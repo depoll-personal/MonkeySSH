@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -5,6 +6,7 @@ import '../domain/services/auth_service.dart';
 import '../presentation/screens/auth_setup_screen.dart';
 import '../presentation/screens/home_screen.dart';
 import '../presentation/screens/lock_screen.dart';
+import '../presentation/screens/terminal_screen.dart';
 
 /// Provider for the app router.
 final routerProvider = Provider<GoRouter>((ref) {
@@ -50,6 +52,17 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/auth-setup',
         name: 'auth-setup',
         builder: (context, state) => const AuthSetupScreen(),
+      ),
+      GoRoute(
+        path: '/terminal/:hostId',
+        name: 'terminal',
+        builder: (context, state) {
+          final hostId = int.tryParse(state.pathParameters['hostId'] ?? '');
+          if (hostId == null) {
+            return const Scaffold(body: Center(child: Text('Invalid host ID')));
+          }
+          return TerminalScreen(hostId: hostId);
+        },
       ),
     ],
   );
