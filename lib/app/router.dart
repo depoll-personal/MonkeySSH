@@ -7,6 +7,8 @@ import '../presentation/screens/auth_setup_screen.dart';
 import '../presentation/screens/home_screen.dart';
 import '../presentation/screens/host_edit_screen.dart';
 import '../presentation/screens/hosts_screen.dart';
+import '../presentation/screens/key_add_screen.dart';
+import '../presentation/screens/keys_screen.dart';
 import '../presentation/screens/lock_screen.dart';
 import '../presentation/screens/terminal_screen.dart';
 
@@ -83,6 +85,16 @@ final routerProvider = Provider<GoRouter>((ref) {
           final hostId = int.tryParse(state.pathParameters['hostId'] ?? '');
           return HostEditScreen(hostId: hostId);
         },
+      ),
+      GoRoute(
+        path: '/keys',
+        name: 'keys',
+        builder: (context, state) => const KeysScreen(),
+      ),
+      GoRoute(
+        path: '/keys/add',
+        name: 'key-add',
+        builder: (context, state) => const KeyAddScreen(),
       ),
     ],
   );
