@@ -10,6 +10,7 @@ import '../presentation/screens/hosts_screen.dart';
 import '../presentation/screens/key_add_screen.dart';
 import '../presentation/screens/keys_screen.dart';
 import '../presentation/screens/lock_screen.dart';
+import '../presentation/screens/sftp_screen.dart';
 import '../presentation/screens/terminal_screen.dart';
 
 /// Provider for the app router.
@@ -95,6 +96,17 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/keys/add',
         name: 'key-add',
         builder: (context, state) => const KeyAddScreen(),
+      ),
+      GoRoute(
+        path: '/sftp/:hostId',
+        name: 'sftp',
+        builder: (context, state) {
+          final hostId = int.tryParse(state.pathParameters['hostId'] ?? '');
+          if (hostId == null) {
+            return const Scaffold(body: Center(child: Text('Invalid host ID')));
+          }
+          return SftpScreen(hostId: hostId);
+        },
       ),
     ],
   );
