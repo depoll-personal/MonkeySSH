@@ -11,6 +11,8 @@ import '../presentation/screens/key_add_screen.dart';
 import '../presentation/screens/keys_screen.dart';
 import '../presentation/screens/lock_screen.dart';
 import '../presentation/screens/sftp_screen.dart';
+import '../presentation/screens/snippet_edit_screen.dart';
+import '../presentation/screens/snippets_screen.dart';
 import '../presentation/screens/terminal_screen.dart';
 
 /// Provider for the app router.
@@ -106,6 +108,25 @@ final routerProvider = Provider<GoRouter>((ref) {
             return const Scaffold(body: Center(child: Text('Invalid host ID')));
           }
           return SftpScreen(hostId: hostId);
+        },
+      ),
+      GoRoute(
+        path: '/snippets',
+        name: 'snippets',
+        builder: (context, state) => const SnippetsScreen(),
+      ),
+      GoRoute(
+        path: '/snippets/add',
+        name: 'snippet-add',
+        builder: (context, state) => const SnippetEditScreen(),
+      ),
+      GoRoute(
+        path: '/snippets/edit/:snippetId',
+        name: 'snippet-edit',
+        builder: (context, state) {
+          final snippetId =
+              int.tryParse(state.pathParameters['snippetId'] ?? '');
+          return SnippetEditScreen(snippetId: snippetId);
         },
       ),
     ],
