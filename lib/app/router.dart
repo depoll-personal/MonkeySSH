@@ -10,6 +10,8 @@ import '../presentation/screens/hosts_screen.dart';
 import '../presentation/screens/key_add_screen.dart';
 import '../presentation/screens/keys_screen.dart';
 import '../presentation/screens/lock_screen.dart';
+import '../presentation/screens/port_forward_edit_screen.dart';
+import '../presentation/screens/port_forwards_screen.dart';
 import '../presentation/screens/sftp_screen.dart';
 import '../presentation/screens/snippet_edit_screen.dart';
 import '../presentation/screens/snippets_screen.dart';
@@ -129,6 +131,25 @@ final routerProvider = Provider<GoRouter>((ref) {
           return SnippetEditScreen(snippetId: snippetId);
         },
       ),
+      GoRoute(
+        path: '/port-forwards',
+        name: 'port-forwards',
+        builder: (context, state) => const PortForwardsScreen(),
+      ),
+      GoRoute(
+        path: '/port-forwards/add',
+        name: 'port-forward-add',
+        builder: (context, state) => const PortForwardEditScreen(),
+      ),
+      GoRoute(
+        path: '/port-forwards/edit/:id',
+        name: 'port-forward-edit',
+        builder: (context, state) {
+          final portForwardId =
+              int.tryParse(state.pathParameters['id'] ?? '');
+          return PortForwardEditScreen(portForwardId: portForwardId);
+        },
+      ),
     ],
   );
 });
@@ -155,6 +176,9 @@ abstract final class Routes {
 
   /// Snippets route.
   static const snippets = 'snippets';
+
+  /// Port forwards route.
+  static const portForwards = 'port-forwards';
 
   /// Settings route.
   static const settings = 'settings';
