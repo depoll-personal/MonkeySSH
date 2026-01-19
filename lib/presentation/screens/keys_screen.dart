@@ -134,7 +134,7 @@ class KeysScreen extends ConsumerWidget {
       ),
     );
 
-    if (confirmed == true) {
+    if (confirmed ?? false) {
       await ref.read(keyRepositoryProvider).delete(key.id);
       ref.invalidate(_allKeysProvider);
       if (context.mounted) {

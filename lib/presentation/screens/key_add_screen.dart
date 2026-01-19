@@ -30,24 +30,22 @@ class _KeyAddScreenState extends ConsumerState<KeyAddScreen>
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Add SSH Key'),
-        bottom: TabBar(
-          controller: _tabController,
-          tabs: const [
-            Tab(text: 'Generate'),
-            Tab(text: 'Import'),
-          ],
-        ),
-      ),
-      body: TabBarView(
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(
+      title: const Text('Add SSH Key'),
+      bottom: TabBar(
         controller: _tabController,
-        children: const [_GenerateKeyTab(), _ImportKeyTab()],
+        tabs: const [
+          Tab(text: 'Generate'),
+          Tab(text: 'Import'),
+        ],
       ),
-    );
-  }
+    ),
+    body: TabBarView(
+      controller: _tabController,
+      children: const [_GenerateKeyTab(), _ImportKeyTab()],
+    ),
+  );
 }
 
 class _GenerateKeyTab extends ConsumerStatefulWidget {
@@ -75,137 +73,135 @@ class _GenerateKeyTabState extends ConsumerState<_GenerateKeyTab> {
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Form(
-      key: _formKey,
-      child: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          // Name
-          TextFormField(
-            controller: _nameController,
-            decoration: const InputDecoration(
-              labelText: 'Key Name',
-              hintText: 'My SSH Key',
-              prefixIcon: Icon(Icons.label),
-            ),
-            textInputAction: TextInputAction.next,
-            validator: (value) {
-              if (value == null || value.isEmpty) {
-                return 'Please enter a name';
-              }
-              return null;
-            },
+  Widget build(BuildContext context) => Form(
+    key: _formKey,
+    child: ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        // Name
+        TextFormField(
+          controller: _nameController,
+          decoration: const InputDecoration(
+            labelText: 'Key Name',
+            hintText: 'My SSH Key',
+            prefixIcon: Icon(Icons.label),
           ),
-          const SizedBox(height: 24),
+          textInputAction: TextInputAction.next,
+          validator: (value) {
+            if (value == null || value.isEmpty) {
+              return 'Please enter a name';
+            }
+            return null;
+          },
+        ),
+        const SizedBox(height: 24),
 
-          // Key type
-          Text('Key Type', style: Theme.of(context).textTheme.titleMedium),
+        // Key type
+        Text('Key Type', style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 8),
+        SegmentedButton<String>(
+          segments: const [
+            ButtonSegment(
+              value: 'ed25519',
+              label: Text('Ed25519'),
+              icon: Icon(Icons.enhanced_encryption),
+            ),
+            ButtonSegment(
+              value: 'rsa',
+              label: Text('RSA'),
+              icon: Icon(Icons.key),
+            ),
+          ],
+          selected: {_keyType},
+          onSelectionChanged: (value) {
+            setState(() => _keyType = value.first);
+          },
+        ),
+        const SizedBox(height: 16),
+
+        // RSA bits (only shown for RSA)
+        if (_keyType == 'rsa') ...[
+          Text('RSA Key Size', style: Theme.of(context).textTheme.titleSmall),
           const SizedBox(height: 8),
-          SegmentedButton<String>(
+          SegmentedButton<int>(
             segments: const [
-              ButtonSegment(
-                value: 'ed25519',
-                label: Text('Ed25519'),
-                icon: Icon(Icons.enhanced_encryption),
-              ),
-              ButtonSegment(
-                value: 'rsa',
-                label: Text('RSA'),
-                icon: Icon(Icons.key),
-              ),
+              ButtonSegment(value: 2048, label: Text('2048')),
+              ButtonSegment(value: 3072, label: Text('3072')),
+              ButtonSegment(value: 4096, label: Text('4096')),
             ],
-            selected: {_keyType},
+            selected: {_rsaBits},
             onSelectionChanged: (value) {
-              setState(() => _keyType = value.first);
+              setState(() => _rsaBits = value.first);
             },
           ),
           const SizedBox(height: 16),
-
-          // RSA bits (only shown for RSA)
-          if (_keyType == 'rsa') ...[
-            Text('RSA Key Size', style: Theme.of(context).textTheme.titleSmall),
-            const SizedBox(height: 8),
-            SegmentedButton<int>(
-              segments: const [
-                ButtonSegment(value: 2048, label: Text('2048')),
-                ButtonSegment(value: 3072, label: Text('3072')),
-                ButtonSegment(value: 4096, label: Text('4096')),
-              ],
-              selected: {_rsaBits},
-              onSelectionChanged: (value) {
-                setState(() => _rsaBits = value.first);
-              },
-            ),
-            const SizedBox(height: 16),
-          ],
-
-          // Passphrase (optional)
-          TextFormField(
-            controller: _passphraseController,
-            decoration: InputDecoration(
-              labelText: 'Passphrase (optional)',
-              hintText: 'Leave empty for no passphrase',
-              prefixIcon: const Icon(Icons.lock),
-              suffixIcon: IconButton(
-                icon: Icon(
-                  _showPassphrase ? Icons.visibility_off : Icons.visibility,
-                ),
-                onPressed: () =>
-                    setState(() => _showPassphrase = !_showPassphrase),
-              ),
-            ),
-            obscureText: !_showPassphrase,
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'A passphrase adds extra security. You will need to enter it each time you use this key.',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: Theme.of(context).colorScheme.outline,
-            ),
-          ),
-          const SizedBox(height: 32),
-
-          // Generate button
-          FilledButton.icon(
-            onPressed: _isGenerating ? null : _generateKey,
-            icon: _isGenerating
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.add),
-            label: Text(_isGenerating ? 'Generating...' : 'Generate Key'),
-          ),
-
-          if (_keyType == 'ed25519') ...[
-            const SizedBox(height: 16),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.info_outline,
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        'Ed25519 is recommended for its security and performance.',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
         ],
-      ),
-    );
-  }
+
+        // Passphrase (optional)
+        TextFormField(
+          controller: _passphraseController,
+          decoration: InputDecoration(
+            labelText: 'Passphrase (optional)',
+            hintText: 'Leave empty for no passphrase',
+            prefixIcon: const Icon(Icons.lock),
+            suffixIcon: IconButton(
+              icon: Icon(
+                _showPassphrase ? Icons.visibility_off : Icons.visibility,
+              ),
+              onPressed: () =>
+                  setState(() => _showPassphrase = !_showPassphrase),
+            ),
+          ),
+          obscureText: !_showPassphrase,
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'A passphrase adds extra security. You will need to enter it each time you use this key.',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+            color: Theme.of(context).colorScheme.outline,
+          ),
+        ),
+        const SizedBox(height: 32),
+
+        // Generate button
+        FilledButton.icon(
+          onPressed: _isGenerating ? null : _generateKey,
+          icon: _isGenerating
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.add),
+          label: Text(_isGenerating ? 'Generating...' : 'Generate Key'),
+        ),
+
+        if (_keyType == 'ed25519') ...[
+          const SizedBox(height: 16),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.info_outline,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'Ed25519 is recommended for its security and performance.',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ],
+    ),
+  );
 
   Future<void> _generateKey() async {
     if (!_formKey.currentState!.validate()) return;
@@ -255,96 +251,93 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Form(
-      key: _formKey,
-      child: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          // Name
-          TextFormField(
-            controller: _nameController,
-            decoration: const InputDecoration(
-              labelText: 'Key Name',
-              hintText: 'Imported Key',
-              prefixIcon: Icon(Icons.label),
-            ),
-            textInputAction: TextInputAction.next,
-            validator: (value) {
-              if (value == null || value.isEmpty) {
-                return 'Please enter a name';
-              }
-              return null;
-            },
+  Widget build(BuildContext context) => Form(
+    key: _formKey,
+    child: ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        // Name
+        TextFormField(
+          controller: _nameController,
+          decoration: const InputDecoration(
+            labelText: 'Key Name',
+            hintText: 'Imported Key',
+            prefixIcon: Icon(Icons.label),
           ),
-          const SizedBox(height: 16),
+          textInputAction: TextInputAction.next,
+          validator: (value) {
+            if (value == null || value.isEmpty) {
+              return 'Please enter a name';
+            }
+            return null;
+          },
+        ),
+        const SizedBox(height: 16),
 
-          // Private key content
-          TextFormField(
-            controller: _privateKeyController,
-            decoration: const InputDecoration(
-              labelText: 'Private Key (PEM format)',
-              hintText: '-----BEGIN OPENSSH PRIVATE KEY-----\n...',
-              alignLabelWithHint: true,
-            ),
-            maxLines: 8,
-            style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-            validator: (value) {
-              if (value == null || value.isEmpty) {
-                return 'Please enter the private key';
-              }
-              if (!value.contains('-----BEGIN') ||
-                  !value.contains('-----END')) {
-                return 'Invalid PEM format';
-              }
-              return null;
-            },
+        // Private key content
+        TextFormField(
+          controller: _privateKeyController,
+          decoration: const InputDecoration(
+            labelText: 'Private Key (PEM format)',
+            hintText: '-----BEGIN OPENSSH PRIVATE KEY-----\n...',
+            alignLabelWithHint: true,
           ),
-          const SizedBox(height: 16),
+          maxLines: 8,
+          style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+          validator: (value) {
+            if (value == null || value.isEmpty) {
+              return 'Please enter the private key';
+            }
+            if (!value.contains('-----BEGIN') || !value.contains('-----END')) {
+              return 'Invalid PEM format';
+            }
+            return null;
+          },
+        ),
+        const SizedBox(height: 16),
 
-          // Passphrase (if encrypted)
-          TextFormField(
-            controller: _passphraseController,
-            decoration: InputDecoration(
-              labelText: 'Passphrase (if encrypted)',
-              hintText: 'Leave empty if key is not encrypted',
-              prefixIcon: const Icon(Icons.lock),
-              suffixIcon: IconButton(
-                icon: Icon(
-                  _showPassphrase ? Icons.visibility_off : Icons.visibility,
-                ),
-                onPressed: () =>
-                    setState(() => _showPassphrase = !_showPassphrase),
+        // Passphrase (if encrypted)
+        TextFormField(
+          controller: _passphraseController,
+          decoration: InputDecoration(
+            labelText: 'Passphrase (if encrypted)',
+            hintText: 'Leave empty if key is not encrypted',
+            prefixIcon: const Icon(Icons.lock),
+            suffixIcon: IconButton(
+              icon: Icon(
+                _showPassphrase ? Icons.visibility_off : Icons.visibility,
               ),
+              onPressed: () =>
+                  setState(() => _showPassphrase = !_showPassphrase),
             ),
-            obscureText: !_showPassphrase,
           ),
-          const SizedBox(height: 32),
+          obscureText: !_showPassphrase,
+        ),
+        const SizedBox(height: 32),
 
-          // Import button
-          FilledButton.icon(
-            onPressed: _isImporting ? null : _importKey,
-            icon: _isImporting
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.download),
-            label: Text(_isImporting ? 'Importing...' : 'Import Key'),
-          ),
-          const SizedBox(height: 16),
+        // Import button
+        FilledButton.icon(
+          onPressed: _isImporting ? null : _importKey,
+          icon: _isImporting
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.download),
+          label: Text(_isImporting ? 'Importing...' : 'Import Key'),
+        ),
+        const SizedBox(height: 16),
 
-          // Import from file button
-          OutlinedButton.icon(
-            onPressed: _importFromFile,
-            icon: const Icon(Icons.file_open),
-            label: const Text('Import from File'),
-          ),
-        ],
-      ),
-    );
-  }
+        // Import from file button
+        OutlinedButton.icon(
+          onPressed: _importFromFile,
+          icon: const Icon(Icons.file_open),
+          label: const Text('Import from File'),
+        ),
+      ],
+    ),
+  );
 
   Future<void> _importKey() async {
     if (!_formKey.currentState!.validate()) return;

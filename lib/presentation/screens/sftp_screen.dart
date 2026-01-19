@@ -124,37 +124,35 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('SFTP Browser'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: () => _loadDirectory(_currentPath),
-            tooltip: 'Refresh',
-          ),
-          IconButton(
-            icon: const Icon(Icons.create_new_folder),
-            onPressed: _showCreateDirectoryDialog,
-            tooltip: 'New folder',
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          // Breadcrumb navigation
-          _buildBreadcrumbs(),
-          // File list
-          Expanded(child: _buildFileList()),
-        ],
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _showUploadDialog,
-        child: const Icon(Icons.upload_file),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(
+      title: const Text('SFTP Browser'),
+      actions: [
+        IconButton(
+          icon: const Icon(Icons.refresh),
+          onPressed: () => _loadDirectory(_currentPath),
+          tooltip: 'Refresh',
+        ),
+        IconButton(
+          icon: const Icon(Icons.create_new_folder),
+          onPressed: _showCreateDirectoryDialog,
+          tooltip: 'New folder',
+        ),
+      ],
+    ),
+    body: Column(
+      children: [
+        // Breadcrumb navigation
+        _buildBreadcrumbs(),
+        // File list
+        Expanded(child: _buildFileList()),
+      ],
+    ),
+    floatingActionButton: FloatingActionButton(
+      onPressed: _showUploadDialog,
+      child: const Icon(Icons.upload_file),
+    ),
+  );
 
   Widget _buildBreadcrumbs() {
     final parts = _currentPath.split('/').where((p) => p.isNotEmpty).toList();
@@ -498,7 +496,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       ),
     );
 
-    if (confirmed == true && _sftp != null) {
+    if ((confirmed ?? false) && _sftp != null) {
       try {
         final path = '$_currentPath/${file.filename}';
         if (file.attr.isDirectory) {
@@ -615,23 +613,21 @@ class _InfoRow extends StatelessWidget {
   final String value;
 
   @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        children: [
-          SizedBox(
-            width: 80,
-            child: Text(
-              label,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Theme.of(context).colorScheme.outline,
-              ),
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 4),
+    child: Row(
+      children: [
+        SizedBox(
+          width: 80,
+          child: Text(
+            label,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Theme.of(context).colorScheme.outline,
             ),
           ),
-          Expanded(child: Text(value)),
-        ],
-      ),
-    );
-  }
+        ),
+        Expanded(child: Text(value)),
+      ],
+    ),
+  );
 }

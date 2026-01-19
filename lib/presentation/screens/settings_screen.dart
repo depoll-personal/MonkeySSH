@@ -10,20 +10,18 @@ class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Settings')),
-      body: ListView(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        children: const [
-          _AppearanceSection(),
-          _SecuritySection(),
-          _TerminalSection(),
-          _AboutSection(),
-        ],
-      ),
-    );
-  }
+  Widget build(BuildContext context, WidgetRef ref) => Scaffold(
+    appBar: AppBar(title: const Text('Settings')),
+    body: ListView(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      children: const [
+        _AppearanceSection(),
+        _SecuritySection(),
+        _TerminalSection(),
+        _AboutSection(),
+      ],
+    ),
+  );
 }
 
 class _SectionHeader extends StatelessWidget {
@@ -83,49 +81,31 @@ class _AppearanceSection extends ConsumerWidget {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Theme'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            RadioListTile<ThemeMode>(
-              title: const Text('System default'),
-              value: ThemeMode.system,
-              groupValue: current,
-              onChanged: (value) {
-                if (value != null) {
-                  ref
-                      .read(themeModeNotifierProvider.notifier)
-                      .setThemeMode(value);
-                  Navigator.pop(context);
-                }
-              },
-            ),
-            RadioListTile<ThemeMode>(
-              title: const Text('Light'),
-              value: ThemeMode.light,
-              groupValue: current,
-              onChanged: (value) {
-                if (value != null) {
-                  ref
-                      .read(themeModeNotifierProvider.notifier)
-                      .setThemeMode(value);
-                  Navigator.pop(context);
-                }
-              },
-            ),
-            RadioListTile<ThemeMode>(
-              title: const Text('Dark'),
-              value: ThemeMode.dark,
-              groupValue: current,
-              onChanged: (value) {
-                if (value != null) {
-                  ref
-                      .read(themeModeNotifierProvider.notifier)
-                      .setThemeMode(value);
-                  Navigator.pop(context);
-                }
-              },
-            ),
-          ],
+        content: RadioGroup<ThemeMode>(
+          groupValue: current,
+          onChanged: (value) {
+            if (value != null) {
+              ref.read(themeModeNotifierProvider.notifier).setThemeMode(value);
+              Navigator.pop(context);
+            }
+          },
+          child: const Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              RadioListTile<ThemeMode>(
+                title: Text('System default'),
+                value: ThemeMode.system,
+              ),
+              RadioListTile<ThemeMode>(
+                title: Text('Light'),
+                value: ThemeMode.light,
+              ),
+              RadioListTile<ThemeMode>(
+                title: Text('Dark'),
+                value: ThemeMode.dark,
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -292,27 +272,31 @@ class _SecuritySection extends ConsumerWidget {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Auto-lock timeout'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: options.map((minutes) {
-            return RadioListTile<int>(
-              title: Text(
-                minutes == 0
-                    ? 'Disabled'
-                    : '$minutes minute${minutes == 1 ? '' : 's'}',
-              ),
-              value: minutes,
-              groupValue: current,
-              onChanged: (value) {
-                if (value != null) {
-                  ref
-                      .read(autoLockTimeoutNotifierProvider.notifier)
-                      .setTimeout(value);
-                  Navigator.pop(context);
-                }
-              },
-            );
-          }).toList(),
+        content: RadioGroup<int>(
+          groupValue: current,
+          onChanged: (value) {
+            if (value != null) {
+              ref
+                  .read(autoLockTimeoutNotifierProvider.notifier)
+                  .setTimeout(value);
+              Navigator.pop(context);
+            }
+          },
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: options
+                .map(
+                  (minutes) => RadioListTile<int>(
+                    title: Text(
+                      minutes == 0
+                          ? 'Disabled'
+                          : '$minutes minute${minutes == 1 ? '' : 's'}',
+                    ),
+                    value: minutes,
+                  ),
+                )
+                .toList(),
+          ),
         ),
       ),
     );
@@ -357,7 +341,9 @@ class _TerminalSection extends ConsumerWidget {
           subtitle: const Text('Play sound on terminal bell'),
           value: bellSound,
           onChanged: (value) {
-            ref.read(bellSoundNotifierProvider.notifier).setEnabled(value);
+            ref
+                .read(bellSoundNotifierProvider.notifier)
+                .setEnabled(enabled: value);
           },
         ),
       ],
@@ -445,23 +431,27 @@ class _TerminalSection extends ConsumerWidget {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Font family'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: options.map((family) {
-            return RadioListTile<String>(
-              title: Text(_fontFamilyLabel(family)),
-              value: family,
-              groupValue: current,
-              onChanged: (value) {
-                if (value != null) {
-                  ref
-                      .read(fontFamilyNotifierProvider.notifier)
-                      .setFontFamily(value);
-                  Navigator.pop(context);
-                }
-              },
-            );
-          }).toList(),
+        content: RadioGroup<String>(
+          groupValue: current,
+          onChanged: (value) {
+            if (value != null) {
+              ref
+                  .read(fontFamilyNotifierProvider.notifier)
+                  .setFontFamily(value);
+              Navigator.pop(context);
+            }
+          },
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: options
+                .map(
+                  (family) => RadioListTile<String>(
+                    title: Text(_fontFamilyLabel(family)),
+                    value: family,
+                  ),
+                )
+                .toList(),
+          ),
         ),
       ),
     );
@@ -477,23 +467,27 @@ class _TerminalSection extends ConsumerWidget {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Cursor style'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: options.map((style) {
-            return RadioListTile<String>(
-              title: Text(_cursorStyleLabel(style)),
-              value: style,
-              groupValue: current,
-              onChanged: (value) {
-                if (value != null) {
-                  ref
-                      .read(cursorStyleNotifierProvider.notifier)
-                      .setCursorStyle(value);
-                  Navigator.pop(context);
-                }
-              },
-            );
-          }).toList(),
+        content: RadioGroup<String>(
+          groupValue: current,
+          onChanged: (value) {
+            if (value != null) {
+              ref
+                  .read(cursorStyleNotifierProvider.notifier)
+                  .setCursorStyle(value);
+              Navigator.pop(context);
+            }
+          },
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: options
+                .map(
+                  (style) => RadioListTile<String>(
+                    title: Text(_cursorStyleLabel(style)),
+                    value: style,
+                  ),
+                )
+                .toList(),
+          ),
         ),
       ),
     );
@@ -504,35 +498,33 @@ class _AboutSection extends StatelessWidget {
   const _AboutSection();
 
   @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const _SectionHeader(title: 'About'),
-        const ListTile(
-          leading: Icon(Icons.info_outline),
-          title: Text('App version'),
-          subtitle: Text('0.1.0'),
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      const _SectionHeader(title: 'About'),
+      const ListTile(
+        leading: Icon(Icons.info_outline),
+        title: Text('App version'),
+        subtitle: Text('0.1.0'),
+      ),
+      ListTile(
+        leading: const Icon(Icons.code),
+        title: const Text('GitHub'),
+        subtitle: const Text('View source code'),
+        onTap: () => _showGitHubInfo(context),
+      ),
+      ListTile(
+        leading: const Icon(Icons.description_outlined),
+        title: const Text('Licenses'),
+        subtitle: const Text('Open source licenses'),
+        onTap: () => showLicensePage(
+          context: context,
+          applicationName: 'Flutty',
+          applicationVersion: '0.1.0',
         ),
-        ListTile(
-          leading: const Icon(Icons.code),
-          title: const Text('GitHub'),
-          subtitle: const Text('View source code'),
-          onTap: () => _showGitHubInfo(context),
-        ),
-        ListTile(
-          leading: const Icon(Icons.description_outlined),
-          title: const Text('Licenses'),
-          subtitle: const Text('Open source licenses'),
-          onTap: () => showLicensePage(
-            context: context,
-            applicationName: 'Flutty',
-            applicationVersion: '0.1.0',
-          ),
-        ),
-      ],
-    );
-  }
+      ),
+    ],
+  );
 
   void _showGitHubInfo(BuildContext context) {
     ScaffoldMessenger.of(context).showSnackBar(

@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:xterm/xterm.dart';
-
 import 'package:flutty/presentation/widgets/keyboard_toolbar.dart';
+import 'package:xterm/xterm.dart';
 
 void main() {
   group('KeyboardToolbar', () {
@@ -125,7 +124,7 @@ void main() {
       );
 
       expect(find.text('|'), findsOneWidget);
-      expect(find.text('\\'), findsOneWidget);
+      expect(find.text(r'\'), findsOneWidget);
       expect(find.text('/'), findsOneWidget);
       expect(find.text('`'), findsOneWidget);
       expect(find.text('-'), findsOneWidget);

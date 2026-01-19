@@ -184,7 +184,7 @@ final fontSizeProvider = FutureProvider<double>((ref) async {
 /// Notifier for font size with write capability.
 class FontSizeNotifier extends StateNotifier<double> {
   /// Creates a new [FontSizeNotifier].
-  FontSizeNotifier(this._settings) : super(14.0) {
+  FontSizeNotifier(this._settings) : super(14) {
     _init();
   }
 
@@ -298,7 +298,7 @@ class HapticFeedbackNotifier extends StateNotifier<bool> {
   }
 
   /// Set haptic feedback enabled.
-  Future<void> setEnabled(bool enabled) async {
+  Future<void> setEnabled({required bool enabled}) async {
     await _settings.setBool(SettingKeys.hapticFeedback, value: enabled);
     state = enabled;
   }
@@ -367,7 +367,7 @@ class BellSoundNotifier extends StateNotifier<bool> {
   }
 
   /// Set bell sound enabled.
-  Future<void> setEnabled(bool enabled) async {
+  Future<void> setEnabled({required bool enabled}) async {
     await _settings.setBool(SettingKeys.bellSound, value: enabled);
     state = enabled;
   }

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -62,7 +64,7 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
             ],
           ),
         ),
-        data: (hosts) => _buildHostList(hosts),
+        data: _buildHostList,
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => context.push('/hosts/add'),
@@ -78,11 +80,14 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
     // Apply search filter
     if (_searchQuery.isNotEmpty) {
       final query = _searchQuery.toLowerCase();
-      filteredHosts = filteredHosts.where((h) {
-        return h.label.toLowerCase().contains(query) ||
-            h.hostname.toLowerCase().contains(query) ||
-            h.username.toLowerCase().contains(query);
-      }).toList();
+      filteredHosts = filteredHosts
+          .where(
+            (h) =>
+                h.label.toLowerCase().contains(query) ||
+                h.hostname.toLowerCase().contains(query) ||
+                h.username.toLowerCase().contains(query),
+          )
+          .toList();
     }
 
     // Apply group filter
@@ -137,7 +142,7 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
   }
 
   Future<void> _connectToHost(Host host) async {
-    context.push('/terminal/${host.id}');
+    unawaited(context.push('/terminal/${host.id}'));
   }
 
   Future<void> _deleteHost(Host host) async {
@@ -162,7 +167,7 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
       ),
     );
 
-    if (confirmed == true) {
+    if (confirmed ?? false) {
       await ref.read(hostRepositoryProvider).delete(host.id);
       ref.invalidate(allHostsProvider);
       if (mounted) {
@@ -255,7 +260,8 @@ class _HostListTile extends ConsumerWidget {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (host.isFavorite) Icon(Icons.star, color: Colors.amber, size: 20),
+          if (host.isFavorite)
+            const Icon(Icons.star, color: Colors.amber, size: 20),
           if (isConnecting)
             const SizedBox(
               width: 20,

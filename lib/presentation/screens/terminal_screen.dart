@@ -195,8 +195,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     return TerminalView(
       _terminal,
       theme: isDark ? _darkTerminalTheme : _lightTerminalTheme,
-      textStyle: const TerminalStyle(fontSize: 14, fontFamily: 'monospace'),
-      autofocus: true,
+      textStyle: const TerminalStyle(fontSize: 14),
     );
   }
 
@@ -286,7 +285,7 @@ class _KeyboardToolbar extends StatelessWidget {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
-    return Container(
+    return DecoratedBox(
       decoration: BoxDecoration(
         color: colorScheme.surface,
         border: Border(top: BorderSide(color: colorScheme.outlineVariant)),
@@ -300,8 +299,8 @@ class _KeyboardToolbar extends StatelessWidget {
             _buildKeyRow([
               _ToolbarKey(label: 'Esc', onTap: () => _sendKey('\x1b')),
               _ToolbarKey(label: 'Tab', onTap: () => _sendKey('\t')),
-              _ModifierKey(label: 'Ctrl', modifier: _Modifier.ctrl),
-              _ModifierKey(label: 'Alt', modifier: _Modifier.alt),
+              const _ModifierKey(label: 'Ctrl', modifier: _Modifier.ctrl),
+              const _ModifierKey(label: 'Alt', modifier: _Modifier.alt),
               _ToolbarKey(label: '↑', onTap: () => _sendKey('\x1b[A')),
               _ToolbarKey(label: '↓', onTap: () => _sendKey('\x1b[B')),
               _ToolbarKey(label: '←', onTap: () => _sendKey('\x1b[D')),
@@ -331,8 +330,9 @@ class _KeyboardToolbar extends StatelessWidget {
 
   void _sendKey(String key) {
     HapticFeedback.lightImpact();
-    terminal.keyInput(TerminalKey.escape);
-    terminal.textInput(key);
+    terminal
+      ..keyInput(TerminalKey.escape)
+      ..textInput(key);
   }
 }
 

@@ -136,7 +136,7 @@ class SnippetsScreen extends ConsumerWidget {
       ),
     );
 
-    if (confirmed == true) {
+    if (confirmed ?? false) {
       await ref.read(snippetRepositoryProvider).delete(snippet.id);
       ref.invalidate(_allSnippetsProvider);
       if (context.mounted) {

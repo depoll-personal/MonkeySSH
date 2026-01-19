@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:xterm/xterm.dart';
@@ -38,7 +40,7 @@ class _KeyboardToolbarState extends State<KeyboardToolbar> {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
-    return Container(
+    return DecoratedBox(
       decoration: BoxDecoration(
         color: colorScheme.surface,
         border: Border(top: BorderSide(color: colorScheme.outlineVariant)),
@@ -316,7 +318,7 @@ class _KeyboardToolbarState extends State<KeyboardToolbar> {
   }
 
   Future<void> _paste() async {
-    HapticFeedback.lightImpact();
+    unawaited(HapticFeedback.lightImpact());
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     if (data?.text case final text?) {
       widget.terminal.paste(text);
@@ -392,9 +394,7 @@ class _ToolbarButtonState extends State<_ToolbarButton> {
               ? colorScheme.primary.withAlpha(50)
               : effectiveColor,
           borderRadius: BorderRadius.circular(6),
-          border: _isPressed
-              ? Border.all(color: colorScheme.primary, width: 1)
-              : null,
+          border: _isPressed ? Border.all(color: colorScheme.primary) : null,
         ),
         child: Center(
           child: widget.icon != null
@@ -419,8 +419,8 @@ class _ToolbarButtonState extends State<_ToolbarButton> {
       ),
     );
 
-    if (widget.tooltip != null) {
-      button = Tooltip(message: widget.tooltip!, child: button);
+    if (widget.tooltip case final tooltip?) {
+      button = Tooltip(message: tooltip, child: button);
     }
 
     return button;

@@ -129,7 +129,7 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
 
                   // Host selection
                   DropdownButtonFormField<int>(
-                    value: _selectedHostId,
+                    initialValue: _selectedHostId,
                     decoration: const InputDecoration(
                       labelText: 'Host',
                       prefixIcon: Icon(Icons.computer),

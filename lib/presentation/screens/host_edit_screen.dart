@@ -218,18 +218,15 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                   // SSH Key dropdown
                   keysAsync.when(
                     loading: () => const LinearProgressIndicator(),
-                    error: (_, __) => const Text('Error loading keys'),
+                    error: (_, _) => const Text('Error loading keys'),
                     data: (keys) => DropdownButtonFormField<int?>(
-                      value: _selectedKeyId,
+                      initialValue: _selectedKeyId,
                       decoration: const InputDecoration(
                         labelText: 'SSH Key (optional)',
                         prefixIcon: Icon(Icons.key),
                       ),
                       items: [
-                        const DropdownMenuItem(
-                          value: null,
-                          child: Text('None'),
-                        ),
+                        const DropdownMenuItem(child: Text('None')),
                         ...keys.map(
                           (key) => DropdownMenuItem(
                             value: key.id,
@@ -252,14 +249,14 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                       // Jump host dropdown
                       hostsAsync.when(
                         loading: () => const LinearProgressIndicator(),
-                        error: (_, __) => const Text('Error loading hosts'),
+                        error: (_, _) => const Text('Error loading hosts'),
                         data: (hosts) {
                           // Filter out current host from jump host options
                           final availableHosts = hosts
                               .where((h) => h.id != widget.hostId)
                               .toList();
                           return DropdownButtonFormField<int?>(
-                            value: _selectedJumpHostId,
+                            initialValue: _selectedJumpHostId,
                             decoration: const InputDecoration(
                               labelText: 'Jump Host (optional)',
                               prefixIcon: Icon(Icons.hub),
@@ -267,10 +264,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                                   'Connect through another host (bastion)',
                             ),
                             items: [
-                              const DropdownMenuItem(
-                                value: null,
-                                child: Text('None'),
-                              ),
+                              const DropdownMenuItem(child: Text('None')),
                               ...availableHosts.map(
                                 (host) => DropdownMenuItem(
                                   value: host.id,

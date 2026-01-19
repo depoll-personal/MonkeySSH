@@ -139,7 +139,7 @@ class PortForwardsScreen extends ConsumerWidget {
       ),
     );
 
-    if (confirmed == true) {
+    if (confirmed ?? false) {
       await ref.read(portForwardRepositoryProvider).delete(portForward.id);
       ref.invalidate(_allPortForwardsProvider);
       if (context.mounted) {
