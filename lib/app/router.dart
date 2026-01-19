@@ -12,6 +12,7 @@ import '../presentation/screens/keys_screen.dart';
 import '../presentation/screens/lock_screen.dart';
 import '../presentation/screens/port_forward_edit_screen.dart';
 import '../presentation/screens/port_forwards_screen.dart';
+import '../presentation/screens/settings_screen.dart';
 import '../presentation/screens/sftp_screen.dart';
 import '../presentation/screens/snippet_edit_screen.dart';
 import '../presentation/screens/snippets_screen.dart';
@@ -149,6 +150,11 @@ final routerProvider = Provider<GoRouter>((ref) {
               int.tryParse(state.pathParameters['id'] ?? '');
           return PortForwardEditScreen(portForwardId: portForwardId);
         },
+      ),
+      GoRoute(
+        path: '/settings',
+        name: 'settings',
+        builder: (context, state) => const SettingsScreen(),
       ),
     ],
   );
