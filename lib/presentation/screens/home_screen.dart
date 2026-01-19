@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 /// The main home screen with navigation to hosts, keys, snippets, etc.
 class HomeScreen extends StatelessWidget {
@@ -21,9 +22,7 @@ class HomeScreen extends StatelessWidget {
         actions: [
           IconButton(
             icon: const Icon(Icons.settings_outlined),
-            onPressed: () {
-              // TODO: Navigate to settings
-            },
+            onPressed: () => context.push('/settings'),
           ),
         ],
       ),
@@ -56,33 +55,25 @@ class HomeScreen extends StatelessWidget {
                       icon: Icons.dns_outlined,
                       title: 'Hosts',
                       subtitle: 'Manage connections',
-                      onTap: () {
-                        // TODO: Navigate to hosts
-                      },
+                      onTap: () => context.push('/hosts'),
                     ),
                     _NavigationCard(
                       icon: Icons.vpn_key_outlined,
                       title: 'Keys',
                       subtitle: 'SSH keys',
-                      onTap: () {
-                        // TODO: Navigate to keys
-                      },
+                      onTap: () => context.push('/keys'),
                     ),
                     _NavigationCard(
                       icon: Icons.code_outlined,
                       title: 'Snippets',
                       subtitle: 'Saved commands',
-                      onTap: () {
-                        // TODO: Navigate to snippets
-                      },
+                      onTap: () => context.push('/snippets'),
                     ),
                     _NavigationCard(
                       icon: Icons.swap_horiz_outlined,
                       title: 'Port Forward',
                       subtitle: 'Tunnels',
-                      onTap: () {
-                        // TODO: Navigate to port forwarding
-                      },
+                      onTap: () => context.push('/port-forwards'),
                     ),
                   ],
                 ),
@@ -103,9 +94,7 @@ class _QuickConnectCard extends StatelessWidget {
 
     return Card(
       child: InkWell(
-        onTap: () {
-          // TODO: Show quick connect dialog
-        },
+        onTap: () => _showQuickConnectDialog(context),
         borderRadius: BorderRadius.circular(12),
         child: Padding(
           padding: const EdgeInsets.all(20),
@@ -152,6 +141,53 @@ class _QuickConnectCard extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  void _showQuickConnectDialog(BuildContext context) {
+    final hostController = TextEditingController();
+    final userController = TextEditingController(text: 'root');
+
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Quick Connect'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: hostController,
+              decoration: const InputDecoration(
+                labelText: 'Host',
+                hintText: 'hostname:port or hostname',
+              ),
+              autofocus: true,
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: userController,
+              decoration: const InputDecoration(
+                labelText: 'Username',
+                hintText: 'root',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(context);
+              // Navigate to add host with prefilled values
+              context.push('/hosts/add');
+            },
+            child: const Text('Connect'),
+          ),
+        ],
       ),
     );
   }

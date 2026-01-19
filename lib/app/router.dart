@@ -5,6 +5,8 @@ import 'package:go_router/go_router.dart';
 import '../domain/services/auth_service.dart';
 import '../presentation/screens/auth_setup_screen.dart';
 import '../presentation/screens/home_screen.dart';
+import '../presentation/screens/host_edit_screen.dart';
+import '../presentation/screens/hosts_screen.dart';
 import '../presentation/screens/lock_screen.dart';
 import '../presentation/screens/terminal_screen.dart';
 
@@ -62,6 +64,24 @@ final routerProvider = Provider<GoRouter>((ref) {
             return const Scaffold(body: Center(child: Text('Invalid host ID')));
           }
           return TerminalScreen(hostId: hostId);
+        },
+      ),
+      GoRoute(
+        path: '/hosts',
+        name: 'hosts',
+        builder: (context, state) => const HostsScreen(),
+      ),
+      GoRoute(
+        path: '/hosts/add',
+        name: 'host-add',
+        builder: (context, state) => const HostEditScreen(),
+      ),
+      GoRoute(
+        path: '/hosts/edit/:hostId',
+        name: 'host-edit',
+        builder: (context, state) {
+          final hostId = int.tryParse(state.pathParameters['hostId'] ?? '');
+          return HostEditScreen(hostId: hostId);
         },
       ),
     ],
