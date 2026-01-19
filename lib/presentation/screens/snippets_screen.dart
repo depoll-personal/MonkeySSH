@@ -141,17 +141,17 @@ class SnippetsScreen extends ConsumerWidget {
       await ref.read(snippetRepositoryProvider).delete(snippet.id);
       ref.invalidate(_allSnippetsProvider);
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Deleted "${snippet.name}"')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Deleted "${snippet.name}"')));
       }
     }
   }
 
   void _showFoldersDialog(BuildContext context) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Folders coming soon')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Folders coming soon')));
   }
 }
 
@@ -175,10 +175,7 @@ class _SnippetListTile extends StatelessWidget {
     return ListTile(
       leading: CircleAvatar(
         backgroundColor: theme.colorScheme.primaryContainer,
-        child: Icon(
-          Icons.code,
-          color: theme.colorScheme.onPrimaryContainer,
-        ),
+        child: Icon(Icons.code, color: theme.colorScheme.onPrimaryContainer),
       ),
       title: Text(snippet.name),
       subtitle: Text(

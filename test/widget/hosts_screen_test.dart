@@ -9,11 +9,7 @@ void main() {
   group('HostsScreen', () {
     testWidgets('shows loading indicator initially', (tester) async {
       await tester.pumpWidget(
-        ProviderScope(
-          child: MaterialApp(
-            home: const HostsScreen(),
-          ),
-        ),
+        ProviderScope(child: MaterialApp(home: const HostsScreen())),
       );
 
       expect(find.byType(CircularProgressIndicator), findsOneWidget);
@@ -22,12 +18,8 @@ void main() {
     testWidgets('shows empty state when no hosts', (tester) async {
       await tester.pumpWidget(
         ProviderScope(
-          overrides: [
-            allHostsProvider.overrideWith((ref) async => <Host>[]),
-          ],
-          child: MaterialApp(
-            home: const HostsScreen(),
-          ),
+          overrides: [allHostsProvider.overrideWith((ref) async => <Host>[])],
+          child: MaterialApp(home: const HostsScreen()),
         ),
       );
 
@@ -40,12 +32,8 @@ void main() {
     testWidgets('shows FAB to add host', (tester) async {
       await tester.pumpWidget(
         ProviderScope(
-          overrides: [
-            allHostsProvider.overrideWith((ref) async => <Host>[]),
-          ],
-          child: MaterialApp(
-            home: const HostsScreen(),
-          ),
+          overrides: [allHostsProvider.overrideWith((ref) async => <Host>[])],
+          child: MaterialApp(home: const HostsScreen()),
         ),
       );
 
@@ -58,12 +46,8 @@ void main() {
     testWidgets('shows search and group buttons in app bar', (tester) async {
       await tester.pumpWidget(
         ProviderScope(
-          overrides: [
-            allHostsProvider.overrideWith((ref) async => <Host>[]),
-          ],
-          child: MaterialApp(
-            home: const HostsScreen(),
-          ),
+          overrides: [allHostsProvider.overrideWith((ref) async => <Host>[])],
+          child: MaterialApp(home: const HostsScreen()),
         ),
       );
 

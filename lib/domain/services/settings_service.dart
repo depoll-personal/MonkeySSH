@@ -171,8 +171,8 @@ class ThemeModeNotifier extends StateNotifier<ThemeMode> {
 /// Provider for theme mode with write capability.
 final themeModeNotifierProvider =
     StateNotifierProvider<ThemeModeNotifier, ThemeMode>(
-  (ref) => ThemeModeNotifier(ref.watch(settingsServiceProvider)),
-);
+      (ref) => ThemeModeNotifier(ref.watch(settingsServiceProvider)),
+    );
 
 /// Provider for font size setting.
 final fontSizeProvider = FutureProvider<double>((ref) async {
@@ -205,8 +205,8 @@ class FontSizeNotifier extends StateNotifier<double> {
 /// Provider for font size with write capability.
 final fontSizeNotifierProvider =
     StateNotifierProvider<FontSizeNotifier, double>(
-  (ref) => FontSizeNotifier(ref.watch(settingsServiceProvider)),
-);
+      (ref) => FontSizeNotifier(ref.watch(settingsServiceProvider)),
+    );
 
 /// Provider for font family setting.
 final fontFamilyProvider = FutureProvider<String>((ref) async {
@@ -238,8 +238,8 @@ class FontFamilyNotifier extends StateNotifier<String> {
 /// Provider for font family with write capability.
 final fontFamilyNotifierProvider =
     StateNotifierProvider<FontFamilyNotifier, String>(
-  (ref) => FontFamilyNotifier(ref.watch(settingsServiceProvider)),
-);
+      (ref) => FontFamilyNotifier(ref.watch(settingsServiceProvider)),
+    );
 
 /// Provider for auto-lock timeout setting.
 final autoLockTimeoutProvider = FutureProvider<int>((ref) async {
@@ -271,8 +271,8 @@ class AutoLockTimeoutNotifier extends StateNotifier<int> {
 /// Provider for auto-lock timeout with write capability.
 final autoLockTimeoutNotifierProvider =
     StateNotifierProvider<AutoLockTimeoutNotifier, int>(
-  (ref) => AutoLockTimeoutNotifier(ref.watch(settingsServiceProvider)),
-);
+      (ref) => AutoLockTimeoutNotifier(ref.watch(settingsServiceProvider)),
+    );
 
 /// Provider for haptic feedback setting.
 final hapticFeedbackProvider = FutureProvider<bool>((ref) async {
@@ -290,8 +290,10 @@ class HapticFeedbackNotifier extends StateNotifier<bool> {
   final SettingsService _settings;
 
   Future<void> _init() async {
-    final value =
-        await _settings.getBool(SettingKeys.hapticFeedback, defaultValue: true);
+    final value = await _settings.getBool(
+      SettingKeys.hapticFeedback,
+      defaultValue: true,
+    );
     state = value;
   }
 
@@ -305,8 +307,8 @@ class HapticFeedbackNotifier extends StateNotifier<bool> {
 /// Provider for haptic feedback with write capability.
 final hapticFeedbackNotifierProvider =
     StateNotifierProvider<HapticFeedbackNotifier, bool>(
-  (ref) => HapticFeedbackNotifier(ref.watch(settingsServiceProvider)),
-);
+      (ref) => HapticFeedbackNotifier(ref.watch(settingsServiceProvider)),
+    );
 
 /// Provider for cursor style setting.
 final cursorStyleProvider = FutureProvider<String>((ref) async {
@@ -338,8 +340,8 @@ class CursorStyleNotifier extends StateNotifier<String> {
 /// Provider for cursor style with write capability.
 final cursorStyleNotifierProvider =
     StateNotifierProvider<CursorStyleNotifier, String>(
-  (ref) => CursorStyleNotifier(ref.watch(settingsServiceProvider)),
-);
+      (ref) => CursorStyleNotifier(ref.watch(settingsServiceProvider)),
+    );
 
 /// Provider for bell sound setting.
 final bellSoundProvider = FutureProvider<bool>((ref) async {
@@ -357,8 +359,10 @@ class BellSoundNotifier extends StateNotifier<bool> {
   final SettingsService _settings;
 
   Future<void> _init() async {
-    final value =
-        await _settings.getBool(SettingKeys.bellSound, defaultValue: true);
+    final value = await _settings.getBool(
+      SettingKeys.bellSound,
+      defaultValue: true,
+    );
     state = value;
   }
 
@@ -372,5 +376,5 @@ class BellSoundNotifier extends StateNotifier<bool> {
 /// Provider for bell sound with write capability.
 final bellSoundNotifierProvider =
     StateNotifierProvider<BellSoundNotifier, bool>(
-  (ref) => BellSoundNotifier(ref.watch(settingsServiceProvider)),
-);
+      (ref) => BellSoundNotifier(ref.watch(settingsServiceProvider)),
+    );

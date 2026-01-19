@@ -16,19 +16,19 @@ class PortForwardRepository {
   Stream<List<PortForward>> watchAll() => _db.select(_db.portForwards).watch();
 
   /// Get port forwards by host ID.
-  Future<List<PortForward>> getByHostId(int hostId) =>
-      (_db.select(_db.portForwards)..where((p) => p.hostId.equals(hostId)))
-          .get();
+  Future<List<PortForward>> getByHostId(int hostId) => (_db.select(
+    _db.portForwards,
+  )..where((p) => p.hostId.equals(hostId))).get();
 
   /// Watch port forwards by host ID.
-  Stream<List<PortForward>> watchByHostId(int hostId) =>
-      (_db.select(_db.portForwards)..where((p) => p.hostId.equals(hostId)))
-          .watch();
+  Stream<List<PortForward>> watchByHostId(int hostId) => (_db.select(
+    _db.portForwards,
+  )..where((p) => p.hostId.equals(hostId))).watch();
 
   /// Get a port forward by ID.
-  Future<PortForward?> getById(int id) =>
-      (_db.select(_db.portForwards)..where((p) => p.id.equals(id)))
-          .getSingleOrNull();
+  Future<PortForward?> getById(int id) => (_db.select(
+    _db.portForwards,
+  )..where((p) => p.id.equals(id))).getSingleOrNull();
 
   /// Insert a new port forward.
   Future<int> insert(PortForwardsCompanion portForward) =>

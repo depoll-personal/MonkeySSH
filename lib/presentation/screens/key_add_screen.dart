@@ -44,10 +44,7 @@ class _KeyAddScreenState extends ConsumerState<KeyAddScreen>
       ),
       body: TabBarView(
         controller: _tabController,
-        children: const [
-          _GenerateKeyTab(),
-          _ImportKeyTab(),
-        ],
+        children: const [_GenerateKeyTab(), _ImportKeyTab()],
       ),
     );
   }
@@ -103,10 +100,7 @@ class _GenerateKeyTabState extends ConsumerState<_GenerateKeyTab> {
           const SizedBox(height: 24),
 
           // Key type
-          Text(
-            'Key Type',
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
+          Text('Key Type', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 8),
           SegmentedButton<String>(
             segments: const [
@@ -130,10 +124,7 @@ class _GenerateKeyTabState extends ConsumerState<_GenerateKeyTab> {
 
           // RSA bits (only shown for RSA)
           if (_keyType == 'rsa') ...[
-            Text(
-              'RSA Key Size',
-              style: Theme.of(context).textTheme.titleSmall,
-            ),
+            Text('RSA Key Size', style: Theme.of(context).textTheme.titleSmall),
             const SizedBox(height: 8),
             SegmentedButton<int>(
               segments: const [
@@ -170,8 +161,8 @@ class _GenerateKeyTabState extends ConsumerState<_GenerateKeyTab> {
           Text(
             'A passphrase adds extra security. You will need to enter it each time you use this key.',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Theme.of(context).colorScheme.outline,
-                ),
+              color: Theme.of(context).colorScheme.outline,
+            ),
           ),
           const SizedBox(height: 32),
 
@@ -297,10 +288,7 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
               alignLabelWithHint: true,
             ),
             maxLines: 8,
-            style: const TextStyle(
-              fontFamily: 'monospace',
-              fontSize: 12,
-            ),
+            style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
             validator: (value) {
               if (value == null || value.isEmpty) {
                 return 'Please enter the private key';
@@ -394,9 +382,9 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
       }
     } on Exception catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error importing key: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error importing key: $e')));
       }
     } finally {
       if (mounted) setState(() => _isImporting = false);

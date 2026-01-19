@@ -202,7 +202,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                       prefixIcon: const Icon(Icons.lock),
                       suffixIcon: IconButton(
                         icon: Icon(
-                          _showPassword ? Icons.visibility_off : Icons.visibility,
+                          _showPassword
+                              ? Icons.visibility_off
+                              : Icons.visibility,
                         ),
                         onPressed: () =>
                             setState(() => _showPassword = !_showPassword),
@@ -314,8 +316,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     try {
       final repo = ref.read(hostRepositoryProvider);
       final port = int.parse(_portController.text);
-      final password =
-          _passwordController.text.isEmpty ? null : _passwordController.text;
+      final password = _passwordController.text.isEmpty
+          ? null
+          : _passwordController.text;
 
       if (widget.hostId != null && _existingHost != null) {
         // Update existing host
@@ -363,9 +366,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       }
     } on Exception catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error: $e')));
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
@@ -375,9 +378,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   Future<void> _testConnection() async {
     if (!_formKey.currentState!.validate()) return;
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Testing connection...')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Testing connection...')));
 
     // TODO: Implement connection test
     await Future<void>.delayed(const Duration(seconds: 1));

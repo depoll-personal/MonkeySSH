@@ -74,7 +74,11 @@ class _AppearanceSection extends ConsumerWidget {
     ThemeMode.system => 'System default',
   };
 
-  void _showThemeDialog(BuildContext context, WidgetRef ref, ThemeMode current) {
+  void _showThemeDialog(
+    BuildContext context,
+    WidgetRef ref,
+    ThemeMode current,
+  ) {
     showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
@@ -88,7 +92,9 @@ class _AppearanceSection extends ConsumerWidget {
               groupValue: current,
               onChanged: (value) {
                 if (value != null) {
-                  ref.read(themeModeNotifierProvider.notifier).setThemeMode(value);
+                  ref
+                      .read(themeModeNotifierProvider.notifier)
+                      .setThemeMode(value);
                   Navigator.pop(context);
                 }
               },
@@ -99,7 +105,9 @@ class _AppearanceSection extends ConsumerWidget {
               groupValue: current,
               onChanged: (value) {
                 if (value != null) {
-                  ref.read(themeModeNotifierProvider.notifier).setThemeMode(value);
+                  ref
+                      .read(themeModeNotifierProvider.notifier)
+                      .setThemeMode(value);
                   Navigator.pop(context);
                 }
               },
@@ -110,7 +118,9 @@ class _AppearanceSection extends ConsumerWidget {
               groupValue: current,
               onChanged: (value) {
                 if (value != null) {
-                  ref.read(themeModeNotifierProvider.notifier).setThemeMode(value);
+                  ref
+                      .read(themeModeNotifierProvider.notifier)
+                      .setThemeMode(value);
                   Navigator.pop(context);
                 }
               },
@@ -138,9 +148,13 @@ class _SecuritySection extends ConsumerWidget {
         ListTile(
           leading: const Icon(Icons.pin_outlined),
           title: const Text('Change PIN'),
-          subtitle: Text(isAuthEnabled ? 'Update your PIN code' : 'PIN not set'),
+          subtitle: Text(
+            isAuthEnabled ? 'Update your PIN code' : 'PIN not set',
+          ),
           enabled: isAuthEnabled,
-          onTap: isAuthEnabled ? () => _showChangePinDialog(context, ref) : null,
+          onTap: isAuthEnabled
+              ? () => _showChangePinDialog(context, ref)
+              : null,
         ),
         FutureBuilder<bool>(
           future: ref.read(authServiceProvider).isBiometricAvailable(),
@@ -240,16 +254,20 @@ class _SecuritySection extends ConsumerWidget {
           FilledButton(
             onPressed: () async {
               if (formKey.currentState?.validate() ?? false) {
-                final success = await ref.read(authServiceProvider).changePin(
-                  currentPinController.text,
-                  newPinController.text,
-                );
+                final success = await ref
+                    .read(authServiceProvider)
+                    .changePin(
+                      currentPinController.text,
+                      newPinController.text,
+                    );
                 if (context.mounted) {
                   Navigator.pop(context);
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text(
-                        success ? 'PIN changed successfully' : 'Current PIN is incorrect',
+                        success
+                            ? 'PIN changed successfully'
+                            : 'Current PIN is incorrect',
                       ),
                     ),
                   );
@@ -287,7 +305,9 @@ class _SecuritySection extends ConsumerWidget {
               groupValue: current,
               onChanged: (value) {
                 if (value != null) {
-                  ref.read(autoLockTimeoutNotifierProvider.notifier).setTimeout(value);
+                  ref
+                      .read(autoLockTimeoutNotifierProvider.notifier)
+                      .setTimeout(value);
                   Navigator.pop(context);
                 }
               },
@@ -360,7 +380,11 @@ class _TerminalSection extends ConsumerWidget {
     _ => style,
   };
 
-  void _showFontSizeDialog(BuildContext context, WidgetRef ref, double current) {
+  void _showFontSizeDialog(
+    BuildContext context,
+    WidgetRef ref,
+    double current,
+  ) {
     var tempValue = current;
     showDialog<void>(
       context: context,
@@ -370,7 +394,10 @@ class _TerminalSection extends ConsumerWidget {
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text('${tempValue.round()} pt', style: const TextStyle(fontSize: 24)),
+              Text(
+                '${tempValue.round()} pt',
+                style: const TextStyle(fontSize: 24),
+              ),
               const SizedBox(height: 16),
               Slider(
                 value: tempValue,
@@ -389,7 +416,9 @@ class _TerminalSection extends ConsumerWidget {
             ),
             FilledButton(
               onPressed: () {
-                ref.read(fontSizeNotifierProvider.notifier).setFontSize(tempValue);
+                ref
+                    .read(fontSizeNotifierProvider.notifier)
+                    .setFontSize(tempValue);
                 Navigator.pop(context);
               },
               child: const Text('Apply'),
@@ -400,8 +429,18 @@ class _TerminalSection extends ConsumerWidget {
     );
   }
 
-  void _showFontFamilyDialog(BuildContext context, WidgetRef ref, String current) {
-    final options = ['monospace', 'JetBrains Mono', 'Fira Code', 'Source Code Pro', 'Cascadia Code'];
+  void _showFontFamilyDialog(
+    BuildContext context,
+    WidgetRef ref,
+    String current,
+  ) {
+    final options = [
+      'monospace',
+      'JetBrains Mono',
+      'Fira Code',
+      'Source Code Pro',
+      'Cascadia Code',
+    ];
     showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
@@ -415,7 +454,9 @@ class _TerminalSection extends ConsumerWidget {
               groupValue: current,
               onChanged: (value) {
                 if (value != null) {
-                  ref.read(fontFamilyNotifierProvider.notifier).setFontFamily(value);
+                  ref
+                      .read(fontFamilyNotifierProvider.notifier)
+                      .setFontFamily(value);
                   Navigator.pop(context);
                 }
               },
@@ -426,7 +467,11 @@ class _TerminalSection extends ConsumerWidget {
     );
   }
 
-  void _showCursorStyleDialog(BuildContext context, WidgetRef ref, String current) {
+  void _showCursorStyleDialog(
+    BuildContext context,
+    WidgetRef ref,
+    String current,
+  ) {
     final options = ['block', 'underline', 'bar'];
     showDialog<void>(
       context: context,
@@ -441,7 +486,9 @@ class _TerminalSection extends ConsumerWidget {
               groupValue: current,
               onChanged: (value) {
                 if (value != null) {
-                  ref.read(cursorStyleNotifierProvider.notifier).setCursorStyle(value);
+                  ref
+                      .read(cursorStyleNotifierProvider.notifier)
+                      .setCursorStyle(value);
                   Navigator.pop(context);
                 }
               },

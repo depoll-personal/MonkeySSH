@@ -142,7 +142,8 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
                           ),
                         )
                         .toList(),
-                    onChanged: (value) => setState(() => _selectedHostId = value),
+                    onChanged: (value) =>
+                        setState(() => _selectedHostId = value),
                     validator: (value) {
                       if (value == null) {
                         return 'Please select a host';
@@ -156,8 +157,8 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
                   Text(
                     'Forward Type',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
                   ),
                   const SizedBox(height: 8),
                   SegmentedButton<String>(
@@ -184,16 +185,13 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
                         ? 'Forward local port to remote host'
                         : 'Forward remote port to local host',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context).colorScheme.outline,
-                        ),
+                      color: Theme.of(context).colorScheme.outline,
+                    ),
                   ),
                   const SizedBox(height: 24),
 
                   // Local host/port
-                  Text(
-                    'Local',
-                    style: Theme.of(context).textTheme.titleSmall,
-                  ),
+                  Text('Local', style: Theme.of(context).textTheme.titleSmall),
                   const SizedBox(height: 8),
                   Row(
                     children: [
@@ -235,10 +233,7 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
                   const SizedBox(height: 24),
 
                   // Remote host/port
-                  Text(
-                    'Remote',
-                    style: Theme.of(context).textTheme.titleSmall,
-                  ),
+                  Text('Remote', style: Theme.of(context).textTheme.titleSmall),
                   const SizedBox(height: 8),
                   Row(
                     children: [
@@ -282,8 +277,9 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
                   // Auto-start toggle
                   SwitchListTile(
                     title: const Text('Auto-start'),
-                    subtitle:
-                        const Text('Start forwarding when connecting to host'),
+                    subtitle: const Text(
+                      'Start forwarding when connecting to host',
+                    ),
                     value: _autoStart,
                     onChanged: (value) => setState(() => _autoStart = value),
                   ),
@@ -293,7 +289,9 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
                   FilledButton.icon(
                     onPressed: _savePortForward,
                     icon: const Icon(Icons.save),
-                    label: Text(isEditing ? 'Save Changes' : 'Add Port Forward'),
+                    label: Text(
+                      isEditing ? 'Save Changes' : 'Add Port Forward',
+                    ),
                   ),
                 ],
               ),
@@ -353,9 +351,9 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
       }
     } on Exception catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error: $e')));
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);

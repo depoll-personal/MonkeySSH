@@ -8,8 +8,9 @@ void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
   group('App Integration Tests', () {
-    testWidgets('Home screen loads and shows navigation options',
-        (tester) async {
+    testWidgets('Home screen loads and shows navigation options', (
+      tester,
+    ) async {
       app.main();
       await tester.pumpAndSettle(const Duration(seconds: 3));
 

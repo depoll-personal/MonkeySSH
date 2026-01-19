@@ -208,10 +208,7 @@ class _HostGroup extends StatelessWidget {
 }
 
 class _PortForwardListTile extends StatelessWidget {
-  const _PortForwardListTile({
-    required this.portForward,
-    required this.onTap,
-  });
+  const _PortForwardListTile({required this.portForward, required this.onTap});
 
   final PortForward portForward;
   final VoidCallback onTap;
@@ -223,16 +220,14 @@ class _PortForwardListTile extends StatelessWidget {
 
     return ListTile(
       leading: CircleAvatar(
-        backgroundColor:
-            isLocal
-                ? theme.colorScheme.primaryContainer
-                : theme.colorScheme.secondaryContainer,
+        backgroundColor: isLocal
+            ? theme.colorScheme.primaryContainer
+            : theme.colorScheme.secondaryContainer,
         child: Icon(
           isLocal ? Icons.arrow_forward : Icons.arrow_back,
-          color:
-              isLocal
-                  ? theme.colorScheme.onPrimaryContainer
-                  : theme.colorScheme.onSecondaryContainer,
+          color: isLocal
+              ? theme.colorScheme.onPrimaryContainer
+              : theme.colorScheme.onSecondaryContainer,
         ),
       ),
       title: Text(portForward.name),
@@ -262,7 +257,10 @@ class _PortForwardListTile extends StatelessWidget {
           Chip(
             label: Text(
               isLocal ? 'Local' : 'Remote',
-              style: TextStyle(fontSize: 10, color: theme.colorScheme.onSurface),
+              style: TextStyle(
+                fontSize: 10,
+                color: theme.colorScheme.onSurface,
+              ),
             ),
             visualDensity: VisualDensity.compact,
             padding: EdgeInsets.zero,

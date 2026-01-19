@@ -17,9 +17,7 @@ class KeysScreen extends ConsumerWidget {
     final theme = Theme.of(context);
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('SSH Keys'),
-      ),
+      appBar: AppBar(title: const Text('SSH Keys')),
       body: keysAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (error, stack) => Center(
@@ -104,10 +102,8 @@ class KeysScreen extends ConsumerWidget {
         maxChildSize: 0.9,
         minChildSize: 0.3,
         expand: false,
-        builder: (context, scrollController) => _KeyDetailsSheet(
-          sshKey: key,
-          scrollController: scrollController,
-        ),
+        builder: (context, scrollController) =>
+            _KeyDetailsSheet(sshKey: key, scrollController: scrollController),
       ),
     );
   }
@@ -142,9 +138,9 @@ class KeysScreen extends ConsumerWidget {
       await ref.read(keyRepositoryProvider).delete(key.id);
       ref.invalidate(_allKeysProvider);
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Deleted "${key.name}"')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Deleted "${key.name}"')));
       }
     }
   }
@@ -168,10 +164,7 @@ class _KeyListTile extends StatelessWidget {
     return ListTile(
       leading: CircleAvatar(
         backgroundColor: theme.colorScheme.primaryContainer,
-        child: Icon(
-          _getKeyIcon(),
-          color: theme.colorScheme.onPrimaryContainer,
-        ),
+        child: Icon(_getKeyIcon(), color: theme.colorScheme.onPrimaryContainer),
       ),
       title: Text(sshKey.name),
       subtitle: Text(
@@ -241,10 +234,7 @@ class _KeyDetailsSheet extends StatelessWidget {
           const SizedBox(height: 16),
 
           // Key name and type
-          Text(
-            sshKey.name,
-            style: theme.textTheme.headlineSmall,
-          ),
+          Text(sshKey.name, style: theme.textTheme.headlineSmall),
           const SizedBox(height: 4),
           Text(
             sshKey.keyType.toUpperCase(),
@@ -255,10 +245,7 @@ class _KeyDetailsSheet extends StatelessWidget {
           const SizedBox(height: 24),
 
           // Public key
-          Text(
-            'Public Key',
-            style: theme.textTheme.titleMedium,
-          ),
+          Text('Public Key', style: theme.textTheme.titleMedium),
           const SizedBox(height: 8),
           Container(
             padding: const EdgeInsets.all(12),
@@ -268,10 +255,7 @@ class _KeyDetailsSheet extends StatelessWidget {
             ),
             child: SelectableText(
               sshKey.publicKey,
-              style: const TextStyle(
-                fontFamily: 'monospace',
-                fontSize: 12,
-              ),
+              style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
             ),
           ),
           const SizedBox(height: 8),
@@ -283,10 +267,7 @@ class _KeyDetailsSheet extends StatelessWidget {
           const SizedBox(height: 24),
 
           // Created date
-          Text(
-            'Created',
-            style: theme.textTheme.titleMedium,
-          ),
+          Text('Created', style: theme.textTheme.titleMedium),
           const SizedBox(height: 4),
           Text(
             sshKey.createdAt.toString().split('.').first,
@@ -299,9 +280,9 @@ class _KeyDetailsSheet extends StatelessWidget {
 
   void _copyToClipboard(BuildContext context, String text) {
     Clipboard.setData(ClipboardData(text: text));
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Copied to clipboard')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Copied to clipboard')));
   }
 }
 

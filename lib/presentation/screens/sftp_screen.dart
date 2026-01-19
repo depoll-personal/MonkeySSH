@@ -253,10 +253,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
               const SizedBox(height: 16),
               Text(_error!, textAlign: TextAlign.center),
               const SizedBox(height: 24),
-              ElevatedButton(
-                onPressed: _connect,
-                child: const Text('Retry'),
-              ),
+              ElevatedButton(onPressed: _connect, child: const Text('Retry')),
             ],
           ),
         ),
@@ -400,9 +397,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         content: TextField(
           controller: controller,
           autofocus: true,
-          decoration: const InputDecoration(
-            labelText: 'Directory name',
-          ),
+          decoration: const InputDecoration(labelText: 'Directory name'),
         ),
         actions: [
           TextButton(
@@ -422,15 +417,15 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         await _sftp!.mkdir('$_currentPath/$name');
         await _loadDirectory(_currentPath);
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Created "$name"')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Created "$name"')));
         }
       } on Exception catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error: $e')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Error: $e')));
         }
       }
     }
@@ -446,9 +441,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         content: TextField(
           controller: controller,
           autofocus: true,
-          decoration: const InputDecoration(
-            labelText: 'New name',
-          ),
+          decoration: const InputDecoration(labelText: 'New name'),
         ),
         actions: [
           TextButton(
@@ -471,15 +464,15 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         );
         await _loadDirectory(_currentPath);
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Renamed to "$newName"')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Renamed to "$newName"')));
         }
       } on Exception catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error: $e')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Error: $e')));
         }
       }
     }
@@ -517,15 +510,15 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         }
         await _loadDirectory(_currentPath);
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Deleted "${file.filename}"')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Deleted "${file.filename}"')));
         }
       } on Exception catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error: $e')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Error: $e')));
         }
       }
     }
@@ -540,9 +533,9 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
   void _showUploadDialog() {
     // TODO: Implement file upload
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Upload not yet implemented')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Upload not yet implemented')));
   }
 
   String _formatSize(int bytes) {
@@ -634,8 +627,8 @@ class _InfoRow extends StatelessWidget {
             child: Text(
               label,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.outline,
-                  ),
+                color: Theme.of(context).colorScheme.outline,
+              ),
             ),
           ),
           Expanded(child: Text(value)),

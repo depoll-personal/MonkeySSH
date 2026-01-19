@@ -47,7 +47,11 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(Icons.error_outline, size: 48, color: theme.colorScheme.error),
+              Icon(
+                Icons.error_outline,
+                size: 48,
+                color: theme.colorScheme.error,
+              ),
               const SizedBox(height: 16),
               Text('Error loading hosts: $error'),
               const SizedBox(height: 16),
@@ -83,8 +87,9 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
 
     // Apply group filter
     if (_selectedGroupId != null) {
-      filteredHosts =
-          filteredHosts.where((h) => h.groupId == _selectedGroupId).toList();
+      filteredHosts = filteredHosts
+          .where((h) => h.groupId == _selectedGroupId)
+          .toList();
     }
 
     if (filteredHosts.isEmpty) {
@@ -161,9 +166,9 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
       await ref.read(hostRepositoryProvider).delete(host.id);
       ref.invalidate(allHostsProvider);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Deleted "${host.label}"')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Deleted "${host.label}"')));
       }
     }
   }
@@ -204,9 +209,9 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
 
   void _showGroupsDialog() {
     // TODO: Implement groups dialog
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Groups coming soon')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Groups coming soon')));
   }
 }
 
@@ -250,8 +255,7 @@ class _HostListTile extends ConsumerWidget {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (host.isFavorite)
-            Icon(Icons.star, color: Colors.amber, size: 20),
+          if (host.isFavorite) Icon(Icons.star, color: Colors.amber, size: 20),
           if (isConnecting)
             const SizedBox(
               width: 20,
@@ -304,9 +308,9 @@ class _HostListTile extends ConsumerWidget {
     );
     ref.invalidate(allHostsProvider);
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Host duplicated')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Host duplicated')));
     }
   }
 }

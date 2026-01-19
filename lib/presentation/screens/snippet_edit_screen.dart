@@ -37,8 +37,9 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
 
   Future<void> _loadSnippet() async {
     setState(() => _isLoading = true);
-    final snippet =
-        await ref.read(snippetRepositoryProvider).getById(widget.snippetId!);
+    final snippet = await ref
+        .read(snippetRepositoryProvider)
+        .getById(widget.snippetId!);
     if (snippet != null && mounted) {
       setState(() {
         _existingSnippet = snippet;
@@ -134,8 +135,8 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
                   Text(
                     'Use {{variable}} for substitution',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context).colorScheme.outline,
-                        ),
+                      color: Theme.of(context).colorScheme.outline,
+                    ),
                   ),
                   const SizedBox(height: 24),
 
@@ -169,10 +170,7 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              'Variables',
-              style: Theme.of(context).textTheme.titleSmall,
-            ),
+            Text('Variables', style: Theme.of(context).textTheme.titleSmall),
             const SizedBox(height: 8),
             Wrap(
               spacing: 8,
@@ -241,9 +239,9 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
       }
     } on Exception catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error: $e')));
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
@@ -262,18 +260,13 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
             children: [
               Text('Use {{variable}} syntax to create placeholders.'),
               SizedBox(height: 16),
-              Text(
-                'Examples:',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
+              Text('Examples:', style: TextStyle(fontWeight: FontWeight.bold)),
               SizedBox(height: 8),
               Text('• ssh {{user}}@{{host}}'),
               Text('• docker exec -it {{container}} bash'),
               Text('• git push origin {{branch}}'),
               SizedBox(height: 16),
-              Text(
-                'When executing, you\'ll be prompted to fill in values.',
-              ),
+              Text('When executing, you\'ll be prompted to fill in values.'),
             ],
           ),
         ),

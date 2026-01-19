@@ -127,8 +127,9 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/snippets/edit/:snippetId',
         name: 'snippet-edit',
         builder: (context, state) {
-          final snippetId =
-              int.tryParse(state.pathParameters['snippetId'] ?? '');
+          final snippetId = int.tryParse(
+            state.pathParameters['snippetId'] ?? '',
+          );
           return SnippetEditScreen(snippetId: snippetId);
         },
       ),
@@ -146,8 +147,7 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/port-forwards/edit/:id',
         name: 'port-forward-edit',
         builder: (context, state) {
-          final portForwardId =
-              int.tryParse(state.pathParameters['id'] ?? '');
+          final portForwardId = int.tryParse(state.pathParameters['id'] ?? '');
           return PortForwardEditScreen(portForwardId: portForwardId);
         },
       ),
