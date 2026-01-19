@@ -286,7 +286,7 @@ void main() {
     });
 
     test('updateFolder modifies existing folder', () async {
-      final id = await repository.insertFolder(
+      await repository.insertFolder(
         SnippetFoldersCompanion.insert(name: 'Original Folder'),
       );
 
