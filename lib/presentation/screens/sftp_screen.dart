@@ -125,8 +125,6 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('SFTP Browser'),

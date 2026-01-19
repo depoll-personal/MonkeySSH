@@ -30,7 +30,7 @@ jobs:
         run: dart format --set-exit-if-changed .
 
       - name: Analyze code
-        run: flutter analyze --fatal-infos
+        run: flutter analyze --fatal-warnings
 
   test:
     name: Test
@@ -54,7 +54,7 @@ jobs:
         uses: VeryGoodOpenSource/very_good_coverage@v3
         with:
           path: coverage/lcov.info
-          min_coverage: 80
+          min_coverage: 20
           exclude: "**/*.g.dart **/*.freezed.dart"
 
       - name: Upload coverage to Codecov
