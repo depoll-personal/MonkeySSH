@@ -36,7 +36,7 @@ dependencies:
   flutter_secure_storage: ^9.2.4
   
   # Biometrics
-  local_auth: ^2.3.0
+  local_auth: ^3.0.0
   
   # File handling
   file_picker: ^8.3.3
