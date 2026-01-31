@@ -39,7 +39,7 @@ dependencies:
   local_auth: ^2.3.0
   
   # File handling
-  file_picker: ^8.3.3
+  file_picker: ^10.3.10
   share_plus: ^10.1.4
   
   # UI
