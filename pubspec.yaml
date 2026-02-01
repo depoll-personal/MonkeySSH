@@ -52,7 +52,7 @@ dependencies:
   intl: ^0.20.2
   collection: ^1.19.1
   equatable: ^2.0.7
-  freezed_annotation: ^2.4.4
+  freezed_annotation: ^3.1.0
   json_annotation: ^4.9.0
 
 dev_dependencies:
@@ -62,8 +62,8 @@ dev_dependencies:
   
   # Code generation
   build_runner: ^2.4.15
-  riverpod_generator: ^2.6.4
-  freezed: ^2.5.8
+  riverpod_generator: ^2.6.5
+  freezed: ^3.1.0
   json_serializable: ^6.9.5
   drift_dev: ^2.25.0
   
