@@ -92,13 +92,13 @@ jobs:
         run: flutter build appbundle --release
 
       - name: Upload APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: android-apk
           path: build/app/outputs/flutter-apk/app-release.apk
 
       - name: Upload AAB
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: android-aab
           path: build/app/outputs/bundle/release/app-release.aab
@@ -123,7 +123,7 @@ jobs:
         run: flutter build ios --release --no-codesign
 
       - name: Upload iOS build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ios-build
           path: build/ios/iphoneos/Runner.app
@@ -148,7 +148,7 @@ jobs:
         run: flutter build macos --release
 
       - name: Upload macOS build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: macos-build
           path: build/macos/Build/Products/Release/flutty.app
@@ -173,7 +173,7 @@ jobs:
         run: flutter build windows --release
 
       - name: Upload Windows build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: windows-build
           path: build/windows/x64/runner/Release/
@@ -203,7 +203,7 @@ jobs:
         run: flutter build linux --release
 
       - name: Upload Linux build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: linux-build
           path: build/linux/x64/release/bundle/
