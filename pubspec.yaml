@@ -65,7 +65,7 @@ dev_dependencies:
   riverpod_generator: ^4.0.0+1
   freezed: ^3.2.3
   json_serializable: ^6.9.5
-  drift_dev: ^2.25.0
+  drift_dev: ^2.31.0
   
   # Testing
   mocktail: ^1.0.4
