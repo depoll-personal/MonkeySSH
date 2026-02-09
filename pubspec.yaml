@@ -21,7 +21,7 @@ dependencies:
   go_router: ^17.0.1
   
   # Database
-  drift: ^2.25.0
+  drift: ^2.31.0
   sqlite3_flutter_libs: ^0.5.32
   path_provider: ^2.1.5
   path: ^1.9.1
