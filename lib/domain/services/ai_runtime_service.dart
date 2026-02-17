@@ -248,64 +248,75 @@ class AiRuntimeService {
   StreamSubscription<String>? _stdoutSubscription;
   StreamSubscription<String>? _stderrSubscription;
   bool _cancelRequested = false;
+  bool _isLaunching = false;
   bool _disposed = false;
 
   /// Runtime events stream.
   Stream<AiRuntimeEvent> get events => _eventsController.stream;
 
   /// Whether a provider command is currently active.
-  bool get hasActiveRun => _activeProcess != null;
+  bool get hasActiveRun => _activeProcess != null || _isLaunching;
 
   /// Launches a provider command on an existing SSH connection.
   Future<void> launch(AiRuntimeLaunchRequest request) async {
     _ensureNotDisposed();
-    if (_activeProcess != null) {
+    if (_activeProcess != null || _isLaunching) {
       throw const AiRuntimeServiceException(
         'A runtime command is already active.',
       );
     }
+    _isLaunching = true;
 
-    final shell = _shellResolver.resolve(request.connectionId);
-    if (shell == null) {
-      throw AiRuntimeServiceException(
-        'No active SSH session found for connection ${request.connectionId}.',
-      );
-    }
-
-    final command = _commandBuilder.buildLaunchCommand(
-      provider: request.provider,
-      remoteWorkingDirectory: request.remoteWorkingDirectory,
-      structuredOutput: request.structuredOutput,
-      extraArguments: request.extraArguments,
-    );
-
-    AiRuntimeProcess process;
     try {
-      process = await shell.execute(command);
+      final shell = _shellResolver.resolve(request.connectionId);
+      if (shell == null) {
+        throw AiRuntimeServiceException(
+          'No active SSH session found for connection ${request.connectionId}.',
+        );
+      }
+
+      final command = _commandBuilder.buildLaunchCommand(
+        provider: request.provider,
+        remoteWorkingDirectory: request.remoteWorkingDirectory,
+        structuredOutput: request.structuredOutput,
+        extraArguments: request.extraArguments,
+      );
+
+      final process = await shell.execute(command);
+      if (_disposed) {
+        await _cleanupDetachedProcess(process);
+        throw const AiRuntimeServiceException(
+          'AiRuntimeService was disposed during launch.',
+        );
+      }
+
+      _activeProcess = process;
+      _activeLaunchRequest = request;
+      _lastLaunchRequest = request;
+      _cancelRequested = false;
+      _attachOutputStreams(process, request);
+
+      _emitEvent(
+        AiRuntimeEvent(
+          type: AiRuntimeEventType.started,
+          aiSessionId: request.aiSessionId,
+          connectionId: request.connectionId,
+          provider: request.provider,
+        ),
+      );
+
+      unawaited(_watchCompletion(process));
+    } on AiRuntimeServiceException {
+      rethrow;
     } on Exception catch (exception, stackTrace) {
       throw AiRuntimeServiceException(
         'Failed to execute runtime command.',
         cause: exception,
         stackTrace: stackTrace,
       );
+    } finally {
+      _isLaunching = false;
     }
-
-    _activeProcess = process;
-    _activeLaunchRequest = request;
-    _lastLaunchRequest = request;
-    _cancelRequested = false;
-    _attachOutputStreams(process, request);
-
-    _eventsController.add(
-      AiRuntimeEvent(
-        type: AiRuntimeEventType.started,
-        aiSessionId: request.aiSessionId,
-        connectionId: request.connectionId,
-        provider: request.provider,
-      ),
-    );
-
-    unawaited(_watchCompletion(process));
   }
 
   /// Sends incremental stdin content to the active runtime command.
@@ -360,7 +371,7 @@ class AiRuntimeService {
       return;
     }
 
-    _eventsController.add(
+    _emitEvent(
       AiRuntimeEvent(
         type: AiRuntimeEventType.cancelled,
         aiSessionId: completion.request.aiSessionId,
@@ -379,13 +390,13 @@ class AiRuntimeService {
         'Cannot retry because no previous runtime launch exists.',
       );
     }
-    if (_activeProcess != null) {
+    if (_activeProcess != null || _isLaunching) {
       throw const AiRuntimeServiceException(
         'Cannot retry while another runtime command is active.',
       );
     }
 
-    _eventsController.add(
+    _emitEvent(
       AiRuntimeEvent(
         type: AiRuntimeEventType.retried,
         aiSessionId: previousRequest.aiSessionId,
@@ -405,6 +416,11 @@ class AiRuntimeService {
 
     final activeProcess = _activeProcess;
     if (activeProcess != null) {
+      try {
+        await activeProcess.terminate();
+      } on Exception {
+        // Continue cleanup regardless of terminate support/failure.
+      }
       await _cleanupActiveProcess(activeProcess);
     }
 
@@ -417,7 +433,7 @@ class AiRuntimeService {
   ) {
     _stdoutSubscription = process.stdout.listen(
       (chunk) {
-        _eventsController.add(
+        _emitEvent(
           AiRuntimeEvent(
             type: AiRuntimeEventType.stdout,
             aiSessionId: request.aiSessionId,
@@ -434,7 +450,7 @@ class AiRuntimeService {
 
     _stderrSubscription = process.stderr.listen(
       (chunk) {
-        _eventsController.add(
+        _emitEvent(
           AiRuntimeEvent(
             type: AiRuntimeEventType.stderr,
             aiSessionId: request.aiSessionId,
@@ -470,7 +486,7 @@ class AiRuntimeService {
     }
 
     if (completion.wasCancelled) {
-      _eventsController.add(
+      _emitEvent(
         AiRuntimeEvent(
           type: AiRuntimeEventType.cancelled,
           aiSessionId: completion.request.aiSessionId,
@@ -481,7 +497,7 @@ class AiRuntimeService {
       return;
     }
 
-    _eventsController.add(
+    _emitEvent(
       AiRuntimeEvent(
         type: AiRuntimeEventType.completed,
         aiSessionId: completion.request.aiSessionId,
@@ -534,23 +550,35 @@ class AiRuntimeService {
     return completion;
   }
 
+  Future<void> _cleanupDetachedProcess(AiRuntimeProcess process) async {
+    try {
+      await process.terminate();
+    } on Exception {
+      // Best-effort terminate; close still runs below.
+    }
+    await process.close();
+  }
+
   void _emitErrorEvent(
     AiRuntimeLaunchRequest request,
     Object error,
     StackTrace stackTrace,
-  ) {
-    _eventsController
-      ..add(
-        AiRuntimeEvent(
-          type: AiRuntimeEventType.error,
-          aiSessionId: request.aiSessionId,
-          connectionId: request.connectionId,
-          provider: request.provider,
-          error: error,
-          stackTrace: stackTrace,
-        ),
-      )
-      ..addError(error, stackTrace);
+  ) => _emitEvent(
+    AiRuntimeEvent(
+      type: AiRuntimeEventType.error,
+      aiSessionId: request.aiSessionId,
+      connectionId: request.connectionId,
+      provider: request.provider,
+      error: error,
+      stackTrace: stackTrace,
+    ),
+  );
+
+  void _emitEvent(AiRuntimeEvent event) {
+    if (_eventsController.isClosed) {
+      return;
+    }
+    _eventsController.add(event);
   }
 
   void _ensureNotDisposed() {

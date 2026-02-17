@@ -10,6 +10,7 @@ import '../../data/database/database.dart';
 import '../../data/repositories/ai_repository.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../domain/models/ai_cli_provider.dart';
+import '../../domain/services/ai_session_metadata.dart';
 import '../../domain/services/ssh_service.dart';
 
 /// Start flow for creating a new AI chat session.
@@ -473,16 +474,16 @@ final _recentAiSessionsProvider =
         final timelineEntry = await repository.getLatestTimelineEntry(
           session.id,
         );
-        final metadata = _decodeMetadataMap(timelineEntry?.metadata);
+        final metadata = AiSessionMetadata.decode(timelineEntry?.metadata);
         items.add(
           _AiSessionResumeSummary(
             sessionId: session.id,
             title: session.title,
-            provider: _providerFromMetadata(metadata),
-            connectionId: _metadataInt(metadata, 'connectionId'),
-            hostId: _metadataInt(metadata, 'hostId'),
+            provider: AiSessionMetadata.readProvider(metadata),
+            connectionId: AiSessionMetadata.readInt(metadata, 'connectionId'),
+            hostId: AiSessionMetadata.readInt(metadata, 'hostId'),
             workingDirectory:
-                _metadataString(metadata, 'workingDirectory') ??
+                AiSessionMetadata.readString(metadata, 'workingDirectory') ??
                 workspace?.path ??
                 '~',
           ),
@@ -507,54 +508,4 @@ class _AiSessionResumeSummary {
   final int? connectionId;
   final int? hostId;
   final String workingDirectory;
-}
-
-Map<String, dynamic> _decodeMetadataMap(String? raw) {
-  if (raw == null || raw.isEmpty) {
-    return const <String, dynamic>{};
-  }
-  try {
-    final decoded = jsonDecode(raw);
-    if (decoded is Map<String, dynamic>) {
-      return decoded;
-    }
-  } on FormatException {
-    return const <String, dynamic>{};
-  }
-  return const <String, dynamic>{};
-}
-
-String? _metadataString(Map<String, dynamic> metadata, String key) {
-  final value = metadata[key];
-  if (value is String && value.trim().isNotEmpty) {
-    return value;
-  }
-  return null;
-}
-
-int? _metadataInt(Map<String, dynamic> metadata, String key) {
-  final value = metadata[key];
-  if (value is int) {
-    return value;
-  }
-  if (value is num) {
-    return value.toInt();
-  }
-  if (value is String) {
-    return int.tryParse(value);
-  }
-  return null;
-}
-
-AiCliProvider? _providerFromMetadata(Map<String, dynamic> metadata) {
-  final providerName = _metadataString(metadata, 'provider');
-  if (providerName == null) {
-    return null;
-  }
-  for (final provider in AiCliProvider.values) {
-    if (provider.name == providerName) {
-      return provider;
-    }
-  }
-  return null;
 }

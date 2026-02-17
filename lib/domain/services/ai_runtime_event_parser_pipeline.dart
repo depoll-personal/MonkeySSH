@@ -87,7 +87,10 @@ class AiRuntimeEventParserPipeline {
 
   /// Binds this pipeline to an [AiRuntimeEvent] stream.
   Stream<AiTimelineEvent> bind(Stream<AiRuntimeEvent> runtimeEvents) async* {
-    await for (final event in runtimeEvents) {
+    final guardedEvents = runtimeEvents.handleError(
+      (Object error, StackTrace stackTrace) {},
+    );
+    await for (final event in guardedEvents) {
       for (final timelineEvent in parse(event)) {
         yield timelineEvent;
       }
@@ -173,16 +176,15 @@ class AiRuntimeEventParserPipeline {
 
     final currentBuffer = fromStderr ? state.stderrBuffer : state.stdoutBuffer;
     final combined = '$currentBuffer$chunk';
-    final lines = combined.split('\n');
-    final pending = lines.removeLast();
+    final segments = _splitStructuredSegments(combined);
     if (fromStderr) {
-      state.stderrBuffer = pending;
+      state.stderrBuffer = segments.pending;
     } else {
-      state.stdoutBuffer = pending;
+      state.stdoutBuffer = segments.pending;
     }
 
     final events = <AiTimelineEvent>[];
-    for (final line in lines) {
+    for (final line in segments.completed) {
       events.addAll(
         _parseStructuredLineOrFallback(
           runtimeEvent: runtimeEvent,
@@ -294,11 +296,78 @@ class AiRuntimeEventParserPipeline {
 
   AiRuntimeProviderEventAdapter _adapterFor(AiCliProvider provider) =>
       _adapters[provider] ?? _fallbackAdapter;
+
+  _AiRuntimeStructuredSegments _splitStructuredSegments(String value) {
+    final completed = <String>[];
+    var current = StringBuffer();
+    var inString = false;
+    var escaped = false;
+    var collectionDepth = 0;
+
+    for (var index = 0; index < value.length; index++) {
+      final character = value[index];
+      current.write(character);
+
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+
+      if (inString && character.codeUnitAt(0) == 0x5C) {
+        escaped = true;
+        continue;
+      }
+
+      if (character == '"') {
+        inString = !inString;
+        continue;
+      }
+
+      if (inString) {
+        continue;
+      }
+
+      if (character == '{' || character == '[') {
+        collectionDepth++;
+        continue;
+      }
+
+      if (character == '}' || character == ']') {
+        if (collectionDepth > 0) {
+          collectionDepth--;
+        }
+        continue;
+      }
+
+      if (character == '\n' && collectionDepth == 0) {
+        final line = current.toString().trim();
+        if (line.isNotEmpty) {
+          completed.add(line);
+        }
+        current = StringBuffer();
+      }
+    }
+
+    return _AiRuntimeStructuredSegments(
+      completed: completed,
+      pending: current.toString(),
+    );
+  }
 }
 
 class _AiRuntimeParserState {
   String stdoutBuffer = '';
   String stderrBuffer = '';
+}
+
+class _AiRuntimeStructuredSegments {
+  const _AiRuntimeStructuredSegments({
+    required this.completed,
+    required this.pending,
+  });
+
+  final List<String> completed;
+  final String pending;
 }
 
 class _DefaultAiRuntimeProviderEventAdapter

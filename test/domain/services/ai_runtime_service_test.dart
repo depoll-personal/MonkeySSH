@@ -172,43 +172,110 @@ void main() {
       expect(shell.executedCommands.first, shell.executedCommands.last);
     });
 
-    test('non-zero exit publishes error events and stream errors', () async {
+    test(
+      'non-zero exit publishes error events without stream errors',
+      () async {
+        final process = _FakeRuntimeProcess();
+        final shell = _FakeRuntimeShell(
+          processes: <_FakeRuntimeProcess>[process],
+        );
+        final service = AiRuntimeService(
+          shellResolver: _FakeRuntimeShellResolver(<int, AiRuntimeShell>{
+            66: shell,
+          }),
+        );
+        addTearDown(service.dispose);
+
+        final events = <AiRuntimeEvent>[];
+        final streamErrors = <Object>[];
+        final subscription = service.events.listen(
+          events.add,
+          onError: streamErrors.add,
+        );
+        addTearDown(subscription.cancel);
+
+        await service.launch(
+          const AiRuntimeLaunchRequest(
+            aiSessionId: 1,
+            connectionId: 66,
+            provider: AiCliProvider.codex,
+            remoteWorkingDirectory: '/tmp/repo',
+          ),
+        );
+        await process.finish(exitCode: 12);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(
+          events.where((event) => event.type == AiRuntimeEventType.error),
+          isNotEmpty,
+        );
+        expect(streamErrors, isEmpty);
+      },
+    );
+
+    test(
+      'launch prevents concurrent launches while first launch is pending',
+      () async {
+        final process = _FakeRuntimeProcess();
+        final shell = _BlockingRuntimeShell(process);
+        final service = AiRuntimeService(
+          shellResolver: _FakeRuntimeShellResolver(<int, AiRuntimeShell>{
+            77: shell,
+          }),
+        );
+        addTearDown(service.dispose);
+
+        final firstLaunch = service.launch(
+          const AiRuntimeLaunchRequest(
+            aiSessionId: 2,
+            connectionId: 77,
+            provider: AiCliProvider.claude,
+            remoteWorkingDirectory: '/repo',
+          ),
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        await expectLater(
+          () => service.launch(
+            const AiRuntimeLaunchRequest(
+              aiSessionId: 2,
+              connectionId: 77,
+              provider: AiCliProvider.claude,
+              remoteWorkingDirectory: '/repo',
+            ),
+          ),
+          throwsA(isA<AiRuntimeServiceException>()),
+        );
+
+        shell.release();
+        await firstLaunch;
+        await process.finish(exitCode: 0);
+      },
+    );
+
+    test('dispose terminates active process before cleanup', () async {
       final process = _FakeRuntimeProcess();
       final shell = _FakeRuntimeShell(
         processes: <_FakeRuntimeProcess>[process],
       );
       final service = AiRuntimeService(
         shellResolver: _FakeRuntimeShellResolver(<int, AiRuntimeShell>{
-          66: shell,
+          34: shell,
         }),
       );
-      addTearDown(service.dispose);
-
-      final events = <AiRuntimeEvent>[];
-      final streamErrors = <Object>[];
-      final subscription = service.events.listen(
-        events.add,
-        onError: streamErrors.add,
-      );
-      addTearDown(subscription.cancel);
 
       await service.launch(
         const AiRuntimeLaunchRequest(
-          aiSessionId: 1,
-          connectionId: 66,
+          aiSessionId: 3,
+          connectionId: 34,
           provider: AiCliProvider.codex,
-          remoteWorkingDirectory: '/tmp/repo',
+          remoteWorkingDirectory: '/repo',
         ),
       );
-      await process.finish(exitCode: 12);
-      await Future<void>.delayed(Duration.zero);
+      await service.dispose();
 
-      expect(
-        events.where((event) => event.type == AiRuntimeEventType.error),
-        isNotEmpty,
-      );
-      expect(streamErrors, hasLength(1));
-      expect(streamErrors.single, isA<AiRuntimeServiceException>());
+      expect(process.terminated, isTrue);
+      expect(process.closed, isTrue);
     });
 
     test('launch/retry validate session and history preconditions', () async {
@@ -261,6 +328,25 @@ class _FakeRuntimeShell implements AiRuntimeShell {
       throw Exception('No fake process available');
     }
     return _processes.removeAt(0);
+  }
+}
+
+class _BlockingRuntimeShell implements AiRuntimeShell {
+  _BlockingRuntimeShell(this._process);
+
+  final _gate = Completer<void>();
+  final _FakeRuntimeProcess _process;
+
+  @override
+  Future<AiRuntimeProcess> execute(String command) async {
+    await _gate.future;
+    return _process;
+  }
+
+  void release() {
+    if (!_gate.isCompleted) {
+      _gate.complete();
+    }
   }
 }
 

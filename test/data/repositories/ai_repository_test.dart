@@ -22,13 +22,13 @@ void main() {
   group('AiRepository - Workspaces', () {
     test('insertWorkspace creates and retrieves workspace', () async {
       final id = await repository.insertWorkspace(
-        AiWorkspacesCompanion.insert(name: 'Flutty', path: '/tmp/flutty'),
+        AiWorkspacesCompanion.insert(name: 'MonkeySSH', path: '/tmp/flutty'),
       );
 
       final workspace = await repository.getWorkspaceById(id);
 
       expect(workspace, isNotNull);
-      expect(workspace!.name, 'Flutty');
+      expect(workspace!.name, 'MonkeySSH');
       expect(workspace.path, '/tmp/flutty');
     });
 
@@ -121,7 +121,7 @@ void main() {
   group('AiRepository - Timeline', () {
     test('getTimelineBySession returns entries for a session', () async {
       final workspaceId = await repository.insertWorkspace(
-        AiWorkspacesCompanion.insert(name: 'Flutty', path: '/tmp/flutty'),
+        AiWorkspacesCompanion.insert(name: 'MonkeySSH', path: '/tmp/flutty'),
       );
       final sessionId = await repository.insertSession(
         AiSessionsCompanion.insert(

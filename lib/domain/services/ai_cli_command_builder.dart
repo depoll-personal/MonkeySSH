@@ -1,4 +1,5 @@
 import '../models/ai_cli_provider.dart';
+import 'shell_escape.dart';
 
 /// Builds shell-safe launch commands for AI CLI providers.
 class AiCliCommandBuilder {
@@ -34,7 +35,7 @@ class AiCliCommandBuilder {
       executable: provider.executable,
       arguments: commandArguments,
     );
-    final escapedDirectory = _shellEscape(trimmedRemoteWorkingDirectory);
+    final escapedDirectory = shellEscape(trimmedRemoteWorkingDirectory);
     return 'cd $escapedDirectory && $executableCommand';
   }
 
@@ -55,15 +56,7 @@ class AiCliCommandBuilder {
     if (arguments.isEmpty) {
       return executable;
     }
-    final escapedArguments = arguments.map(_shellEscape).join(' ');
+    final escapedArguments = arguments.map(shellEscape).join(' ');
     return '$executable $escapedArguments';
-  }
-
-  String _shellEscape(String value) {
-    if (value.isEmpty) {
-      return '\'\'';
-    }
-    final escapedValue = value.replaceAll('\'', '\'\\\'\'');
-    return '\'$escapedValue\'';
   }
 }

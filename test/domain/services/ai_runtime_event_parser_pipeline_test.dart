@@ -39,6 +39,22 @@ void main() {
       expect(secondOutput.single.message, 'running ls');
     });
 
+    test('parses multi-line structured JSON payloads as one event', () {
+      final pipeline = AiRuntimeEventParserPipeline();
+
+      final output = pipeline.parse(
+        _runtimeEvent(
+          type: AiRuntimeEventType.stdout,
+          provider: AiCliProvider.claude,
+          chunk: '{\n"type":"thinking",\n"content":"Plan next step"\n}\n',
+        ),
+      );
+
+      expect(output, hasLength(1));
+      expect(output.single.type, AiTimelineEventType.thinking);
+      expect(output.single.message, 'Plan next step');
+    });
+
     test('falls back to plain text for unsupported structured chunks', () {
       final pipeline = AiRuntimeEventParserPipeline();
 
@@ -103,6 +119,32 @@ void main() {
         AiTimelineEventType.message,
         AiTimelineEventType.status,
       ]);
+    });
+
+    test('bind continues parsing after source stream errors', () async {
+      final pipeline = AiRuntimeEventParserPipeline();
+      final controller = StreamController<AiRuntimeEvent>();
+      final timelineEvents = <AiTimelineEvent>[];
+
+      final subscription = pipeline
+          .bind(controller.stream)
+          .listen(timelineEvents.add);
+
+      controller
+        ..addError(StateError('simulated runtime stream error'))
+        ..add(
+          _runtimeEvent(
+            type: AiRuntimeEventType.started,
+            provider: AiCliProvider.codex,
+          ),
+        );
+
+      await Future<void>.delayed(Duration.zero);
+      await controller.close();
+      await subscription.cancel();
+
+      expect(timelineEvents, hasLength(1));
+      expect(timelineEvents.single.type, AiTimelineEventType.status);
     });
   });
 }

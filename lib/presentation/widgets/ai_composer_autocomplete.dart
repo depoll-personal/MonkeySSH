@@ -56,9 +56,12 @@ class AiComposerAutocompleteEngine {
     final normalizedQuery = token.query.toLowerCase();
     if (token.type == AiComposerSuggestionType.slashCommand) {
       return _slashCommands
-          .where(
-            (command) => command.toLowerCase().startsWith('/$normalizedQuery'),
-          )
+          .where((command) {
+            final normalizedCommand = command.startsWith('/')
+                ? command.substring(1).toLowerCase()
+                : command.toLowerCase();
+            return normalizedCommand.startsWith(normalizedQuery);
+          })
           .map(
             (command) => AiComposerSuggestion(
               label: command,

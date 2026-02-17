@@ -11,6 +11,8 @@ import '../../data/repositories/ai_repository.dart';
 import '../../domain/models/ai_cli_provider.dart';
 import '../../domain/services/ai_runtime_event_parser_pipeline.dart';
 import '../../domain/services/ai_runtime_service.dart';
+import '../../domain/services/ai_session_metadata.dart';
+import '../../domain/services/shell_escape.dart';
 import '../../domain/services/ssh_service.dart';
 import '../widgets/ai_composer_autocomplete.dart';
 
@@ -97,7 +99,10 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       final runtimeEvents = ref.read(aiRuntimeServiceProvider).events;
       _runtimeTimelineSubscription = parser
           .bind(runtimeEvents)
-          .listen(_handleRuntimeTimelineEvent);
+          .listen(
+            _handleRuntimeTimelineEvent,
+            onError: _handleRuntimeTimelineStreamError,
+          );
       unawaited(_initializeSessionContext());
     });
   }
@@ -436,7 +441,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       return const <String>[];
     }
 
-    final escapedDirectory = _shellEscape(context.remoteWorkingDirectory);
+    final escapedDirectory = shellEscape(context.remoteWorkingDirectory);
     final process = await session.execute(
       'cd $escapedDirectory && '
       'find . -maxdepth 4 -type f 2>/dev/null | sed "s#^./##" | head -n 250',
@@ -451,11 +456,6 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         .map((line) => line.trim())
         .where((line) => line.isNotEmpty)
         .toList(growable: false);
-  }
-
-  String _shellEscape(String value) {
-    final escapedValue = value.replaceAll('\'', '\'\\\'\'');
-    return '\'$escapedValue\'';
   }
 
   void _selectNextComposerSuggestion() {
@@ -538,7 +538,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
 
     var latestMetadata = const <String, dynamic>{};
     for (final entry in timelineEntries.reversed) {
-      final metadata = _decodeMetadataMap(entry.metadata);
+      final metadata = AiSessionMetadata.decode(entry.metadata);
       if (metadata.isNotEmpty) {
         latestMetadata = metadata;
         break;
@@ -547,14 +547,16 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
 
     final provider =
         widget.provider ??
-        _providerFromMetadata(latestMetadata) ??
+        AiSessionMetadata.readProvider(latestMetadata) ??
         AiCliProvider.claude;
     final connectionId =
-        widget.connectionId ?? _metadataInt(latestMetadata, 'connectionId');
-    final hostId = widget.hostId ?? _metadataInt(latestMetadata, 'hostId');
+        widget.connectionId ??
+        AiSessionMetadata.readInt(latestMetadata, 'connectionId');
+    final hostId =
+        widget.hostId ?? AiSessionMetadata.readInt(latestMetadata, 'hostId');
     final remoteWorkingDirectory =
         widget.remoteWorkingDirectory ??
-        _metadataString(latestMetadata, 'workingDirectory') ??
+        AiSessionMetadata.readString(latestMetadata, 'workingDirectory') ??
         workspace?.path ??
         '~';
 
@@ -804,6 +806,16 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     );
   }
 
+  void _handleRuntimeTimelineStreamError(Object error, StackTrace stackTrace) {
+    unawaited(
+      _insertTimelineEntry(
+        role: 'error',
+        message: 'Runtime stream error: $error',
+        metadata: <String, dynamic>{'stackTrace': stackTrace.toString()},
+      ),
+    );
+  }
+
   void _scrollToBottom() {
     if (!_scrollController.hasClients) {
       return;
@@ -983,53 +995,3 @@ class _AiSessionRuntimeContext {
 }
 
 enum _RuntimeAttachmentState { restoring, attached, resumed, detached }
-
-Map<String, dynamic> _decodeMetadataMap(String? raw) {
-  if (raw == null || raw.isEmpty) {
-    return const <String, dynamic>{};
-  }
-  try {
-    final decoded = jsonDecode(raw);
-    if (decoded is Map<String, dynamic>) {
-      return decoded;
-    }
-  } on FormatException {
-    return const <String, dynamic>{};
-  }
-  return const <String, dynamic>{};
-}
-
-String? _metadataString(Map<String, dynamic> metadata, String key) {
-  final value = metadata[key];
-  if (value is String && value.trim().isNotEmpty) {
-    return value;
-  }
-  return null;
-}
-
-int? _metadataInt(Map<String, dynamic> metadata, String key) {
-  final value = metadata[key];
-  if (value is int) {
-    return value;
-  }
-  if (value is num) {
-    return value.toInt();
-  }
-  if (value is String) {
-    return int.tryParse(value);
-  }
-  return null;
-}
-
-AiCliProvider? _providerFromMetadata(Map<String, dynamic> metadata) {
-  final providerName = _metadataString(metadata, 'provider');
-  if (providerName == null) {
-    return null;
-  }
-  for (final provider in AiCliProvider.values) {
-    if (provider.name == providerName) {
-      return provider;
-    }
-  }
-  return null;
-}
