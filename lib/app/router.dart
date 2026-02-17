@@ -2,7 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../domain/models/ai_cli_provider.dart';
 import '../domain/services/auth_service.dart';
+import '../presentation/screens/ai_chat_session_screen.dart';
+import '../presentation/screens/ai_start_session_screen.dart';
 import '../presentation/screens/auth_setup_screen.dart';
 import '../presentation/screens/home_screen.dart';
 import '../presentation/screens/host_edit_screen.dart';
@@ -173,6 +176,45 @@ final routerProvider = Provider<GoRouter>((ref) {
           return ThemeEditorScreen(themeId: themeId);
         },
       ),
+      GoRoute(
+        path: '/ai',
+        name: 'ai',
+        builder: (context, state) => const AiStartSessionScreen(),
+      ),
+      GoRoute(
+        path: '/ai/session/:sessionId',
+        name: 'ai-session',
+        builder: (context, state) {
+          final sessionId = int.tryParse(
+            state.pathParameters['sessionId'] ?? '',
+          );
+          final connectionId = int.tryParse(
+            state.uri.queryParameters['connectionId'] ?? '',
+          );
+          final hostId = int.tryParse(
+            state.uri.queryParameters['hostId'] ?? '',
+          );
+          final providerRaw = state.uri.queryParameters['provider'];
+          final workingDirectory = state.uri.queryParameters['workingDir'];
+          final isResumeRequest = state.uri.queryParameters['resume'] == '1';
+          final provider = AiCliProvider.values.where(
+            (candidate) => candidate.name == providerRaw,
+          );
+          if (sessionId == null) {
+            return const Scaffold(
+              body: Center(child: Text('Invalid AI session parameters')),
+            );
+          }
+          return AiChatSessionScreen(
+            sessionId: sessionId,
+            connectionId: connectionId,
+            hostId: hostId,
+            provider: provider.isEmpty ? null : provider.first,
+            remoteWorkingDirectory: workingDirectory,
+            isResumeRequest: isResumeRequest,
+          );
+        },
+      ),
     ],
   );
 });
@@ -211,4 +253,10 @@ abstract final class Routes {
 
   /// Theme editor route for new theme.
   static const themeEditorNew = 'theme-editor-new';
+
+  /// AI start flow route.
+  static const ai = 'ai';
+
+  /// AI chat session route.
+  static const aiSession = 'ai-session';
 }
