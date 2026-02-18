@@ -16,6 +16,7 @@ void main() {
         AiCliProvider.opencode: 'opencode',
         AiCliProvider.copilot: 'copilot',
         AiCliProvider.gemini: 'gemini',
+        AiCliProvider.acp: 'acp-client',
       };
 
       for (final entry in expectedExecutables.entries) {
@@ -61,6 +62,20 @@ void main() {
       expect(
         command,
         'cd \'/srv/it\'\\\'\'s-here\' && codex \'--message\' \'ship it\'',
+      );
+    });
+
+    test('uses executable override for ACP-compatible clients', () {
+      final command = builder.buildLaunchCommand(
+        provider: AiCliProvider.acp,
+        executableOverride: 'my-acp-client --stdio',
+        remoteWorkingDirectory: '/srv/project',
+        extraArguments: const <String>['--workspace', '.'],
+      );
+
+      expect(
+        command,
+        'cd \'/srv/project\' && my-acp-client --stdio \'--workspace\' \'.\'',
       );
     });
 

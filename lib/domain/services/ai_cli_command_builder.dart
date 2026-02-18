@@ -14,6 +14,7 @@ class AiCliCommandBuilder {
   String buildLaunchCommand({
     required AiCliProvider provider,
     required String remoteWorkingDirectory,
+    String? executableOverride,
     bool structuredOutput = false,
     List<String> extraArguments = const <String>[],
   }) {
@@ -31,8 +32,9 @@ class AiCliCommandBuilder {
       ...extraArguments,
     ];
 
-    final executableCommand = _buildExecutableCommand(
-      executable: provider.executable,
+    final executableCommand = _buildLaunchExecutableCommand(
+      provider: provider,
+      executableOverride: executableOverride,
       arguments: commandArguments,
     );
     final escapedDirectory = shellEscape(trimmedRemoteWorkingDirectory);
@@ -49,10 +51,19 @@ class AiCliCommandBuilder {
     return capabilities.structuredOutputArguments;
   }
 
-  String _buildExecutableCommand({
-    required String executable,
+  String _buildLaunchExecutableCommand({
+    required AiCliProvider provider,
+    required String? executableOverride,
     required List<String> arguments,
   }) {
+    final executable = (executableOverride ?? provider.executable).trim();
+    if (executable.isEmpty) {
+      throw ArgumentError.value(
+        executableOverride,
+        'executableOverride',
+        'Executable override cannot be empty.',
+      );
+    }
     if (arguments.isEmpty) {
       return executable;
     }

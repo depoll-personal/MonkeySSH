@@ -41,6 +41,7 @@ class AiRuntimeLaunchRequest {
     required this.connectionId,
     required this.provider,
     required this.remoteWorkingDirectory,
+    this.executableOverride,
     this.structuredOutput = false,
     this.extraArguments = const <String>[],
   });
@@ -56,6 +57,9 @@ class AiRuntimeLaunchRequest {
 
   /// Remote working directory where the command starts.
   final String remoteWorkingDirectory;
+
+  /// Optional shell command override used to launch provider executable.
+  final String? executableOverride;
 
   /// Whether to request structured provider output.
   final bool structuredOutput;
@@ -278,6 +282,7 @@ class AiRuntimeService {
       final command = _commandBuilder.buildLaunchCommand(
         provider: request.provider,
         remoteWorkingDirectory: request.remoteWorkingDirectory,
+        executableOverride: request.executableOverride,
         structuredOutput: request.structuredOutput,
         extraArguments: request.extraArguments,
       );

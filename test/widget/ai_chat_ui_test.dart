@@ -67,6 +67,46 @@ void main() {
 
       expect(find.text('Working directory is required.'), findsOneWidget);
     });
+
+    testWidgets('requires ACP client command when ACP provider is selected', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await db
+          .into(db.hosts)
+          .insert(
+            HostsCompanion.insert(
+              label: 'Prod',
+              hostname: 'prod.example.com',
+              username: 'ubuntu',
+            ),
+          );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [databaseProvider.overrideWithValue(db)],
+          child: const MaterialApp(home: AiStartSessionScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('ai-provider-field')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('acp-client').last);
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const Key('ai-acp-client-command-field')),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.text('Start Session'));
+      await tester.pump();
+
+      expect(find.text('ACP client command is required.'), findsOneWidget);
+    });
   });
 
   group('AI timeline rendering', () {
@@ -240,6 +280,57 @@ void main() {
         find.byKey(const Key('ai-reconnect-runtime-button')),
         findsOneWidget,
       );
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('shows ACP executable override from saved metadata', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      final workspaceId = await db
+          .into(db.aiWorkspaces)
+          .insert(
+            AiWorkspacesCompanion.insert(name: 'Workspace', path: '/workspace'),
+          );
+      final sessionId = await db
+          .into(db.aiSessions)
+          .insert(
+            AiSessionsCompanion.insert(
+              workspaceId: workspaceId,
+              title: 'ACP resume',
+            ),
+          );
+      await db
+          .into(db.aiTimelineEntries)
+          .insert(
+            AiTimelineEntriesCompanion.insert(
+              sessionId: sessionId,
+              role: 'status',
+              message: 'Saved metadata',
+              metadata: const Value(
+                '{"provider":"acp","workingDirectory":"/repo","executableOverride":"my-acp-client --stdio"}',
+              ),
+            ),
+          );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [databaseProvider.overrideWithValue(db)],
+          child: MaterialApp(
+            home: AiChatSessionScreen(
+              sessionId: sessionId,
+              autoStartRuntime: false,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('my-acp-client --stdio · /repo'), findsOneWidget);
 
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pumpAndSettle();

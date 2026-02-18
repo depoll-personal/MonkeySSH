@@ -79,6 +79,7 @@ class AiRuntimeEventParserPipeline {
     AiCliProvider.opencode: _DefaultAiRuntimeProviderEventAdapter(),
     AiCliProvider.copilot: _DefaultAiRuntimeProviderEventAdapter(),
     AiCliProvider.gemini: _DefaultAiRuntimeProviderEventAdapter(),
+    AiCliProvider.acp: _DefaultAiRuntimeProviderEventAdapter(),
   };
 
   final Map<AiCliProvider, AiRuntimeProviderEventAdapter> _adapters;

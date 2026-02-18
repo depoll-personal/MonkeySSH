@@ -23,6 +23,7 @@ class AiChatSessionScreen extends ConsumerStatefulWidget {
     required this.sessionId,
     this.connectionId,
     this.provider,
+    this.executableOverride,
     this.remoteWorkingDirectory,
     this.hostId,
     this.isResumeRequest = false,
@@ -39,6 +40,9 @@ class AiChatSessionScreen extends ConsumerStatefulWidget {
 
   /// CLI provider used for this session.
   final AiCliProvider? provider;
+
+  /// Optional ACP-compatible client launch command override.
+  final String? executableOverride;
 
   /// Remote working directory for command startup.
   final String? remoteWorkingDirectory;
@@ -125,6 +129,10 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     final sessionContext = _sessionContext;
     final provider =
         sessionContext?.provider ?? widget.provider ?? AiCliProvider.claude;
+    final executableLabel =
+        sessionContext?.executableOverride ??
+        widget.executableOverride ??
+        provider.executable;
     final workingDirectory =
         sessionContext?.remoteWorkingDirectory ??
         widget.remoteWorkingDirectory ??
@@ -162,7 +170,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
-                    '${provider.executable} · $workingDirectory',
+                    '$executableLabel · $workingDirectory',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: theme.textTheme.bodySmall,
@@ -549,6 +557,9 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         widget.provider ??
         AiSessionMetadata.readProvider(latestMetadata) ??
         AiCliProvider.claude;
+    final executableOverride =
+        widget.executableOverride ??
+        AiSessionMetadata.readString(latestMetadata, 'executableOverride');
     final connectionId =
         widget.connectionId ??
         AiSessionMetadata.readInt(latestMetadata, 'connectionId');
@@ -564,6 +575,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       connectionId: connectionId,
       hostId: hostId,
       provider: provider,
+      executableOverride: executableOverride,
       remoteWorkingDirectory: remoteWorkingDirectory,
       resumedSession: widget.isResumeRequest || widget.connectionId == null,
     );
@@ -610,6 +622,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           aiSessionId: widget.sessionId,
           connectionId: connectionId,
           provider: context.provider,
+          executableOverride: context.executableOverride,
           remoteWorkingDirectory: context.remoteWorkingDirectory,
           structuredOutput:
               context.provider.capabilities.supportsStructuredOutput,
@@ -713,6 +726,8 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     }
     return <String, dynamic>{
       'provider': context.provider.name,
+      if (context.executableOverride != null)
+        'executableOverride': context.executableOverride,
       'workingDirectory': context.remoteWorkingDirectory,
       'resumedSession': context.resumedSession,
       if (context.connectionId != null) 'connectionId': context.connectionId,
@@ -968,6 +983,7 @@ class _AiSessionRuntimeContext {
     required this.connectionId,
     required this.hostId,
     required this.provider,
+    required this.executableOverride,
     required this.remoteWorkingDirectory,
     required this.resumedSession,
   });
@@ -975,6 +991,7 @@ class _AiSessionRuntimeContext {
   final int? connectionId;
   final int? hostId;
   final AiCliProvider provider;
+  final String? executableOverride;
   final String remoteWorkingDirectory;
   final bool resumedSession;
 
@@ -982,12 +999,14 @@ class _AiSessionRuntimeContext {
     int? connectionId,
     int? hostId,
     AiCliProvider? provider,
+    String? executableOverride,
     String? remoteWorkingDirectory,
     bool? resumedSession,
   }) => _AiSessionRuntimeContext(
     connectionId: connectionId ?? this.connectionId,
     hostId: hostId ?? this.hostId,
     provider: provider ?? this.provider,
+    executableOverride: executableOverride ?? this.executableOverride,
     remoteWorkingDirectory:
         remoteWorkingDirectory ?? this.remoteWorkingDirectory,
     resumedSession: resumedSession ?? this.resumedSession,

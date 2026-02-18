@@ -14,6 +14,9 @@ enum AiCliProvider {
 
   /// Google Gemini CLI.
   gemini,
+
+  /// Generic ACP-compatible client command.
+  acp,
 }
 
 /// Capability metadata for a provider.
@@ -44,6 +47,7 @@ extension AiCliProviderMetadata on AiCliProvider {
     AiCliProvider.opencode => 'opencode',
     AiCliProvider.copilot => 'copilot',
     AiCliProvider.gemini => 'gemini',
+    AiCliProvider.acp => 'acp-client',
   };
 
   /// Metadata describing this provider's capabilities.
@@ -53,6 +57,7 @@ extension AiCliProviderMetadata on AiCliProvider {
     AiCliProvider.opencode => _opencodeCapabilities,
     AiCliProvider.copilot => _copilotCapabilities,
     AiCliProvider.gemini => _geminiCapabilities,
+    AiCliProvider.acp => _acpCapabilities,
   };
 }
 
@@ -83,4 +88,8 @@ const _geminiCapabilities = AiCliProviderCapabilities(
   supportsStructuredOutput: true,
   structuredOutputArguments: <String>['--format', 'json'],
   composerSlashCommands: <String>['/help', '/clear', '/model'],
+);
+const _acpCapabilities = AiCliProviderCapabilities(
+  supportsStructuredOutput: true,
+  composerSlashCommands: <String>['/help', '/clear'],
 );

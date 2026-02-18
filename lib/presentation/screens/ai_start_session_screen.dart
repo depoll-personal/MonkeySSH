@@ -28,6 +28,7 @@ class AiStartSessionScreen extends ConsumerStatefulWidget {
 
 class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
   late final TextEditingController _workingDirectoryController;
+  late final TextEditingController _acpClientCommandController;
   AiCliProvider _selectedProvider = AiCliProvider.claude;
   int? _selectedHostId;
   bool _isStarting = false;
@@ -36,11 +37,13 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
   void initState() {
     super.initState();
     _workingDirectoryController = TextEditingController(text: '~');
+    _acpClientCommandController = TextEditingController();
   }
 
   @override
   void dispose() {
     _workingDirectoryController.dispose();
+    _acpClientCommandController.dispose();
     super.dispose();
   }
 
@@ -115,6 +118,18 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
                           });
                         },
                       ),
+                      if (_selectedProvider == AiCliProvider.acp) ...[
+                        const SizedBox(height: 12),
+                        TextField(
+                          key: const Key('ai-acp-client-command-field'),
+                          controller: _acpClientCommandController,
+                          decoration: const InputDecoration(
+                            labelText: 'ACP client command',
+                            hintText: 'my-acp-client --stdio',
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                      ],
                       const SizedBox(height: 16),
                       SizedBox(
                         width: double.infinity,
@@ -284,6 +299,12 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
     _AiSessionResumeSummary session, {
     required bool canReattach,
   }) {
+    final provider = session.provider;
+    final providerLabel = provider == null
+        ? 'Provider unknown'
+        : provider == AiCliProvider.acp
+        ? session.executableOverride ?? provider.executable
+        : provider.executable;
     final trailing = canReattach
         ? const Tooltip(
             message: 'Runtime available for resume',
@@ -294,7 +315,7 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
             child: Icon(Icons.link_off_rounded, size: 18),
           );
     final subtitleParts = <String>[
-      session.provider?.executable ?? 'Provider unknown',
+      providerLabel,
       session.workingDirectory,
       if (canReattach) 'runtime ready' else 'runtime detached',
     ];
@@ -326,6 +347,10 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
     if (session.workingDirectory.isNotEmpty) {
       parameters['workingDir'] = session.workingDirectory;
     }
+    if (session.executableOverride != null &&
+        session.executableOverride!.isNotEmpty) {
+      parameters['executable'] = session.executableOverride!;
+    }
 
     final uri = Uri(
       path: '/ai/session/${session.sessionId}',
@@ -350,6 +375,14 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
       _showSnackBar('Working directory is required.');
       return;
     }
+    final acpExecutableOverride = _selectedProvider == AiCliProvider.acp
+        ? _acpClientCommandController.text.trim()
+        : null;
+    if (_selectedProvider == AiCliProvider.acp &&
+        (acpExecutableOverride == null || acpExecutableOverride.isEmpty)) {
+      _showSnackBar('ACP client command is required.');
+      return;
+    }
 
     Host? selectedHost;
     for (final host in hosts) {
@@ -362,6 +395,12 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
       _showSnackBar('Selected host is no longer available.');
       return;
     }
+    final acpExecutableMetadata = acpExecutableOverride == null
+        ? null
+        : <String, dynamic>{'executableOverride': acpExecutableOverride};
+    final acpExecutableQueryParam = acpExecutableOverride == null
+        ? null
+        : <String, String>{'executable': acpExecutableOverride};
 
     setState(() {
       _isStarting = true;
@@ -401,6 +440,7 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
               'provider': _selectedProvider.name,
               'hostId': selectedHost.id,
               'workingDirectory': workingDirectory,
+              ...?acpExecutableMetadata,
               'runtimeState': 'attached',
             }),
           ),
@@ -411,13 +451,16 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
         return;
       }
 
-      final workingDirectoryParam = Uri.encodeComponent(workingDirectory);
-      await context.push(
-        '/ai/session/$sessionId'
-        '?connectionId=${connectionResult.connectionId}'
-        '&provider=${_selectedProvider.name}'
-        '&workingDir=$workingDirectoryParam',
+      final sessionUri = Uri(
+        path: '/ai/session/$sessionId',
+        queryParameters: <String, String>{
+          'connectionId': connectionResult.connectionId!.toString(),
+          'provider': _selectedProvider.name,
+          'workingDir': workingDirectory,
+          ...?acpExecutableQueryParam,
+        },
       );
+      await context.push(sessionUri.toString());
     } finally {
       if (mounted) {
         setState(() {
@@ -480,6 +523,10 @@ final _recentAiSessionsProvider =
             sessionId: session.id,
             title: session.title,
             provider: AiSessionMetadata.readProvider(metadata),
+            executableOverride: AiSessionMetadata.readString(
+              metadata,
+              'executableOverride',
+            ),
             connectionId: AiSessionMetadata.readInt(metadata, 'connectionId'),
             hostId: AiSessionMetadata.readInt(metadata, 'hostId'),
             workingDirectory:
@@ -498,6 +545,7 @@ class _AiSessionResumeSummary {
     required this.title,
     required this.workingDirectory,
     this.provider,
+    this.executableOverride,
     this.connectionId,
     this.hostId,
   });
@@ -508,4 +556,5 @@ class _AiSessionResumeSummary {
   final int? connectionId;
   final int? hostId;
   final String workingDirectory;
+  final String? executableOverride;
 }

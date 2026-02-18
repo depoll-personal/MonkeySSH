@@ -196,6 +196,7 @@ final routerProvider = Provider<GoRouter>((ref) {
           );
           final providerRaw = state.uri.queryParameters['provider'];
           final workingDirectory = state.uri.queryParameters['workingDir'];
+          final executableOverride = state.uri.queryParameters['executable'];
           final isResumeRequest = state.uri.queryParameters['resume'] == '1';
           final provider = AiCliProvider.values.where(
             (candidate) => candidate.name == providerRaw,
@@ -211,6 +212,7 @@ final routerProvider = Provider<GoRouter>((ref) {
             hostId: hostId,
             provider: provider.isEmpty ? null : provider.first,
             remoteWorkingDirectory: workingDirectory,
+            executableOverride: executableOverride,
             isResumeRequest: isResumeRequest,
           );
         },
