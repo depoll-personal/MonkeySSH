@@ -27,9 +27,12 @@ class AiStartSessionScreen extends ConsumerStatefulWidget {
 }
 
 class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
+  static const _customAcpClientId = '__custom__';
+
   late final TextEditingController _workingDirectoryController;
   late final TextEditingController _acpClientCommandController;
   AiCliProvider _selectedProvider = AiCliProvider.claude;
+  String _selectedAcpClientId = knownAcpClientPresets.first.id;
   int? _selectedHostId;
   bool _isStarting = false;
 
@@ -115,20 +118,72 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
                           }
                           setState(() {
                             _selectedProvider = provider;
+                            if (provider == AiCliProvider.acp &&
+                                _selectedAcpClientId != _customAcpClientId) {
+                              final preset = _selectedAcpClientPreset;
+                              if (preset != null) {
+                                _acpClientCommandController.text =
+                                    preset.command;
+                              }
+                            }
                           });
                         },
                       ),
                       if (_selectedProvider == AiCliProvider.acp) ...[
                         const SizedBox(height: 12),
-                        TextField(
-                          key: const Key('ai-acp-client-command-field'),
-                          controller: _acpClientCommandController,
+                        DropdownButtonFormField<String>(
+                          key: const Key('ai-acp-client-preset-field'),
+                          initialValue: _selectedAcpClientId,
                           decoration: const InputDecoration(
-                            labelText: 'ACP client command',
-                            hintText: 'my-acp-client --stdio',
+                            labelText: 'ACP client',
                             border: OutlineInputBorder(),
                           ),
+                          items: <DropdownMenuItem<String>>[
+                            ...knownAcpClientPresets.map(
+                              (preset) => DropdownMenuItem<String>(
+                                value: preset.id,
+                                child: Text(preset.label),
+                              ),
+                            ),
+                            const DropdownMenuItem<String>(
+                              value: _customAcpClientId,
+                              child: Text('Custom command'),
+                            ),
+                          ],
+                          onChanged: (value) {
+                            if (value == null) {
+                              return;
+                            }
+                            setState(() {
+                              _selectedAcpClientId = value;
+                              final preset = _selectedAcpClientPreset;
+                              if (value == _customAcpClientId) {
+                                _acpClientCommandController.clear();
+                              } else if (preset != null) {
+                                _acpClientCommandController.text =
+                                    preset.command;
+                              }
+                            });
+                          },
                         ),
+                        if (_selectedAcpClientId == _customAcpClientId) ...[
+                          const SizedBox(height: 12),
+                          TextField(
+                            key: const Key('ai-acp-client-command-field'),
+                            controller: _acpClientCommandController,
+                            decoration: const InputDecoration(
+                              labelText: 'Custom ACP client command',
+                              hintText: 'my-acp-client --stdio',
+                              border: OutlineInputBorder(),
+                            ),
+                          ),
+                        ] else ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            'Command: ${_selectedAcpClientPreset?.command ?? _acpClientCommandController.text}',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ],
                       ],
                       const SizedBox(height: 16),
                       SizedBox(
@@ -303,7 +358,9 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
     final providerLabel = provider == null
         ? 'Provider unknown'
         : provider == AiCliProvider.acp
-        ? session.executableOverride ?? provider.executable
+        ? session.acpClientLabel ??
+              session.executableOverride ??
+              provider.executable
         : provider.executable;
     final trailing = canReattach
         ? const Tooltip(
@@ -375,13 +432,29 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
       _showSnackBar('Working directory is required.');
       return;
     }
-    final acpExecutableOverride = _selectedProvider == AiCliProvider.acp
-        ? _acpClientCommandController.text.trim()
-        : null;
-    if (_selectedProvider == AiCliProvider.acp &&
-        (acpExecutableOverride == null || acpExecutableOverride.isEmpty)) {
-      _showSnackBar('ACP client command is required.');
-      return;
+    String? acpExecutableOverride;
+    String? acpClientLabel;
+    String? acpClientId;
+    if (_selectedProvider == AiCliProvider.acp) {
+      if (_selectedAcpClientId == _customAcpClientId) {
+        final customCommand = _acpClientCommandController.text.trim();
+        if (customCommand.isEmpty) {
+          _showSnackBar('ACP client command is required.');
+          return;
+        }
+        acpExecutableOverride = customCommand;
+        acpClientLabel = 'Custom command';
+        acpClientId = _customAcpClientId;
+      } else {
+        final preset = _selectedAcpClientPreset;
+        if (preset == null) {
+          _showSnackBar('Select an ACP client.');
+          return;
+        }
+        acpExecutableOverride = preset.command;
+        acpClientLabel = preset.label;
+        acpClientId = preset.id;
+      }
     }
 
     Host? selectedHost;
@@ -398,6 +471,13 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
     final acpExecutableMetadata = acpExecutableOverride == null
         ? null
         : <String, dynamic>{'executableOverride': acpExecutableOverride};
+    final acpClientMetadata = <String, dynamic>{};
+    if (acpClientLabel != null) {
+      acpClientMetadata['acpClientLabel'] = acpClientLabel;
+    }
+    if (acpClientId != null) {
+      acpClientMetadata['acpClientId'] = acpClientId;
+    }
     final acpExecutableQueryParam = acpExecutableOverride == null
         ? null
         : <String, String>{'executable': acpExecutableOverride};
@@ -441,6 +521,7 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
               'hostId': selectedHost.id,
               'workingDirectory': workingDirectory,
               ...?acpExecutableMetadata,
+              ...acpClientMetadata,
               'runtimeState': 'attached',
             }),
           ),
@@ -498,6 +579,15 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
   }
+
+  AcpClientPreset? get _selectedAcpClientPreset {
+    for (final preset in knownAcpClientPresets) {
+      if (preset.id == _selectedAcpClientId) {
+        return preset;
+      }
+    }
+    return null;
+  }
 }
 
 final _aiHostsProvider = FutureProvider.autoDispose<List<Host>>((ref) {
@@ -527,6 +617,10 @@ final _recentAiSessionsProvider =
               metadata,
               'executableOverride',
             ),
+            acpClientLabel: AiSessionMetadata.readString(
+              metadata,
+              'acpClientLabel',
+            ),
             connectionId: AiSessionMetadata.readInt(metadata, 'connectionId'),
             hostId: AiSessionMetadata.readInt(metadata, 'hostId'),
             workingDirectory:
@@ -546,6 +640,7 @@ class _AiSessionResumeSummary {
     required this.workingDirectory,
     this.provider,
     this.executableOverride,
+    this.acpClientLabel,
     this.connectionId,
     this.hostId,
   });
@@ -557,4 +652,5 @@ class _AiSessionResumeSummary {
   final int? hostId;
   final String workingDirectory;
   final String? executableOverride;
+  final String? acpClientLabel;
 }

@@ -68,45 +68,57 @@ void main() {
       expect(find.text('Working directory is required.'), findsOneWidget);
     });
 
-    testWidgets('requires ACP client command when ACP provider is selected', (
-      tester,
-    ) async {
-      final db = AppDatabase.forTesting(NativeDatabase.memory());
-      addTearDown(db.close);
+    testWidgets(
+      'requires ACP client command when custom ACP mode is selected',
+      (tester) async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
 
-      await db
-          .into(db.hosts)
-          .insert(
-            HostsCompanion.insert(
-              label: 'Prod',
-              hostname: 'prod.example.com',
-              username: 'ubuntu',
-            ),
-          );
+        await db
+            .into(db.hosts)
+            .insert(
+              HostsCompanion.insert(
+                label: 'Prod',
+                hostname: 'prod.example.com',
+                username: 'ubuntu',
+              ),
+            );
 
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [databaseProvider.overrideWithValue(db)],
-          child: const MaterialApp(home: AiStartSessionScreen()),
-        ),
-      );
-      await tester.pumpAndSettle();
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [databaseProvider.overrideWithValue(db)],
+            child: const MaterialApp(home: AiStartSessionScreen()),
+          ),
+        );
+        await tester.pumpAndSettle();
 
-      await tester.tap(find.byKey(const Key('ai-provider-field')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('acp-client').last);
-      await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('ai-provider-field')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('acp-client').last);
+        await tester.pumpAndSettle();
 
-      expect(
-        find.byKey(const Key('ai-acp-client-command-field')),
-        findsOneWidget,
-      );
+        expect(
+          find.byKey(const Key('ai-acp-client-preset-field')),
+          findsOneWidget,
+        );
+        expect(find.textContaining('Command: '), findsOneWidget);
 
-      await tester.tap(find.text('Start Session'));
-      await tester.pump();
+        await tester.tap(find.byKey(const Key('ai-acp-client-preset-field')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Custom command').last);
+        await tester.pumpAndSettle();
 
-      expect(find.text('ACP client command is required.'), findsOneWidget);
-    });
+        expect(
+          find.byKey(const Key('ai-acp-client-command-field')),
+          findsOneWidget,
+        );
+
+        await tester.tap(find.text('Start Session'));
+        await tester.pump();
+
+        expect(find.text('ACP client command is required.'), findsOneWidget);
+      },
+    );
   });
 
   group('AI timeline rendering', () {

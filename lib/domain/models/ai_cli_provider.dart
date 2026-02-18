@@ -93,3 +93,36 @@ const _acpCapabilities = AiCliProviderCapabilities(
   supportsStructuredOutput: true,
   composerSlashCommands: <String>['/help', '/clear'],
 );
+
+/// Preset configuration for a known ACP-compatible client launch command.
+class AcpClientPreset {
+  /// Creates an [AcpClientPreset].
+  const AcpClientPreset({
+    required this.id,
+    required this.label,
+    required this.command,
+  });
+
+  /// Stable identifier persisted in session metadata.
+  final String id;
+
+  /// Human-friendly name shown in selection UI.
+  final String label;
+
+  /// Remote shell command used to launch this client.
+  final String command;
+}
+
+/// Built-in ACP-compatible client presets shown in the start flow.
+const knownAcpClientPresets = <AcpClientPreset>[
+  AcpClientPreset(id: 'claude', label: 'Claude Code', command: 'claude'),
+  AcpClientPreset(id: 'codex', label: 'Codex', command: 'codex'),
+  AcpClientPreset(id: 'opencode', label: 'OpenCode', command: 'opencode'),
+  AcpClientPreset(id: 'copilot', label: 'GitHub Copilot', command: 'copilot'),
+  AcpClientPreset(id: 'gemini', label: 'Gemini CLI', command: 'gemini'),
+  AcpClientPreset(
+    id: 'generic-stdio',
+    label: 'Generic ACP Client (stdio)',
+    command: 'acp-client --stdio',
+  ),
+];
