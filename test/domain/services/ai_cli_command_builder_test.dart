@@ -88,5 +88,32 @@ void main() {
         throwsArgumentError,
       );
     });
+
+    test('adds ACP launch arguments when acpMode is true', () {
+      final command = builder.buildLaunchCommand(
+        provider: AiCliProvider.copilot,
+        remoteWorkingDirectory: '/srv/project',
+        acpMode: true,
+      );
+
+      expect(
+        command,
+        'cd \'/srv/project\' && copilot \'--acp\' \'--allow-all-tools\'',
+      );
+    });
+
+    test('acpMode suppresses structured output arguments', () {
+      final command = builder.buildLaunchCommand(
+        provider: AiCliProvider.copilot,
+        remoteWorkingDirectory: '/srv/project',
+        acpMode: true,
+        structuredOutput: true,
+      );
+
+      expect(
+        command,
+        'cd \'/srv/project\' && copilot \'--acp\' \'--allow-all-tools\'',
+      );
+    });
   });
 }

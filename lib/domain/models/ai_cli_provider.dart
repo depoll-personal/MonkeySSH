@@ -28,6 +28,8 @@ class AiCliProviderCapabilities {
     this.composerSlashCommands = const <String>[],
     this.requiresPty = false,
     this.autoStartRuntime = true,
+    this.supportsAcp = false,
+    this.acpLaunchArguments = const <String>[],
   });
 
   /// Whether the provider supports structured machine-readable output.
@@ -44,6 +46,12 @@ class AiCliProviderCapabilities {
 
   /// Whether sessions for this provider should auto-start on screen open.
   final bool autoStartRuntime;
+
+  /// Whether the provider supports the Agent Client Protocol (ACP).
+  final bool supportsAcp;
+
+  /// CLI arguments used to launch this provider in ACP mode.
+  final List<String> acpLaunchArguments;
 }
 
 /// Extension that exposes command and capability metadata.
@@ -91,7 +99,8 @@ const _opencodeCapabilities = AiCliProviderCapabilities(
 const _copilotCapabilities = AiCliProviderCapabilities(
   supportsStructuredOutput: false,
   composerSlashCommands: <String>['/help', '/clear'],
-  autoStartRuntime: false,
+  supportsAcp: true,
+  acpLaunchArguments: <String>['--acp', '--allow-all-tools'],
 );
 const _geminiCapabilities = AiCliProviderCapabilities(
   supportsStructuredOutput: true,

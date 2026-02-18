@@ -10,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/ai_repository.dart';
 import '../../domain/models/ai_cli_provider.dart';
+import '../../domain/services/acp_client.dart';
 import '../../domain/services/ai_runtime_event_parser_pipeline.dart';
 import '../../domain/services/ai_runtime_service.dart';
 import '../../domain/services/ai_session_metadata.dart';
@@ -72,6 +73,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
   late AiComposerAutocompleteEngine _composerAutocompleteEngine;
 
   StreamSubscription<AiTimelineEvent>? _runtimeTimelineSubscription;
+  StreamSubscription<AcpEvent>? _acpEventSubscription;
   Future<List<String>>? _remoteFileSuggestionsInFlight;
   List<String>? _cachedRemoteFileSuggestions;
   List<AiComposerSuggestion> _composerSuggestions =
@@ -79,6 +81,8 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
   var _selectedComposerSuggestionIndex = 0;
   var _composerSuggestionRevision = 0;
   _AiSessionRuntimeContext? _sessionContext;
+  AcpClient? _acpClient;
+  AcpSession? _acpSession;
   bool _runtimeStarted = false;
   bool _reconnecting = false;
   bool _sending = false;
@@ -124,6 +128,8 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     _promptFocusNode.dispose();
     _scrollController.dispose();
     unawaited(_runtimeTimelineSubscription?.cancel());
+    unawaited(_acpEventSubscription?.cancel());
+    unawaited(_acpClient?.dispose());
     super.dispose();
   }
 
@@ -162,9 +168,60 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       _RuntimeAttachmentState.attached => theme.colorScheme.onPrimaryContainer,
     };
 
+    final acpSession = _acpSession;
+    final isAcp = acpSession != null;
+    final displayLabel = isAcp
+        ? 'ACP · ${acpSession.currentModelId ?? executableLabel}'
+        : executableLabel;
+
     return Scaffold(
       appBar: AppBar(
         title: Text('AI Session #${widget.sessionId}'),
+        actions: [
+          if (isAcp && acpSession.availableModels.length > 1)
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.model_training, size: 20),
+              tooltip: 'Select model',
+              onSelected: (modelId) {
+                setState(() {
+                  _acpSession = AcpSession(
+                    sessionId: acpSession.sessionId,
+                    availableModels: acpSession.availableModels,
+                    currentModelId: modelId,
+                    availableModes: acpSession.availableModes,
+                    currentModeId: acpSession.currentModeId,
+                  );
+                });
+              },
+              itemBuilder: (context) => acpSession.availableModels
+                  .map(
+                    (model) => PopupMenuItem<String>(
+                      value: model.modelId,
+                      child: Row(
+                        children: [
+                          if (model.modelId == acpSession.currentModelId)
+                            Icon(
+                              Icons.check,
+                              size: 16,
+                              color: theme.colorScheme.primary,
+                            )
+                          else
+                            const SizedBox(width: 16),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              model.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                  .toList(growable: false),
+            ),
+        ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(30),
           child: Padding(
@@ -175,7 +232,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
-                    '$executableLabel · $workingDirectory',
+                    '$displayLabel · $workingDirectory',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: theme.textTheme.bodySmall,
@@ -637,6 +694,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     }
 
     _runtimeStarted = true;
+    final useAcp = context.provider.capabilities.supportsAcp;
     try {
       await runtimeService.launch(
         AiRuntimeLaunchRequest(
@@ -646,7 +704,8 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           executableOverride: context.executableOverride,
           remoteWorkingDirectory: context.remoteWorkingDirectory,
           structuredOutput:
-              context.provider.capabilities.supportsStructuredOutput,
+              !useAcp && context.provider.capabilities.supportsStructuredOutput,
+          acpMode: useAcp,
         ),
       );
       if (mounted) {
@@ -655,6 +714,9 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
               ? _RuntimeAttachmentState.resumed
               : _RuntimeAttachmentState.attached;
         });
+      }
+      if (useAcp) {
+        await _initializeAcpClient(context);
       }
       await ref
           .read(aiRepositoryProvider)
@@ -667,6 +729,66 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       );
       await _enterDetachedMode(
         'Unable to launch runtime. Continue from transcript or reconnect.',
+      );
+    }
+  }
+
+  Future<void> _initializeAcpClient(_AiSessionRuntimeContext context) async {
+    final runtimeService = ref.read(aiRuntimeServiceProvider);
+    final process = runtimeService.getActiveProcess(widget.sessionId);
+    if (process == null) {
+      await _insertTimelineEntry(
+        role: 'error',
+        message: 'ACP process not available after launch.',
+      );
+      return;
+    }
+    final client = AcpClient(process: process);
+    _acpClient = client;
+    _acpEventSubscription = client.events.listen(
+      _handleAcpEvent,
+      onError: (Object error) {
+        unawaited(
+          _persistTimelineEntrySafely(
+            role: 'error',
+            message: 'ACP stream error: $error',
+          ),
+        );
+      },
+    );
+    try {
+      final initResult = await client.initialize();
+      final agentInfo = client.agentInfo;
+      await _insertTimelineEntry(
+        role: 'status',
+        message:
+            'ACP initialized: ${agentInfo?.title ?? agentInfo?.name ?? 'Agent'}'
+            '${agentInfo?.version != null ? ' v${agentInfo!.version}' : ''}',
+        metadata: <String, dynamic>{'acpInitialize': initResult},
+      );
+      final session = await client.createSession(
+        cwd: context.remoteWorkingDirectory,
+      );
+      _acpSession = session;
+      if (session.availableModels.isNotEmpty) {
+        await _insertTimelineEntry(
+          role: 'status',
+          message:
+              'Session created · model: ${session.currentModelId ?? 'default'} · '
+              '${session.availableModels.length} models available',
+          metadata: <String, dynamic>{
+            'acpSessionId': session.sessionId,
+            'currentModelId': session.currentModelId,
+            'availableModels': session.availableModels
+                .map((m) => m.modelId)
+                .toList(),
+          },
+        );
+      }
+    } on AcpClientException catch (error) {
+      await _insertTimelineEntry(
+        role: 'error',
+        message: 'ACP initialization failed: $error',
       );
     }
   }
@@ -687,14 +809,30 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       await _insertTimelineEntry(role: 'user', message: prompt);
       if (widget.autoStartRuntime &&
           _runtimeAttachmentState != _RuntimeAttachmentState.detached) {
-        if (context != null && context.provider == AiCliProvider.copilot) {
-          await _runCopilotPrompt(prompt: prompt, context: context);
-          return;
-        }
         await _startRuntimeIfNeeded(force: true);
         if (_runtimeAttachmentState == _RuntimeAttachmentState.detached) {
           return;
         }
+
+        // Use ACP protocol when available.
+        final acpClient = _acpClient;
+        final acpSession = _acpSession;
+        if (acpClient != null && acpSession != null) {
+          await _sendAcpPrompt(
+            client: acpClient,
+            sessionId: acpSession.sessionId,
+            prompt: prompt,
+          );
+          return;
+        }
+
+        // Legacy: copilot one-shot mode.
+        if (context != null && context.provider == AiCliProvider.copilot) {
+          await _runCopilotPrompt(prompt: prompt, context: context);
+          return;
+        }
+
+        // Legacy: raw stdin mode for non-ACP providers.
         await ref
             .read(aiRuntimeServiceProvider)
             .send(prompt, appendNewline: true, aiSessionId: widget.sessionId);
@@ -717,6 +855,86 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         });
       }
     }
+  }
+
+  Future<void> _sendAcpPrompt({
+    required AcpClient client,
+    required String sessionId,
+    required String prompt,
+  }) async {
+    try {
+      final result = await client.sendPrompt(
+        sessionId: sessionId,
+        text: prompt,
+      );
+      final stopReason = result['stopReason']?.toString();
+      if (stopReason != null && stopReason != 'end_turn') {
+        await _insertTimelineEntry(
+          role: 'status',
+          message: 'Turn ended: $stopReason',
+        );
+      }
+    } on AcpClientException catch (error) {
+      await _insertTimelineEntry(
+        role: 'error',
+        message: 'ACP prompt error: $error',
+      );
+    }
+  }
+
+  void _handleAcpEvent(AcpEvent event) {
+    final role = switch (event.type) {
+      AcpEventType.agentMessage => 'assistant',
+      AcpEventType.agentThought => 'thinking',
+      AcpEventType.toolCall => 'tool',
+      AcpEventType.toolCallUpdate => 'tool',
+      AcpEventType.unknown => 'status',
+    };
+    final metadata = <String, dynamic>{
+      'acpEventType': event.type.name,
+      if (event.toolCallId != null) 'toolCallId': event.toolCallId,
+      'payload': event.rawUpdate,
+    };
+
+    // Extract tool-specific metadata for rich rendering.
+    if (event.type == AcpEventType.toolCall) {
+      final update = event.rawUpdate;
+      final title = update['title']?.toString();
+      final kind = update['kind']?.toString();
+      if (title != null) {
+        metadata['toolName'] = title;
+      }
+      if (kind != null) {
+        metadata['toolKind'] = kind;
+      }
+      final rawInput = update['rawInput'];
+      if (rawInput != null) {
+        metadata['input'] = rawInput;
+      }
+      final locations = update['locations'];
+      if (locations is List<dynamic>) {
+        metadata['locations'] = locations;
+      }
+    }
+    if (event.type == AcpEventType.toolCallUpdate) {
+      final update = event.rawUpdate;
+      final status = update['status']?.toString();
+      if (status != null) {
+        metadata['toolStatus'] = status;
+      }
+      final rawOutput = update['rawOutput'];
+      if (rawOutput != null) {
+        metadata['output'] = rawOutput;
+      }
+    }
+
+    unawaited(
+      _persistTimelineEntrySafely(
+        role: role,
+        message: event.text,
+        metadata: metadata,
+      ),
+    );
   }
 
   Future<void> _runCopilotPrompt({

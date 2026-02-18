@@ -393,6 +393,32 @@ void main() {
         throwsA(isA<AiRuntimeServiceException>()),
       );
     });
+
+    test('getActiveProcess returns process for active sessions', () async {
+      final process = _FakeRuntimeProcess();
+      final shell = _FakeRuntimeShell(
+        processes: <_FakeRuntimeProcess>[process],
+      );
+      final service = AiRuntimeService(
+        shellResolver: _FakeRuntimeShellResolver(<int, AiRuntimeShell>{
+          50: shell,
+        }),
+      );
+      addTearDown(service.dispose);
+
+      expect(service.getActiveProcess(20), isNull);
+      await service.launch(
+        const AiRuntimeLaunchRequest(
+          aiSessionId: 20,
+          connectionId: 50,
+          provider: AiCliProvider.copilot,
+          remoteWorkingDirectory: '/repo',
+          acpMode: true,
+        ),
+      );
+      expect(service.getActiveProcess(20), isNotNull);
+      expect(service.getActiveProcess(99), isNull);
+    });
   });
 }
 

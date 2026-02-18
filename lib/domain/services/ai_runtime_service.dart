@@ -43,6 +43,7 @@ class AiRuntimeLaunchRequest {
     required this.remoteWorkingDirectory,
     this.executableOverride,
     this.structuredOutput = false,
+    this.acpMode = false,
     this.extraArguments = const <String>[],
   });
 
@@ -63,6 +64,9 @@ class AiRuntimeLaunchRequest {
 
   /// Whether to request structured provider output.
   final bool structuredOutput;
+
+  /// Whether to launch the provider in ACP mode.
+  final bool acpMode;
 
   /// Extra CLI arguments appended to the provider command.
   final List<String> extraArguments;
@@ -277,6 +281,10 @@ class AiRuntimeService {
       _activeProcesses.containsKey(aiSessionId) ||
       _launchingSessionIds.contains(aiSessionId);
 
+  /// Returns the active [AiRuntimeProcess] for [aiSessionId], or null.
+  AiRuntimeProcess? getActiveProcess(int aiSessionId) =>
+      _activeProcesses[aiSessionId];
+
   /// Launches a provider command on an existing SSH connection.
   Future<void> launch(AiRuntimeLaunchRequest request) async {
     _ensureNotDisposed();
@@ -301,6 +309,7 @@ class AiRuntimeService {
         remoteWorkingDirectory: request.remoteWorkingDirectory,
         executableOverride: request.executableOverride,
         structuredOutput: request.structuredOutput,
+        acpMode: request.acpMode,
         extraArguments: request.extraArguments,
       );
 
@@ -319,7 +328,11 @@ class AiRuntimeService {
       _activeLaunchRequests[aiSessionId] = request;
       _lastLaunchRequests[aiSessionId] = request;
       _cancelRequestedSessionIds.remove(aiSessionId);
-      _attachOutputStreams(process, request);
+      // Skip stdout/stderr stream attachment for ACP mode — the AcpClient
+      // handles all communication over the process streams directly.
+      if (!request.acpMode) {
+        _attachOutputStreams(process, request);
+      }
 
       _emitEvent(
         AiRuntimeEvent(

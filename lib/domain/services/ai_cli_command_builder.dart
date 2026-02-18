@@ -10,12 +10,14 @@ class AiCliCommandBuilder {
   ///
   /// The returned command is intended for remote shell execution over SSH.
   /// Set [structuredOutput] to include provider-specific structured output
-  /// arguments when supported.
+  /// arguments when supported. When [acpMode] is true, ACP-specific
+  /// arguments are added instead.
   String buildLaunchCommand({
     required AiCliProvider provider,
     required String remoteWorkingDirectory,
     String? executableOverride,
     bool structuredOutput = false,
+    bool acpMode = false,
     List<String> extraArguments = const <String>[],
   }) {
     final trimmedRemoteWorkingDirectory = remoteWorkingDirectory.trim();
@@ -28,7 +30,9 @@ class AiCliCommandBuilder {
     }
 
     final commandArguments = <String>[
-      if (structuredOutput) ..._structuredOutputArgumentsFor(provider),
+      if (acpMode) ...provider.capabilities.acpLaunchArguments,
+      if (structuredOutput && !acpMode)
+        ..._structuredOutputArgumentsFor(provider),
       ...extraArguments,
     ];
 
