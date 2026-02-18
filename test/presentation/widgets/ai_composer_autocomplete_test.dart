@@ -19,6 +19,21 @@ void main() {
       expect(suggestions.map((s) => s.label), <String>['/model']);
     });
 
+    test('shows slash command suggestions when only prefix is typed', () {
+      final suggestions = engine.suggestionsFor(
+        const TextEditingValue(
+          text: '/',
+          selection: TextSelection.collapsed(offset: 1),
+        ),
+      );
+
+      expect(suggestions.map((s) => s.label), <String>[
+        '/help',
+        '/clear',
+        '/model',
+      ]);
+    });
+
     test('filters remote file suggestions from active file token', () {
       final suggestions = engine.suggestionsFor(
         const TextEditingValue(

@@ -203,6 +203,40 @@ void main() {
       expect(find.byIcon(Icons.psychology_alt_outlined), findsOneWidget);
       expect(find.byIcon(Icons.error_outline), findsOneWidget);
     });
+
+    testWidgets('renders ANSI/control-heavy timeline output safely', (
+      tester,
+    ) async {
+      final entries = <AiTimelineEntry>[
+        AiTimelineEntry(
+          id: 1,
+          sessionId: 10,
+          role: 'error',
+          message:
+              '\u001B[31mRuntime failed\u001B[0m\r\n\u001B]8;;https://example.com\u0007link\u001B]8;;\u0007',
+          createdAt: DateTime(2024),
+        ),
+      ];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: Column(
+                children: entries
+                    .map((entry) => AiTimelineEntryTile(entry: entry))
+                    .toList(growable: false),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.textContaining('Runtime failed'), findsOneWidget);
+      expect(find.textContaining('\u001B[31m'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
   });
 
   group('AI session resume', () {
@@ -360,6 +394,62 @@ void main() {
   });
 
   group('AI chat composer autocomplete', () {
+    testWidgets('shows slash commands after runtime error timeline entries', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final workspaceId = await db
+          .into(db.aiWorkspaces)
+          .insert(
+            AiWorkspacesCompanion.insert(name: 'Workspace', path: '/workspace'),
+          );
+      final sessionId = await db
+          .into(db.aiSessions)
+          .insert(
+            AiSessionsCompanion.insert(
+              workspaceId: workspaceId,
+              title: 'Autocomplete after errors',
+            ),
+          );
+      await db
+          .into(db.aiTimelineEntries)
+          .insert(
+            AiTimelineEntriesCompanion.insert(
+              sessionId: sessionId,
+              role: 'error',
+              message: '\u001B[31mRuntime failed\u001B[0m',
+            ),
+          );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [databaseProvider.overrideWithValue(db)],
+          child: MaterialApp(
+            home: AiChatSessionScreen(
+              sessionId: sessionId,
+              connectionId: 9,
+              provider: AiCliProvider.claude,
+              remoteWorkingDirectory: '/workspace',
+              autoStartRuntime: false,
+              remoteFileSuggestionLoader: () async => const <String>[],
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('ai-chat-input')));
+      await tester.enterText(find.byKey(const Key('ai-chat-input')), '/');
+      await tester.pumpAndSettle();
+
+      expect(find.text('/model'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+    });
+
     testWidgets('shows provider slash commands and applies with keyboard', (
       tester,
     ) async {

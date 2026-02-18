@@ -118,7 +118,7 @@ class AiComposerAutocompleteEngine {
     final leftText = value.text.substring(0, cursor);
     final tokenStart = leftText.lastIndexOf(RegExp(r'[\s\n\t]')) + 1;
     final tokenText = leftText.substring(tokenStart);
-    if (tokenText.length < 2) {
+    if (tokenText.isEmpty) {
       return null;
     }
 
