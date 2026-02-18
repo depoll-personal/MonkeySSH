@@ -45,9 +45,9 @@ void main() {
       await process.finish(exitCode: 0);
       await completionEventFuture;
 
-      expect(shell.executedCommands, const <String>[
-        'cd \'/srv/project\' && codex',
-      ]);
+      expect(shell.executedCommands, hasLength(1));
+      expect(shell.executedCommands.first, startsWith('bash -lc '));
+      expect(shell.executedCommands.first, contains('codex'));
       expect(
         events.map((event) => event.type),
         containsAllInOrder(<AiRuntimeEventType>[

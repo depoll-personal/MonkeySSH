@@ -3,6 +3,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/ai_cli_provider.dart';
 import 'package:monkeyssh/domain/services/ai_cli_command_builder.dart';
+import 'package:monkeyssh/domain/services/shell_escape.dart';
 
 void main() {
   group('AiCliCommandBuilder', () {
@@ -24,7 +25,9 @@ void main() {
           provider: entry.key,
           remoteWorkingDirectory: remoteWorkingDirectory,
         );
-        expect(command, 'cd \'/srv/project\' && ${entry.value}');
+        final inner =
+            "cd ${shellEscape('/srv/project')} && exec ${entry.value}";
+        expect(command, 'bash -lc ${shellEscape(inner)}');
       }
     });
 
@@ -35,10 +38,10 @@ void main() {
         structuredOutput: true,
       );
 
-      expect(
-        command,
-        'cd \'/srv/project\' && claude \'--output-format\' \'json\'',
-      );
+      expect(command, startsWith('bash -lc '));
+      expect(command, contains('claude'));
+      expect(command, contains('--output-format'));
+      expect(command, contains('json'));
     });
 
     test('throws for structured output when provider does not support it', () {
@@ -52,17 +55,23 @@ void main() {
       );
     });
 
-    test('shell-escapes directory and arguments', () {
+    test('preserves tilde expansion in working directory', () {
       final command = builder.buildLaunchCommand(
-        provider: AiCliProvider.codex,
-        remoteWorkingDirectory: '/srv/it\'s-here',
-        extraArguments: const <String>['--message', 'ship it'],
+        provider: AiCliProvider.claude,
+        remoteWorkingDirectory: '~',
       );
 
-      expect(
-        command,
-        'cd \'/srv/it\'\\\'\'s-here\' && codex \'--message\' \'ship it\'',
+      expect(command, "bash -lc 'cd ~ && exec claude'");
+
+      final commandSubdir = builder.buildLaunchCommand(
+        provider: AiCliProvider.claude,
+        remoteWorkingDirectory: '~/projects/my-app',
       );
+
+      expect(commandSubdir, startsWith('bash -lc '));
+      expect(commandSubdir, contains('cd ~/'));
+      expect(commandSubdir, contains('projects/my-app'));
+      expect(commandSubdir, contains('claude'));
     });
 
     test('uses executable override for ACP-compatible clients', () {
@@ -73,10 +82,9 @@ void main() {
         extraArguments: const <String>['--workspace', '.'],
       );
 
-      expect(
-        command,
-        'cd \'/srv/project\' && my-acp-client --stdio \'--workspace\' \'.\'',
-      );
+      expect(command, startsWith('bash -lc '));
+      expect(command, contains('my-acp-client --stdio'));
+      expect(command, contains('--workspace'));
     });
 
     test('throws when remote working directory is empty', () {
@@ -96,10 +104,10 @@ void main() {
         acpMode: true,
       );
 
-      expect(
-        command,
-        'cd \'/srv/project\' && copilot \'--acp\' \'--allow-all-tools\'',
-      );
+      expect(command, startsWith('bash -lc '));
+      expect(command, contains('copilot'));
+      expect(command, contains('--acp'));
+      expect(command, contains('--allow-all-tools'));
     });
 
     test('acpMode suppresses structured output arguments', () {
@@ -110,10 +118,9 @@ void main() {
         structuredOutput: true,
       );
 
-      expect(
-        command,
-        'cd \'/srv/project\' && copilot \'--acp\' \'--allow-all-tools\'',
-      );
+      expect(command, startsWith('bash -lc '));
+      expect(command, contains('--acp'));
+      expect(command, isNot(contains('--output-format')));
     });
   });
 }

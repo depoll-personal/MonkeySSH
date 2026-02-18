@@ -42,7 +42,10 @@ class AiCliCommandBuilder {
       arguments: commandArguments,
     );
     final cdDirectory = _buildCdDirectory(trimmedRemoteWorkingDirectory);
-    return 'cd $cdDirectory && $executableCommand';
+    final innerCommand = 'cd $cdDirectory && exec $executableCommand';
+    // Wrap in a login shell so the user's PATH (from .profile / .bashrc)
+    // is available — SSH exec channels are non-interactive by default.
+    return 'bash -lc ${shellEscape(innerCommand)}';
   }
 
   /// Builds a shell-safe cd target that preserves tilde expansion.

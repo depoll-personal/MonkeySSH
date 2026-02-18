@@ -828,7 +828,9 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     } on AcpClientException catch (error) {
       await _insertTimelineEntry(
         role: 'error',
-        message: 'ACP initialization failed: $error',
+        message:
+            'ACP initialization failed: $error\n\n'
+            'Make sure the CLI is installed and in your PATH on the remote host.',
       );
     }
   }
@@ -1264,12 +1266,16 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       }
     }
 
+    // For ACP sessions, the AcpClient handles errors directly — downgrade
+    // redundant runtime error events (e.g., "exited with code 127") to status
+    // to avoid duplicate red-box error entries.
+    final isAcpSession = _acpClient != null;
     final role = switch (timelineEvent.type) {
       AiTimelineEventType.message => 'assistant',
       AiTimelineEventType.tool => 'tool',
       AiTimelineEventType.thinking => 'thinking',
       AiTimelineEventType.status => 'status',
-      AiTimelineEventType.error => 'error',
+      AiTimelineEventType.error => isAcpSession ? 'status' : 'error',
     };
 
     unawaited(

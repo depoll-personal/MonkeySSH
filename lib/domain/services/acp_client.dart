@@ -15,16 +15,22 @@ class AcpClient {
       onError: _onStreamError,
       onDone: _onStreamDone,
     );
+    _stderrSubscription = _process.stderr.listen(
+      _onStderrChunk,
+      onError: (_) {},
+    );
   }
 
   final AiRuntimeProcess _process;
   StreamSubscription<String>? _stdoutSubscription;
+  StreamSubscription<String>? _stderrSubscription;
   int _nextId = 1;
   final Map<int, Completer<Map<String, dynamic>>> _pendingRequests =
       <int, Completer<Map<String, dynamic>>>{};
   final StreamController<AcpEvent> _eventsController =
       StreamController<AcpEvent>.broadcast();
   String _stdoutBuffer = '';
+  final StringBuffer _stderrBuffer = StringBuffer();
   bool _disposed = false;
 
   /// Stream of ACP events (session updates, errors).
@@ -125,6 +131,8 @@ class AcpClient {
     _disposed = true;
     await _stdoutSubscription?.cancel();
     _stdoutSubscription = null;
+    await _stderrSubscription?.cancel();
+    _stderrSubscription = null;
 
     for (final completer in _pendingRequests.values) {
       if (!completer.isCompleted) {
@@ -337,12 +345,18 @@ class AcpClient {
     _pendingRequests.clear();
   }
 
+  void _onStderrChunk(String chunk) {
+    _stderrBuffer.write(chunk);
+  }
+
   void _onStreamDone() {
+    final stderrContent = _stderrBuffer.toString().trim();
+    final errorMessage = stderrContent.isNotEmpty
+        ? 'ACP process ended: $stderrContent'
+        : 'ACP process stdout stream closed.';
     for (final completer in _pendingRequests.values) {
       if (!completer.isCompleted) {
-        completer.completeError(
-          const AcpClientException('ACP process stdout stream closed.'),
-        );
+        completer.completeError(AcpClientException(errorMessage));
       }
     }
     _pendingRequests.clear();
