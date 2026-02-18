@@ -532,7 +532,8 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           slashCommands: context.provider.capabilities.composerSlashCommands,
         );
       });
-      if (widget.autoStartRuntime) {
+      if (widget.autoStartRuntime &&
+          context.provider.capabilities.autoStartRuntime) {
         await _startRuntimeIfNeeded();
       }
     } on Exception {
@@ -610,12 +611,15 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       ref.read(activeSessionsProvider.notifier).getSession(connectionId) !=
       null;
 
-  Future<void> _startRuntimeIfNeeded() async {
+  Future<void> _startRuntimeIfNeeded({bool force = false}) async {
     if (_runtimeStarted) {
       return;
     }
     final context = _sessionContext;
     if (context == null) {
+      return;
+    }
+    if (!force && !context.provider.capabilities.autoStartRuntime) {
       return;
     }
     final connectionId = context.connectionId;
@@ -672,6 +676,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     if (prompt.isEmpty || _sending) {
       return;
     }
+    final context = _sessionContext;
 
     _promptController.clear();
     setState(() {
@@ -682,7 +687,11 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       await _insertTimelineEntry(role: 'user', message: prompt);
       if (widget.autoStartRuntime &&
           _runtimeAttachmentState != _RuntimeAttachmentState.detached) {
-        await _startRuntimeIfNeeded();
+        if (context != null && context.provider == AiCliProvider.copilot) {
+          await _runCopilotPrompt(prompt: prompt, context: context);
+          return;
+        }
+        await _startRuntimeIfNeeded(force: true);
         if (_runtimeAttachmentState == _RuntimeAttachmentState.detached) {
           return;
         }
@@ -708,6 +717,52 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         });
       }
     }
+  }
+
+  Future<void> _runCopilotPrompt({
+    required String prompt,
+    required _AiSessionRuntimeContext context,
+  }) async {
+    final connectionId = context.connectionId;
+    if (connectionId == null || !_hasActiveConnection(connectionId)) {
+      await _enterDetachedMode(
+        'Runtime detached from previous session. Transcript restored; reconnect to continue live.',
+      );
+      return;
+    }
+    final runtimeService = ref.read(aiRuntimeServiceProvider);
+    if (runtimeService.hasActiveRunForSession(widget.sessionId)) {
+      await _insertTimelineEntry(
+        role: 'status',
+        message: 'Previous Copilot request is still running.',
+      );
+      return;
+    }
+    await runtimeService.launch(
+      AiRuntimeLaunchRequest(
+        aiSessionId: widget.sessionId,
+        connectionId: connectionId,
+        provider: context.provider,
+        executableOverride: context.executableOverride,
+        remoteWorkingDirectory: context.remoteWorkingDirectory,
+        structuredOutput:
+            context.provider.capabilities.supportsStructuredOutput,
+        extraArguments: <String>[
+          '-p',
+          prompt,
+          '--resume',
+          _copilotResumeSessionId(widget.sessionId),
+        ],
+      ),
+    );
+  }
+
+  String _copilotResumeSessionId(int aiSessionId) {
+    final hex = aiSessionId.toRadixString(16).toLowerCase();
+    final suffix = hex.length > 12
+        ? hex.substring(hex.length - 12)
+        : hex.padLeft(12, '0');
+    return '00000000-0000-4000-8000-$suffix';
   }
 
   Future<void> _insertTimelineEntry({

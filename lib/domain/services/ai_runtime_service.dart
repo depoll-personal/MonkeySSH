@@ -669,19 +669,8 @@ class AiRuntimeService {
     return _lastLaunchRequests.keys.first;
   }
 
-  bool _shouldRunInPty(AiRuntimeLaunchRequest request) {
-    if (request.provider.capabilities.requiresPty) {
-      return true;
-    }
-    if (request.provider != AiCliProvider.acp) {
-      return false;
-    }
-    final override = request.executableOverride?.trim().toLowerCase();
-    if (override == null || override.isEmpty) {
-      return false;
-    }
-    return override.startsWith('copilot') || override.startsWith('gh copilot');
-  }
+  bool _shouldRunInPty(AiRuntimeLaunchRequest request) =>
+      request.provider.capabilities.requiresPty;
 }
 
 class _AiRuntimeCompletion {

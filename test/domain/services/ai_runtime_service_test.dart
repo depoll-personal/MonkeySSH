@@ -74,7 +74,7 @@ void main() {
       expect(errors, isEmpty);
     });
 
-    test('launch allocates a PTY for copilot runtimes', () async {
+    test('launch runs copilot without forcing PTY mode', () async {
       final process = _FakeRuntimeProcess();
       final shell = _FakeRuntimeShell(
         processes: <_FakeRuntimeProcess>[process],
@@ -95,10 +95,10 @@ void main() {
         ),
       );
 
-      expect(shell.executedRunInPty, const <bool>[true]);
+      expect(shell.executedRunInPty, const <bool>[false]);
     });
 
-    test('launch allocates a PTY for ACP copilot command overrides', () async {
+    test('launch runs ACP overrides without forcing PTY mode', () async {
       final process = _FakeRuntimeProcess();
       final shell = _FakeRuntimeShell(
         processes: <_FakeRuntimeProcess>[process],
@@ -120,7 +120,7 @@ void main() {
         ),
       );
 
-      expect(shell.executedRunInPty, const <bool>[true]);
+      expect(shell.executedRunInPty, const <bool>[false]);
     });
 
     test('send writes to stdin and throws when runtime is inactive', () async {
