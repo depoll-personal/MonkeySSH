@@ -246,30 +246,41 @@ class AiRuntimeService {
   final StreamController<AiRuntimeEvent> _eventsController =
       StreamController<AiRuntimeEvent>.broadcast();
 
-  AiRuntimeProcess? _activeProcess;
-  AiRuntimeLaunchRequest? _activeLaunchRequest;
-  AiRuntimeLaunchRequest? _lastLaunchRequest;
-  StreamSubscription<String>? _stdoutSubscription;
-  StreamSubscription<String>? _stderrSubscription;
-  bool _cancelRequested = false;
-  bool _isLaunching = false;
+  final Map<int, AiRuntimeProcess> _activeProcesses = <int, AiRuntimeProcess>{};
+  final Map<int, AiRuntimeLaunchRequest> _activeLaunchRequests =
+      <int, AiRuntimeLaunchRequest>{};
+  final Map<int, AiRuntimeLaunchRequest> _lastLaunchRequests =
+      <int, AiRuntimeLaunchRequest>{};
+  final Map<int, StreamSubscription<String>> _stdoutSubscriptions =
+      <int, StreamSubscription<String>>{};
+  final Map<int, StreamSubscription<String>> _stderrSubscriptions =
+      <int, StreamSubscription<String>>{};
+  final Set<int> _cancelRequestedSessionIds = <int>{};
+  final Set<int> _launchingSessionIds = <int>{};
   bool _disposed = false;
 
   /// Runtime events stream.
   Stream<AiRuntimeEvent> get events => _eventsController.stream;
 
   /// Whether a provider command is currently active.
-  bool get hasActiveRun => _activeProcess != null || _isLaunching;
+  bool get hasActiveRun =>
+      _activeProcesses.isNotEmpty || _launchingSessionIds.isNotEmpty;
+
+  /// Whether the provided [aiSessionId] currently has an active runtime.
+  bool hasActiveRunForSession(int aiSessionId) =>
+      _activeProcesses.containsKey(aiSessionId) ||
+      _launchingSessionIds.contains(aiSessionId);
 
   /// Launches a provider command on an existing SSH connection.
   Future<void> launch(AiRuntimeLaunchRequest request) async {
     _ensureNotDisposed();
-    if (_activeProcess != null || _isLaunching) {
-      throw const AiRuntimeServiceException(
-        'A runtime command is already active.',
+    final aiSessionId = request.aiSessionId;
+    if (hasActiveRunForSession(aiSessionId)) {
+      throw AiRuntimeServiceException(
+        'A runtime command is already active for session $aiSessionId.',
       );
     }
-    _isLaunching = true;
+    _launchingSessionIds.add(aiSessionId);
 
     try {
       final shell = _shellResolver.resolve(request.connectionId);
@@ -295,10 +306,10 @@ class AiRuntimeService {
         );
       }
 
-      _activeProcess = process;
-      _activeLaunchRequest = request;
-      _lastLaunchRequest = request;
-      _cancelRequested = false;
+      _activeProcesses[aiSessionId] = process;
+      _activeLaunchRequests[aiSessionId] = request;
+      _lastLaunchRequests[aiSessionId] = request;
+      _cancelRequestedSessionIds.remove(aiSessionId);
       _attachOutputStreams(process, request);
 
       _emitEvent(
@@ -310,7 +321,7 @@ class AiRuntimeService {
         ),
       );
 
-      unawaited(_watchCompletion(process));
+      unawaited(_watchCompletion(aiSessionId, process));
     } on AiRuntimeServiceException {
       rethrow;
     } on Exception catch (exception, stackTrace) {
@@ -320,18 +331,26 @@ class AiRuntimeService {
         stackTrace: stackTrace,
       );
     } finally {
-      _isLaunching = false;
+      _launchingSessionIds.remove(aiSessionId);
     }
   }
 
   /// Sends incremental stdin content to the active runtime command.
-  Future<void> send(String input, {bool appendNewline = false}) async {
+  Future<void> send(
+    String input, {
+    bool appendNewline = false,
+    int? aiSessionId,
+  }) async {
     _ensureNotDisposed();
-    final process = _activeProcess;
-    final request = _activeLaunchRequest;
+    final sessionId = _resolveTargetSessionId(
+      aiSessionId: aiSessionId,
+      operation: 'send input',
+    );
+    final process = _activeProcesses[sessionId];
+    final request = _activeLaunchRequests[sessionId];
     if (process == null || request == null) {
-      throw const AiRuntimeServiceException(
-        'Cannot send input because no runtime command is active.',
+      throw AiRuntimeServiceException(
+        'Cannot send input because no runtime command is active for session $sessionId.',
       );
     }
 
@@ -349,17 +368,21 @@ class AiRuntimeService {
   }
 
   /// Cancels the active runtime command.
-  Future<void> cancel() async {
+  Future<void> cancel({int? aiSessionId}) async {
     _ensureNotDisposed();
-    final process = _activeProcess;
-    final request = _activeLaunchRequest;
+    final sessionId = _resolveTargetSessionId(
+      aiSessionId: aiSessionId,
+      operation: 'cancel runtime',
+    );
+    final process = _activeProcesses[sessionId];
+    final request = _activeLaunchRequests[sessionId];
     if (process == null || request == null) {
-      throw const AiRuntimeServiceException(
-        'Cannot cancel because no runtime command is active.',
+      throw AiRuntimeServiceException(
+        'Cannot cancel because no runtime command is active for session $sessionId.',
       );
     }
 
-    _cancelRequested = true;
+    _cancelRequestedSessionIds.add(sessionId);
     try {
       await process.terminate();
     } on Exception catch (exception, stackTrace) {
@@ -371,7 +394,7 @@ class AiRuntimeService {
       );
     }
 
-    final completion = await _cleanupActiveProcess(process);
+    final completion = await _cleanupActiveProcess(sessionId, process);
     if (completion == null) {
       return;
     }
@@ -387,17 +410,18 @@ class AiRuntimeService {
   }
 
   /// Retries the last launched command.
-  Future<void> retry() async {
+  Future<void> retry({int? aiSessionId}) async {
     _ensureNotDisposed();
-    final previousRequest = _lastLaunchRequest;
+    final sessionId = _resolveRetrySessionId(aiSessionId);
+    final previousRequest = _lastLaunchRequests[sessionId];
     if (previousRequest == null) {
-      throw const AiRuntimeServiceException(
-        'Cannot retry because no previous runtime launch exists.',
+      throw AiRuntimeServiceException(
+        'Cannot retry because no previous runtime launch exists for session $sessionId.',
       );
     }
-    if (_activeProcess != null || _isLaunching) {
-      throw const AiRuntimeServiceException(
-        'Cannot retry while another runtime command is active.',
+    if (hasActiveRunForSession(sessionId)) {
+      throw AiRuntimeServiceException(
+        'Cannot retry while another runtime command is active for session $sessionId.',
       );
     }
 
@@ -419,14 +443,15 @@ class AiRuntimeService {
     }
     _disposed = true;
 
-    final activeProcess = _activeProcess;
-    if (activeProcess != null) {
+    for (final entry in _activeProcesses.entries.toList(growable: false)) {
+      final sessionId = entry.key;
+      final activeProcess = entry.value;
       try {
         await activeProcess.terminate();
       } on Exception {
         // Continue cleanup regardless of terminate support/failure.
       }
-      await _cleanupActiveProcess(activeProcess);
+      await _cleanupActiveProcess(sessionId, activeProcess);
     }
 
     await _eventsController.close();
@@ -436,7 +461,8 @@ class AiRuntimeService {
     AiRuntimeProcess process,
     AiRuntimeLaunchRequest request,
   ) {
-    _stdoutSubscription = process.stdout.listen(
+    final aiSessionId = request.aiSessionId;
+    _stdoutSubscriptions[aiSessionId] = process.stdout.listen(
       (chunk) {
         _emitEvent(
           AiRuntimeEvent(
@@ -453,7 +479,7 @@ class AiRuntimeService {
       },
     );
 
-    _stderrSubscription = process.stderr.listen(
+    _stderrSubscriptions[aiSessionId] = process.stderr.listen(
       (chunk) {
         _emitEvent(
           AiRuntimeEvent(
@@ -471,21 +497,25 @@ class AiRuntimeService {
     );
   }
 
-  Future<void> _watchCompletion(AiRuntimeProcess process) async {
+  Future<void> _watchCompletion(
+    int aiSessionId,
+    AiRuntimeProcess process,
+  ) async {
     try {
       await process.done;
     } on Exception catch (exception, stackTrace) {
-      final request = _activeLaunchRequest;
-      if (request != null && identical(_activeProcess, process)) {
+      final request = _activeLaunchRequests[aiSessionId];
+      if (request != null &&
+          identical(_activeProcesses[aiSessionId], process)) {
         _emitErrorEvent(request, exception, stackTrace);
       }
     }
 
-    if (!identical(_activeProcess, process)) {
+    if (!identical(_activeProcesses[aiSessionId], process)) {
       return;
     }
 
-    final completion = await _cleanupActiveProcess(process);
+    final completion = await _cleanupActiveProcess(aiSessionId, process);
     if (completion == null) {
       return;
     }
@@ -525,13 +555,14 @@ class AiRuntimeService {
   }
 
   Future<_AiRuntimeCompletion?> _cleanupActiveProcess(
+    int aiSessionId,
     AiRuntimeProcess process,
   ) async {
-    if (!identical(_activeProcess, process)) {
+    if (!identical(_activeProcesses[aiSessionId], process)) {
       return null;
     }
 
-    final request = _activeLaunchRequest;
+    final request = _activeLaunchRequests[aiSessionId];
     if (request == null) {
       return null;
     }
@@ -539,18 +570,16 @@ class AiRuntimeService {
     final completion = _AiRuntimeCompletion(
       request: request,
       exitCode: process.exitCode,
-      wasCancelled: _cancelRequested,
+      wasCancelled: _cancelRequestedSessionIds.contains(aiSessionId),
     );
 
-    await _stdoutSubscription?.cancel();
-    await _stderrSubscription?.cancel();
+    await _stdoutSubscriptions.remove(aiSessionId)?.cancel();
+    await _stderrSubscriptions.remove(aiSessionId)?.cancel();
     await process.close();
 
-    _stdoutSubscription = null;
-    _stderrSubscription = null;
-    _activeProcess = null;
-    _activeLaunchRequest = null;
-    _cancelRequested = false;
+    _activeProcesses.remove(aiSessionId);
+    _activeLaunchRequests.remove(aiSessionId);
+    _cancelRequestedSessionIds.remove(aiSessionId);
 
     return completion;
   }
@@ -592,6 +621,43 @@ class AiRuntimeService {
         'AiRuntimeService is already disposed.',
       );
     }
+  }
+
+  int _resolveTargetSessionId({
+    required int? aiSessionId,
+    required String operation,
+  }) {
+    if (aiSessionId != null) {
+      return aiSessionId;
+    }
+    if (_activeLaunchRequests.isEmpty) {
+      throw const AiRuntimeServiceException(
+        'Cannot complete operation because no runtime command is active.',
+      );
+    }
+    if (_activeLaunchRequests.length > 1) {
+      throw AiRuntimeServiceException(
+        'Specify aiSessionId to $operation when multiple runtime commands are active.',
+      );
+    }
+    return _activeLaunchRequests.keys.first;
+  }
+
+  int _resolveRetrySessionId(int? aiSessionId) {
+    if (aiSessionId != null) {
+      return aiSessionId;
+    }
+    if (_lastLaunchRequests.isEmpty) {
+      throw const AiRuntimeServiceException(
+        'Cannot retry because no previous runtime launch exists.',
+      );
+    }
+    if (_lastLaunchRequests.length > 1) {
+      throw const AiRuntimeServiceException(
+        'Specify aiSessionId to retry when multiple launch histories exist.',
+      );
+    }
+    return _lastLaunchRequests.keys.first;
   }
 }
 

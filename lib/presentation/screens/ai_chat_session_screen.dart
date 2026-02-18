@@ -625,8 +625,13 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       return;
     }
 
-    _runtimeStarted = true;
     final runtimeService = ref.read(aiRuntimeServiceProvider);
+    if (runtimeService.hasActiveRunForSession(widget.sessionId)) {
+      _runtimeStarted = true;
+      return;
+    }
+
+    _runtimeStarted = true;
     try {
       await runtimeService.launch(
         AiRuntimeLaunchRequest(
@@ -682,7 +687,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         }
         await ref
             .read(aiRuntimeServiceProvider)
-            .send(prompt, appendNewline: true);
+            .send(prompt, appendNewline: true, aiSessionId: widget.sessionId);
       } else {
         await _insertTimelineEntry(
           role: 'status',

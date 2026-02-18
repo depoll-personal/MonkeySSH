@@ -172,6 +172,49 @@ void main() {
       expect(shell.executedCommands.first, shell.executedCommands.last);
     });
 
+    test('supports multiple active sessions concurrently', () async {
+      final firstProcess = _FakeRuntimeProcess();
+      final secondProcess = _FakeRuntimeProcess();
+      final shell = _FakeRuntimeShell(
+        processes: <_FakeRuntimeProcess>[firstProcess, secondProcess],
+      );
+      final service = AiRuntimeService(
+        shellResolver: _FakeRuntimeShellResolver(<int, AiRuntimeShell>{
+          55: shell,
+        }),
+      );
+      addTearDown(service.dispose);
+
+      await service.launch(
+        const AiRuntimeLaunchRequest(
+          aiSessionId: 101,
+          connectionId: 55,
+          provider: AiCliProvider.codex,
+          remoteWorkingDirectory: '/repo-one',
+        ),
+      );
+      await service.launch(
+        const AiRuntimeLaunchRequest(
+          aiSessionId: 202,
+          connectionId: 55,
+          provider: AiCliProvider.claude,
+          remoteWorkingDirectory: '/repo-two',
+        ),
+      );
+
+      await service.send('first', appendNewline: true, aiSessionId: 101);
+      await service.send('second', appendNewline: true, aiSessionId: 202);
+      expect(firstProcess.writes, const <String>['first\n']);
+      expect(secondProcess.writes, const <String>['second\n']);
+      await expectLater(
+        () => service.send('ambiguous', appendNewline: true),
+        throwsA(isA<AiRuntimeServiceException>()),
+      );
+
+      await firstProcess.finish(exitCode: 0);
+      await secondProcess.finish(exitCode: 0);
+    });
+
     test(
       'non-zero exit publishes error events without stream errors',
       () async {

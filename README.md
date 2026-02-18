@@ -86,6 +86,7 @@ flutter build linux
 3. For **ACP** provider, choose a known client preset or select **Custom command** and enter your own remote client command (for example, `my-acp-client --stdio`).
 4. Start a session to launch the provider over the active SSH connection.
 5. Resume recent sessions from history; reconnect runtime when marked **Detached**.
+6. Run multiple AI sessions concurrently; each session keeps its own runtime stream.
 
 Supported providers: `claude`, `codex`, `opencode`, `copilot`, `gemini`, and **ACP** (custom command for ACP-compatible clients).
 
