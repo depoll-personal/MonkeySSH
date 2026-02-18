@@ -136,7 +136,7 @@ abstract interface class AiRuntimeShellResolver {
 /// Shell abstraction used to launch provider commands.
 abstract interface class AiRuntimeShell {
   /// Executes [command] on the remote host.
-  Future<AiRuntimeProcess> execute(String command);
+  Future<AiRuntimeProcess> execute(String command, {bool runInPty = false});
 }
 
 /// Running process abstraction for streaming and control.
@@ -188,8 +188,14 @@ class SshAiRuntimeShell implements AiRuntimeShell {
   final SshSession _session;
 
   @override
-  Future<AiRuntimeProcess> execute(String command) async {
-    final sshSession = await _session.execute(command);
+  Future<AiRuntimeProcess> execute(
+    String command, {
+    bool runInPty = false,
+  }) async {
+    final sshSession = await _session.execute(
+      command,
+      pty: runInPty ? const SSHPtyConfig() : null,
+    );
     return SshAiRuntimeProcess(sshSession);
   }
 }
@@ -298,7 +304,10 @@ class AiRuntimeService {
         extraArguments: request.extraArguments,
       );
 
-      final process = await shell.execute(command);
+      final process = await shell.execute(
+        command,
+        runInPty: _shouldRunInPty(request),
+      );
       if (_disposed) {
         await _cleanupDetachedProcess(process);
         throw const AiRuntimeServiceException(
@@ -658,6 +667,20 @@ class AiRuntimeService {
       );
     }
     return _lastLaunchRequests.keys.first;
+  }
+
+  bool _shouldRunInPty(AiRuntimeLaunchRequest request) {
+    if (request.provider.capabilities.requiresPty) {
+      return true;
+    }
+    if (request.provider != AiCliProvider.acp) {
+      return false;
+    }
+    final override = request.executableOverride?.trim().toLowerCase();
+    if (override == null || override.isEmpty) {
+      return false;
+    }
+    return override.startsWith('copilot') || override.startsWith('gh copilot');
   }
 }
 

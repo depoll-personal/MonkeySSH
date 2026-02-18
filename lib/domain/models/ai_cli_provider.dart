@@ -26,6 +26,7 @@ class AiCliProviderCapabilities {
     required this.supportsStructuredOutput,
     this.structuredOutputArguments = const <String>[],
     this.composerSlashCommands = const <String>[],
+    this.requiresPty = false,
   });
 
   /// Whether the provider supports structured machine-readable output.
@@ -36,6 +37,9 @@ class AiCliProviderCapabilities {
 
   /// Slash commands supported by the provider's interactive composer.
   final List<String> composerSlashCommands;
+
+  /// Whether the runtime must allocate a PTY when launching this provider.
+  final bool requiresPty;
 }
 
 /// Extension that exposes command and capability metadata.
@@ -83,6 +87,7 @@ const _opencodeCapabilities = AiCliProviderCapabilities(
 const _copilotCapabilities = AiCliProviderCapabilities(
   supportsStructuredOutput: false,
   composerSlashCommands: <String>['/help', '/clear'],
+  requiresPty: true,
 );
 const _geminiCapabilities = AiCliProviderCapabilities(
   supportsStructuredOutput: true,

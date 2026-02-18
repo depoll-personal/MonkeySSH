@@ -74,6 +74,55 @@ void main() {
       expect(errors, isEmpty);
     });
 
+    test('launch allocates a PTY for copilot runtimes', () async {
+      final process = _FakeRuntimeProcess();
+      final shell = _FakeRuntimeShell(
+        processes: <_FakeRuntimeProcess>[process],
+      );
+      final service = AiRuntimeService(
+        shellResolver: _FakeRuntimeShellResolver(<int, AiRuntimeShell>{
+          88: shell,
+        }),
+      );
+      addTearDown(service.dispose);
+
+      await service.launch(
+        const AiRuntimeLaunchRequest(
+          aiSessionId: 12,
+          connectionId: 88,
+          provider: AiCliProvider.copilot,
+          remoteWorkingDirectory: '/repo',
+        ),
+      );
+
+      expect(shell.executedRunInPty, const <bool>[true]);
+    });
+
+    test('launch allocates a PTY for ACP copilot command overrides', () async {
+      final process = _FakeRuntimeProcess();
+      final shell = _FakeRuntimeShell(
+        processes: <_FakeRuntimeProcess>[process],
+      );
+      final service = AiRuntimeService(
+        shellResolver: _FakeRuntimeShellResolver(<int, AiRuntimeShell>{
+          89: shell,
+        }),
+      );
+      addTearDown(service.dispose);
+
+      await service.launch(
+        const AiRuntimeLaunchRequest(
+          aiSessionId: 13,
+          connectionId: 89,
+          provider: AiCliProvider.acp,
+          executableOverride: 'copilot --acp',
+          remoteWorkingDirectory: '/repo',
+        ),
+      );
+
+      expect(shell.executedRunInPty, const <bool>[true]);
+    });
+
     test('send writes to stdin and throws when runtime is inactive', () async {
       final process = _FakeRuntimeProcess();
       final shell = _FakeRuntimeShell(
@@ -363,10 +412,15 @@ class _FakeRuntimeShell implements AiRuntimeShell {
 
   final List<_FakeRuntimeProcess> _processes;
   final List<String> executedCommands = <String>[];
+  final List<bool> executedRunInPty = <bool>[];
 
   @override
-  Future<AiRuntimeProcess> execute(String command) async {
+  Future<AiRuntimeProcess> execute(
+    String command, {
+    bool runInPty = false,
+  }) async {
     executedCommands.add(command);
+    executedRunInPty.add(runInPty);
     if (_processes.isEmpty) {
       throw Exception('No fake process available');
     }
@@ -381,7 +435,10 @@ class _BlockingRuntimeShell implements AiRuntimeShell {
   final _FakeRuntimeProcess _process;
 
   @override
-  Future<AiRuntimeProcess> execute(String command) async {
+  Future<AiRuntimeProcess> execute(
+    String command, {
+    bool runInPty = false,
+  }) async {
     await _gate.future;
     return _process;
   }
