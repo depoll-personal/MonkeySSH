@@ -1138,11 +1138,29 @@ class _EntryRoleBadge extends StatelessWidget {
 class _TimelineMarkdownBody extends StatelessWidget {
   const _TimelineMarkdownBody({required this.data, required this.textColor});
 
+  static final RegExp _ansiEscapePattern = RegExp(
+    '\u001B\\[[0-9;?]*[ -/]*[@-~]',
+  );
+  static final RegExp _oscEscapePattern = RegExp(
+    '\u001B\\][^\\u0007]*(\\u0007|\u001B\\\\)',
+  );
+  static final RegExp _unsafeControlPattern = RegExp(
+    r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]',
+  );
+
   final String data;
   final Color textColor;
 
   @override
   Widget build(BuildContext context) {
+    final sanitizedData = _sanitizeMarkdownInput(data);
+    final fallbackTextStyle = Theme.of(
+      context,
+    ).textTheme.bodyMedium?.copyWith(color: textColor);
+    if (sanitizedData.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
     final styleSheet = MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
       p: Theme.of(context).textTheme.bodyMedium?.copyWith(color: textColor),
       code: Theme.of(context).textTheme.bodyMedium?.copyWith(
@@ -1153,8 +1171,16 @@ class _TimelineMarkdownBody extends StatelessWidget {
         context,
       ).textTheme.bodyMedium?.copyWith(color: textColor.withAlpha(220)),
     );
-    return MarkdownBody(data: data, styleSheet: styleSheet);
+    if (_unsafeControlPattern.hasMatch(sanitizedData)) {
+      return SelectableText(sanitizedData, style: fallbackTextStyle);
+    }
+    return MarkdownBody(data: sanitizedData, styleSheet: styleSheet);
   }
+
+  String _sanitizeMarkdownInput(String value) => value
+      .replaceAll(_ansiEscapePattern, '')
+      .replaceAll(_oscEscapePattern, '')
+      .replaceAll(_unsafeControlPattern, '');
 }
 
 class _TimelineMetadataSection extends StatelessWidget {
@@ -1257,7 +1283,8 @@ abstract final class _AiTimelineEntryFormatting {
       return '';
     }
     const encoder = JsonEncoder.withIndent('  ');
-    return '```json\n${encoder.convert(payload)}\n```';
+    final encodedPayload = encoder.convert(_jsonSafeValue(payload));
+    return '```json\n$encodedPayload\n```';
   }
 
   static Map<String, dynamic> _payloadMap(Map<String, dynamic> metadata) {
@@ -1292,15 +1319,28 @@ abstract final class _AiTimelineEntryFormatting {
       return value.toString();
     }
     if (value is Map<String, dynamic>) {
-      return jsonEncode(value);
+      return jsonEncode(_jsonSafeValue(value));
     }
     if (value is Map<Object?, Object?>) {
-      return jsonEncode(
-        value.map((key, mapValue) => MapEntry(key.toString(), mapValue)),
-      );
+      return jsonEncode(_jsonSafeValue(value));
     }
     if (value is List<Object?>) {
-      return jsonEncode(value);
+      return jsonEncode(_jsonSafeValue(value));
+    }
+    return value.toString();
+  }
+
+  static Object? _jsonSafeValue(Object? value) {
+    if (value == null || value is String || value is num || value is bool) {
+      return value;
+    }
+    if (value is Map<Object?, Object?>) {
+      return value.map(
+        (key, mapValue) => MapEntry(key.toString(), _jsonSafeValue(mapValue)),
+      );
+    }
+    if (value is Iterable<Object?>) {
+      return value.map(_jsonSafeValue).toList(growable: false);
     }
     return value.toString();
   }

@@ -165,7 +165,7 @@ void main() {
           id: 6,
           sessionId: 9,
           role: 'error',
-          message: 'Command failed with `exit 1`.',
+          message: '\u001B[31mCommand failed\u001B[0m with `exit 1`.',
           metadata: '{"code":1}',
           createdAt: DateTime(2024),
         ),
@@ -192,6 +192,7 @@ void main() {
       expect(find.textContaining('Running'), findsOneWidget);
       expect(find.textContaining('Planning response'), findsOneWidget);
       expect(find.textContaining('Command failed'), findsOneWidget);
+      expect(find.textContaining('\u001B[31m'), findsNothing);
       expect(find.text('Prompt'), findsOneWidget);
       expect(find.text('Assistant'), findsOneWidget);
       expect(find.text('Subagent call'), findsOneWidget);
