@@ -237,6 +237,39 @@ void main() {
       expect(find.textContaining('\u001B[31m'), findsNothing);
       expect(tester.takeException(), isNull);
     });
+
+    testWidgets('sanitizes status entries with terminal control sequences', (
+      tester,
+    ) async {
+      final entries = <AiTimelineEntry>[
+        AiTimelineEntry(
+          id: 1,
+          sessionId: 11,
+          role: 'status',
+          message: '\u001B[32mRuntime started\u001B[0m\u0007',
+          createdAt: DateTime(2024),
+        ),
+      ];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: Column(
+                children: entries
+                    .map((entry) => AiTimelineEntryTile(entry: entry))
+                    .toList(growable: false),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.textContaining('Runtime started'), findsOneWidget);
+      expect(find.textContaining('\u001B[32m'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
   });
 
   group('AI session resume', () {

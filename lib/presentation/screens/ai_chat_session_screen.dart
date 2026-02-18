@@ -721,6 +721,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       ...?metadata,
       'runtimeState': _runtimeAttachmentState.name,
     };
+    final encodedMetadata = _encodeTimelineMetadata(metadataPayload);
     await ref
         .read(aiRepositoryProvider)
         .insertTimelineEntry(
@@ -728,12 +729,52 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
             sessionId: widget.sessionId,
             role: role,
             message: message,
-            metadata: drift.Value(
-              metadataPayload.isEmpty ? null : jsonEncode(metadataPayload),
-            ),
+            metadata: drift.Value(encodedMetadata),
           ),
         );
     _scrollToBottom();
+  }
+
+  String? _encodeTimelineMetadata(Map<String, dynamic> metadataPayload) {
+    if (metadataPayload.isEmpty) {
+      return null;
+    }
+    return jsonEncode(_jsonSafeMetadataValue(metadataPayload));
+  }
+
+  Object? _jsonSafeMetadataValue(Object? value) {
+    if (value == null || value is String || value is bool) {
+      return value;
+    }
+    if (value is num) {
+      return value.isFinite ? value : value.toString();
+    }
+    if (value is Map<Object?, Object?>) {
+      return value.map(
+        (key, mapValue) =>
+            MapEntry(key.toString(), _jsonSafeMetadataValue(mapValue)),
+      );
+    }
+    if (value is Iterable<Object?>) {
+      return value.map(_jsonSafeMetadataValue).toList(growable: false);
+    }
+    return value.toString();
+  }
+
+  Future<void> _persistTimelineEntrySafely({
+    required String role,
+    required String message,
+    Map<String, dynamic>? metadata,
+  }) async {
+    try {
+      await _insertTimelineEntry(
+        role: role,
+        message: message,
+        metadata: metadata,
+      );
+    } on Exception catch (exception) {
+      _showSnackBar('Unable to persist runtime update: $exception');
+    }
   }
 
   Map<String, dynamic> _sessionMetadata() {
@@ -842,7 +883,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     };
 
     unawaited(
-      _insertTimelineEntry(
+      _persistTimelineEntrySafely(
         role: role,
         message: timelineEvent.message,
         metadata: <String, dynamic>{
@@ -855,7 +896,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
 
   void _handleRuntimeTimelineStreamError(Object error, StackTrace stackTrace) {
     unawaited(
-      _insertTimelineEntry(
+      _persistTimelineEntrySafely(
         role: 'error',
         message: 'Runtime stream error: $error',
         metadata: <String, dynamic>{'stackTrace': stackTrace.toString()},
@@ -977,20 +1018,26 @@ class _StatusTimelineEntry extends StatelessWidget {
   final AiTimelineEntry entry;
 
   @override
-  Widget build(BuildContext context) => Center(
-    child: Container(
-      margin: const EdgeInsets.symmetric(vertical: 6),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(999),
+  Widget build(BuildContext context) {
+    final sanitizedMessage = _TimelineMarkdownBody.sanitizeText(entry.message);
+    if (sanitizedMessage.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return Center(
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Text(
+          sanitizedMessage,
+          style: Theme.of(context).textTheme.labelMedium,
+        ),
       ),
-      child: Text(
-        entry.message,
-        style: Theme.of(context).textTheme.labelMedium,
-      ),
-    ),
-  );
+    );
+  }
 }
 
 class _SystemTimelineEntry extends StatelessWidget {
@@ -1151,9 +1198,14 @@ class _TimelineMarkdownBody extends StatelessWidget {
   final String data;
   final Color textColor;
 
+  static String sanitizeText(String value) => value
+      .replaceAll(_ansiEscapePattern, '')
+      .replaceAll(_oscEscapePattern, '')
+      .replaceAll(_unsafeControlPattern, '');
+
   @override
   Widget build(BuildContext context) {
-    final sanitizedData = _sanitizeMarkdownInput(data);
+    final sanitizedData = sanitizeText(data);
     final fallbackTextStyle = Theme.of(
       context,
     ).textTheme.bodyMedium?.copyWith(color: textColor);
@@ -1171,16 +1223,16 @@ class _TimelineMarkdownBody extends StatelessWidget {
         context,
       ).textTheme.bodyMedium?.copyWith(color: textColor.withAlpha(220)),
     );
-    if (_unsafeControlPattern.hasMatch(sanitizedData)) {
+    final hasTerminalFormattingArtifacts =
+        _ansiEscapePattern.hasMatch(data) ||
+        _oscEscapePattern.hasMatch(data) ||
+        _unsafeControlPattern.hasMatch(data) ||
+        data.contains('\r');
+    if (hasTerminalFormattingArtifacts) {
       return SelectableText(sanitizedData, style: fallbackTextStyle);
     }
     return MarkdownBody(data: sanitizedData, styleSheet: styleSheet);
   }
-
-  String _sanitizeMarkdownInput(String value) => value
-      .replaceAll(_ansiEscapePattern, '')
-      .replaceAll(_oscEscapePattern, '')
-      .replaceAll(_unsafeControlPattern, '');
 }
 
 class _TimelineMetadataSection extends StatelessWidget {
