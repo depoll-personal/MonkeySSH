@@ -90,7 +90,7 @@ const _geminiCapabilities = AiCliProviderCapabilities(
   composerSlashCommands: <String>['/help', '/clear', '/model'],
 );
 const _acpCapabilities = AiCliProviderCapabilities(
-  supportsStructuredOutput: true,
+  supportsStructuredOutput: false,
   composerSlashCommands: <String>['/help', '/clear'],
 );
 

@@ -55,6 +55,25 @@ void main() {
       expect(output.single.message, 'Plan next step');
     });
 
+    test('parses concatenated structured JSON payloads on one line', () {
+      final pipeline = AiRuntimeEventParserPipeline();
+
+      final output = pipeline.parse(
+        _runtimeEvent(
+          type: AiRuntimeEventType.stdout,
+          provider: AiCliProvider.claude,
+          chunk:
+              '{"type":"thinking","content":"Plan"}{"type":"tool_use","content":"run tests"}',
+        ),
+      );
+
+      expect(output, hasLength(2));
+      expect(output.first.type, AiTimelineEventType.thinking);
+      expect(output.first.message, 'Plan');
+      expect(output.last.type, AiTimelineEventType.tool);
+      expect(output.last.message, 'run tests');
+    });
+
     test('falls back to plain text for unsupported structured chunks', () {
       final pipeline = AiRuntimeEventParserPipeline();
 

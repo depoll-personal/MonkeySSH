@@ -337,6 +337,13 @@ class AiRuntimeEventParserPipeline {
         if (collectionDepth > 0) {
           collectionDepth--;
         }
+        if (collectionDepth == 0) {
+          final line = current.toString().trim();
+          if (line.isNotEmpty) {
+            completed.add(line);
+          }
+          current = StringBuffer();
+        }
         continue;
       }
 

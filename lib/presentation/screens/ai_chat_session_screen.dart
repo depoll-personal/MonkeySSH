@@ -81,6 +81,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
   bool _runtimeStarted = false;
   bool _reconnecting = false;
   bool _sending = false;
+  var _lastRenderedTimelineCount = 0;
   _RuntimeAttachmentState _runtimeAttachmentState =
       _RuntimeAttachmentState.restoring;
 
@@ -99,6 +100,9 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     _promptFocusNode.addListener(_handleComposerInputChanged);
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
       final parser = ref.read(aiRuntimeEventParserPipelineProvider);
       final runtimeEvents = ref.read(aiRuntimeServiceProvider).events;
       _runtimeTimelineSubscription = parser
@@ -214,15 +218,22 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
                         Center(child: Text('Failed to load timeline: $error')),
                     data: (entries) {
                       if (entries.isEmpty) {
+                        _lastRenderedTimelineCount = 0;
                         return const Center(
                           child: Text(
                             'No timeline entries yet. Send a message to begin.',
                           ),
                         );
                       }
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        _scrollToBottom();
-                      });
+                      if (_lastRenderedTimelineCount != entries.length) {
+                        _lastRenderedTimelineCount = entries.length;
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          if (!mounted) {
+                            return;
+                          }
+                          _scrollToBottom();
+                        });
+                      }
                       return ListView.builder(
                         key: const Key('ai-timeline-list'),
                         controller: _scrollController,
@@ -702,7 +713,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     final metadataPayload = <String, dynamic>{
       ...sessionMetadata,
       ...?metadata,
-      'runtimeAttachmentState': _runtimeAttachmentState.name,
+      'runtimeState': _runtimeAttachmentState.name,
     };
     await ref
         .read(aiRepositoryProvider)
@@ -801,6 +812,21 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     if (timelineEvent.aiSessionId != widget.sessionId) {
       return;
     }
+    if (timelineEvent.type == AiTimelineEventType.error) {
+      _runtimeStarted = false;
+    }
+
+    if (timelineEvent.type == AiTimelineEventType.status) {
+      final runtimeEventType = timelineEvent.metadata['runtimeEventType']
+          ?.toString();
+      if (runtimeEventType == AiRuntimeEventType.completed.name ||
+          runtimeEventType == AiRuntimeEventType.cancelled.name) {
+        _runtimeStarted = false;
+      } else if (runtimeEventType == AiRuntimeEventType.started.name) {
+        _runtimeStarted = true;
+      }
+    }
+
     final role = switch (timelineEvent.type) {
       AiTimelineEventType.message => 'assistant',
       AiTimelineEventType.tool => 'tool',

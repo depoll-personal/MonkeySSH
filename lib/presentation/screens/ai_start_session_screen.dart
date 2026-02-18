@@ -256,10 +256,6 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
   );
 
   Widget _buildHostField(List<Host> hosts) {
-    if (_selectedHostId == null && hosts.isNotEmpty) {
-      _selectedHostId = hosts.first.id;
-    }
-
     if (hosts.isEmpty) {
       return const InputDecorator(
         decoration: InputDecoration(
@@ -270,9 +266,26 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
       );
     }
 
+    final selectedHostStillExists =
+        _selectedHostId != null &&
+        hosts.any((host) => host.id == _selectedHostId);
+    final resolvedHostId = selectedHostStillExists
+        ? _selectedHostId!
+        : hosts.first.id;
+    if (_selectedHostId != resolvedHostId) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _selectedHostId = resolvedHostId;
+        });
+      });
+    }
+
     return DropdownButtonFormField<int>(
       key: const Key('ai-host-field'),
-      initialValue: _selectedHostId,
+      initialValue: resolvedHostId,
       decoration: const InputDecoration(
         labelText: 'Host',
         border: OutlineInputBorder(),
@@ -599,17 +612,16 @@ final _recentAiSessionsProvider =
     FutureProvider.autoDispose<List<_AiSessionResumeSummary>>((ref) async {
       final repository = ref.watch(aiRepositoryProvider);
       final sessions = await repository.getRecentSessions();
-      final items = <_AiSessionResumeSummary>[];
-      for (final session in sessions) {
-        final workspace = await repository.getWorkspaceById(
-          session.workspaceId,
-        );
-        final timelineEntry = await repository.getLatestTimelineEntry(
-          session.id,
-        );
-        final metadata = AiSessionMetadata.decode(timelineEntry?.metadata);
-        items.add(
-          _AiSessionResumeSummary(
+      return Future.wait(
+        sessions.map((session) async {
+          final workspace = await repository.getWorkspaceById(
+            session.workspaceId,
+          );
+          final timelineEntry = await repository.getLatestTimelineEntry(
+            session.id,
+          );
+          final metadata = AiSessionMetadata.decode(timelineEntry?.metadata);
+          return _AiSessionResumeSummary(
             sessionId: session.id,
             title: session.title,
             provider: AiSessionMetadata.readProvider(metadata),
@@ -627,10 +639,9 @@ final _recentAiSessionsProvider =
                 AiSessionMetadata.readString(metadata, 'workingDirectory') ??
                 workspace?.path ??
                 '~',
-          ),
-        );
-      }
-      return items;
+          );
+        }),
+      );
     });
 
 class _AiSessionResumeSummary {
