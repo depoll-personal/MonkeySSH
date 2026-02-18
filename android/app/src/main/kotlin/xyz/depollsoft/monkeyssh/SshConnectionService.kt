@@ -3,15 +3,15 @@ package xyz.depollsoft.monkeyssh
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
-import android.content.Context
+import android.app.Service
 import android.content.Intent
+import android.os.Build
+import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 
-/// Shows a persistent notification and holds a wake lock while an SSH
-/// session is active. This is NOT a foreground service — it avoids the
-/// Play Store foreground-service permission declaration requirement.
-class SshConnectionService(private val context: Context) {
+/// Foreground service that keeps the SSH session alive in the background.
+class SshConnectionService : Service() {
 
     companion object {
         const val CHANNEL_ID = "ssh_connection"
@@ -21,30 +21,42 @@ class SshConnectionService(private val context: Context) {
 
     private var wakeLock: PowerManager.WakeLock? = null
 
-    init {
+    override fun onCreate() {
+        super.onCreate()
         createNotificationChannel()
     }
 
-    /// Show a persistent notification and acquire a wake lock.
-    fun start(hostName: String) {
-        val stopIntent = Intent(context, MainActivity::class.java).apply {
-            action = ACTION_STOP
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+            stopSelf()
+            return START_NOT_STICKY
         }
-        val stopPendingIntent = PendingIntent.getActivity(
-            context, 1, stopIntent,
+
+        val hostName = intent?.getStringExtra("hostName") ?: "SSH server"
+
+        val stopIntent = Intent(this, SshConnectionService::class.java).apply {
+            action = ACTION_STOP
+        }
+        val stopPendingIntent = PendingIntent.getService(
+            this, 0, stopIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val tapIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+        val tapIntent = packageManager.getLaunchIntentForPackage(packageName)
         val tapPendingIntent = if (tapIntent != null) {
             PendingIntent.getActivity(
-                context, 0, tapIntent,
+                this, 0, tapIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
         } else null
 
-        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Connected to $hostName")
             .setContentText("SSH session is active")
             .setSmallIcon(android.R.drawable.ic_lock_lock)
@@ -54,29 +66,29 @@ class SshConnectionService(private val context: Context) {
             .addAction(android.R.drawable.ic_delete, "Disconnect", stopPendingIntent)
             .build()
 
-        val manager = context.getSystemService(NotificationManager::class.java)
-        manager.notify(NOTIFICATION_ID, notification)
+        startForeground(NOTIFICATION_ID, notification)
 
         // Acquire a partial wake lock to keep the CPU running for SSH keepalives.
         if (wakeLock?.isHeld != true) {
-            val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            val pm = getSystemService(POWER_SERVICE) as PowerManager
             wakeLock = pm.newWakeLock(
                 PowerManager.PARTIAL_WAKE_LOCK,
                 "monkeyssh:ssh_background"
             ).apply { acquire(24 * 60 * 60 * 1000L) }
         }
+
+        return START_STICKY
     }
 
-    /// Dismiss the notification and release the wake lock.
-    fun stop() {
-        val manager = context.getSystemService(NotificationManager::class.java)
-        manager.cancel(NOTIFICATION_ID)
-
+    override fun onDestroy() {
         if (wakeLock?.isHeld == true) {
             wakeLock?.release()
         }
         wakeLock = null
+        super.onDestroy()
     }
+
+    override fun onBind(intent: Intent?): IBinder? = null
 
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
@@ -87,7 +99,7 @@ class SshConnectionService(private val context: Context) {
             description = "Shows when an SSH session is active in the background"
             setShowBadge(false)
         }
-        val manager = context.getSystemService(NotificationManager::class.java)
+        val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(channel)
     }
 }
