@@ -135,36 +135,37 @@ void main() {
           id: 2,
           sessionId: 9,
           role: 'user',
-          message: 'Hello',
+          message: 'Hello **team**',
           createdAt: DateTime(2024),
         ),
         AiTimelineEntry(
           id: 3,
           sessionId: 9,
           role: 'assistant',
-          message: 'Hi there',
+          message: 'Hi there\n\n- Step 1\n- Step 2',
           createdAt: DateTime(2024),
         ),
         AiTimelineEntry(
           id: 4,
           sessionId: 9,
           role: 'tool',
-          message: 'Running ls',
-          metadata: '{"code":0}',
+          message: 'Running `ls`',
+          metadata:
+              '{"payload":{"toolName":"code-reviewer","subagent":"code-reviewer","input":"Review changed files","output":"No critical issues"}}',
           createdAt: DateTime(2024),
         ),
         AiTimelineEntry(
           id: 5,
           sessionId: 9,
           role: 'thinking',
-          message: 'Planning response',
+          message: 'Planning response with **reasoning**.',
           createdAt: DateTime(2024),
         ),
         AiTimelineEntry(
           id: 6,
           sessionId: 9,
           role: 'error',
-          message: 'Command failed',
+          message: 'Command failed with `exit 1`.',
           metadata: '{"code":1}',
           createdAt: DateTime(2024),
         ),
@@ -173,10 +174,12 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
-            body: Column(
-              children: entries
-                  .map((entry) => AiTimelineEntryTile(entry: entry))
-                  .toList(growable: false),
+            body: SingleChildScrollView(
+              child: Column(
+                children: entries
+                    .map((entry) => AiTimelineEntryTile(entry: entry))
+                    .toList(growable: false),
+              ),
             ),
           ),
         ),
@@ -184,12 +187,18 @@ void main() {
       await tester.pump();
 
       expect(find.text('Runtime started.'), findsOneWidget);
-      expect(find.text('Hello'), findsOneWidget);
-      expect(find.text('Hi there'), findsOneWidget);
-      expect(find.text('Running ls'), findsOneWidget);
-      expect(find.text('Planning response'), findsOneWidget);
-      expect(find.text('Command failed'), findsOneWidget);
-      expect(find.byIcon(Icons.build_circle_outlined), findsOneWidget);
+      expect(find.textContaining('Hello'), findsOneWidget);
+      expect(find.textContaining('Hi there'), findsOneWidget);
+      expect(find.textContaining('Running'), findsOneWidget);
+      expect(find.textContaining('Planning response'), findsOneWidget);
+      expect(find.textContaining('Command failed'), findsOneWidget);
+      expect(find.text('Prompt'), findsOneWidget);
+      expect(find.text('Assistant'), findsOneWidget);
+      expect(find.text('Subagent call'), findsOneWidget);
+      expect(find.text('Model thinking'), findsOneWidget);
+      expect(find.text('Runtime error'), findsOneWidget);
+      expect(find.text('Input'), findsOneWidget);
+      expect(find.text('Output'), findsOneWidget);
       expect(find.byIcon(Icons.psychology_alt_outlined), findsOneWidget);
       expect(find.byIcon(Icons.error_outline), findsOneWidget);
     });

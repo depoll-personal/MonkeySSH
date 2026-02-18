@@ -87,6 +87,7 @@ flutter build linux
 4. Start a session to launch the provider over the active SSH connection.
 5. Resume recent sessions from history; reconnect runtime when marked **Detached**.
 6. Run multiple AI sessions concurrently; each session keeps its own runtime stream.
+7. Timeline output is formatted for markdown responses, thinking traces, tool/subagent calls, and user prompts.
 
 Supported providers: `claude`, `codex`, `opencode`, `copilot`, `gemini`, and **ACP** (custom command for ACP-compatible clients).
 

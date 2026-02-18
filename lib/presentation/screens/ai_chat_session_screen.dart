@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/database/database.dart';
@@ -894,31 +895,75 @@ class AiTimelineEntryTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final role = entry.role.toLowerCase();
+    final metadata = AiSessionMetadata.decode(entry.metadata);
     if (role == 'status') {
       return _StatusTimelineEntry(entry: entry);
     }
     if (role == 'tool' || role == 'thinking' || role == 'error') {
-      return _SystemTimelineEntry(entry: entry, role: role);
+      return _SystemTimelineEntry(entry: entry, role: role, metadata: metadata);
     }
+    return _MessageTimelineEntry(entry: entry, role: role, metadata: metadata);
+  }
+}
+
+class _MessageTimelineEntry extends StatelessWidget {
+  const _MessageTimelineEntry({
+    required this.entry,
+    required this.role,
+    required this.metadata,
+  });
+
+  final AiTimelineEntry entry;
+  final String role;
+  final Map<String, dynamic> metadata;
+
+  @override
+  Widget build(BuildContext context) {
     final isUser = role == 'user';
+    final theme = Theme.of(context);
+    final containerColor = isUser
+        ? theme.colorScheme.primaryContainer
+        : theme.colorScheme.surfaceContainerHighest;
+    final contentColor = isUser
+        ? theme.colorScheme.onPrimaryContainer
+        : theme.colorScheme.onSurface;
+    final sectionLabel = isUser ? 'Prompt' : 'Assistant';
+    final icon = isUser ? Icons.person_outline : Icons.smart_toy_outlined;
+
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
-        constraints: const BoxConstraints(maxWidth: 700),
+        constraints: const BoxConstraints(maxWidth: 760),
         margin: const EdgeInsets.symmetric(vertical: 4),
-        padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-          color: isUser
-              ? Theme.of(context).colorScheme.primaryContainer
-              : Theme.of(context).colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(12),
+          color: containerColor,
+          borderRadius: BorderRadius.circular(14),
         ),
-        child: Text(
-          entry.message,
-          style: TextStyle(
-            color: isUser
-                ? Theme.of(context).colorScheme.onPrimaryContainer
-                : Theme.of(context).colorScheme.onSurface,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _EntryRoleBadge(
+                icon: icon,
+                label: sectionLabel,
+                color: contentColor,
+              ),
+              const SizedBox(height: 8),
+              _TimelineMarkdownBody(
+                data: entry.message,
+                textColor: contentColor,
+              ),
+              if (_AiTimelineEntryFormatting.hasStructuredPayload(metadata))
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: _TimelineMetadataSection(
+                    title: 'Structured payload',
+                    content: _AiTimelineEntryFormatting.prettyPayload(metadata),
+                    textColor: contentColor,
+                  ),
+                ),
+            ],
           ),
         ),
       ),
@@ -949,17 +994,32 @@ class _StatusTimelineEntry extends StatelessWidget {
 }
 
 class _SystemTimelineEntry extends StatelessWidget {
-  const _SystemTimelineEntry({required this.entry, required this.role});
+  const _SystemTimelineEntry({
+    required this.entry,
+    required this.role,
+    required this.metadata,
+  });
 
   final AiTimelineEntry entry;
   final String role;
+  final Map<String, dynamic> metadata;
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final toolName = _AiTimelineEntryFormatting.extractToolName(metadata);
+    final inputSummary = _AiTimelineEntryFormatting.extractInput(metadata);
+    final outputSummary = _AiTimelineEntryFormatting.extractOutput(metadata);
+    final isSubagent = _AiTimelineEntryFormatting.isSubagentCall(metadata);
+    final heading = switch (role) {
+      'tool' => isSubagent ? 'Subagent call' : 'Tool call',
+      'thinking' => 'Model thinking',
+      'error' => 'Runtime error',
+      _ => 'System event',
+    };
     final (icon, tint, background) = switch (role) {
       'tool' => (
-        Icons.build_circle_outlined,
+        isSubagent ? Icons.smart_toy_outlined : Icons.build_circle_outlined,
         colorScheme.secondary,
         colorScheme.secondaryContainer,
       ),
@@ -987,19 +1047,262 @@ class _SystemTimelineEntry extends StatelessWidget {
         color: background,
         child: Padding(
           padding: const EdgeInsets.all(12),
-          child: Row(
+          child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(icon, size: 18, color: tint),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(entry.message, style: TextStyle(color: tint)),
-              ),
+              _EntryRoleBadge(icon: icon, label: heading, color: tint),
+              if (toolName != null) ...[
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: tint.withAlpha(26),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    toolName,
+                    style: Theme.of(
+                      context,
+                    ).textTheme.labelMedium?.copyWith(color: tint),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 8),
+              _TimelineMarkdownBody(data: entry.message, textColor: tint),
+              if (inputSummary != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: _TimelineMetadataSection(
+                    title: 'Input',
+                    content: inputSummary,
+                    textColor: tint,
+                  ),
+                ),
+              if (outputSummary != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: _TimelineMetadataSection(
+                    title: 'Output',
+                    content: outputSummary,
+                    textColor: tint,
+                  ),
+                ),
+              if (_AiTimelineEntryFormatting.hasStructuredPayload(metadata))
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: _TimelineMetadataSection(
+                    title: 'Payload',
+                    content: _AiTimelineEntryFormatting.prettyPayload(metadata),
+                    textColor: tint,
+                  ),
+                ),
             ],
           ),
         ),
       ),
     );
+  }
+}
+
+class _EntryRoleBadge extends StatelessWidget {
+  const _EntryRoleBadge({
+    required this.icon,
+    required this.label,
+    required this.color,
+  });
+
+  final IconData icon;
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Icon(icon, size: 16, color: color),
+      const SizedBox(width: 6),
+      Text(
+        label,
+        style: Theme.of(context).textTheme.labelMedium?.copyWith(
+          color: color,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    ],
+  );
+}
+
+class _TimelineMarkdownBody extends StatelessWidget {
+  const _TimelineMarkdownBody({required this.data, required this.textColor});
+
+  final String data;
+  final Color textColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final styleSheet = MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+      p: Theme.of(context).textTheme.bodyMedium?.copyWith(color: textColor),
+      code: Theme.of(context).textTheme.bodyMedium?.copyWith(
+        color: textColor,
+        fontFamily: 'monospace',
+      ),
+      blockquote: Theme.of(
+        context,
+      ).textTheme.bodyMedium?.copyWith(color: textColor.withAlpha(220)),
+    );
+    return MarkdownBody(data: data, styleSheet: styleSheet);
+  }
+}
+
+class _TimelineMetadataSection extends StatelessWidget {
+  const _TimelineMetadataSection({
+    required this.title,
+    required this.content,
+    required this.textColor,
+  });
+
+  final String title;
+  final String content;
+  final Color textColor;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: double.infinity,
+    padding: const EdgeInsets.all(10),
+    decoration: BoxDecoration(
+      color: textColor.withAlpha(20),
+      borderRadius: BorderRadius.circular(10),
+      border: Border.all(color: textColor.withAlpha(40)),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: Theme.of(
+            context,
+          ).textTheme.labelMedium?.copyWith(color: textColor),
+        ),
+        const SizedBox(height: 4),
+        _TimelineMarkdownBody(data: content, textColor: textColor),
+      ],
+    ),
+  );
+}
+
+abstract final class _AiTimelineEntryFormatting {
+  static bool hasStructuredPayload(Map<String, dynamic> metadata) =>
+      _payloadMap(metadata).isNotEmpty;
+
+  static bool isSubagentCall(Map<String, dynamic> metadata) {
+    final payload = _payloadMap(metadata);
+    final subagent = _readString(payload, const <String>['subagent', 'agent']);
+    if (subagent != null) {
+      return true;
+    }
+    final name = extractToolName(metadata);
+    return name != null &&
+        (name.toLowerCase().contains('agent') ||
+            name.toLowerCase().contains('subagent'));
+  }
+
+  static String? extractToolName(Map<String, dynamic> metadata) {
+    final payload = _payloadMap(metadata);
+    return _readString(payload, const <String>[
+          'toolName',
+          'tool',
+          'name',
+          'command',
+        ]) ??
+        _readString(metadata, const <String>[
+          'toolName',
+          'tool',
+          'name',
+          'command',
+        ]);
+  }
+
+  static String? extractInput(Map<String, dynamic> metadata) {
+    final payload = _payloadMap(metadata);
+    return _readString(payload, const <String>[
+          'input',
+          'arguments',
+          'args',
+          'prompt',
+        ]) ??
+        _readString(metadata, const <String>[
+          'input',
+          'arguments',
+          'args',
+          'prompt',
+        ]);
+  }
+
+  static String? extractOutput(Map<String, dynamic> metadata) {
+    final payload = _payloadMap(metadata);
+    return _readString(payload, const <String>[
+          'output',
+          'result',
+          'response',
+        ]) ??
+        _readString(metadata, const <String>['output', 'result', 'response']);
+  }
+
+  static String prettyPayload(Map<String, dynamic> metadata) {
+    final payload = _payloadMap(metadata);
+    if (payload.isEmpty) {
+      return '';
+    }
+    const encoder = JsonEncoder.withIndent('  ');
+    return '```json\n${encoder.convert(payload)}\n```';
+  }
+
+  static Map<String, dynamic> _payloadMap(Map<String, dynamic> metadata) {
+    final payload = metadata['payload'];
+    if (payload is Map<String, dynamic>) {
+      return payload;
+    }
+    if (payload is Map<Object?, Object?>) {
+      return payload.map((key, value) => MapEntry(key.toString(), value));
+    }
+    return const <String, dynamic>{};
+  }
+
+  static String? _readString(Map<String, dynamic> source, List<String> keys) {
+    for (final key in keys) {
+      final resolved = _stringifyValue(source[key]);
+      if (resolved != null && resolved.trim().isNotEmpty) {
+        return resolved.trim();
+      }
+    }
+    return null;
+  }
+
+  static String? _stringifyValue(Object? value) {
+    if (value == null) {
+      return null;
+    }
+    if (value is String) {
+      return value;
+    }
+    if (value is num || value is bool) {
+      return value.toString();
+    }
+    if (value is Map<String, dynamic>) {
+      return jsonEncode(value);
+    }
+    if (value is Map<Object?, Object?>) {
+      return jsonEncode(
+        value.map((key, mapValue) => MapEntry(key.toString(), mapValue)),
+      );
+    }
+    if (value is List<Object?>) {
+      return jsonEncode(value);
+    }
+    return value.toString();
   }
 }
 
