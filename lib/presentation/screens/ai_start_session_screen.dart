@@ -41,6 +41,7 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
     super.initState();
     _workingDirectoryController = TextEditingController(text: '~');
     _acpClientCommandController = TextEditingController();
+    _restoreLastUsedProviderSelection();
   }
 
   @override
@@ -514,10 +515,11 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
         host: selectedHost,
         workingDirectory: workingDirectory,
       );
+      final sessionTitle = acpClientLabel ?? _selectedProvider.executable;
       final sessionId = await repository.insertSession(
         AiSessionsCompanion.insert(
           workspaceId: workspaceId,
-          title: '${_selectedProvider.executable} · ${selectedHost.label}',
+          title: '$sessionTitle · ${selectedHost.label}',
           status: const drift.Value('active'),
         ),
       );
@@ -591,6 +593,43 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// Restores the last-used provider and ACP preset from the most recent
+  /// session metadata.
+  Future<void> _restoreLastUsedProviderSelection() async {
+    final repository = ref.read(aiRepositoryProvider);
+    final sessions = await repository.getRecentSessions();
+    if (sessions.isEmpty) {
+      return;
+    }
+    final latestSession = sessions.first;
+    final latestEntry = await repository.getLatestTimelineEntry(
+      latestSession.id,
+    );
+    if (latestEntry == null) {
+      return;
+    }
+    final metadata = AiSessionMetadata.decode(latestEntry.metadata);
+    final provider = AiSessionMetadata.readProvider(metadata);
+    if (provider != null && mounted) {
+      setState(() {
+        _selectedProvider = provider;
+      });
+    }
+    final acpClientId = AiSessionMetadata.readString(metadata, 'acpClientId');
+    if (acpClientId != null && mounted) {
+      setState(() {
+        _selectedAcpClientId = acpClientId;
+      });
+    }
+    final acpExecutable = AiSessionMetadata.readString(
+      metadata,
+      'executableOverride',
+    );
+    if (acpClientId == _customAcpClientId && acpExecutable != null && mounted) {
+      _acpClientCommandController.text = acpExecutable;
+    }
   }
 
   AcpClientPreset? get _selectedAcpClientPreset {

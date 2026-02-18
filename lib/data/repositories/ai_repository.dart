@@ -179,6 +179,12 @@ class AiRepository {
   /// Delete a timeline entry.
   Future<int> deleteTimelineEntry(int id) =>
       (_db.delete(_db.aiTimelineEntries)..where((e) => e.id.equals(id))).go();
+
+  /// Update the message text of an existing timeline entry.
+  Future<void> updateTimelineEntryMessage(int id, String message) =>
+      (_db.update(_db.aiTimelineEntries)..where((e) => e.id.equals(id))).write(
+        AiTimelineEntriesCompanion(message: Value(message)),
+      );
 }
 
 /// Provider for [AiRepository].

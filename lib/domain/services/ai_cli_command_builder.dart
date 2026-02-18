@@ -41,8 +41,20 @@ class AiCliCommandBuilder {
       executableOverride: executableOverride,
       arguments: commandArguments,
     );
-    final escapedDirectory = shellEscape(trimmedRemoteWorkingDirectory);
-    return 'cd $escapedDirectory && $executableCommand';
+    final cdDirectory = _buildCdDirectory(trimmedRemoteWorkingDirectory);
+    return 'cd $cdDirectory && $executableCommand';
+  }
+
+  /// Builds a shell-safe cd target that preserves tilde expansion.
+  String _buildCdDirectory(String directory) {
+    if (directory == '~') {
+      return '~';
+    }
+    if (directory.startsWith('~/')) {
+      final rest = directory.substring(2);
+      return rest.isEmpty ? '~' : '~/${shellEscape(rest)}';
+    }
+    return shellEscape(directory);
   }
 
   List<String> _structuredOutputArgumentsFor(AiCliProvider provider) {

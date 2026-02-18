@@ -83,6 +83,14 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
   _AiSessionRuntimeContext? _sessionContext;
   AcpClient? _acpClient;
   AcpSession? _acpSession;
+  String? _savedAcpModelId;
+
+  /// Buffers for aggregating streaming ACP chunks into single timeline entries.
+  final StringBuffer _acpMessageBuffer = StringBuffer();
+  final StringBuffer _acpThoughtBuffer = StringBuffer();
+  int? _acpMessageEntryId;
+  int? _acpThoughtEntryId;
+
   bool _runtimeStarted = false;
   bool _reconnecting = false;
   bool _sending = false;
@@ -192,6 +200,13 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
                     currentModeId: acpSession.currentModeId,
                   );
                 });
+                unawaited(
+                  _persistTimelineEntrySafely(
+                    role: 'status',
+                    message: 'Model changed to $modelId',
+                    metadata: <String, dynamic>{'acpModelId': modelId},
+                  ),
+                );
               },
               itemBuilder: (context) => acpSession.availableModels
                   .map(
@@ -518,9 +533,12 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       return const <String>[];
     }
 
-    final escapedDirectory = shellEscape(context.remoteWorkingDirectory);
+    final remoteDir = context.remoteWorkingDirectory;
+    final cdDirectory = remoteDir.startsWith('~')
+        ? remoteDir
+        : shellEscape(remoteDir);
     final process = await session.execute(
-      'cd $escapedDirectory && '
+      'cd $cdDirectory && '
       'find . -maxdepth 4 -type f 2>/dev/null | sed "s#^./##" | head -n 250',
     );
     final output = await process.stdout
@@ -610,18 +628,12 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       throw StateError('Session ${widget.sessionId} not found.');
     }
     final workspace = await repository.getWorkspaceById(session.workspaceId);
-    final timelineEntries = await repository.getTimelineBySession(
+    final latestEntry = await repository.getLatestTimelineEntry(
       widget.sessionId,
     );
-
-    var latestMetadata = const <String, dynamic>{};
-    for (final entry in timelineEntries.reversed) {
-      final metadata = AiSessionMetadata.decode(entry.metadata);
-      if (metadata.isNotEmpty) {
-        latestMetadata = metadata;
-        break;
-      }
-    }
+    final latestMetadata = latestEntry == null
+        ? const <String, dynamic>{}
+        : AiSessionMetadata.decode(latestEntry.metadata);
 
     final provider =
         widget.provider ??
@@ -640,6 +652,11 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         AiSessionMetadata.readString(latestMetadata, 'workingDirectory') ??
         workspace?.path ??
         '~';
+
+    // Restore the last-used ACP model selection.
+    _savedAcpModelId =
+        AiSessionMetadata.readString(latestMetadata, 'acpModelId') ??
+        AiSessionMetadata.readString(latestMetadata, 'currentModelId');
 
     return _AiSessionRuntimeContext(
       connectionId: connectionId,
@@ -688,13 +705,23 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     }
 
     final runtimeService = ref.read(aiRuntimeServiceProvider);
+    final useAcp = context.provider.capabilities.supportsAcp;
     if (runtimeService.hasActiveRunForSession(widget.sessionId)) {
       _runtimeStarted = true;
+      if (mounted) {
+        setState(() {
+          _runtimeAttachmentState = context.resumedSession
+              ? _RuntimeAttachmentState.resumed
+              : _RuntimeAttachmentState.attached;
+        });
+      }
+      if (useAcp && _acpClient == null) {
+        await _initializeAcpClient(context);
+      }
       return;
     }
 
     _runtimeStarted = true;
-    final useAcp = context.provider.capabilities.supportsAcp;
     try {
       await runtimeService.launch(
         AiRuntimeLaunchRequest(
@@ -769,7 +796,20 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       final session = await client.createSession(
         cwd: context.remoteWorkingDirectory,
       );
-      _acpSession = session;
+      // Restore previously selected model if persisted.
+      final savedModelId = _savedAcpModelId;
+      if (savedModelId != null &&
+          session.availableModels.any((m) => m.modelId == savedModelId)) {
+        _acpSession = AcpSession(
+          sessionId: session.sessionId,
+          availableModels: session.availableModels,
+          currentModelId: savedModelId,
+          availableModes: session.availableModes,
+          currentModeId: session.currentModeId,
+        );
+      } else {
+        _acpSession = session;
+      }
       if (session.availableModels.isNotEmpty) {
         await _insertTimelineEntry(
           role: 'status',
@@ -862,11 +902,16 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     required String sessionId,
     required String prompt,
   }) async {
+    // Reset streaming buffers for the new turn.
+    _flushAcpBuffers();
     try {
       final result = await client.sendPrompt(
         sessionId: sessionId,
         text: prompt,
+        modelId: _acpSession?.currentModelId,
       );
+      // Flush any remaining buffered chunks.
+      _flushAcpBuffers();
       final stopReason = result['stopReason']?.toString();
       if (stopReason != null && stopReason != 'end_turn') {
         await _insertTimelineEntry(
@@ -875,6 +920,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         );
       }
     } on AcpClientException catch (error) {
+      _flushAcpBuffers();
       await _insertTimelineEntry(
         role: 'error',
         message: 'ACP prompt error: $error',
@@ -883,58 +929,128 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
   }
 
   void _handleAcpEvent(AcpEvent event) {
-    final role = switch (event.type) {
-      AcpEventType.agentMessage => 'assistant',
-      AcpEventType.agentThought => 'thinking',
-      AcpEventType.toolCall => 'tool',
-      AcpEventType.toolCallUpdate => 'tool',
-      AcpEventType.unknown => 'status',
-    };
-    final metadata = <String, dynamic>{
-      'acpEventType': event.type.name,
-      if (event.toolCallId != null) 'toolCallId': event.toolCallId,
-      'payload': event.rawUpdate,
-    };
-
-    // Extract tool-specific metadata for rich rendering.
-    if (event.type == AcpEventType.toolCall) {
-      final update = event.rawUpdate;
-      final title = update['title']?.toString();
-      final kind = update['kind']?.toString();
-      if (title != null) {
-        metadata['toolName'] = title;
-      }
-      if (kind != null) {
-        metadata['toolKind'] = kind;
-      }
-      final rawInput = update['rawInput'];
-      if (rawInput != null) {
-        metadata['input'] = rawInput;
-      }
-      final locations = update['locations'];
-      if (locations is List<dynamic>) {
-        metadata['locations'] = locations;
-      }
+    switch (event.type) {
+      case AcpEventType.agentMessage:
+        _appendAcpChunk(
+          buffer: _acpMessageBuffer,
+          entryIdGetter: () => _acpMessageEntryId,
+          entryIdSetter: (id) => _acpMessageEntryId = id,
+          role: 'assistant',
+          text: event.text,
+        );
+      case AcpEventType.agentThought:
+        _appendAcpChunk(
+          buffer: _acpThoughtBuffer,
+          entryIdGetter: () => _acpThoughtEntryId,
+          entryIdSetter: (id) => _acpThoughtEntryId = id,
+          role: 'thinking',
+          text: event.text,
+        );
+      case AcpEventType.toolCall:
+        // Flush any open message/thought buffers before a tool call.
+        _flushAcpBuffers();
+        final metadata = <String, dynamic>{
+          'acpEventType': event.type.name,
+          if (event.toolCallId != null) 'toolCallId': event.toolCallId,
+        };
+        final update = event.rawUpdate;
+        final title = update['title']?.toString();
+        final kind = update['kind']?.toString();
+        if (title != null) {
+          metadata['toolName'] = title;
+        }
+        if (kind != null) {
+          metadata['toolKind'] = kind;
+        }
+        final rawInput = update['rawInput'];
+        if (rawInput != null) {
+          metadata['input'] = rawInput;
+        }
+        final locations = update['locations'];
+        if (locations is List<dynamic>) {
+          metadata['locations'] = locations;
+        }
+        unawaited(
+          _persistTimelineEntrySafely(
+            role: 'tool',
+            message: event.text,
+            metadata: metadata,
+          ),
+        );
+      case AcpEventType.toolCallUpdate:
+        final metadata = <String, dynamic>{
+          'acpEventType': event.type.name,
+          if (event.toolCallId != null) 'toolCallId': event.toolCallId,
+        };
+        final update = event.rawUpdate;
+        final status = update['status']?.toString();
+        if (status != null) {
+          metadata['toolStatus'] = status;
+        }
+        final rawOutput = update['rawOutput'];
+        if (rawOutput != null) {
+          metadata['output'] = rawOutput;
+        }
+        unawaited(
+          _persistTimelineEntrySafely(
+            role: 'tool',
+            message: event.text,
+            metadata: metadata,
+          ),
+        );
+      case AcpEventType.unknown:
+        unawaited(
+          _persistTimelineEntrySafely(
+            role: 'status',
+            message: event.text,
+            metadata: <String, dynamic>{
+              'acpEventType': event.type.name,
+              'payload': event.rawUpdate,
+            },
+          ),
+        );
     }
-    if (event.type == AcpEventType.toolCallUpdate) {
-      final update = event.rawUpdate;
-      final status = update['status']?.toString();
-      if (status != null) {
-        metadata['toolStatus'] = status;
-      }
-      final rawOutput = update['rawOutput'];
-      if (rawOutput != null) {
-        metadata['output'] = rawOutput;
-      }
-    }
+  }
 
-    unawaited(
-      _persistTimelineEntrySafely(
-        role: role,
-        message: event.text,
-        metadata: metadata,
-      ),
-    );
+  /// Appends a streaming chunk to [buffer] and creates or updates
+  /// the corresponding timeline entry.
+  void _appendAcpChunk({
+    required StringBuffer buffer,
+    required int? Function() entryIdGetter,
+    required void Function(int) entryIdSetter,
+    required String role,
+    required String text,
+  }) {
+    buffer.write(text);
+    final entryId = entryIdGetter();
+    if (entryId != null) {
+      // Update the existing entry with accumulated text.
+      unawaited(
+        ref
+            .read(aiRepositoryProvider)
+            .updateTimelineEntryMessage(entryId, buffer.toString()),
+      );
+    } else {
+      // Create the initial entry — the first chunk.
+      unawaited(
+        _insertTimelineEntry(role: role, message: buffer.toString()).then((
+          insertedId,
+        ) {
+          if (insertedId != null) {
+            entryIdSetter(insertedId);
+          }
+        }),
+      );
+    }
+  }
+
+  /// Resets streaming buffers between turns (e.g., before tool calls or
+  /// at end of turn).
+  void _flushAcpBuffers() {
+    _acpMessageBuffer.clear();
+    _acpMessageEntryId = null;
+    _acpThoughtBuffer.clear();
+    _acpThoughtEntryId = null;
   }
 
   Future<void> _runCopilotPrompt({
@@ -983,7 +1099,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     return '00000000-0000-4000-8000-$suffix';
   }
 
-  Future<void> _insertTimelineEntry({
+  Future<int?> _insertTimelineEntry({
     required String role,
     required String message,
     Map<String, dynamic>? metadata,
@@ -995,7 +1111,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       'runtimeState': _runtimeAttachmentState.name,
     };
     final encodedMetadata = _encodeTimelineMetadata(metadataPayload);
-    await ref
+    final insertedId = await ref
         .read(aiRepositoryProvider)
         .insertTimelineEntry(
           AiTimelineEntriesCompanion.insert(
@@ -1006,6 +1122,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           ),
         );
     _scrollToBottom();
+    return insertedId;
   }
 
   String? _encodeTimelineMetadata(Map<String, dynamic> metadataPayload) {
@@ -1474,7 +1591,9 @@ class _TimelineMarkdownBody extends StatelessWidget {
   static String sanitizeText(String value) => value
       .replaceAll(_ansiEscapePattern, '')
       .replaceAll(_oscEscapePattern, '')
-      .replaceAll(_unsafeControlPattern, '');
+      .replaceAll(_unsafeControlPattern, '')
+      .replaceAll('\r\n', '\n')
+      .replaceAll('\r', '\n');
 
   @override
   Widget build(BuildContext context) {
@@ -1504,7 +1623,13 @@ class _TimelineMarkdownBody extends StatelessWidget {
     if (hasTerminalFormattingArtifacts) {
       return SelectableText(sanitizedData, style: fallbackTextStyle);
     }
-    return MarkdownBody(data: sanitizedData, styleSheet: styleSheet);
+    return MarkdownBody(
+      data: sanitizedData,
+      styleSheet: styleSheet,
+      sizedImageBuilder: (config) =>
+          Text(config.alt ?? '[image]', style: fallbackTextStyle),
+      onTapLink: (text, href, title) {},
+    );
   }
 }
 

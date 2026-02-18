@@ -298,7 +298,7 @@ class AiTimelineEntries extends Table {
   IntColumn get sessionId =>
       integer().references(AiSessions, #id, onDelete: KeyAction.cascade)();
 
-  /// Entry role (user/assistant/tool/system).
+  /// Entry role (user/assistant/tool/thinking/status/error).
   TextColumn get role => text().withLength(min: 1, max: 50)();
 
   /// Entry message content.

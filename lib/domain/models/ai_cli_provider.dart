@@ -110,6 +110,7 @@ const _geminiCapabilities = AiCliProviderCapabilities(
 const _acpCapabilities = AiCliProviderCapabilities(
   supportsStructuredOutput: false,
   composerSlashCommands: <String>['/help', '/clear'],
+  supportsAcp: true,
 );
 
 /// Preset configuration for a known ACP-compatible client launch command.
