@@ -3,7 +3,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/ai_cli_provider.dart';
 import 'package:monkeyssh/domain/services/ai_cli_command_builder.dart';
-import 'package:monkeyssh/domain/services/shell_escape.dart';
 
 void main() {
   group('AiCliCommandBuilder', () {
@@ -25,9 +24,10 @@ void main() {
           provider: entry.key,
           remoteWorkingDirectory: remoteWorkingDirectory,
         );
-        final inner =
-            "cd ${shellEscape('/srv/project')} && exec ${entry.value}";
-        expect(command, 'bash -lc ${shellEscape(inner)}');
+        expect(command, startsWith('sh -c '));
+        expect(command, contains('/srv/project'));
+        expect(command, contains('&& exec'));
+        expect(command, contains(entry.value));
       }
     });
 
@@ -38,7 +38,7 @@ void main() {
         structuredOutput: true,
       );
 
-      expect(command, startsWith('bash -lc '));
+      expect(command, startsWith('sh -c '));
       expect(command, contains('claude'));
       expect(command, contains('--output-format'));
       expect(command, contains('json'));
@@ -61,14 +61,15 @@ void main() {
         remoteWorkingDirectory: '~',
       );
 
-      expect(command, "bash -lc 'cd ~ && exec claude'");
+      expect(command, startsWith('sh -c '));
+      expect(command, contains('cd ~ && exec claude'));
 
       final commandSubdir = builder.buildLaunchCommand(
         provider: AiCliProvider.claude,
         remoteWorkingDirectory: '~/projects/my-app',
       );
 
-      expect(commandSubdir, startsWith('bash -lc '));
+      expect(commandSubdir, startsWith('sh -c '));
       expect(commandSubdir, contains('cd ~/'));
       expect(commandSubdir, contains('projects/my-app'));
       expect(commandSubdir, contains('claude'));
@@ -82,7 +83,7 @@ void main() {
         extraArguments: const <String>['--workspace', '.'],
       );
 
-      expect(command, startsWith('bash -lc '));
+      expect(command, startsWith('sh -c '));
       expect(command, contains('my-acp-client --stdio'));
       expect(command, contains('--workspace'));
     });
@@ -104,7 +105,7 @@ void main() {
         acpMode: true,
       );
 
-      expect(command, startsWith('bash -lc '));
+      expect(command, startsWith('sh -c '));
       expect(command, contains('copilot'));
       expect(command, contains('--acp'));
       expect(command, contains('--allow-all-tools'));
@@ -118,7 +119,7 @@ void main() {
         structuredOutput: true,
       );
 
-      expect(command, startsWith('bash -lc '));
+      expect(command, startsWith('sh -c '));
       expect(command, contains('--acp'));
       expect(command, isNot(contains('--output-format')));
     });

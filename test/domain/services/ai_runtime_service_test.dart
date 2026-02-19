@@ -46,7 +46,7 @@ void main() {
       await completionEventFuture;
 
       expect(shell.executedCommands, hasLength(1));
-      expect(shell.executedCommands.first, startsWith('bash -lc '));
+      expect(shell.executedCommands.first, startsWith('sh -c '));
       expect(shell.executedCommands.first, contains('codex'));
       expect(
         events.map((event) => event.type),

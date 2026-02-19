@@ -42,10 +42,17 @@ class AiCliCommandBuilder {
       arguments: commandArguments,
     );
     final cdDirectory = _buildCdDirectory(trimmedRemoteWorkingDirectory);
-    final innerCommand = 'cd $cdDirectory && exec $executableCommand';
-    // Wrap in a login shell so the user's PATH (from .profile / .bashrc)
-    // is available — SSH exec channels are non-interactive by default.
-    return 'bash -lc ${shellEscape(innerCommand)}';
+    final bootstrapSegments = <String>[
+      r'PATH="$PATH:$HOME/.local/bin:$HOME/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"',
+      'export PATH',
+      r'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1; fi',
+      r'if [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1; fi',
+      r'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1; fi',
+      'cd $cdDirectory && exec $executableCommand',
+    ];
+    // Use POSIX `sh -c` instead of hard-requiring bash so this works on hosts
+    // where bash is unavailable.
+    return 'sh -c ${shellEscape(bootstrapSegments.join('; '))}';
   }
 
   /// Builds a shell-safe cd target that preserves tilde expansion.
