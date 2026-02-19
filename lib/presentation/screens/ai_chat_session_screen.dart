@@ -1580,6 +1580,10 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       _promptController.clear();
       return;
     }
+    if (await _handleRuntimeResetComposerCommand(prompt: prompt)) {
+      _promptController.clear();
+      return;
+    }
     final appliedSteeringPrompts = _steeringPromptQueue.length;
     _promptController.clear();
     setState(() {
@@ -1715,6 +1719,46 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       return true;
     }
     return false;
+  }
+
+  Future<bool> _handleRuntimeResetComposerCommand({
+    required String prompt,
+  }) async {
+    if (prompt != '/clear') {
+      return false;
+    }
+    await _insertTimelineEntry(role: 'user', message: prompt);
+
+    final runtimeService = ref.read(aiRuntimeServiceProvider);
+    if (runtimeService.hasActiveRunForSession(widget.sessionId)) {
+      try {
+        await runtimeService.cancel(aiSessionId: widget.sessionId);
+      } on AiRuntimeServiceException {
+        // Runtime may have already exited.
+      }
+    }
+    _runtimeStarted = false;
+    _steeringPromptQueue.clear();
+    _flushAcpBuffers();
+    await _disposeAcpClientState();
+    _acpUnavailableForSession = false;
+
+    if (_runtimeAttachmentState == _RuntimeAttachmentState.detached) {
+      await _insertTimelineEntry(
+        role: 'status',
+        message: 'Conversation context reset. Reconnect runtime to continue.',
+      );
+      return true;
+    }
+
+    await _startRuntimeIfNeeded(force: true);
+    await _insertTimelineEntry(
+      role: 'status',
+      message: _runtimeAttachmentState == _RuntimeAttachmentState.detached
+          ? 'Conversation context reset. Runtime detached; reconnect to continue.'
+          : 'Conversation context reset.',
+    );
+    return true;
   }
 
   String? _nativeSteeringCommand(AiCliProvider provider) => switch (provider) {
