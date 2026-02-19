@@ -57,6 +57,12 @@ class AcpClient {
   /// Current mode ID from the last [createSession] call.
   String? get currentModeId => _currentModeId;
   String? _currentModeId;
+  final List<AcpCommand> _availableCommands = <AcpCommand>[];
+  final Map<String, int> _activePromptRequestIdsBySession = <String, int>{};
+
+  /// Available ACP commands from the latest session update.
+  List<AcpCommand> get availableCommands =>
+      List<AcpCommand>.unmodifiable(_availableCommands);
 
   /// Sends `initialize` and returns the agent capabilities.
   Future<Map<String, dynamic>> initialize({
@@ -83,19 +89,25 @@ class AcpClient {
   }
 
   /// Creates a new ACP session.
-  ///
-  /// When [cwd] is provided, it is sent as the session working directory.
-  Future<AcpSession> createSession({String? cwd}) async {
-    final params = <String, dynamic>{'mcpServers': <dynamic>[]};
-    final normalizedCwd = cwd?.trim();
-    if (normalizedCwd != null && normalizedCwd.isNotEmpty) {
-      params['cwd'] = normalizedCwd;
+  Future<AcpSession> createSession({required String cwd}) async {
+    final normalizedCwd = cwd.trim();
+    if (normalizedCwd.isEmpty || !normalizedCwd.startsWith('/')) {
+      throw ArgumentError.value(
+        cwd,
+        'cwd',
+        'ACP session cwd must be an absolute path.',
+      );
     }
+    final params = <String, dynamic>{
+      'cwd': normalizedCwd,
+      'mcpServers': <dynamic>[],
+    };
     final result = await _sendRequest('session/new', params);
 
     final sessionId = result['sessionId']?.toString() ?? '';
     _parseModels(result);
     _parseModes(result);
+    _parseCommands(result);
 
     return AcpSession(
       sessionId: sessionId,
@@ -103,6 +115,7 @@ class AcpClient {
       currentModelId: _currentModelId,
       availableModes: List<AcpMode>.unmodifiable(_availableModes),
       currentModeId: _currentModeId,
+      availableCommands: List<AcpCommand>.unmodifiable(_availableCommands),
     );
   }
 
@@ -114,7 +127,7 @@ class AcpClient {
     required String sessionId,
     required String text,
     String? modelId,
-  }) {
+  }) async {
     final params = <String, dynamic>{
       'sessionId': sessionId,
       'prompt': <Map<String, dynamic>>[
@@ -124,7 +137,75 @@ class AcpClient {
     if (modelId != null) {
       params['modelPreference'] = <String, dynamic>{'modelId': modelId};
     }
-    return _sendRequest('session/prompt', params);
+    final pending = _sendRequestInternal('session/prompt', params);
+    _activePromptRequestIdsBySession[sessionId] = pending.id;
+    try {
+      return await pending.future;
+    } finally {
+      final activeRequestId = _activePromptRequestIdsBySession[sessionId];
+      if (activeRequestId == pending.id) {
+        _activePromptRequestIdsBySession.remove(sessionId);
+      }
+    }
+  }
+
+  /// Requests an ACP mode switch for [sessionId].
+  Future<Map<String, dynamic>> setMode({
+    required String sessionId,
+    required String modeId,
+  }) => _sendRequest('session/set_mode', <String, dynamic>{
+    'sessionId': sessionId,
+    'modeId': modeId,
+  });
+
+  /// Requests an ACP model switch for [sessionId].
+  Future<Map<String, dynamic>> setModel({
+    required String sessionId,
+    required String modelId,
+  }) async {
+    try {
+      return await _sendRequest('session/set_config_option', <String, dynamic>{
+        'sessionId': sessionId,
+        'optionId': 'model',
+        'value': modelId,
+      });
+    } on AcpClientException catch (error) {
+      if (error.code == -32601) {
+        return _sendRequest('session/set_model', <String, dynamic>{
+          'sessionId': sessionId,
+          'modelId': modelId,
+        });
+      }
+      rethrow;
+    }
+  }
+
+  /// Sends cancellation for an active prompt, if one exists.
+  bool cancelActivePrompt(String sessionId) {
+    if (!_activePromptRequestIdsBySession.containsKey(sessionId)) {
+      return false;
+    }
+    _sendNotification('session/cancel', <String, dynamic>{
+      'sessionId': sessionId,
+    });
+    return true;
+  }
+
+  /// Gracefully asks ACP agent to shutdown.
+  Future<void> shutdown() async {
+    try {
+      await _sendRequest(
+        'shutdown',
+        const <String, dynamic>{},
+      ).timeout(const Duration(milliseconds: 300));
+    } on Exception {
+      // Best effort.
+    }
+    try {
+      _sendNotification('exit');
+    } on Exception {
+      // Best effort.
+    }
   }
 
   /// Disposes this client and releases resources.
@@ -132,6 +213,7 @@ class AcpClient {
     if (_disposed) {
       return;
     }
+    await shutdown();
     _disposed = true;
     await _stdoutSubscription?.cancel();
     _stdoutSubscription = null;
@@ -146,10 +228,16 @@ class AcpClient {
       }
     }
     _pendingRequests.clear();
+    _activePromptRequestIdsBySession.clear();
     await _eventsController.close();
   }
 
   Future<Map<String, dynamic>> _sendRequest(
+    String method,
+    Map<String, dynamic> params,
+  ) => _sendRequestInternal(method, params).future;
+
+  _AcpPendingRequest _sendRequestInternal(
     String method,
     Map<String, dynamic> params,
   ) {
@@ -164,7 +252,17 @@ class AcpClient {
     final completer = Completer<Map<String, dynamic>>();
     _pendingRequests[id] = completer;
     _process.write('${jsonEncode(message)}\n');
-    return completer.future;
+    return _AcpPendingRequest(id: id, future: completer.future);
+  }
+
+  void _sendNotification(String method, [Map<String, dynamic>? params]) {
+    _ensureNotDisposed();
+    final message = <String, dynamic>{
+      'jsonrpc': '2.0',
+      'method': method,
+      ...?(params == null ? null : <String, dynamic>{'params': params}),
+    };
+    _process.write('${jsonEncode(message)}\n');
   }
 
   void _onStdoutChunk(String chunk) {
@@ -173,13 +271,13 @@ class AcpClient {
   }
 
   void _drainBuffer() {
-    while (true) {
-      final newlineIndex = _stdoutBuffer.indexOf('\n');
-      if (newlineIndex < 0) {
-        break;
-      }
-      final line = _stdoutBuffer.substring(0, newlineIndex).trim();
-      _stdoutBuffer = _stdoutBuffer.substring(newlineIndex + 1);
+    if (_stdoutBuffer.isEmpty) {
+      return;
+    }
+    final lines = _stdoutBuffer.split('\n');
+    _stdoutBuffer = lines.removeLast();
+    for (final rawLine in lines) {
+      final line = rawLine.trim();
       if (line.isNotEmpty) {
         _handleJsonRpcLine(line);
       }
@@ -297,6 +395,75 @@ class AcpClient {
             rawUpdate: update,
           ),
         );
+      case 'plan':
+        _emitEvent(
+          AcpEvent(
+            sessionId: sessionId,
+            type: AcpEventType.plan,
+            text: _extractText(update['content']),
+            rawUpdate: update,
+          ),
+        );
+      case 'current_mode_update':
+        final modeId = _extractModeId(update);
+        if (modeId != null && modeId.isNotEmpty) {
+          _currentModeId = modeId;
+        }
+        final availableModes = _extractAvailableModes(update);
+        if (availableModes.isNotEmpty) {
+          _availableModes
+            ..clear()
+            ..addAll(availableModes);
+        }
+        _emitEvent(
+          AcpEvent(
+            sessionId: sessionId,
+            type: AcpEventType.currentModeUpdate,
+            text: modeId ?? '',
+            rawUpdate: update,
+          ),
+        );
+      case 'current_model_update':
+        final modelId = _extractModelId(update);
+        if (modelId != null && modelId.isNotEmpty) {
+          _currentModelId = modelId;
+        }
+        final availableModels = _extractAvailableModels(update);
+        if (availableModels.isNotEmpty) {
+          _availableModels
+            ..clear()
+            ..addAll(availableModels);
+        }
+        _emitEvent(
+          AcpEvent(
+            sessionId: sessionId,
+            type: AcpEventType.currentModelUpdate,
+            text: modelId ?? '',
+            rawUpdate: update,
+          ),
+        );
+      case 'available_commands_update':
+        final commands = _extractAvailableCommands(update);
+        _availableCommands
+          ..clear()
+          ..addAll(commands);
+        _emitEvent(
+          AcpEvent(
+            sessionId: sessionId,
+            type: AcpEventType.availableCommandsUpdate,
+            text: '${commands.length} commands available',
+            rawUpdate: update,
+          ),
+        );
+      case 'session_info_update':
+        _emitEvent(
+          AcpEvent(
+            sessionId: sessionId,
+            type: AcpEventType.sessionInfoUpdate,
+            text: update['title']?.toString() ?? 'Session info updated',
+            rawUpdate: update,
+          ),
+        );
       default:
         _emitEvent(
           AcpEvent(
@@ -312,6 +479,23 @@ class AcpClient {
   String _extractText(Object? content) {
     if (content is Map<String, dynamic>) {
       return content['text']?.toString() ?? '';
+    }
+    if (content is List<dynamic>) {
+      final parts = <String>[];
+      for (final item in content) {
+        if (item is Map<String, dynamic>) {
+          final nested = item['content'];
+          final extracted = switch (nested) {
+            final Map<String, dynamic> value => value['text']?.toString() ?? '',
+            final String value => value,
+            _ => item['text']?.toString() ?? '',
+          };
+          if (extracted.trim().isNotEmpty) {
+            parts.add(extracted.trim());
+          }
+        }
+      }
+      return parts.join('\n');
     }
     if (content is String) {
       return content;
@@ -331,7 +515,119 @@ class AcpClient {
         return detailedContent;
       }
     }
+    final content = update['content'];
+    final extractedContent = _extractText(content);
+    if (extractedContent.trim().isNotEmpty) {
+      return extractedContent;
+    }
     return update['status']?.toString() ?? '';
+  }
+
+  String? _extractModeId(Map<String, dynamic> update) {
+    final modes = update['modes'];
+    final value =
+        update['modeId'] ??
+        update['currentModeId'] ??
+        (modes is Map<String, dynamic> ? modes['currentModeId'] : null);
+    final modeId = value?.toString();
+    return modeId != null && modeId.trim().isNotEmpty ? modeId : null;
+  }
+
+  String? _extractModelId(Map<String, dynamic> update) {
+    final models = update['models'];
+    final value =
+        update['modelId'] ??
+        update['currentModelId'] ??
+        (models is Map<String, dynamic> ? models['currentModelId'] : null);
+    final modelId = value?.toString();
+    return modelId != null && modelId.trim().isNotEmpty ? modelId : null;
+  }
+
+  List<AcpMode> _extractAvailableModes(Map<String, dynamic> update) {
+    final availableValue = update['availableModes'] ?? update['modes'];
+    final available = switch (availableValue) {
+      final List<dynamic> value => value,
+      final Map<String, dynamic> value =>
+        value['availableModes'] is List<dynamic>
+            ? value['availableModes'] as List<dynamic>
+            : const <dynamic>[],
+      _ => const <dynamic>[],
+    };
+    final modes = <AcpMode>[];
+    for (final entry in available) {
+      if (entry is Map<String, dynamic>) {
+        modes.add(
+          AcpMode(
+            id: entry['id']?.toString() ?? '',
+            name: entry['name']?.toString() ?? '',
+            description: entry['description']?.toString(),
+          ),
+        );
+      }
+    }
+    return modes;
+  }
+
+  List<AcpModel> _extractAvailableModels(Map<String, dynamic> update) {
+    final availableValue = update['availableModels'] ?? update['models'];
+    final available = switch (availableValue) {
+      final List<dynamic> value => value,
+      final Map<String, dynamic> value =>
+        value['availableModels'] is List<dynamic>
+            ? value['availableModels'] as List<dynamic>
+            : const <dynamic>[],
+      _ => const <dynamic>[],
+    };
+    final models = <AcpModel>[];
+    for (final entry in available) {
+      if (entry is Map<String, dynamic>) {
+        models.add(
+          AcpModel(
+            modelId: entry['modelId']?.toString() ?? '',
+            name: entry['name']?.toString() ?? '',
+            description: entry['description']?.toString(),
+          ),
+        );
+      }
+    }
+    return models;
+  }
+
+  List<AcpCommand> _extractAvailableCommands(Map<String, dynamic> update) {
+    final commandsValue = update['commands'] ?? update['availableCommands'];
+    final commands = switch (commandsValue) {
+      final List<dynamic> value => value,
+      final Map<String, dynamic> value =>
+        value['availableCommands'] is List<dynamic>
+            ? value['availableCommands'] as List<dynamic>
+            : const <dynamic>[],
+      _ => const <dynamic>[],
+    };
+    if (commands.isEmpty) {
+      return const <AcpCommand>[];
+    }
+    final parsed = <AcpCommand>[];
+    for (final entry in commands) {
+      if (entry is Map<String, dynamic>) {
+        final id = entry['name']?.toString() ?? entry['id']?.toString() ?? '';
+        final normalizedId = id.trim();
+        if (normalizedId.isEmpty) {
+          continue;
+        }
+        final title =
+            entry['title']?.toString() ??
+            entry['name']?.toString() ??
+            normalizedId;
+        parsed.add(
+          AcpCommand(
+            id: normalizedId,
+            title: title.trim().isEmpty ? normalizedId : title,
+            description: entry['description']?.toString(),
+          ),
+        );
+      }
+    }
+    return parsed;
   }
 
   void _emitEvent(AcpEvent event) {
@@ -347,6 +643,7 @@ class AcpClient {
       }
     }
     _pendingRequests.clear();
+    _activePromptRequestIdsBySession.clear();
   }
 
   void _onStderrChunk(String chunk) {
@@ -364,6 +661,7 @@ class AcpClient {
       }
     }
     _pendingRequests.clear();
+    _activePromptRequestIdsBySession.clear();
   }
 
   void _parseModels(Map<String, dynamic> result) {
@@ -414,6 +712,12 @@ class AcpClient {
     }
   }
 
+  void _parseCommands(Map<String, dynamic> result) {
+    _availableCommands
+      ..clear()
+      ..addAll(_extractAvailableCommands(result));
+  }
+
   void _ensureNotDisposed() {
     if (_disposed) {
       throw const AcpClientException('AcpClient is already disposed.');
@@ -434,6 +738,21 @@ enum AcpEventType {
 
   /// Tool call result.
   toolCallUpdate,
+
+  /// Agent plan update.
+  plan,
+
+  /// Current mode changed.
+  currentModeUpdate,
+
+  /// Current model changed.
+  currentModelUpdate,
+
+  /// Available ACP commands changed.
+  availableCommandsUpdate,
+
+  /// Session info metadata changed.
+  sessionInfoUpdate,
 
   /// Unrecognized session update type.
   unknown,
@@ -490,6 +809,7 @@ class AcpSession {
     this.currentModelId,
     this.availableModes = const <AcpMode>[],
     this.currentModeId,
+    this.availableCommands = const <AcpCommand>[],
   });
 
   /// Remote session identifier.
@@ -506,6 +826,9 @@ class AcpSession {
 
   /// Currently selected mode ID.
   final String? currentModeId;
+
+  /// ACP commands available for this session.
+  final List<AcpCommand> availableCommands;
 }
 
 /// Model metadata from ACP.
@@ -536,6 +859,28 @@ class AcpMode {
 
   /// Optional description.
   final String? description;
+}
+
+/// Command metadata from ACP available-commands updates.
+class AcpCommand {
+  /// Creates an [AcpCommand].
+  const AcpCommand({required this.id, required this.title, this.description});
+
+  /// Stable command identifier.
+  final String id;
+
+  /// Human-readable title.
+  final String title;
+
+  /// Optional command description.
+  final String? description;
+}
+
+class _AcpPendingRequest {
+  const _AcpPendingRequest({required this.id, required this.future});
+
+  final int id;
+  final Future<Map<String, dynamic>> future;
 }
 
 /// Exception thrown by [AcpClient].

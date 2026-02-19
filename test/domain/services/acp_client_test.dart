@@ -148,7 +148,7 @@ void main() {
       expect(client.availableModels, hasLength(2));
     });
 
-    test('createSession omits cwd when not provided', () async {
+    test('createSession requires absolute cwd', () async {
       final initFuture = client.initialize();
       await Future<void>.delayed(Duration.zero);
       process.emitStdout(
@@ -160,13 +160,17 @@ void main() {
       );
       await initFuture;
 
-      final sessionFuture = client.createSession();
+      expect(
+        () => client.createSession(cwd: 'relative/path'),
+        throwsA(isA<ArgumentError>()),
+      );
+
+      final sessionFuture = client.createSession(cwd: '/test');
       await Future<void>.delayed(Duration.zero);
       final sent = jsonDecode(process.stdinWrites[1]) as Map<String, dynamic>;
       final sentParams = sent['params'] as Map<String, dynamic>;
-      expect(sentParams.containsKey('cwd'), isFalse);
+      expect(sentParams['cwd'], '/test');
       expect(sentParams['mcpServers'], isA<List<dynamic>>());
-
       process.emitStdout(
         '${jsonEncode(<String, dynamic>{
           'jsonrpc': '2.0',
@@ -275,6 +279,151 @@ void main() {
       expect(collectedEvents[1].text, 'Reading file');
       expect(collectedEvents[2].type, AcpEventType.agentMessage);
       expect(collectedEvents[2].text, 'Hello world');
+    });
+
+    test('cancelActivePrompt sends cancel notification with request id', () async {
+      final initFuture = client.initialize();
+      await Future<void>.delayed(Duration.zero);
+      process.emitStdout(
+        '${jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 1,
+          'result': <String, dynamic>{'protocolVersion': 1},
+        })}\n',
+      );
+      await initFuture;
+
+      final sessionFuture = client.createSession(cwd: '/test');
+      await Future<void>.delayed(Duration.zero);
+      process.emitStdout(
+        '${jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 2,
+          'result': <String, dynamic>{'sessionId': 'sess-1', 'models': <String, dynamic>{}, 'modes': <String, dynamic>{}},
+        })}\n',
+      );
+      await sessionFuture;
+
+      final promptFuture = client.sendPrompt(
+        sessionId: 'sess-1',
+        text: 'hello',
+      );
+      await Future<void>.delayed(Duration.zero);
+      final didCancel = client.cancelActivePrompt('sess-1');
+      expect(didCancel, isTrue);
+
+      expect(process.stdinWrites, hasLength(4));
+      final cancelMessage =
+          jsonDecode(process.stdinWrites.last) as Map<String, dynamic>;
+      expect(cancelMessage['method'], 'session/cancel');
+      expect(
+        (cancelMessage['params'] as Map<String, dynamic>)['sessionId'],
+        'sess-1',
+      );
+
+      process.emitStdout(
+        '${jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 3,
+          'error': <String, dynamic>{'code': -32800, 'message': 'Request cancelled'},
+        })}\n',
+      );
+      expect(promptFuture, throwsA(isA<AcpClientException>()));
+    });
+
+    test('parses ACP mode/model/commands session updates', () async {
+      final initFuture = client.initialize();
+      await Future<void>.delayed(Duration.zero);
+      process.emitStdout(
+        '${jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 1,
+          'result': <String, dynamic>{'protocolVersion': 1},
+        })}\n',
+      );
+      await initFuture;
+
+      final sessionFuture = client.createSession(cwd: '/test');
+      await Future<void>.delayed(Duration.zero);
+      process.emitStdout(
+        '${jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 2,
+          'result': <String, dynamic>{'sessionId': 'sess-1', 'models': <String, dynamic>{}, 'modes': <String, dynamic>{}},
+        })}\n',
+      );
+      await sessionFuture;
+
+      final collectedEvents = <AcpEvent>[];
+      final eventSub = client.events.listen(collectedEvents.add);
+
+      process
+        ..emitStdout(
+          '${jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'method': 'session/update',
+            'params': <String, dynamic>{
+              'sessionId': 'sess-1',
+              'update': <String, dynamic>{
+                'sessionUpdate': 'current_mode_update',
+                'modeId': 'code',
+                'availableModes': <dynamic>[
+                  <String, dynamic>{'id': 'code', 'name': 'Code'},
+                ],
+              },
+            },
+          })}\n',
+        )
+        ..emitStdout(
+          '${jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'method': 'session/update',
+            'params': <String, dynamic>{
+              'sessionId': 'sess-1',
+              'update': <String, dynamic>{
+                'sessionUpdate': 'current_model_update',
+                'modelId': 'model-x',
+                'availableModels': <dynamic>[
+                  <String, dynamic>{'modelId': 'model-x', 'name': 'Model X'},
+                ],
+              },
+            },
+          })}\n',
+        )
+        ..emitStdout(
+          '${jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'method': 'session/update',
+            'params': <String, dynamic>{
+              'sessionId': 'sess-1',
+              'update': <String, dynamic>{
+                'sessionUpdate': 'available_commands_update',
+                'commands': <dynamic>[
+                  <String, dynamic>{'id': 'plan', 'title': 'Plan'},
+                ],
+              },
+            },
+          })}\n',
+        );
+      await Future<void>.delayed(Duration.zero);
+      await eventSub.cancel();
+
+      expect(client.currentModeId, 'code');
+      expect(client.currentModelId, 'model-x');
+      expect(client.availableCommands, hasLength(1));
+      expect(client.availableCommands.first.id, 'plan');
+      expect(
+        collectedEvents.any(
+          (event) => event.type == AcpEventType.currentModeUpdate,
+        ),
+        isTrue,
+      );
+      expect(
+        collectedEvents.any(
+          (event) => event.type == AcpEventType.availableCommandsUpdate,
+        ),
+        isTrue,
+      );
     });
 
     test('handles JSON-RPC errors gracefully', () async {

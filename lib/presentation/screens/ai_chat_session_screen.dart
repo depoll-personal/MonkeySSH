@@ -95,7 +95,9 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
   AcpClient? _acpClient;
   AcpSession? _acpSession;
   bool _acpUnavailableForSession = false;
+  String? _acpSessionTitle;
   String? _savedAcpModelId;
+  String? _savedAcpModeId;
   final List<String> _steeringPromptQueue = <String>[];
   List<String> _availableSlashCommands = const <String>[];
 
@@ -106,6 +108,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
   int? _acpThoughtEntryId;
   var _acpMessageInsertPending = false;
   var _acpThoughtInsertPending = false;
+  var _acpBufferGeneration = 0;
 
   bool _runtimeStarted = false;
   bool _reconnecting = false;
@@ -210,30 +213,58 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('AI Session #${widget.sessionId}'),
+        title: Text(_acpSessionTitle ?? 'AI Session #${widget.sessionId}'),
         actions: [
+          if (isAcp && _sending)
+            IconButton(
+              icon: const Icon(Icons.stop_circle_outlined),
+              tooltip: 'Cancel ACP turn',
+              onPressed: _cancelActiveAcpTurn,
+            ),
+          if (isAcp && acpSession.availableCommands.isNotEmpty)
+            IconButton(
+              icon: const Icon(Icons.flash_on_outlined),
+              tooltip: 'ACP commands',
+              onPressed: _showAcpCommandsSheet,
+            ),
+          if (isAcp && acpSession.availableModes.length > 1)
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.tune, size: 20),
+              tooltip: 'Select mode',
+              onSelected: (modeId) => unawaited(_selectAcpMode(modeId)),
+              itemBuilder: (context) => acpSession.availableModes
+                  .map(
+                    (mode) => PopupMenuItem<String>(
+                      value: mode.id,
+                      child: Row(
+                        children: [
+                          if (mode.id == acpSession.currentModeId)
+                            Icon(
+                              Icons.check,
+                              size: 16,
+                              color: theme.colorScheme.primary,
+                            )
+                          else
+                            const SizedBox(width: 16),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              mode.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                  .toList(growable: false),
+            ),
           if (isAcp && acpSession.availableModels.length > 1)
             PopupMenuButton<String>(
               icon: const Icon(Icons.model_training, size: 20),
               tooltip: 'Select model',
-              onSelected: (modelId) {
-                setState(() {
-                  _acpSession = AcpSession(
-                    sessionId: acpSession.sessionId,
-                    availableModels: acpSession.availableModels,
-                    currentModelId: modelId,
-                    availableModes: acpSession.availableModes,
-                    currentModeId: acpSession.currentModeId,
-                  );
-                });
-                unawaited(
-                  _persistTimelineEntrySafely(
-                    role: 'status',
-                    message: 'Model changed to $modelId',
-                    metadata: <String, dynamic>{'acpModelId': modelId},
-                  ),
-                );
-              },
+              onSelected: (modelId) => unawaited(_selectAcpModel(modelId)),
               itemBuilder: (context) => acpSession.availableModels
                   .map(
                     (model) => PopupMenuItem<String>(
@@ -396,7 +427,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       return 'acp';
     }
     final telemetry = _latestCliTelemetry(entries: entries);
-    return telemetry.mode ?? '--';
+    return telemetry.mode ?? _savedAcpModeId ?? '--';
   }
 
   String _contextRemainingLabel({required List<AiTimelineEntry>? entries}) {
@@ -408,6 +439,132 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       return 'Context: ${telemetry.contextUsedTokens} tok used';
     }
     return 'Context: --';
+  }
+
+  Future<void> _cancelActiveAcpTurn() async {
+    final client = _acpClient;
+    final session = _acpSession;
+    if (client == null || session == null) {
+      return;
+    }
+    final didCancel = client.cancelActivePrompt(session.sessionId);
+    await _insertTimelineEntry(
+      role: 'status',
+      message: didCancel
+          ? 'Cancelling active ACP turn...'
+          : 'No active ACP turn to cancel.',
+    );
+  }
+
+  void _showAcpCommandsSheet() {
+    final session = _acpSession;
+    if (session == null || session.availableCommands.isEmpty) {
+      return;
+    }
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        final theme = Theme.of(context);
+        return SafeArea(
+          child: ListView.builder(
+            shrinkWrap: true,
+            itemCount: session.availableCommands.length,
+            itemBuilder: (context, index) {
+              final command = session.availableCommands[index];
+              return ListTile(
+                leading: Icon(
+                  Icons.code_rounded,
+                  color: theme.colorScheme.primary,
+                ),
+                title: Text(command.title),
+                subtitle: command.description == null
+                    ? Text('/${command.id}')
+                    : Text('/${command.id}\n${command.description!}'),
+                isThreeLine: command.description != null,
+                onTap: () {
+                  Navigator.of(context).pop();
+                  _applyComposerSuggestion(
+                    AiComposerSuggestion(
+                      type: AiComposerSuggestionType.slashCommand,
+                      label: '/${command.id}',
+                      insertText: '/${command.id} ',
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _selectAcpMode(String modeId) async {
+    final session = _acpSession;
+    final client = _acpClient;
+    if (session == null || client == null) {
+      return;
+    }
+    setState(() {
+      _acpSession = AcpSession(
+        sessionId: session.sessionId,
+        availableModels: session.availableModels,
+        currentModelId: session.currentModelId,
+        availableModes: session.availableModes,
+        currentModeId: modeId,
+        availableCommands: session.availableCommands,
+      );
+      _savedAcpModeId = modeId;
+    });
+    try {
+      await client.setMode(sessionId: session.sessionId, modeId: modeId);
+      await _persistTimelineEntrySafely(
+        role: 'status',
+        message: 'Mode changed to $modeId',
+        metadata: <String, dynamic>{'currentModeId': modeId},
+      );
+    } on AcpClientException catch (error) {
+      await _insertTimelineEntry(
+        role: 'error',
+        message: 'Failed to set ACP mode: $error',
+      );
+    }
+  }
+
+  Future<void> _selectAcpModel(String modelId) async {
+    final session = _acpSession;
+    final client = _acpClient;
+    if (session == null || client == null) {
+      return;
+    }
+    setState(() {
+      _acpSession = AcpSession(
+        sessionId: session.sessionId,
+        availableModels: session.availableModels,
+        currentModelId: modelId,
+        availableModes: session.availableModes,
+        currentModeId: session.currentModeId,
+        availableCommands: session.availableCommands,
+      );
+      _savedAcpModelId = modelId;
+    });
+    var appliedRemotely = true;
+    try {
+      await client.setModel(sessionId: session.sessionId, modelId: modelId);
+    } on AcpClientException {
+      appliedRemotely = false;
+    }
+    await _persistTimelineEntrySafely(
+      role: 'status',
+      message: appliedRemotely
+          ? 'Model changed to $modelId'
+          : 'Model preference set to $modelId (remote ACP set_model unsupported).',
+      metadata: <String, dynamic>{
+        'acpModelId': modelId,
+        if (!appliedRemotely) 'modelPreferenceOnly': true,
+      },
+    );
   }
 
   _CliRuntimeTelemetry _latestCliTelemetry({
@@ -861,6 +1018,14 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     _savedAcpModelId =
         AiSessionMetadata.readString(latestMetadata, 'acpModelId') ??
         AiSessionMetadata.readString(latestMetadata, 'currentModelId');
+    _savedAcpModeId = AiSessionMetadata.readString(
+      latestMetadata,
+      'currentModeId',
+    );
+    _acpSessionTitle = AiSessionMetadata.readString(
+      latestMetadata,
+      'acpSessionTitle',
+    );
 
     return _AiSessionRuntimeContext(
       connectionId: connectionId,
@@ -1212,21 +1377,68 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           currentModelId: savedModelId,
           availableModes: session.availableModes,
           currentModeId: session.currentModeId,
+          availableCommands: session.availableCommands,
         );
       } else {
         _acpSession = session;
+      }
+      final savedModeId = _savedAcpModeId;
+      final currentSession = _acpSession;
+      if (currentSession != null &&
+          savedModeId != null &&
+          currentSession.availableModes.any((m) => m.id == savedModeId)) {
+        _acpSession = AcpSession(
+          sessionId: currentSession.sessionId,
+          availableModels: currentSession.availableModels,
+          currentModelId: currentSession.currentModelId,
+          availableModes: currentSession.availableModes,
+          currentModeId: savedModeId,
+          availableCommands: currentSession.availableCommands,
+        );
+        if (savedModeId != session.currentModeId) {
+          try {
+            await client.setMode(
+              sessionId: session.sessionId,
+              modeId: savedModeId,
+            );
+          } on AcpClientException {
+            // Keep local mode as preference even if remote call is unsupported.
+          }
+        }
+      }
+      if (session.availableCommands.isNotEmpty) {
+        final slashCommands = session.availableCommands
+            .map((command) {
+              final id = command.id.trim();
+              return id.startsWith('/') ? id : '/$id';
+            })
+            .where((value) => value.length > 1)
+            .toList(growable: false);
+        final merged = LinkedHashSet<String>.from(
+          _baseSlashCommands(context.provider),
+        )..addAll(slashCommands);
+        _availableSlashCommands = merged.toList(growable: false);
+        _composerAutocompleteEngine = AiComposerAutocompleteEngine(
+          slashCommands: _availableSlashCommands,
+        );
       }
       if (session.availableModels.isNotEmpty) {
         await _insertTimelineEntry(
           role: 'status',
           message:
               'Session created · model: ${session.currentModelId ?? 'default'} · '
-              '${session.availableModels.length} models available',
+              '${session.availableModels.length} models · '
+              '${session.availableModes.length} modes · '
+              '${session.availableCommands.length} commands',
           metadata: <String, dynamic>{
             'acpSessionId': session.sessionId,
             'currentModelId': session.currentModelId,
             'availableModels': session.availableModels
                 .map((m) => m.modelId)
+                .toList(),
+            'availableModes': session.availableModes.map((m) => m.id).toList(),
+            'availableCommands': session.availableCommands
+                .map((c) => c.id)
                 .toList(),
           },
         );
@@ -1625,6 +1837,150 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
             metadata: metadata,
           ),
         );
+      case AcpEventType.currentModeUpdate:
+        final modesUpdate = _metadataMap(event.rawUpdate['modes']);
+        final modeId =
+            event.rawUpdate['modeId']?.toString() ??
+            event.rawUpdate['currentModeId']?.toString() ??
+            modesUpdate?['currentModeId']?.toString();
+        final session = _acpSession;
+        if (session != null && modeId != null && modeId.isNotEmpty) {
+          final availableModes = _parseAcpModes(
+            event.rawUpdate['availableModes'] ?? event.rawUpdate['modes'],
+            fallback: session.availableModes,
+          );
+          setState(() {
+            _acpSession = AcpSession(
+              sessionId: session.sessionId,
+              availableModels: session.availableModels,
+              currentModelId: session.currentModelId,
+              availableModes: availableModes,
+              currentModeId: modeId,
+              availableCommands: session.availableCommands,
+            );
+            _savedAcpModeId = modeId;
+          });
+        }
+        unawaited(
+          _persistTimelineEntrySafely(
+            role: 'status',
+            message: modeId == null || modeId.isEmpty
+                ? 'ACP mode updated.'
+                : 'Mode changed to $modeId',
+            metadata: <String, dynamic>{
+              'acpEventType': event.type.name,
+              'payload': event.rawUpdate,
+            },
+          ),
+        );
+      case AcpEventType.currentModelUpdate:
+        final modelsUpdate = _metadataMap(event.rawUpdate['models']);
+        final modelId =
+            event.rawUpdate['modelId']?.toString() ??
+            event.rawUpdate['currentModelId']?.toString() ??
+            modelsUpdate?['currentModelId']?.toString();
+        final session = _acpSession;
+        if (session != null && modelId != null && modelId.isNotEmpty) {
+          final availableModels = _parseAcpModels(
+            event.rawUpdate['availableModels'] ?? event.rawUpdate['models'],
+            fallback: session.availableModels,
+          );
+          setState(() {
+            _acpSession = AcpSession(
+              sessionId: session.sessionId,
+              availableModels: availableModels,
+              currentModelId: modelId,
+              availableModes: session.availableModes,
+              currentModeId: session.currentModeId,
+              availableCommands: session.availableCommands,
+            );
+            _savedAcpModelId = modelId;
+          });
+        }
+        unawaited(
+          _persistTimelineEntrySafely(
+            role: 'status',
+            message: modelId == null || modelId.isEmpty
+                ? 'ACP model updated.'
+                : 'Model changed to $modelId',
+            metadata: <String, dynamic>{
+              'acpEventType': event.type.name,
+              'payload': event.rawUpdate,
+            },
+          ),
+        );
+      case AcpEventType.availableCommandsUpdate:
+        final commands = _parseAcpSlashCommands(event.rawUpdate);
+        final parsedCommands = _parseAcpCommands(event.rawUpdate);
+        final session = _acpSession;
+        if (session != null) {
+          setState(() {
+            _acpSession = AcpSession(
+              sessionId: session.sessionId,
+              availableModels: session.availableModels,
+              currentModelId: session.currentModelId,
+              availableModes: session.availableModes,
+              currentModeId: session.currentModeId,
+              availableCommands: parsedCommands,
+            );
+          });
+        }
+        if (commands.isNotEmpty) {
+          final merged = LinkedHashSet<String>.from(
+            _baseSlashCommands(_sessionContext?.provider ?? AiCliProvider.acp),
+          )..addAll(commands);
+          final nextCommands = merged.toList(growable: false);
+          if (!_listsEqual(_availableSlashCommands, nextCommands)) {
+            setState(() {
+              _availableSlashCommands = nextCommands;
+              _composerAutocompleteEngine = AiComposerAutocompleteEngine(
+                slashCommands: _availableSlashCommands,
+              );
+            });
+            unawaited(_refreshComposerSuggestions());
+          }
+        }
+        unawaited(
+          _persistTimelineEntrySafely(
+            role: 'status',
+            message: commands.isEmpty
+                ? 'ACP commands updated.'
+                : 'ACP commands updated (${commands.length}).',
+            metadata: <String, dynamic>{
+              'acpEventType': event.type.name,
+              'commands': commands,
+              'payload': event.rawUpdate,
+            },
+          ),
+        );
+      case AcpEventType.sessionInfoUpdate:
+        final title = event.rawUpdate['title']?.toString();
+        if (title != null && title.trim().isNotEmpty) {
+          setState(() {
+            _acpSessionTitle = title.trim();
+          });
+        }
+        unawaited(
+          _persistTimelineEntrySafely(
+            role: 'status',
+            message: event.text,
+            metadata: <String, dynamic>{
+              'acpEventType': event.type.name,
+              'payload': event.rawUpdate,
+            },
+          ),
+        );
+      case AcpEventType.plan:
+        unawaited(
+          _persistTimelineEntrySafely(
+            role: 'thinking',
+            message: event.text.isEmpty ? 'Plan updated.' : event.text,
+            metadata: <String, dynamic>{
+              'acpEventType': event.type.name,
+              'payload': event.rawUpdate,
+            },
+          ),
+        );
       case AcpEventType.unknown:
         unawaited(
           _persistTimelineEntrySafely(
@@ -1639,6 +1995,121 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     }
   }
 
+  List<AcpMode> _parseAcpModes(
+    Object? value, {
+    required List<AcpMode> fallback,
+  }) {
+    final list = switch (value) {
+      final List<dynamic> raw => raw,
+      final Map<String, dynamic> raw =>
+        raw['availableModes'] is List<dynamic>
+            ? raw['availableModes'] as List<dynamic>
+            : const <dynamic>[],
+      _ => const <dynamic>[],
+    };
+    if (list.isEmpty) {
+      return fallback;
+    }
+    final modes = <AcpMode>[];
+    for (final entry in list) {
+      if (entry is Map<String, dynamic>) {
+        modes.add(
+          AcpMode(
+            id: entry['id']?.toString() ?? '',
+            name: entry['name']?.toString() ?? '',
+            description: entry['description']?.toString(),
+          ),
+        );
+      }
+    }
+    return modes.isEmpty ? fallback : modes;
+  }
+
+  List<AcpModel> _parseAcpModels(
+    Object? value, {
+    required List<AcpModel> fallback,
+  }) {
+    final list = switch (value) {
+      final List<dynamic> raw => raw,
+      final Map<String, dynamic> raw =>
+        raw['availableModels'] is List<dynamic>
+            ? raw['availableModels'] as List<dynamic>
+            : const <dynamic>[],
+      _ => const <dynamic>[],
+    };
+    if (list.isEmpty) {
+      return fallback;
+    }
+    final models = <AcpModel>[];
+    for (final entry in list) {
+      if (entry is Map<String, dynamic>) {
+        models.add(
+          AcpModel(
+            modelId: entry['modelId']?.toString() ?? '',
+            name: entry['name']?.toString() ?? '',
+            description: entry['description']?.toString(),
+          ),
+        );
+      }
+    }
+    return models.isEmpty ? fallback : models;
+  }
+
+  List<String> _parseAcpSlashCommands(Object? value) {
+    final commands = _parseAcpCommands(value);
+    if (commands.isEmpty) {
+      return const <String>[];
+    }
+    final slashCommands = <String>{};
+    for (final command in commands) {
+      final normalized = command.id.trim();
+      if (normalized.isEmpty) {
+        continue;
+      }
+      slashCommands.add(
+        normalized.startsWith('/') ? normalized : '/$normalized',
+      );
+    }
+    return slashCommands.toList(growable: false);
+  }
+
+  List<AcpCommand> _parseAcpCommands(Object? value) {
+    final list = switch (value) {
+      final List<dynamic> raw => raw,
+      final Map<String, dynamic> raw =>
+        raw['availableCommands'] is List<dynamic>
+            ? raw['availableCommands'] as List<dynamic>
+            : raw['commands'] is List<dynamic>
+            ? raw['commands'] as List<dynamic>
+            : const <dynamic>[],
+      _ => const <dynamic>[],
+    };
+    if (list.isEmpty) {
+      return const <AcpCommand>[];
+    }
+    final commands = <AcpCommand>[];
+    for (final entry in list) {
+      if (entry is! Map<String, dynamic>) {
+        continue;
+      }
+      final id = entry['name']?.toString() ?? entry['id']?.toString() ?? '';
+      final title =
+          entry['title']?.toString() ?? entry['name']?.toString() ?? id;
+      final normalizedId = id.trim();
+      if (normalizedId.isEmpty) {
+        continue;
+      }
+      commands.add(
+        AcpCommand(
+          id: normalizedId,
+          title: title.trim().isEmpty ? normalizedId : title,
+          description: entry['description']?.toString(),
+        ),
+      );
+    }
+    return commands;
+  }
+
   /// Appends a streaming chunk to [buffer] and creates or updates
   /// the corresponding timeline entry.
   void _appendAcpChunk({
@@ -1650,6 +2121,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     required String role,
     required String text,
   }) {
+    final generation = _acpBufferGeneration;
     buffer.write(text);
     final entryId = entryIdGetter();
     if (entryId != null) {
@@ -1668,6 +2140,9 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       unawaited(
         _insertTimelineEntry(role: role, message: buffer.toString())
             .then((insertedId) async {
+              if (generation != _acpBufferGeneration) {
+                return;
+              }
               if (insertedId != null) {
                 entryIdSetter(insertedId);
                 await ref
@@ -1675,7 +2150,11 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
                     .updateTimelineEntryMessage(insertedId, buffer.toString());
               }
             })
-            .whenComplete(() => insertPendingSetter(pending: false)),
+            .whenComplete(() {
+              if (generation == _acpBufferGeneration) {
+                insertPendingSetter(pending: false);
+              }
+            }),
       );
     }
   }
@@ -1683,6 +2162,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
   /// Resets streaming buffers between turns (e.g., before tool calls or
   /// at end of turn).
   void _flushAcpBuffers() {
+    _acpBufferGeneration++;
     _acpMessageBuffer.clear();
     _acpMessageEntryId = null;
     _acpMessageInsertPending = false;
@@ -1834,6 +2314,11 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       'resumedSession': context.resumedSession,
       if (context.connectionId != null) 'connectionId': context.connectionId,
       if (context.hostId != null) 'hostId': context.hostId,
+      if (_acpSessionTitle != null) 'acpSessionTitle': _acpSessionTitle,
+      if (_acpSession?.currentModelId != null)
+        'currentModelId': _acpSession!.currentModelId,
+      if (_acpSession?.currentModeId != null)
+        'currentModeId': _acpSession!.currentModeId,
     };
   }
 
