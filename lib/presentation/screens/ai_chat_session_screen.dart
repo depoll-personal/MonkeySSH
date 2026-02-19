@@ -94,6 +94,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
   _AiSessionRuntimeContext? _sessionContext;
   AcpClient? _acpClient;
   AcpSession? _acpSession;
+  bool _acpUnavailableForSession = false;
   String? _savedAcpModelId;
   final List<String> _steeringPromptQueue = <String>[];
   List<String> _availableSlashCommands = const <String>[];
@@ -152,8 +153,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     _promptFocusNode.dispose();
     _scrollController.dispose();
     unawaited(_runtimeTimelineSubscription?.cancel());
-    unawaited(_acpEventSubscription?.cancel());
-    unawaited(_acpClient?.dispose());
+    unawaited(_disposeAcpClientState());
     super.dispose();
   }
 
@@ -1004,15 +1004,37 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       ref.read(activeSessionsProvider.notifier).getSession(connectionId) !=
       null;
 
+  bool _prefersAcpTransport(AiCliProvider provider) => switch (provider) {
+    AiCliProvider.claude ||
+    AiCliProvider.codex ||
+    AiCliProvider.opencode ||
+    AiCliProvider.copilot ||
+    AiCliProvider.gemini ||
+    AiCliProvider.acp => true,
+  };
+
+  bool _requiresAcpTransport(AiCliProvider provider) =>
+      provider == AiCliProvider.acp;
+
+  Future<void> _launchAdapterRuntime({
+    required _AiSessionRuntimeContext context,
+    required int connectionId,
+  }) async {
+    await ref
+        .read(aiRuntimeServiceProvider)
+        .launch(
+          AiRuntimeLaunchRequest(
+            aiSessionId: widget.sessionId,
+            connectionId: connectionId,
+            provider: context.provider,
+            executableOverride: context.executableOverride,
+            remoteWorkingDirectory: context.remoteWorkingDirectory,
+          ),
+        );
+  }
+
   Future<void> _startRuntimeIfNeeded({bool force = false}) async {
     final runtimeService = ref.read(aiRuntimeServiceProvider);
-    if (_runtimeStarted &&
-        runtimeService.hasActiveRunForSession(widget.sessionId)) {
-      return;
-    }
-    if (_runtimeStarted) {
-      _runtimeStarted = false;
-    }
     final context = _sessionContext;
     if (context == null) {
       return;
@@ -1028,8 +1050,12 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       return;
     }
 
-    final useAcp = context.provider.capabilities.supportsAcp;
-    if (runtimeService.hasActiveRunForSession(widget.sessionId)) {
+    final useAcp = _prefersAcpTransport(context.provider);
+    final requiresAcp = _requiresAcpTransport(context.provider);
+    final hasActiveRun = runtimeService.hasActiveRunForSession(
+      widget.sessionId,
+    );
+    if ((_runtimeStarted && hasActiveRun) || hasActiveRun) {
       _runtimeStarted = true;
       if (mounted) {
         setState(() {
@@ -1038,13 +1064,31 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
               : _RuntimeAttachmentState.attached;
         });
       }
-      if (useAcp && _acpClient == null) {
-        await _initializeAcpClient(context);
+      if (useAcp && _acpClient == null && !_acpUnavailableForSession) {
+        final acpReady = await _initializeAcpClient(
+          context,
+          emitFailure: requiresAcp,
+        );
+        if (acpReady) {
+          _acpUnavailableForSession = false;
+        }
+        if (!acpReady && !requiresAcp) {
+          _acpUnavailableForSession = true;
+          await _insertTimelineEntry(
+            role: 'status',
+            message:
+                'ACP unavailable for ${context.provider.executable}; using provider adapter mode.',
+          );
+        }
       }
       return;
     }
+    if (_runtimeStarted) {
+      _runtimeStarted = false;
+    }
 
     _runtimeStarted = true;
+    _acpUnavailableForSession = false;
     try {
       await runtimeService.launch(
         AiRuntimeLaunchRequest(
@@ -1058,6 +1102,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           acpMode: useAcp,
         ),
       );
+
       if (mounted) {
         setState(() {
           _runtimeAttachmentState = context.resumedSession
@@ -1066,7 +1111,26 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         });
       }
       if (useAcp) {
-        await _initializeAcpClient(context);
+        final acpReady = await _initializeAcpClient(
+          context,
+          emitFailure: requiresAcp,
+        );
+        if (acpReady) {
+          _acpUnavailableForSession = false;
+        }
+        if (!acpReady && !requiresAcp) {
+          _acpUnavailableForSession = true;
+          await runtimeService.cancel(aiSessionId: widget.sessionId);
+          await _launchAdapterRuntime(
+            context: context,
+            connectionId: connectionId,
+          );
+          await _insertTimelineEntry(
+            role: 'status',
+            message:
+                'ACP unavailable for ${context.provider.executable}; switched to provider adapter mode.',
+          );
+        }
       }
       await ref
           .read(aiRepositoryProvider)
@@ -1083,15 +1147,32 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     }
   }
 
-  Future<void> _initializeAcpClient(_AiSessionRuntimeContext context) async {
+  Future<void> _disposeAcpClientState() async {
+    await _acpEventSubscription?.cancel();
+    _acpEventSubscription = null;
+    final client = _acpClient;
+    _acpClient = null;
+    _acpSession = null;
+    if (client != null) {
+      await client.dispose();
+    }
+  }
+
+  Future<bool> _initializeAcpClient(
+    _AiSessionRuntimeContext context, {
+    bool emitFailure = true,
+  }) async {
+    await _disposeAcpClientState();
     final runtimeService = ref.read(aiRuntimeServiceProvider);
     final process = runtimeService.getActiveProcess(widget.sessionId);
     if (process == null) {
-      await _insertTimelineEntry(
-        role: 'error',
-        message: 'ACP process not available after launch.',
-      );
-      return;
+      if (emitFailure) {
+        await _insertTimelineEntry(
+          role: 'error',
+          message: 'ACP process not available after launch.',
+        );
+      }
+      return false;
     }
     final client = AcpClient(process: process);
     _acpClient = client;
@@ -1107,7 +1188,9 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       },
     );
     try {
-      final initResult = await client.initialize();
+      final initResult = await client.initialize().timeout(
+        const Duration(seconds: 6),
+      );
       final agentInfo = client.agentInfo;
       await _insertTimelineEntry(
         role: 'status',
@@ -1116,9 +1199,9 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
             '${agentInfo?.version != null ? ' v${agentInfo!.version}' : ''}',
         metadata: <String, dynamic>{'acpInitialize': initResult},
       );
-      final session = await client.createSession(
-        cwd: await _resolveAcpSessionCwd(context),
-      );
+      final session = await client
+          .createSession(cwd: await _resolveAcpSessionCwd(context))
+          .timeout(const Duration(seconds: 6));
       // Restore previously selected model if persisted.
       final savedModelId = _savedAcpModelId;
       if (savedModelId != null &&
@@ -1148,23 +1231,45 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           },
         );
       }
+      _acpUnavailableForSession = false;
+      return true;
     } on AcpClientException catch (error) {
-      final isCopilot = context.provider == AiCliProvider.copilot;
-      await _insertTimelineEntry(
-        role: 'error',
-        message:
-            'ACP initialization failed: $error\n\n'
-            '${isCopilot ? 'If this is Copilot, run `copilot login` on the remote host first.\n\n' : ''}'
-            'Make sure the CLI is installed and in your PATH on the remote host.',
-        metadata: <String, dynamic>{
-          if (error.code != null) 'acpErrorCode': error.code,
-          if (error.data != null) 'acpErrorData': error.data,
-          'provider': context.provider.name,
-          if (context.executableOverride != null)
-            'executableOverride': context.executableOverride,
-        },
-      );
+      if (emitFailure) {
+        final isCopilot = context.provider == AiCliProvider.copilot;
+        await _insertTimelineEntry(
+          role: 'error',
+          message:
+              'ACP initialization failed: $error\n\n'
+              '${isCopilot ? 'If this is Copilot, run `copilot login` on the remote host first.\n\n' : ''}'
+              'Make sure the CLI is installed and in your PATH on the remote host.',
+          metadata: <String, dynamic>{
+            if (error.code != null) 'acpErrorCode': error.code,
+            if (error.data != null) 'acpErrorData': error.data,
+            'provider': context.provider.name,
+            if (context.executableOverride != null)
+              'executableOverride': context.executableOverride,
+          },
+        );
+      }
+    } on TimeoutException catch (error) {
+      if (emitFailure) {
+        await _insertTimelineEntry(
+          role: 'error',
+          message: 'ACP initialization timed out: $error',
+          metadata: <String, dynamic>{'provider': context.provider.name},
+        );
+      }
+    } on Exception catch (error) {
+      if (emitFailure) {
+        await _insertTimelineEntry(
+          role: 'error',
+          message: 'ACP initialization failed: $error',
+          metadata: <String, dynamic>{'provider': context.provider.name},
+        );
+      }
     }
+    await _disposeAcpClientState();
+    return false;
   }
 
   Future<String> _resolveAcpSessionCwd(_AiSessionRuntimeContext context) async {
@@ -1624,6 +1729,16 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         return;
       }
       await _applyQueuedNativeSteering(context);
+      final acpClient = _acpClient;
+      final acpSession = _acpSession;
+      if (acpClient != null && acpSession != null) {
+        await _sendAcpPrompt(
+          client: acpClient,
+          sessionId: acpSession.sessionId,
+          prompt: prompt,
+        );
+        return;
+      }
       await ref
           .read(aiRuntimeServiceProvider)
           .send(prompt, appendNewline: true, aiSessionId: widget.sessionId);
