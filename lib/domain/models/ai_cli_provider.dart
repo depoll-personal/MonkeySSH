@@ -81,6 +81,7 @@ const _claudeCapabilities = AiCliProviderCapabilities(
   supportsStructuredOutput: true,
   structuredOutputArguments: <String>['--output-format', 'json'],
   composerSlashCommands: <String>['/help', '/clear', '/model', '/compact'],
+  autoStartRuntime: false,
 );
 const _codexCapabilities = AiCliProviderCapabilities(
   supportsStructuredOutput: true,

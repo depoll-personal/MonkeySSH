@@ -849,6 +849,10 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
 
     try {
       await _insertTimelineEntry(role: 'user', message: prompt);
+      if (context != null && context.provider == AiCliProvider.claude) {
+        await _runClaudePrompt(prompt: prompt, context: context);
+        return;
+      }
       if (widget.autoStartRuntime &&
           _runtimeAttachmentState != _RuntimeAttachmentState.detached) {
         await _startRuntimeIfNeeded(force: true);
@@ -1053,6 +1057,43 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     _acpMessageEntryId = null;
     _acpThoughtBuffer.clear();
     _acpThoughtEntryId = null;
+  }
+
+  Future<void> _runClaudePrompt({
+    required String prompt,
+    required _AiSessionRuntimeContext context,
+  }) async {
+    final connectionId = context.connectionId;
+    if (connectionId == null || !_hasActiveConnection(connectionId)) {
+      await _enterDetachedMode(
+        'Runtime detached from previous session. Transcript restored; reconnect to continue live.',
+      );
+      return;
+    }
+    final runtimeService = ref.read(aiRuntimeServiceProvider);
+    if (runtimeService.hasActiveRunForSession(widget.sessionId)) {
+      await _insertTimelineEntry(
+        role: 'status',
+        message: 'Previous Claude request is still running.',
+      );
+      return;
+    }
+    await runtimeService.launch(
+      AiRuntimeLaunchRequest(
+        aiSessionId: widget.sessionId,
+        connectionId: connectionId,
+        provider: context.provider,
+        executableOverride: context.executableOverride,
+        remoteWorkingDirectory: context.remoteWorkingDirectory,
+        extraArguments: <String>[
+          '--print',
+          '--verbose',
+          '--output-format',
+          'stream-json',
+          prompt,
+        ],
+      ),
+    );
   }
 
   Future<void> _runCopilotPrompt({

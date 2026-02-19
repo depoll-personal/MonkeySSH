@@ -14,8 +14,8 @@ void main() {
       );
     });
 
-    test('other built-in providers keep runtime auto-start enabled', () {
-      expect(AiCliProvider.claude.capabilities.autoStartRuntime, isTrue);
+    test('provider auto-start matches launch model', () {
+      expect(AiCliProvider.claude.capabilities.autoStartRuntime, isFalse);
       expect(AiCliProvider.codex.capabilities.autoStartRuntime, isTrue);
       expect(AiCliProvider.opencode.capabilities.autoStartRuntime, isTrue);
       expect(AiCliProvider.gemini.capabilities.autoStartRuntime, isTrue);
