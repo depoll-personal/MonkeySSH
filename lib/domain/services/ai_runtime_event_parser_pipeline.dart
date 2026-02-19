@@ -431,9 +431,17 @@ class _DefaultAiRuntimeProviderEventAdapter
           normalizedRawType.contains('fail')) {
         return AiTimelineEventType.error;
       }
+
+      return AiTimelineEventType.message;
     }
 
-    if (payload.containsKey('error')) {
+    final isErrorFlag = payload['is_error'];
+    if (isErrorFlag == true) {
+      return AiTimelineEventType.error;
+    }
+
+    final errorValue = payload['error'];
+    if (errorValue != null) {
       return AiTimelineEventType.error;
     }
     return AiTimelineEventType.message;

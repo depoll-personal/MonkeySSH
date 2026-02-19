@@ -98,6 +98,21 @@ void main() {
       expect(stderrEvents.single.message, 'plain stderr line');
     });
 
+    test('typed payloads are not forced to error when error field is null', () {
+      final pipeline = AiRuntimeEventParserPipeline();
+      final output = pipeline.parse(
+        _runtimeEvent(
+          type: AiRuntimeEventType.stdout,
+          provider: AiCliProvider.claude,
+          chunk: '{"type":"assistant","content":"Hello","error":null}\n',
+        ),
+      );
+
+      expect(output, hasLength(1));
+      expect(output.single.type, AiTimelineEventType.message);
+      expect(output.single.message, 'Hello');
+    });
+
     test('bind integrates runtime event stream into timeline stream', () async {
       final pipeline = AiRuntimeEventParserPipeline();
       final controller = StreamController<AiRuntimeEvent>();

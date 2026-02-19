@@ -1538,7 +1538,7 @@ class _SystemTimelineEntry extends StatelessWidget {
       ),
       'error' => (
         Icons.error_outline,
-        colorScheme.error,
+        colorScheme.onErrorContainer,
         colorScheme.errorContainer,
       ),
       _ => (

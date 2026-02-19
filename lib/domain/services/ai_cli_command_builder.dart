@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import '../models/ai_cli_provider.dart';
 import 'shell_escape.dart';
 
@@ -53,13 +55,20 @@ class AiCliCommandBuilder {
     final runCommand =
         '$executableNotFoundCommand; '
         'cd $cdDirectory && exec $executableCommand';
-    final escapedRunCommand = shellEscape(runCommand);
-    final loginShellCommand =
-        'if [ -n "\$SHELL" ] && command -v "\$SHELL" >/dev/null 2>&1; then exec "\$SHELL" -lc $escapedRunCommand; fi';
+    final encodedRunCommand = base64Encode(utf8.encode(runCommand));
+    final encodedRunCommandAssignment =
+        'MONKEYSSH_RUN_B64=${shellEscape(encodedRunCommand)}';
+    const decodeRunCommand =
+        r'MONKEYSSH_RUN="$(printf %s "$MONKEYSSH_RUN_B64" | base64 --decode 2>/dev/null || printf %s "$MONKEYSSH_RUN_B64" | base64 -d 2>/dev/null)"';
+    const loginShellCommand =
+        r'if [ -n "$SHELL" ] && command -v "$SHELL" >/dev/null 2>&1; then exec "$SHELL" -lc "$MONKEYSSH_RUN"; fi';
     final loginShellSegments = <String>[
+      encodedRunCommandAssignment,
+      decodeRunCommand,
+      'export MONKEYSSH_RUN',
       loginShellCommand,
-      'if command -v zsh >/dev/null 2>&1; then exec zsh -lc $escapedRunCommand; fi',
-      'if command -v bash >/dev/null 2>&1; then exec bash -lc $escapedRunCommand; fi',
+      r'if command -v zsh >/dev/null 2>&1; then exec zsh -lc "$MONKEYSSH_RUN"; fi',
+      r'if command -v bash >/dev/null 2>&1; then exec bash -lc "$MONKEYSSH_RUN"; fi',
     ];
     final fallbackSegments = <String>[
       r'PATH="$PATH:$HOME/.local/bin:$HOME/bin:$HOME/homebrew/bin:$HOME/.homebrew/bin:/usr/local/bin:/usr/local/sbin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin"',
