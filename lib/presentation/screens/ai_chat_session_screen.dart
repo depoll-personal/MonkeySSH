@@ -1251,8 +1251,14 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     if (timelineEvent.aiSessionId != widget.sessionId) {
       return;
     }
+    final sanitizedMessage = _TimelineMarkdownBody.sanitizeText(
+      timelineEvent.message,
+    );
     if (timelineEvent.type == AiTimelineEventType.error) {
       _runtimeStarted = false;
+      if (sanitizedMessage.isEmpty) {
+        return;
+      }
     }
 
     if (timelineEvent.type == AiTimelineEventType.status) {
@@ -1450,10 +1456,28 @@ class _SystemTimelineEntry extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final sanitizedMessage = _TimelineMarkdownBody.sanitizeText(entry.message);
     final toolName = _AiTimelineEntryFormatting.extractToolName(metadata);
     final inputSummary = _AiTimelineEntryFormatting.extractInput(metadata);
     final outputSummary = _AiTimelineEntryFormatting.extractOutput(metadata);
     final isSubagent = _AiTimelineEntryFormatting.isSubagentCall(metadata);
+    final hasPayload = _AiTimelineEntryFormatting.hasStructuredPayload(
+      metadata,
+    );
+    final hasVisibleMessage = sanitizedMessage.isNotEmpty;
+    final hasSupplementalContent =
+        toolName != null ||
+        inputSummary != null ||
+        outputSummary != null ||
+        hasPayload;
+    if (!hasVisibleMessage && !hasSupplementalContent) {
+      return const SizedBox.shrink();
+    }
+    final messageText = hasVisibleMessage
+        ? entry.message
+        : role == 'error'
+        ? 'Runtime error (no details provided).'
+        : '';
     final heading = switch (role) {
       'tool' => isSubagent ? 'Subagent call' : 'Tool call',
       'thinking' => 'Model thinking',
@@ -1514,7 +1538,8 @@ class _SystemTimelineEntry extends StatelessWidget {
                 ),
               ],
               const SizedBox(height: 8),
-              _TimelineMarkdownBody(data: entry.message, textColor: tint),
+              if (messageText.isNotEmpty)
+                _TimelineMarkdownBody(data: messageText, textColor: tint),
               if (inputSummary != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 8),
@@ -1533,7 +1558,7 @@ class _SystemTimelineEntry extends StatelessWidget {
                     textColor: tint,
                   ),
                 ),
-              if (_AiTimelineEntryFormatting.hasStructuredPayload(metadata))
+              if (hasPayload)
                 Padding(
                   padding: const EdgeInsets.only(top: 8),
                   child: _TimelineMetadataSection(
