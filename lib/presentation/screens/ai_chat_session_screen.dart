@@ -422,6 +422,23 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     if (acpSession != null) {
       final mode = acpSession.currentModeId;
       if (mode != null && mode.isNotEmpty) {
+        for (final candidate in acpSession.availableModes) {
+          final candidateName = candidate.name.trim();
+          if (candidate.id == mode &&
+              candidateName.isNotEmpty &&
+              !candidateName.contains('://')) {
+            return candidate.name;
+          }
+        }
+        if (mode.contains('://')) {
+          final uri = Uri.tryParse(mode);
+          final segment = uri?.pathSegments.isNotEmpty ?? false
+              ? uri!.pathSegments.last
+              : null;
+          if (segment != null && segment.trim().isNotEmpty) {
+            return segment;
+          }
+        }
         return mode;
       }
       return 'acp';
@@ -1285,7 +1302,13 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         }
         if (!acpReady && !requiresAcp) {
           _acpUnavailableForSession = true;
-          await runtimeService.cancel(aiSessionId: widget.sessionId);
+          if (runtimeService.hasActiveRunForSession(widget.sessionId)) {
+            try {
+              await runtimeService.cancel(aiSessionId: widget.sessionId);
+            } on AiRuntimeServiceException {
+              // Runtime may have already exited before cancellation.
+            }
+          }
           await _launchAdapterRuntime(
             context: context,
             connectionId: connectionId,
@@ -1417,10 +1440,23 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         final merged = LinkedHashSet<String>.from(
           _baseSlashCommands(context.provider),
         )..addAll(slashCommands);
-        _availableSlashCommands = merged.toList(growable: false);
-        _composerAutocompleteEngine = AiComposerAutocompleteEngine(
-          slashCommands: _availableSlashCommands,
-        );
+        final nextCommands = merged.toList(growable: false);
+        if (!_listsEqual(_availableSlashCommands, nextCommands)) {
+          if (mounted) {
+            setState(() {
+              _availableSlashCommands = nextCommands;
+              _composerAutocompleteEngine = AiComposerAutocompleteEngine(
+                slashCommands: _availableSlashCommands,
+              );
+            });
+          } else {
+            _availableSlashCommands = nextCommands;
+            _composerAutocompleteEngine = AiComposerAutocompleteEngine(
+              slashCommands: _availableSlashCommands,
+            );
+          }
+        }
+        await _refreshComposerSuggestions();
       }
       if (session.availableModels.isNotEmpty) {
         await _insertTimelineEntry(
@@ -2013,13 +2049,21 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     final modes = <AcpMode>[];
     for (final entry in list) {
       if (entry is Map<String, dynamic>) {
+        final modeId =
+            entry['id']?.toString() ?? entry['modeId']?.toString() ?? '';
+        if (modeId.trim().isEmpty) {
+          continue;
+        }
+        final modeName = entry['name']?.toString();
         modes.add(
           AcpMode(
-            id: entry['id']?.toString() ?? '',
-            name: entry['name']?.toString() ?? '',
+            id: modeId,
+            name: modeName?.trim().isNotEmpty ?? false ? modeName! : modeId,
             description: entry['description']?.toString(),
           ),
         );
+      } else if (entry is String && entry.trim().isNotEmpty) {
+        modes.add(AcpMode(id: entry.trim(), name: entry.trim()));
       }
     }
     return modes.isEmpty ? fallback : modes;
@@ -2043,13 +2087,21 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     final models = <AcpModel>[];
     for (final entry in list) {
       if (entry is Map<String, dynamic>) {
+        final modelId =
+            entry['modelId']?.toString() ?? entry['id']?.toString() ?? '';
+        if (modelId.trim().isEmpty) {
+          continue;
+        }
+        final modelName = entry['name']?.toString();
         models.add(
           AcpModel(
-            modelId: entry['modelId']?.toString() ?? '',
-            name: entry['name']?.toString() ?? '',
+            modelId: modelId,
+            name: modelName?.trim().isNotEmpty ?? false ? modelName! : modelId,
             description: entry['description']?.toString(),
           ),
         );
+      } else if (entry is String && entry.trim().isNotEmpty) {
+        models.add(AcpModel(modelId: entry.trim(), name: entry.trim()));
       }
     }
     return models.isEmpty ? fallback : models;
@@ -2089,23 +2141,27 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     }
     final commands = <AcpCommand>[];
     for (final entry in list) {
-      if (entry is! Map<String, dynamic>) {
+      if (entry is Map<String, dynamic>) {
+        final id = entry['name']?.toString() ?? entry['id']?.toString() ?? '';
+        final title =
+            entry['title']?.toString() ?? entry['name']?.toString() ?? id;
+        final normalizedId = id.trim();
+        if (normalizedId.isEmpty) {
+          continue;
+        }
+        commands.add(
+          AcpCommand(
+            id: normalizedId,
+            title: title.trim().isEmpty ? normalizedId : title,
+            description: entry['description']?.toString(),
+          ),
+        );
         continue;
       }
-      final id = entry['name']?.toString() ?? entry['id']?.toString() ?? '';
-      final title =
-          entry['title']?.toString() ?? entry['name']?.toString() ?? id;
-      final normalizedId = id.trim();
-      if (normalizedId.isEmpty) {
+      if (entry is! String || entry.trim().isEmpty) {
         continue;
       }
-      commands.add(
-        AcpCommand(
-          id: normalizedId,
-          title: title.trim().isEmpty ? normalizedId : title,
-          description: entry['description']?.toString(),
-        ),
-      );
+      commands.add(AcpCommand(id: entry.trim(), title: entry.trim()));
     }
     return commands;
   }

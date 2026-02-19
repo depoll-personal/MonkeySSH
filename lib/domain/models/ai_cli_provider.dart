@@ -98,12 +98,14 @@ const _codexCapabilities = AiCliProviderCapabilities(
     '/approval-mode',
   ],
   supportsSteeringPrompts: true,
+  requiresPty: true,
   autoStartRuntime: false,
 );
 const _opencodeCapabilities = AiCliProviderCapabilities(
   supportsStructuredOutput: false,
   composerSlashCommands: <String>['/help', '/clear', '/model'],
   supportsSteeringPrompts: true,
+  requiresPty: true,
   autoStartRuntime: false,
 );
 const _copilotCapabilities = AiCliProviderCapabilities(

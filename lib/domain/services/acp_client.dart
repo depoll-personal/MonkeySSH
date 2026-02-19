@@ -556,13 +556,21 @@ class AcpClient {
     final modes = <AcpMode>[];
     for (final entry in available) {
       if (entry is Map<String, dynamic>) {
+        final modeId =
+            entry['id']?.toString() ?? entry['modeId']?.toString() ?? '';
+        if (modeId.trim().isEmpty) {
+          continue;
+        }
+        final modeName = entry['name']?.toString();
         modes.add(
           AcpMode(
-            id: entry['id']?.toString() ?? '',
-            name: entry['name']?.toString() ?? '',
+            id: modeId,
+            name: modeName?.trim().isNotEmpty ?? false ? modeName! : modeId,
             description: entry['description']?.toString(),
           ),
         );
+      } else if (entry is String && entry.trim().isNotEmpty) {
+        modes.add(AcpMode(id: entry.trim(), name: entry.trim()));
       }
     }
     return modes;
@@ -581,13 +589,21 @@ class AcpClient {
     final models = <AcpModel>[];
     for (final entry in available) {
       if (entry is Map<String, dynamic>) {
+        final modelId =
+            entry['modelId']?.toString() ?? entry['id']?.toString() ?? '';
+        if (modelId.trim().isEmpty) {
+          continue;
+        }
+        final modelName = entry['name']?.toString();
         models.add(
           AcpModel(
-            modelId: entry['modelId']?.toString() ?? '',
-            name: entry['name']?.toString() ?? '',
+            modelId: modelId,
+            name: modelName?.trim().isNotEmpty ?? false ? modelName! : modelId,
             description: entry['description']?.toString(),
           ),
         );
+      } else if (entry is String && entry.trim().isNotEmpty) {
+        models.add(AcpModel(modelId: entry.trim(), name: entry.trim()));
       }
     }
     return models;
@@ -625,6 +641,8 @@ class AcpClient {
             description: entry['description']?.toString(),
           ),
         );
+      } else if (entry is String && entry.trim().isNotEmpty) {
+        parsed.add(AcpCommand(id: entry.trim(), title: entry.trim()));
       }
     }
     return parsed;
