@@ -1391,13 +1391,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           return;
         }
 
-        // Legacy: copilot one-shot mode.
-        if (context.provider == AiCliProvider.copilot) {
-          await _runCopilotPrompt(prompt: prompt, context: context);
-          return;
-        }
-
-        // Legacy: raw stdin mode for non-ACP providers.
+        // Adapter mode: raw stdin transport for non-ACP providers.
         await ref
             .read(aiRuntimeServiceProvider)
             .send(prompt, appendNewline: true, aiSessionId: widget.sessionId);
@@ -1748,62 +1742,6 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       role: 'status',
       message:
           'Runtime is detached. Prompt saved to transcript until reconnect.',
-    );
-  }
-
-  Future<void> _runOneShotPrompt({
-    required _AiSessionRuntimeContext context,
-    required String inFlightMessage,
-    required List<String> extraArguments,
-    bool structuredOutput = false,
-  }) async {
-    final connectionId = context.connectionId;
-    if (connectionId == null || !_hasActiveConnection(connectionId)) {
-      await _enterDetachedMode(
-        'Runtime detached from previous session. Transcript restored; reconnect to continue live.',
-      );
-      return;
-    }
-    final runtimeService = ref.read(aiRuntimeServiceProvider);
-    if (runtimeService.hasActiveRunForSession(widget.sessionId)) {
-      try {
-        await runtimeService.cancel(aiSessionId: widget.sessionId);
-        await Future<void>.delayed(const Duration(milliseconds: 120));
-      } on Exception {
-        // Best effort stale-runtime cleanup.
-      }
-    }
-    if (runtimeService.hasActiveRunForSession(widget.sessionId)) {
-      await _insertTimelineEntry(role: 'status', message: inFlightMessage);
-      return;
-    }
-    await runtimeService.launch(
-      AiRuntimeLaunchRequest(
-        aiSessionId: widget.sessionId,
-        connectionId: connectionId,
-        provider: context.provider,
-        executableOverride: context.executableOverride,
-        remoteWorkingDirectory: context.remoteWorkingDirectory,
-        structuredOutput: structuredOutput,
-        extraArguments: extraArguments,
-      ),
-    );
-  }
-
-  Future<void> _runCopilotPrompt({
-    required String prompt,
-    required _AiSessionRuntimeContext context,
-  }) async {
-    await _runOneShotPrompt(
-      context: context,
-      inFlightMessage: 'Previous Copilot request is still running.',
-      structuredOutput: context.provider.capabilities.supportsStructuredOutput,
-      extraArguments: <String>[
-        '-p',
-        prompt,
-        '--resume',
-        _copilotResumeSessionId(widget.sessionId),
-      ],
     );
   }
 
