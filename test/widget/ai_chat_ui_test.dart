@@ -358,6 +358,9 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('codex · /repo'), findsOneWidget);
+      expect(find.textContaining('Model: default'), findsOneWidget);
+      expect(find.textContaining('Context: ~'), findsOneWidget);
+      expect(find.textContaining('Mode: one-shot'), findsOneWidget);
 
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pumpAndSettle();

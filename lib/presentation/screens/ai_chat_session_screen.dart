@@ -146,6 +146,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
   @override
   Widget build(BuildContext context) {
     final timelineAsync = ref.watch(_aiTimelineProvider(widget.sessionId));
+    final timelineEntries = timelineAsync.asData?.value;
     final theme = Theme.of(context);
     final sessionContext = _sessionContext;
     final provider =
@@ -183,6 +184,15 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     final displayLabel = isAcp
         ? 'ACP · ${acpSession.currentModelId ?? executableLabel}'
         : executableLabel;
+    final modelLabel = _currentModelLabel(
+      provider: provider,
+      acpSession: acpSession,
+    );
+    final modeLabel = _currentModeLabel(
+      provider: provider,
+      acpSession: acpSession,
+    );
+    final contextLabel = _contextRemainingLabel(entries: timelineEntries);
 
     return Scaffold(
       appBar: AppBar(
@@ -240,37 +250,53 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
             ),
         ],
         bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(30),
+          preferredSize: const Size.fromHeight(48),
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-            child: Row(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(Icons.memory_outlined, size: 14, color: theme.hintColor),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    '$displayLabel · $workingDirectory',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodySmall,
-                  ),
-                ),
-                Container(
-                  key: const Key('ai-runtime-state-badge'),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 3,
-                  ),
-                  decoration: BoxDecoration(
-                    color: runtimeBadgeColor,
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Text(
-                    runtimeLabel,
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: runtimeTextColor,
+                Row(
+                  children: [
+                    Icon(
+                      Icons.memory_outlined,
+                      size: 14,
+                      color: theme.hintColor,
                     ),
-                  ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        '$displayLabel · $workingDirectory',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall,
+                      ),
+                    ),
+                    Container(
+                      key: const Key('ai-runtime-state-badge'),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 3,
+                      ),
+                      decoration: BoxDecoration(
+                        color: runtimeBadgeColor,
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        runtimeLabel,
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: runtimeTextColor,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Model: $modelLabel · $contextLabel · Mode: $modeLabel',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.labelSmall,
                 ),
               ],
             ),
@@ -330,6 +356,60 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         ),
       ),
     );
+  }
+
+  String _currentModelLabel({
+    required AiCliProvider provider,
+    required AcpSession? acpSession,
+  }) {
+    final selectedModel = acpSession?.currentModelId ?? _savedAcpModelId;
+    if (selectedModel != null && selectedModel.isNotEmpty) {
+      return selectedModel;
+    }
+    return 'default';
+  }
+
+  String _currentModeLabel({
+    required AiCliProvider provider,
+    required AcpSession? acpSession,
+  }) {
+    if (acpSession != null) {
+      final mode = acpSession.currentModeId;
+      if (mode != null && mode.isNotEmpty) {
+        return mode;
+      }
+      return 'acp';
+    }
+    switch (provider) {
+      case AiCliProvider.claude:
+      case AiCliProvider.codex:
+      case AiCliProvider.opencode:
+        return 'one-shot';
+      case AiCliProvider.copilot:
+        return 'one-shot';
+      case AiCliProvider.gemini:
+        return 'interactive';
+      case AiCliProvider.acp:
+        return 'acp';
+    }
+  }
+
+  String _contextRemainingLabel({required List<AiTimelineEntry>? entries}) {
+    if (entries == null) {
+      return 'Context: --';
+    }
+    const estimatedContextChars = 120000;
+    var usedChars = 0;
+    for (final entry in entries) {
+      usedChars += entry.message.length;
+    }
+    final remainingFraction =
+        ((estimatedContextChars - usedChars) / estimatedContextChars).clamp(
+          0,
+          1,
+        );
+    final percentage = (remainingFraction * 100).round();
+    return 'Context: ~$percentage%';
   }
 
   Widget _buildComposer(BuildContext context) {
