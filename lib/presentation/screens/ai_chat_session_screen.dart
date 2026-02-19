@@ -691,8 +691,13 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       null;
 
   Future<void> _startRuntimeIfNeeded({bool force = false}) async {
-    if (_runtimeStarted) {
+    final runtimeService = ref.read(aiRuntimeServiceProvider);
+    if (_runtimeStarted &&
+        runtimeService.hasActiveRunForSession(widget.sessionId)) {
       return;
+    }
+    if (_runtimeStarted) {
+      _runtimeStarted = false;
     }
     final context = _sessionContext;
     if (context == null) {
@@ -709,7 +714,6 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       return;
     }
 
-    final runtimeService = ref.read(aiRuntimeServiceProvider);
     final useAcp = context.provider.capabilities.supportsAcp;
     if (runtimeService.hasActiveRunForSession(widget.sessionId)) {
       _runtimeStarted = true;
@@ -799,7 +803,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         metadata: <String, dynamic>{'acpInitialize': initResult},
       );
       final session = await client.createSession(
-        cwd: _acpSessionCwd(context.remoteWorkingDirectory),
+        cwd: await _resolveAcpSessionCwd(context),
       );
       // Restore previously selected model if persisted.
       final savedModelId = _savedAcpModelId;
@@ -847,6 +851,43 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         },
       );
     }
+  }
+
+  Future<String> _resolveAcpSessionCwd(_AiSessionRuntimeContext context) async {
+    final absoluteCwd = _acpSessionCwd(context.remoteWorkingDirectory);
+    if (absoluteCwd != null) {
+      return absoluteCwd;
+    }
+    final connectionId = context.connectionId;
+    if (connectionId == null) {
+      return '/';
+    }
+    final session = ref
+        .read(activeSessionsProvider.notifier)
+        .getSession(connectionId);
+    if (session == null) {
+      return '/';
+    }
+    final remoteDir = context.remoteWorkingDirectory.trim();
+    final cdDirectory = remoteDir.startsWith('~')
+        ? remoteDir
+        : shellEscape(remoteDir);
+    final process = await session.execute(
+      'cd $cdDirectory >/dev/null 2>&1 && pwd -P',
+    );
+    final output = await process.stdout
+        .cast<List<int>>()
+        .transform(utf8.decoder)
+        .join();
+    await process.done;
+    String? resolved;
+    for (final line in output.split('\n')) {
+      final trimmedLine = line.trim();
+      if (trimmedLine.isNotEmpty) {
+        resolved = trimmedLine;
+      }
+    }
+    return resolved != null && resolved.startsWith('/') ? resolved : '/';
   }
 
   String? _acpSessionCwd(String remoteWorkingDirectory) {

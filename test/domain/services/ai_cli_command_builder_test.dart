@@ -26,7 +26,8 @@ void main() {
         );
         expect(command, startsWith('sh -c '));
         expect(command, contains('/srv/project'));
-        expect(command, contains('&& exec'));
+        expect(command, contains('&&'));
+        expect(command, contains('exec'));
         expect(command, contains(entry.value));
       }
     });
@@ -62,7 +63,8 @@ void main() {
       );
 
       expect(command, startsWith('sh -c '));
-      expect(command, contains('cd ~ && exec claude'));
+      expect(command, contains('cd ~ && if command -v claude'));
+      expect(command, contains('exec claude'));
 
       final commandSubdir = builder.buildLaunchCommand(
         provider: AiCliProvider.claude,
@@ -73,6 +75,16 @@ void main() {
       expect(commandSubdir, contains('cd ~/'));
       expect(commandSubdir, contains('projects/my-app'));
       expect(commandSubdir, contains('claude'));
+    });
+
+    test('adds Claude executable fallbacks when override is not set', () {
+      final command = builder.buildLaunchCommand(
+        provider: AiCliProvider.claude,
+        remoteWorkingDirectory: '/srv/project',
+      );
+
+      expect(command, contains('command -v claude-code'));
+      expect(command, contains('npx --yes @anthropic-ai/claude-code'));
     });
 
     test('uses executable override for ACP-compatible clients', () {

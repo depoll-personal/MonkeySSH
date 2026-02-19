@@ -38,23 +38,13 @@ class AiCliCommandBuilder {
       ...extraArguments,
     ];
 
-    final executableCommand = _buildLaunchExecutableCommand(
+    final runSegment = _buildRunSegment(
       provider: provider,
       executableOverride: executableOverride,
       arguments: commandArguments,
     );
-    final executableLookup = _resolveExecutableLookupToken(
-      provider: provider,
-      executableOverride: executableOverride,
-    );
-    final executableNotFoundCommand =
-        'if ! command -v ${shellEscape(executableLookup)} >/dev/null 2>&1; then '
-        'echo "monkeyssh: executable not found: ${shellEscape(executableLookup)} (PATH=\$PATH)" >&2; '
-        'exit 127; fi';
     final cdDirectory = _buildCdDirectory(trimmedRemoteWorkingDirectory);
-    final runCommand =
-        '$executableNotFoundCommand; '
-        'cd $cdDirectory && exec $executableCommand';
+    final runCommand = 'cd $cdDirectory && $runSegment';
     final encodedRunCommand = base64Encode(utf8.encode(runCommand));
     final encodedRunCommandAssignment =
         'MONKEYSSH_RUN_B64=${shellEscape(encodedRunCommand)}';
@@ -139,5 +129,38 @@ class AiCliCommandBuilder {
       return executable;
     }
     return executable.substring(0, firstSpace).trim();
+  }
+
+  String _buildRunSegment({
+    required AiCliProvider provider,
+    required String? executableOverride,
+    required List<String> arguments,
+  }) {
+    final hasOverride =
+        executableOverride != null && executableOverride.trim().isNotEmpty;
+    if (provider == AiCliProvider.claude && !hasOverride) {
+      final escapedArguments = arguments.map(shellEscape).join(' ');
+      final argumentSuffix = escapedArguments.isEmpty
+          ? ''
+          : ' $escapedArguments';
+      return 'if command -v claude >/dev/null 2>&1; then exec claude$argumentSuffix; fi; '
+          'if command -v claude-code >/dev/null 2>&1; then exec claude-code$argumentSuffix; fi; '
+          'if command -v npx >/dev/null 2>&1; then exec npx --yes @anthropic-ai/claude-code$argumentSuffix; fi; '
+          'echo "monkeyssh: executable not found: \'claude\' (PATH=\$PATH)" >&2; '
+          'exit 127';
+    }
+    final executableCommand = _buildLaunchExecutableCommand(
+      provider: provider,
+      executableOverride: executableOverride,
+      arguments: arguments,
+    );
+    final executableLookup = _resolveExecutableLookupToken(
+      provider: provider,
+      executableOverride: executableOverride,
+    );
+    return 'if ! command -v ${shellEscape(executableLookup)} >/dev/null 2>&1; then '
+        'echo "monkeyssh: executable not found: ${shellEscape(executableLookup)} (PATH=\$PATH)" >&2; '
+        'exit 127; fi; '
+        'exec $executableCommand';
   }
 }
