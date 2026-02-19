@@ -238,6 +238,45 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
+    testWidgets('collapses completed tool cards and shows called tool', (
+      tester,
+    ) async {
+      final entries = <AiTimelineEntry>[
+        AiTimelineEntry(
+          id: 9,
+          sessionId: 12,
+          role: 'tool',
+          message: 'Viewing /Users/depoll/Code',
+          metadata:
+              r'{"toolKind":"view","toolStatus":"completed","input":"{\"path\":\"/Users/depoll/Code\"}"}',
+          createdAt: DateTime(2024),
+        ),
+      ];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: Column(
+                children: entries
+                    .map((entry) => AiTimelineEntryTile(entry: entry))
+                    .toList(growable: false),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Tool: view · completed'), findsOneWidget);
+      expect(find.text('Input'), findsNothing);
+
+      await tester.tap(find.text('Tool call'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Input'), findsOneWidget);
+    });
+
     testWidgets('sanitizes status entries with terminal control sequences', (
       tester,
     ) async {

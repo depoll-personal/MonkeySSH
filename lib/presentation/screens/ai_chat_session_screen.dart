@@ -1080,9 +1080,21 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           if (event.toolCallId != null) 'toolCallId': event.toolCallId,
         };
         final update = event.rawUpdate;
+        final title = update['title']?.toString();
+        final kind = update['kind']?.toString();
+        if (title != null) {
+          metadata['toolName'] = title;
+        }
+        if (kind != null) {
+          metadata['toolKind'] = kind;
+        }
         final status = update['status']?.toString();
         if (status != null) {
           metadata['toolStatus'] = status;
+        }
+        final rawInput = update['rawInput'];
+        if (rawInput != null) {
+          metadata['input'] = rawInput;
         }
         final rawOutput = update['rawOutput'];
         if (rawOutput != null) {
@@ -1215,6 +1227,14 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       return;
     }
     final runtimeService = ref.read(aiRuntimeServiceProvider);
+    if (!_runtimeStarted &&
+        runtimeService.hasActiveRunForSession(widget.sessionId)) {
+      try {
+        await runtimeService.cancel(aiSessionId: widget.sessionId);
+      } on Exception {
+        // Best effort stale-runtime cleanup.
+      }
+    }
     if (runtimeService.hasActiveRunForSession(widget.sessionId)) {
       await _insertTimelineEntry(role: 'status', message: inFlightMessage);
       return;
@@ -1244,6 +1264,14 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       return;
     }
     final runtimeService = ref.read(aiRuntimeServiceProvider);
+    if (!_runtimeStarted &&
+        runtimeService.hasActiveRunForSession(widget.sessionId)) {
+      try {
+        await runtimeService.cancel(aiSessionId: widget.sessionId);
+      } on Exception {
+        // Best effort stale-runtime cleanup.
+      }
+    }
     if (runtimeService.hasActiveRunForSession(widget.sessionId)) {
       await _insertTimelineEntry(
         role: 'status',
@@ -1635,6 +1663,8 @@ class _SystemTimelineEntry extends StatelessWidget {
     final colorScheme = Theme.of(context).colorScheme;
     final sanitizedMessage = _TimelineMarkdownBody.sanitizeText(entry.message);
     final toolName = _AiTimelineEntryFormatting.extractToolName(metadata);
+    final toolKind = _AiTimelineEntryFormatting.extractToolKind(metadata);
+    final toolStatus = _AiTimelineEntryFormatting.extractToolStatus(metadata);
     final inputSummary = _AiTimelineEntryFormatting.extractInput(metadata);
     final outputSummary = _AiTimelineEntryFormatting.extractOutput(metadata);
     final isSubagent = _AiTimelineEntryFormatting.isSubagentCall(metadata);
@@ -1644,6 +1674,7 @@ class _SystemTimelineEntry extends StatelessWidget {
     final hasVisibleMessage = sanitizedMessage.isNotEmpty;
     final hasSupplementalContent =
         toolName != null ||
+        toolKind != null ||
         inputSummary != null ||
         outputSummary != null ||
         hasPayload;
@@ -1683,20 +1714,49 @@ class _SystemTimelineEntry extends StatelessWidget {
         colorScheme.primaryContainer,
       ),
     };
+    final toolSummary = role == 'tool'
+        ? [
+            if (toolKind != null && toolKind.isNotEmpty) 'Tool: $toolKind',
+            if (toolStatus != null && toolStatus.isNotEmpty) toolStatus,
+          ].join(' · ')
+        : null;
+    final shouldCollapseByDefault =
+        role == 'tool' &&
+        toolStatus != null &&
+        !_AiTimelineEntryFormatting.isToolActive(metadata);
+    final initiallyExpanded = !shouldCollapseByDefault;
 
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 4),
       constraints: const BoxConstraints(maxWidth: 760),
       child: Card(
         color: background,
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+        child: Theme(
+          data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+          child: ExpansionTile(
+            key: PageStorageKey<String>('ai-system-entry-${entry.id}'),
+            initiallyExpanded: initiallyExpanded,
+            iconColor: tint,
+            collapsedIconColor: tint,
+            tilePadding: const EdgeInsets.symmetric(
+              horizontal: 12,
+              vertical: 4,
+            ),
+            childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            title: _EntryRoleBadge(icon: icon, label: heading, color: tint),
+            subtitle: toolSummary != null && toolSummary.isNotEmpty
+                ? Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      toolSummary,
+                      style: Theme.of(
+                        context,
+                      ).textTheme.bodySmall?.copyWith(color: tint),
+                    ),
+                  )
+                : null,
             children: [
-              _EntryRoleBadge(icon: icon, label: heading, color: tint),
-              if (toolName != null) ...[
-                const SizedBox(height: 8),
+              if (toolName != null && toolName.isNotEmpty) ...[
                 Container(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 10,
@@ -1713,8 +1773,8 @@ class _SystemTimelineEntry extends StatelessWidget {
                     ).textTheme.labelMedium?.copyWith(color: tint),
                   ),
                 ),
+                const SizedBox(height: 8),
               ],
-              const SizedBox(height: 8),
               if (messageText.isNotEmpty)
                 _TimelineMarkdownBody(data: messageText, textColor: tint),
               if (inputSummary != null)
@@ -1907,6 +1967,34 @@ abstract final class _AiTimelineEntryFormatting {
           'name',
           'command',
         ]);
+  }
+
+  static String? extractToolKind(Map<String, dynamic> metadata) {
+    final payload = _payloadMap(metadata);
+    return _readString(payload, const <String>['toolKind', 'kind', 'tool']) ??
+        _readString(metadata, const <String>['toolKind', 'kind', 'tool']);
+  }
+
+  static String? extractToolStatus(Map<String, dynamic> metadata) {
+    final payload = _payloadMap(metadata);
+    return _readString(payload, const <String>[
+          'toolStatus',
+          'status',
+          'state',
+        ]) ??
+        _readString(metadata, const <String>['toolStatus', 'status', 'state']);
+  }
+
+  static bool isToolActive(Map<String, dynamic> metadata) {
+    final status = extractToolStatus(metadata)?.toLowerCase();
+    if (status == null) {
+      return false;
+    }
+    return status.contains('pending') ||
+        status.contains('running') ||
+        status.contains('in_progress') ||
+        status.contains('started') ||
+        status.contains('executing');
   }
 
   static String? extractInput(Map<String, dynamic> metadata) {
