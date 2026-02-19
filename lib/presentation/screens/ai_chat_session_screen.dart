@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 
 import 'package:drift/drift.dart' as drift;
@@ -67,6 +68,16 @@ class AiChatSessionScreen extends ConsumerStatefulWidget {
 }
 
 class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
+  static const List<String> _steeringSlashCommands = <String>[
+    '/steer',
+    '/steer-list',
+    '/steer-clear',
+  ];
+  static final RegExp _slashCommandPattern = RegExp(
+    r'(^|[\s(,])\/([a-z][a-z0-9_-]*)(?=\s|$)',
+    multiLine: true,
+  );
+
   late final TextEditingController _promptController;
   late final FocusNode _promptFocusNode;
   late final ScrollController _scrollController;
@@ -84,6 +95,8 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
   AcpClient? _acpClient;
   AcpSession? _acpSession;
   String? _savedAcpModelId;
+  final List<String> _steeringPromptQueue = <String>[];
+  List<String> _availableSlashCommands = const <String>[];
 
   /// Buffers for aggregating streaming ACP chunks into single timeline entries.
   final StringBuffer _acpMessageBuffer = StringBuffer();
@@ -106,10 +119,11 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     _promptController = TextEditingController();
     _promptFocusNode = FocusNode();
     _scrollController = ScrollController();
+    _availableSlashCommands = _baseSlashCommands(
+      widget.provider ?? AiCliProvider.claude,
+    );
     _composerAutocompleteEngine = AiComposerAutocompleteEngine(
-      slashCommands: (widget.provider ?? AiCliProvider.claude)
-          .capabilities
-          .composerSlashCommands,
+      slashCommands: _availableSlashCommands,
     );
     _promptController.addListener(_handleComposerInputChanged);
     _promptFocusNode.addListener(_handleComposerInputChanged);
@@ -690,10 +704,12 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       setState(() {
         _sessionContext = context;
         _runtimeAttachmentState = _resolveRuntimeAttachmentState(context);
+        _availableSlashCommands = _baseSlashCommands(context.provider);
         _composerAutocompleteEngine = AiComposerAutocompleteEngine(
-          slashCommands: context.provider.capabilities.composerSlashCommands,
+          slashCommands: _availableSlashCommands,
         );
       });
+      unawaited(_loadProviderSlashCommands(context));
       if (widget.autoStartRuntime &&
           context.provider.capabilities.autoStartRuntime) {
         await _startRuntimeIfNeeded();
@@ -753,6 +769,99 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       remoteWorkingDirectory: remoteWorkingDirectory,
       resumedSession: widget.isResumeRequest || widget.connectionId == null,
     );
+  }
+
+  List<String> _baseSlashCommands(AiCliProvider provider) {
+    final commands = LinkedHashSet<String>.from(
+      provider.capabilities.composerSlashCommands,
+    );
+    if (provider.capabilities.supportsSteeringPrompts) {
+      commands.addAll(_steeringSlashCommands);
+    }
+    return commands.toList(growable: false);
+  }
+
+  Future<void> _loadProviderSlashCommands(
+    _AiSessionRuntimeContext context,
+  ) async {
+    final discovered = await _discoverSlashCommandsFromCli(context);
+    if (!mounted || discovered.isEmpty) {
+      return;
+    }
+    final merged = LinkedHashSet<String>.from(
+      _baseSlashCommands(context.provider),
+    )..addAll(discovered);
+    final nextCommands = merged.toList(growable: false);
+    if (_listsEqual(_availableSlashCommands, nextCommands)) {
+      return;
+    }
+    setState(() {
+      _availableSlashCommands = nextCommands;
+      _composerAutocompleteEngine = AiComposerAutocompleteEngine(
+        slashCommands: _availableSlashCommands,
+      );
+    });
+    await _refreshComposerSuggestions();
+  }
+
+  Future<List<String>> _discoverSlashCommandsFromCli(
+    _AiSessionRuntimeContext context,
+  ) async {
+    final connectionId = context.connectionId;
+    if (connectionId == null) {
+      return const <String>[];
+    }
+    final session = ref
+        .read(activeSessionsProvider.notifier)
+        .getSession(connectionId);
+    if (session == null) {
+      return const <String>[];
+    }
+
+    final executable =
+        (context.executableOverride ?? context.provider.executable).trim();
+    if (executable.isEmpty) {
+      return const <String>[];
+    }
+
+    final helpCommands = <String>[
+      '$executable --help',
+      if (context.provider == AiCliProvider.opencode) '$executable run --help',
+    ];
+    final discovered = <String>{};
+    for (final helpCommand in helpCommands) {
+      final process = await session.execute(
+        'sh -lc ${shellEscape('$helpCommand 2>&1')}',
+      );
+      final output = await process.stdout
+          .cast<List<int>>()
+          .transform(utf8.decoder)
+          .join();
+      await process.done;
+      for (final match in _slashCommandPattern.allMatches(output)) {
+        final command = match.group(2);
+        if (command == null || command.isEmpty) {
+          continue;
+        }
+        discovered.add('/$command');
+      }
+    }
+    return discovered.toList(growable: false);
+  }
+
+  bool _listsEqual(List<String> a, List<String> b) {
+    if (identical(a, b)) {
+      return true;
+    }
+    if (a.length != b.length) {
+      return false;
+    }
+    for (var index = 0; index < a.length; index++) {
+      if (a[index] != b[index]) {
+        return false;
+      }
+    }
+    return true;
   }
 
   _RuntimeAttachmentState _resolveRuntimeAttachmentState(
@@ -994,23 +1103,41 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       return;
     }
 
+    if (await _handleSteeringComposerCommand(
+      prompt: prompt,
+      context: context,
+    )) {
+      _promptController.clear();
+      return;
+    }
+    final effectivePrompt = _applyQueuedSteeringPrompts(
+      prompt: prompt,
+      provider: context.provider,
+    );
+    final appliedSteeringPrompts = _steeringPromptQueue.length;
     _promptController.clear();
     setState(() {
       _sending = true;
     });
 
     try {
-      await _insertTimelineEntry(role: 'user', message: prompt);
+      await _insertTimelineEntry(
+        role: 'user',
+        message: prompt,
+        metadata: appliedSteeringPrompts > 0
+            ? <String, dynamic>{'steeringPromptCount': appliedSteeringPrompts}
+            : null,
+      );
       if (context.provider == AiCliProvider.claude) {
-        await _runClaudePrompt(prompt: prompt, context: context);
+        await _runClaudePrompt(prompt: effectivePrompt, context: context);
         return;
       }
       if (context.provider == AiCliProvider.codex) {
-        await _runCodexPrompt(prompt: prompt, context: context);
+        await _runCodexPrompt(prompt: effectivePrompt, context: context);
         return;
       }
       if (context.provider == AiCliProvider.opencode) {
-        await _runOpenCodePrompt(prompt: prompt, context: context);
+        await _runOpenCodePrompt(prompt: effectivePrompt, context: context);
         return;
       }
       if (widget.autoStartRuntime &&
@@ -1027,7 +1154,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           await _sendAcpPrompt(
             client: acpClient,
             sessionId: acpSession.sessionId,
-            prompt: prompt,
+            prompt: effectivePrompt,
           );
           return;
         }
@@ -1042,14 +1169,18 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
 
         // Legacy: copilot one-shot mode.
         if (context.provider == AiCliProvider.copilot) {
-          await _runCopilotPrompt(prompt: prompt, context: context);
+          await _runCopilotPrompt(prompt: effectivePrompt, context: context);
           return;
         }
 
         // Legacy: raw stdin mode for non-ACP providers.
         await ref
             .read(aiRuntimeServiceProvider)
-            .send(prompt, appendNewline: true, aiSessionId: widget.sessionId);
+            .send(
+              effectivePrompt,
+              appendNewline: true,
+              aiSessionId: widget.sessionId,
+            );
       } else {
         await _insertTimelineEntry(
           role: 'status',
@@ -1069,6 +1200,68 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         });
       }
     }
+  }
+
+  Future<bool> _handleSteeringComposerCommand({
+    required String prompt,
+    required _AiSessionRuntimeContext context,
+  }) async {
+    if (!context.provider.capabilities.supportsSteeringPrompts) {
+      return false;
+    }
+    if (prompt == '/steer-list') {
+      final message = _steeringPromptQueue.isEmpty
+          ? 'No queued steering prompts.'
+          : 'Steering prompts (${_steeringPromptQueue.length}):\n'
+                '${_steeringPromptQueue.asMap().entries.map((entry) => '${entry.key + 1}. ${entry.value}').join('\n')}';
+      await _insertTimelineEntry(role: 'status', message: message);
+      return true;
+    }
+    if (prompt == '/steer-clear') {
+      _steeringPromptQueue.clear();
+      await _insertTimelineEntry(
+        role: 'status',
+        message: 'Cleared queued steering prompts.',
+      );
+      return true;
+    }
+    if (prompt.startsWith('/steer')) {
+      final steeringPrompt = prompt.substring('/steer'.length).trim();
+      if (steeringPrompt.isEmpty) {
+        await _insertTimelineEntry(
+          role: 'status',
+          message:
+              'Usage: /steer <instruction>. Use /steer-list to view queued prompts.',
+        );
+        return true;
+      }
+      _steeringPromptQueue.add(steeringPrompt);
+      await _insertTimelineEntry(
+        role: 'status',
+        message: 'Queued steering prompt #${_steeringPromptQueue.length}.',
+        metadata: <String, dynamic>{
+          'steeringPrompt': steeringPrompt,
+          'steeringPromptCount': _steeringPromptQueue.length,
+        },
+      );
+      return true;
+    }
+    return false;
+  }
+
+  String _applyQueuedSteeringPrompts({
+    required String prompt,
+    required AiCliProvider provider,
+  }) {
+    if (!provider.capabilities.supportsSteeringPrompts ||
+        _steeringPromptQueue.isEmpty) {
+      return prompt;
+    }
+    final steeringBlock = StringBuffer('Steering instructions:\n');
+    for (var index = 0; index < _steeringPromptQueue.length; index++) {
+      steeringBlock.writeln('${index + 1}. ${_steeringPromptQueue[index]}');
+    }
+    return '$steeringBlock\nUser prompt:\n$prompt';
   }
 
   Future<void> _sendAcpPrompt({

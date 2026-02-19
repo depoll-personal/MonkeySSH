@@ -28,5 +28,20 @@ void main() {
       expect(AiCliProvider.opencode.capabilities.supportsAcp, isFalse);
       expect(AiCliProvider.gemini.capabilities.supportsAcp, isFalse);
     });
+
+    test('providers expose steering prompt support', () {
+      expect(AiCliProvider.claude.capabilities.supportsSteeringPrompts, isTrue);
+      expect(AiCliProvider.codex.capabilities.supportsSteeringPrompts, isTrue);
+      expect(
+        AiCliProvider.opencode.capabilities.supportsSteeringPrompts,
+        isTrue,
+      );
+      expect(
+        AiCliProvider.copilot.capabilities.supportsSteeringPrompts,
+        isTrue,
+      );
+      expect(AiCliProvider.gemini.capabilities.supportsSteeringPrompts, isTrue);
+      expect(AiCliProvider.acp.capabilities.supportsSteeringPrompts, isTrue);
+    });
   });
 }

@@ -525,6 +525,62 @@ void main() {
       await tester.pumpAndSettle();
     });
 
+    testWidgets('queues steering prompts via slash commands', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final workspaceId = await db
+          .into(db.aiWorkspaces)
+          .insert(
+            AiWorkspacesCompanion.insert(name: 'Workspace', path: '/workspace'),
+          );
+      final sessionId = await db
+          .into(db.aiSessions)
+          .insert(
+            AiSessionsCompanion.insert(
+              workspaceId: workspaceId,
+              title: 'Steering queue',
+            ),
+          );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [databaseProvider.overrideWithValue(db)],
+          child: MaterialApp(
+            home: AiChatSessionScreen(
+              sessionId: sessionId,
+              connectionId: 9,
+              provider: AiCliProvider.claude,
+              remoteWorkingDirectory: '/workspace',
+              autoStartRuntime: false,
+              remoteFileSuggestionLoader: () async => const <String>[],
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.enterText(
+        find.byKey(const Key('ai-chat-input')),
+        '/steer Always return concise answers',
+      );
+      await tester.tap(find.byIcon(Icons.send_rounded));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Queued steering prompt #1'), findsOneWidget);
+
+      await tester.enterText(
+        find.byKey(const Key('ai-chat-input')),
+        '/steer-list',
+      );
+      await tester.tap(find.byIcon(Icons.send_rounded));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Steering prompts (1):'), findsOneWidget);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+    });
+
     testWidgets('shows provider slash commands and applies with keyboard', (
       tester,
     ) async {

@@ -26,6 +26,7 @@ class AiCliProviderCapabilities {
     required this.supportsStructuredOutput,
     this.structuredOutputArguments = const <String>[],
     this.composerSlashCommands = const <String>[],
+    this.supportsSteeringPrompts = false,
     this.requiresPty = false,
     this.autoStartRuntime = true,
     this.supportsAcp = false,
@@ -40,6 +41,9 @@ class AiCliProviderCapabilities {
 
   /// Slash commands supported by the provider's interactive composer.
   final List<String> composerSlashCommands;
+
+  /// Whether the provider supports queued steering prompts.
+  final bool supportsSteeringPrompts;
 
   /// Whether the runtime must allocate a PTY when launching this provider.
   final bool requiresPty;
@@ -81,6 +85,7 @@ const _claudeCapabilities = AiCliProviderCapabilities(
   supportsStructuredOutput: true,
   structuredOutputArguments: <String>['--output-format', 'json'],
   composerSlashCommands: <String>['/help', '/clear', '/model', '/compact'],
+  supportsSteeringPrompts: true,
   autoStartRuntime: false,
 );
 const _codexCapabilities = AiCliProviderCapabilities(
@@ -92,26 +97,31 @@ const _codexCapabilities = AiCliProviderCapabilities(
     '/model',
     '/approval-mode',
   ],
+  supportsSteeringPrompts: true,
   autoStartRuntime: false,
 );
 const _opencodeCapabilities = AiCliProviderCapabilities(
   supportsStructuredOutput: false,
   composerSlashCommands: <String>['/help', '/clear', '/model'],
+  supportsSteeringPrompts: true,
   autoStartRuntime: false,
 );
 const _copilotCapabilities = AiCliProviderCapabilities(
   supportsStructuredOutput: false,
   composerSlashCommands: <String>['/help', '/clear'],
+  supportsSteeringPrompts: true,
   supportsAcp: true,
   acpLaunchArguments: <String>['--acp', '--allow-all-tools'],
 );
 const _geminiCapabilities = AiCliProviderCapabilities(
   supportsStructuredOutput: false,
   composerSlashCommands: <String>['/help', '/clear', '/model'],
+  supportsSteeringPrompts: true,
 );
 const _acpCapabilities = AiCliProviderCapabilities(
   supportsStructuredOutput: false,
   composerSlashCommands: <String>['/help', '/clear'],
+  supportsSteeringPrompts: true,
   supportsAcp: true,
 );
 
