@@ -1197,7 +1197,6 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     await _runOneShotPrompt(
       context: context,
       inFlightMessage: 'Previous Codex request is still running.',
-      structuredOutput: true,
       extraArguments: <String>[prompt],
     );
   }
