@@ -799,7 +799,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         metadata: <String, dynamic>{'acpInitialize': initResult},
       );
       final session = await client.createSession(
-        cwd: context.remoteWorkingDirectory,
+        cwd: _acpSessionCwd(context.remoteWorkingDirectory),
       );
       // Restore previously selected model if persisted.
       final savedModelId = _savedAcpModelId;
@@ -847,6 +847,14 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         },
       );
     }
+  }
+
+  String? _acpSessionCwd(String remoteWorkingDirectory) {
+    final trimmed = remoteWorkingDirectory.trim();
+    if (trimmed.startsWith('/')) {
+      return trimmed;
+    }
+    return null;
   }
 
   Future<void> _sendPrompt() async {

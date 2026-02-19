@@ -82,12 +82,16 @@ class AcpClient {
     return result;
   }
 
-  /// Creates a new ACP session with [cwd] as the working directory.
-  Future<AcpSession> createSession({required String cwd}) async {
-    final result = await _sendRequest('session/new', <String, dynamic>{
-      'cwd': cwd,
-      'mcpServers': <dynamic>[],
-    });
+  /// Creates a new ACP session.
+  ///
+  /// When [cwd] is provided, it is sent as the session working directory.
+  Future<AcpSession> createSession({String? cwd}) async {
+    final params = <String, dynamic>{'mcpServers': <dynamic>[]};
+    final normalizedCwd = cwd?.trim();
+    if (normalizedCwd != null && normalizedCwd.isNotEmpty) {
+      params['cwd'] = normalizedCwd;
+    }
+    final result = await _sendRequest('session/new', params);
 
     final sessionId = result['sessionId']?.toString() ?? '';
     _parseModels(result);

@@ -148,6 +148,36 @@ void main() {
       expect(client.availableModels, hasLength(2));
     });
 
+    test('createSession omits cwd when not provided', () async {
+      final initFuture = client.initialize();
+      await Future<void>.delayed(Duration.zero);
+      process.emitStdout(
+        '${jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 1,
+          'result': <String, dynamic>{'protocolVersion': 1},
+        })}\n',
+      );
+      await initFuture;
+
+      final sessionFuture = client.createSession();
+      await Future<void>.delayed(Duration.zero);
+      final sent = jsonDecode(process.stdinWrites[1]) as Map<String, dynamic>;
+      final sentParams = sent['params'] as Map<String, dynamic>;
+      expect(sentParams.containsKey('cwd'), isFalse);
+      expect(sentParams['mcpServers'], isA<List<dynamic>>());
+
+      process.emitStdout(
+        '${jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 2,
+          'result': <String, dynamic>{'sessionId': 'test-session-id', 'models': <String, dynamic>{}, 'modes': <String, dynamic>{}},
+        })}\n',
+      );
+      final session = await sessionFuture;
+      expect(session.sessionId, 'test-session-id');
+    });
+
     test('sendPrompt returns result and emits streaming events', () async {
       // Initialize.
       final initFuture = client.initialize();
