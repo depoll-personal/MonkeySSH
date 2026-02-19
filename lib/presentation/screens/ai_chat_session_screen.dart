@@ -90,6 +90,8 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
   final StringBuffer _acpThoughtBuffer = StringBuffer();
   int? _acpMessageEntryId;
   int? _acpThoughtEntryId;
+  var _acpMessageInsertPending = false;
+  var _acpThoughtInsertPending = false;
 
   bool _runtimeStarted = false;
   bool _reconnecting = false;
@@ -1019,6 +1021,9 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           buffer: _acpMessageBuffer,
           entryIdGetter: () => _acpMessageEntryId,
           entryIdSetter: (id) => _acpMessageEntryId = id,
+          insertPendingGetter: () => _acpMessageInsertPending,
+          insertPendingSetter: ({required pending}) =>
+              _acpMessageInsertPending = pending,
           role: 'assistant',
           text: event.text,
         );
@@ -1027,6 +1032,9 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           buffer: _acpThoughtBuffer,
           entryIdGetter: () => _acpThoughtEntryId,
           entryIdSetter: (id) => _acpThoughtEntryId = id,
+          insertPendingGetter: () => _acpThoughtInsertPending,
+          insertPendingSetter: ({required pending}) =>
+              _acpThoughtInsertPending = pending,
           role: 'thinking',
           text: event.text,
         );
@@ -1102,6 +1110,8 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     required StringBuffer buffer,
     required int? Function() entryIdGetter,
     required void Function(int) entryIdSetter,
+    required bool Function() insertPendingGetter,
+    required void Function({required bool pending}) insertPendingSetter,
     required String role,
     required String text,
   }) {
@@ -1115,15 +1125,22 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
             .updateTimelineEntryMessage(entryId, buffer.toString()),
       );
     } else {
+      if (insertPendingGetter()) {
+        return;
+      }
+      insertPendingSetter(pending: true);
       // Create the initial entry — the first chunk.
       unawaited(
-        _insertTimelineEntry(role: role, message: buffer.toString()).then((
-          insertedId,
-        ) {
-          if (insertedId != null) {
-            entryIdSetter(insertedId);
-          }
-        }),
+        _insertTimelineEntry(role: role, message: buffer.toString())
+            .then((insertedId) async {
+              if (insertedId != null) {
+                entryIdSetter(insertedId);
+                await ref
+                    .read(aiRepositoryProvider)
+                    .updateTimelineEntryMessage(insertedId, buffer.toString());
+              }
+            })
+            .whenComplete(() => insertPendingSetter(pending: false)),
       );
     }
   }
@@ -1133,8 +1150,10 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
   void _flushAcpBuffers() {
     _acpMessageBuffer.clear();
     _acpMessageEntryId = null;
+    _acpMessageInsertPending = false;
     _acpThoughtBuffer.clear();
     _acpThoughtEntryId = null;
+    _acpThoughtInsertPending = false;
   }
 
   Future<void> _runClaudePrompt({
@@ -1606,12 +1625,12 @@ class _SystemTimelineEntry extends StatelessWidget {
     final (icon, tint, background) = switch (role) {
       'tool' => (
         isSubagent ? Icons.smart_toy_outlined : Icons.build_circle_outlined,
-        colorScheme.secondary,
+        colorScheme.onSecondaryContainer,
         colorScheme.secondaryContainer,
       ),
       'thinking' => (
         Icons.psychology_alt_outlined,
-        colorScheme.tertiary,
+        colorScheme.onTertiaryContainer,
         colorScheme.tertiaryContainer,
       ),
       'error' => (
@@ -1621,7 +1640,7 @@ class _SystemTimelineEntry extends StatelessWidget {
       ),
       _ => (
         Icons.info_outline,
-        colorScheme.primary,
+        colorScheme.onPrimaryContainer,
         colorScheme.primaryContainer,
       ),
     };
