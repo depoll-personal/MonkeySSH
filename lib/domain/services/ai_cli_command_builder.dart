@@ -50,18 +50,29 @@ class AiCliCommandBuilder {
         'echo "monkeyssh: executable not found: ${shellEscape(executableLookup)} (PATH=\$PATH)" >&2; '
         'exit 127; fi';
     final cdDirectory = _buildCdDirectory(trimmedRemoteWorkingDirectory);
-    final bootstrapSegments = <String>[
+    final runCommand =
+        '$executableNotFoundCommand; '
+        'cd $cdDirectory && exec $executableCommand';
+    final escapedRunCommand = shellEscape(runCommand);
+    final loginShellCommand =
+        'if [ -n "\$SHELL" ] && command -v "\$SHELL" >/dev/null 2>&1; then exec "\$SHELL" -lc $escapedRunCommand; fi';
+    final loginShellSegments = <String>[
+      loginShellCommand,
+      'if command -v zsh >/dev/null 2>&1; then exec zsh -lc $escapedRunCommand; fi',
+      'if command -v bash >/dev/null 2>&1; then exec bash -lc $escapedRunCommand; fi',
+    ];
+    final fallbackSegments = <String>[
       r'PATH="$PATH:$HOME/.local/bin:$HOME/bin:$HOME/homebrew/bin:$HOME/.homebrew/bin:/usr/local/bin:/usr/local/sbin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin"',
       'export PATH',
       r'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1; fi',
       r'if [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1; fi',
       r'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1; fi',
-      executableNotFoundCommand,
-      'cd $cdDirectory && exec $executableCommand',
+      runCommand,
     ];
+    final launchSegments = <String>[...loginShellSegments, ...fallbackSegments];
     // Use POSIX `sh -c` instead of hard-requiring bash so this works on hosts
     // where bash is unavailable.
-    return 'sh -c ${shellEscape(bootstrapSegments.join('; '))}';
+    return 'sh -c ${shellEscape(launchSegments.join('; '))}';
   }
 
   /// Builds a shell-safe cd target that preserves tilde expansion.
