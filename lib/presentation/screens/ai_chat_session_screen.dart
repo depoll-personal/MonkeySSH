@@ -279,43 +279,46 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         child: Column(
           children: [
             Expanded(
-              child: Align(
-                alignment: Alignment.topCenter,
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 920),
-                  child: timelineAsync.when(
-                    loading: () => const Center(
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
-                    error: (error, _) =>
-                        Center(child: Text('Failed to load timeline: $error')),
-                    data: (entries) {
-                      if (entries.isEmpty) {
-                        _lastRenderedTimelineCount = 0;
-                        return const Center(
-                          child: Text(
-                            'No timeline entries yet. Send a message to begin.',
-                          ),
+              child: SelectionArea(
+                child: Align(
+                  alignment: Alignment.topCenter,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 920),
+                    child: timelineAsync.when(
+                      loading: () => const Center(
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                      error: (error, _) => Center(
+                        child: Text('Failed to load timeline: $error'),
+                      ),
+                      data: (entries) {
+                        if (entries.isEmpty) {
+                          _lastRenderedTimelineCount = 0;
+                          return const Center(
+                            child: Text(
+                              'No timeline entries yet. Send a message to begin.',
+                            ),
+                          );
+                        }
+                        if (_lastRenderedTimelineCount != entries.length) {
+                          _lastRenderedTimelineCount = entries.length;
+                          WidgetsBinding.instance.addPostFrameCallback((_) {
+                            if (!mounted) {
+                              return;
+                            }
+                            _scrollToBottom();
+                          });
+                        }
+                        return ListView.builder(
+                          key: const Key('ai-timeline-list'),
+                          controller: _scrollController,
+                          padding: const EdgeInsets.all(12),
+                          itemCount: entries.length,
+                          itemBuilder: (context, index) =>
+                              AiTimelineEntryTile(entry: entries[index]),
                         );
-                      }
-                      if (_lastRenderedTimelineCount != entries.length) {
-                        _lastRenderedTimelineCount = entries.length;
-                        WidgetsBinding.instance.addPostFrameCallback((_) {
-                          if (!mounted) {
-                            return;
-                          }
-                          _scrollToBottom();
-                        });
-                      }
-                      return ListView.builder(
-                        key: const Key('ai-timeline-list'),
-                        controller: _scrollController,
-                        padding: const EdgeInsets.all(12),
-                        itemCount: entries.length,
-                        itemBuilder: (context, index) =>
-                            AiTimelineEntryTile(entry: entries[index]),
-                      );
-                    },
+                      },
+                    ),
                   ),
                 ),
               ),
