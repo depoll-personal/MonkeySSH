@@ -41,13 +41,22 @@ class AiCliCommandBuilder {
       executableOverride: executableOverride,
       arguments: commandArguments,
     );
+    final executableLookup = _resolveExecutableLookupToken(
+      provider: provider,
+      executableOverride: executableOverride,
+    );
+    final executableNotFoundCommand =
+        'if ! command -v ${shellEscape(executableLookup)} >/dev/null 2>&1; then '
+        'echo "monkeyssh: executable not found: ${shellEscape(executableLookup)} (PATH=\$PATH)" >&2; '
+        'exit 127; fi';
     final cdDirectory = _buildCdDirectory(trimmedRemoteWorkingDirectory);
     final bootstrapSegments = <String>[
-      r'PATH="$PATH:$HOME/.local/bin:$HOME/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"',
+      r'PATH="$PATH:$HOME/.local/bin:$HOME/bin:$HOME/homebrew/bin:$HOME/.homebrew/bin:/usr/local/bin:/usr/local/sbin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin"',
       'export PATH',
       r'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1; fi',
       r'if [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1; fi',
       r'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1; fi',
+      executableNotFoundCommand,
       'cd $cdDirectory && exec $executableCommand',
     ];
     // Use POSIX `sh -c` instead of hard-requiring bash so this works on hosts
@@ -95,5 +104,20 @@ class AiCliCommandBuilder {
     }
     final escapedArguments = arguments.map(shellEscape).join(' ');
     return '$executable $escapedArguments';
+  }
+
+  String _resolveExecutableLookupToken({
+    required AiCliProvider provider,
+    required String? executableOverride,
+  }) {
+    final executable = (executableOverride ?? provider.executable).trim();
+    if (executable.isEmpty) {
+      return provider.executable;
+    }
+    final firstSpace = executable.indexOf(' ');
+    if (firstSpace == -1) {
+      return executable;
+    }
+    return executable.substring(0, firstSpace).trim();
   }
 }
