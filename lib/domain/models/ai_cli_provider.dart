@@ -86,6 +86,7 @@ const _claudeCapabilities = AiCliProviderCapabilities(
   structuredOutputArguments: <String>['--output-format', 'json'],
   composerSlashCommands: <String>['/help', '/clear', '/model', '/compact'],
   supportsSteeringPrompts: true,
+  requiresPty: true,
   autoStartRuntime: false,
 );
 const _codexCapabilities = AiCliProviderCapabilities(

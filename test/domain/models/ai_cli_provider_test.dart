@@ -46,5 +46,12 @@ void main() {
       );
       expect(AiCliProvider.acp.capabilities.supportsSteeringPrompts, isFalse);
     });
+
+    test('interactive adapters requiring TTY are flagged', () {
+      expect(AiCliProvider.claude.capabilities.requiresPty, isTrue);
+      expect(AiCliProvider.codex.capabilities.requiresPty, isTrue);
+      expect(AiCliProvider.opencode.capabilities.requiresPty, isTrue);
+      expect(AiCliProvider.copilot.capabilities.requiresPty, isFalse);
+    });
   });
 }
