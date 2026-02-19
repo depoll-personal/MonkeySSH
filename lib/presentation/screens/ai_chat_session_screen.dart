@@ -1185,6 +1185,8 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         '--verbose',
         '--output-format',
         'stream-json',
+        '--max-turns',
+        '1',
         prompt,
       ],
     );
@@ -1226,10 +1228,10 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       return;
     }
     final runtimeService = ref.read(aiRuntimeServiceProvider);
-    if (!_runtimeStarted &&
-        runtimeService.hasActiveRunForSession(widget.sessionId)) {
+    if (runtimeService.hasActiveRunForSession(widget.sessionId)) {
       try {
         await runtimeService.cancel(aiSessionId: widget.sessionId);
+        await Future<void>.delayed(const Duration(milliseconds: 120));
       } on Exception {
         // Best effort stale-runtime cleanup.
       }
@@ -1263,10 +1265,10 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       return;
     }
     final runtimeService = ref.read(aiRuntimeServiceProvider);
-    if (!_runtimeStarted &&
-        runtimeService.hasActiveRunForSession(widget.sessionId)) {
+    if (runtimeService.hasActiveRunForSession(widget.sessionId)) {
       try {
         await runtimeService.cancel(aiSessionId: widget.sessionId);
+        await Future<void>.delayed(const Duration(milliseconds: 120));
       } on Exception {
         // Best effort stale-runtime cleanup.
       }

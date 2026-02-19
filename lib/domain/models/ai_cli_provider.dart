@@ -92,10 +92,12 @@ const _codexCapabilities = AiCliProviderCapabilities(
     '/model',
     '/approval-mode',
   ],
+  autoStartRuntime: false,
 );
 const _opencodeCapabilities = AiCliProviderCapabilities(
   supportsStructuredOutput: false,
   composerSlashCommands: <String>['/help', '/clear', '/model'],
+  autoStartRuntime: false,
 );
 const _copilotCapabilities = AiCliProviderCapabilities(
   supportsStructuredOutput: false,
@@ -104,8 +106,7 @@ const _copilotCapabilities = AiCliProviderCapabilities(
   acpLaunchArguments: <String>['--acp', '--allow-all-tools'],
 );
 const _geminiCapabilities = AiCliProviderCapabilities(
-  supportsStructuredOutput: true,
-  structuredOutputArguments: <String>['--format', 'json'],
+  supportsStructuredOutput: false,
   composerSlashCommands: <String>['/help', '/clear', '/model'],
 );
 const _acpCapabilities = AiCliProviderCapabilities(
