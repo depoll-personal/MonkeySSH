@@ -1186,14 +1186,8 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       ref.read(activeSessionsProvider.notifier).getSession(connectionId) !=
       null;
 
-  bool _prefersAcpTransport(AiCliProvider provider) => switch (provider) {
-    AiCliProvider.claude ||
-    AiCliProvider.codex ||
-    AiCliProvider.opencode ||
-    AiCliProvider.copilot ||
-    AiCliProvider.gemini ||
-    AiCliProvider.acp => true,
-  };
+  bool _prefersAcpTransport(AiCliProvider provider) =>
+      provider.capabilities.supportsAcp;
 
   bool _requiresAcpTransport(AiCliProvider provider) =>
       provider == AiCliProvider.acp;
