@@ -925,6 +925,14 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         await _runClaudePrompt(prompt: prompt, context: context);
         return;
       }
+      if (context.provider == AiCliProvider.codex) {
+        await _runCodexPrompt(prompt: prompt, context: context);
+        return;
+      }
+      if (context.provider == AiCliProvider.opencode) {
+        await _runOpenCodePrompt(prompt: prompt, context: context);
+        return;
+      }
       if (widget.autoStartRuntime &&
           _runtimeAttachmentState != _RuntimeAttachmentState.detached) {
         await _startRuntimeIfNeeded(force: true);
@@ -996,8 +1004,6 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         text: prompt,
         modelId: _acpSession?.currentModelId,
       );
-      // Flush any remaining buffered chunks.
-      _flushAcpBuffers();
       final stopReason = result['stopReason']?.toString();
       if (stopReason != null && stopReason != 'end_turn') {
         await _insertTimelineEntry(
@@ -1006,7 +1012,6 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         );
       }
     } on AcpClientException catch (error) {
-      _flushAcpBuffers();
       await _insertTimelineEntry(
         role: 'error',
         message: 'ACP prompt error: $error',
@@ -1160,6 +1165,48 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     required String prompt,
     required _AiSessionRuntimeContext context,
   }) async {
+    await _runOneShotPrompt(
+      context: context,
+      inFlightMessage: 'Previous Claude request is still running.',
+      extraArguments: <String>[
+        '--print',
+        '--verbose',
+        '--output-format',
+        'stream-json',
+        prompt,
+      ],
+    );
+  }
+
+  Future<void> _runCodexPrompt({
+    required String prompt,
+    required _AiSessionRuntimeContext context,
+  }) async {
+    await _runOneShotPrompt(
+      context: context,
+      inFlightMessage: 'Previous Codex request is still running.',
+      structuredOutput: true,
+      extraArguments: <String>[prompt],
+    );
+  }
+
+  Future<void> _runOpenCodePrompt({
+    required String prompt,
+    required _AiSessionRuntimeContext context,
+  }) async {
+    await _runOneShotPrompt(
+      context: context,
+      inFlightMessage: 'Previous OpenCode request is still running.',
+      extraArguments: <String>['run', prompt],
+    );
+  }
+
+  Future<void> _runOneShotPrompt({
+    required _AiSessionRuntimeContext context,
+    required String inFlightMessage,
+    required List<String> extraArguments,
+    bool structuredOutput = false,
+  }) async {
     final connectionId = context.connectionId;
     if (connectionId == null || !_hasActiveConnection(connectionId)) {
       await _enterDetachedMode(
@@ -1169,10 +1216,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     }
     final runtimeService = ref.read(aiRuntimeServiceProvider);
     if (runtimeService.hasActiveRunForSession(widget.sessionId)) {
-      await _insertTimelineEntry(
-        role: 'status',
-        message: 'Previous Claude request is still running.',
-      );
+      await _insertTimelineEntry(role: 'status', message: inFlightMessage);
       return;
     }
     await runtimeService.launch(
@@ -1182,13 +1226,8 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         provider: context.provider,
         executableOverride: context.executableOverride,
         remoteWorkingDirectory: context.remoteWorkingDirectory,
-        extraArguments: <String>[
-          '--print',
-          '--verbose',
-          '--output-format',
-          'stream-json',
-          prompt,
-        ],
+        structuredOutput: structuredOutput,
+        extraArguments: extraArguments,
       ),
     );
   }
