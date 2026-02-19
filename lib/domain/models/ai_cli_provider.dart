@@ -110,7 +110,7 @@ const _opencodeCapabilities = AiCliProviderCapabilities(
 );
 const _copilotCapabilities = AiCliProviderCapabilities(
   supportsStructuredOutput: false,
-  composerSlashCommands: <String>['/help', '/clear', '/update'],
+  composerSlashCommands: <String>['/help', '/clear'],
   supportsAcp: true,
   acpLaunchArguments: <String>['--acp', '--allow-all-tools'],
 );

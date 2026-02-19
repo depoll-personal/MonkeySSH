@@ -1764,11 +1764,14 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
   }) async {
     // Reset streaming buffers for the new turn.
     _flushAcpBuffers();
+    final preferredModelId = _isKnownSlashCommandPrompt(prompt)
+        ? null
+        : _acpSession?.currentModelId;
     try {
       final result = await client.sendPrompt(
         sessionId: sessionId,
         text: prompt,
-        modelId: _acpSession?.currentModelId,
+        modelId: preferredModelId,
       );
       final stopReason = result['stopReason']?.toString();
       if (stopReason != null && stopReason != 'end_turn') {
@@ -2164,6 +2167,45 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       commands.add(AcpCommand(id: entry.trim(), title: entry.trim()));
     }
     return commands;
+  }
+
+  bool _isKnownSlashCommandPrompt(String prompt) {
+    final commandId = _extractSlashCommandId(prompt);
+    if (commandId == null) {
+      return false;
+    }
+    for (final command in _availableSlashCommands) {
+      final normalized = _normalizeSlashCommand(command);
+      if (normalized == null) {
+        continue;
+      }
+      if (normalized == commandId) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  String? _extractSlashCommandId(String prompt) {
+    final trimmedPrompt = prompt.trimLeft();
+    if (!trimmedPrompt.startsWith('/')) {
+      return null;
+    }
+    final commandToken = trimmedPrompt.split(RegExp(r'\s+')).first;
+    return _normalizeSlashCommand(commandToken);
+  }
+
+  String? _normalizeSlashCommand(String raw) {
+    final trimmed = raw.trim();
+    if (!trimmed.startsWith('/') || trimmed.length < 2) {
+      return null;
+    }
+    final withoutPrefix = trimmed.substring(1);
+    if (withoutPrefix.contains('/') ||
+        !RegExp(r'^[A-Za-z0-9._-]+$').hasMatch(withoutPrefix)) {
+      return null;
+    }
+    return withoutPrefix.toLowerCase();
   }
 
   /// Appends a streaming chunk to [buffer] and creates or updates
