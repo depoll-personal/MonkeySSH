@@ -190,7 +190,7 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
                       SizedBox(
                         width: double.infinity,
                         child: FilledButton.icon(
-                          onPressed: _isStarting
+                          onPressed: _isStarting || hostsAsync.isLoading
                               ? null
                               : () => unawaited(_startSession(hostsAsync)),
                           icon: _isStarting

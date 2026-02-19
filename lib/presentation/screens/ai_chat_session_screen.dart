@@ -438,7 +438,9 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
                   ],
                   const SizedBox(width: 8),
                   FilledButton(
-                    onPressed: _sending ? null : () => unawaited(_sendPrompt()),
+                    onPressed: _sending || _sessionContext == null
+                        ? null
+                        : () => unawaited(_sendPrompt()),
                     child: _sending
                         ? const SizedBox.square(
                             dimension: 14,
@@ -829,11 +831,20 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         );
       }
     } on AcpClientException catch (error) {
+      final isCopilot = context.provider == AiCliProvider.copilot;
       await _insertTimelineEntry(
         role: 'error',
         message:
             'ACP initialization failed: $error\n\n'
+            '${isCopilot ? 'If this is Copilot, run `copilot login` on the remote host first.\n\n' : ''}'
             'Make sure the CLI is installed and in your PATH on the remote host.',
+        metadata: <String, dynamic>{
+          if (error.code != null) 'acpErrorCode': error.code,
+          if (error.data != null) 'acpErrorData': error.data,
+          'provider': context.provider.name,
+          if (context.executableOverride != null)
+            'executableOverride': context.executableOverride,
+        },
       );
     }
   }
@@ -844,6 +855,13 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       return;
     }
     final context = _sessionContext;
+    if (context == null) {
+      await _insertTimelineEntry(
+        role: 'status',
+        message: 'Session is still loading. Please try again in a moment.',
+      );
+      return;
+    }
 
     _promptController.clear();
     setState(() {
@@ -852,7 +870,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
 
     try {
       await _insertTimelineEntry(role: 'user', message: prompt);
-      if (context != null && context.provider == AiCliProvider.claude) {
+      if (context.provider == AiCliProvider.claude) {
         await _runClaudePrompt(prompt: prompt, context: context);
         return;
       }
@@ -876,7 +894,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         }
 
         // Legacy: copilot one-shot mode.
-        if (context != null && context.provider == AiCliProvider.copilot) {
+        if (context.provider == AiCliProvider.copilot) {
           await _runCopilotPrompt(prompt: prompt, context: context);
           return;
         }

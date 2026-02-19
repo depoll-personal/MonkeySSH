@@ -159,10 +159,11 @@ void main() {
       final pipeline = AiRuntimeEventParserPipeline();
       final controller = StreamController<AiRuntimeEvent>();
       final timelineEvents = <AiTimelineEvent>[];
+      final streamErrors = <Object>[];
 
       final subscription = pipeline
           .bind(controller.stream)
-          .listen(timelineEvents.add);
+          .listen(timelineEvents.add, onError: streamErrors.add);
 
       controller
         ..addError(StateError('simulated runtime stream error'))
@@ -177,6 +178,7 @@ void main() {
       await controller.close();
       await subscription.cancel();
 
+      expect(streamErrors, hasLength(1));
       expect(timelineEvents, hasLength(1));
       expect(timelineEvents.single.type, AiTimelineEventType.status);
     });

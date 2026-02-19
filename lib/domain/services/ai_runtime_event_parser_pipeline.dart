@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -87,16 +88,19 @@ class AiRuntimeEventParserPipeline {
       <int, _AiRuntimeParserState>{};
 
   /// Binds this pipeline to an [AiRuntimeEvent] stream.
-  Stream<AiTimelineEvent> bind(Stream<AiRuntimeEvent> runtimeEvents) async* {
-    final guardedEvents = runtimeEvents.handleError(
-      (Object error, StackTrace stackTrace) {},
-    );
-    await for (final event in guardedEvents) {
-      for (final timelineEvent in parse(event)) {
-        yield timelineEvent;
-      }
-    }
-  }
+  Stream<AiTimelineEvent> bind(Stream<AiRuntimeEvent> runtimeEvents) =>
+      runtimeEvents.transform(
+        StreamTransformer<AiRuntimeEvent, AiTimelineEvent>.fromHandlers(
+          handleData: (event, sink) {
+            for (final timelineEvent in parse(event)) {
+              sink.add(timelineEvent);
+            }
+          },
+          handleError: (error, stackTrace, sink) {
+            sink.addError(error, stackTrace);
+          },
+        ),
+      );
 
   /// Parses one runtime event into zero or more timeline events.
   List<AiTimelineEvent> parse(AiRuntimeEvent runtimeEvent) {

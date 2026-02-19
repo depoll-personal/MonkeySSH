@@ -548,8 +548,23 @@ class AcpClientException implements Exception {
   /// Additional error data, if available.
   final Object? data;
 
+  String _formatData() {
+    if (data == null) {
+      return '';
+    }
+    final serialized = switch (data) {
+      final String value => value,
+      _ => jsonEncode(data),
+    };
+    const maxLength = 600;
+    final clipped = serialized.length > maxLength
+        ? '${serialized.substring(0, maxLength)}…'
+        : serialized;
+    return ' data=$clipped';
+  }
+
   @override
   String toString() => code == null
-      ? 'AcpClientException: $message'
-      : 'AcpClientException($code): $message';
+      ? 'AcpClientException: $message${_formatData()}'
+      : 'AcpClientException($code): $message${_formatData()}';
 }
