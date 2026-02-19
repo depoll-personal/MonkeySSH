@@ -824,14 +824,17 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       return const <String>[];
     }
 
-    final helpCommands = <String>[
-      '$executable --help',
-      if (context.provider == AiCliProvider.opencode) '$executable run --help',
-    ];
+    final probeCommands = _slashCommandProbeCommands(
+      context: context,
+      executable: executable,
+    );
+    if (probeCommands.isEmpty) {
+      return const <String>[];
+    }
     final discovered = <String>{};
-    for (final helpCommand in helpCommands) {
+    for (final probeCommand in probeCommands) {
       final process = await session.execute(
-        'sh -lc ${shellEscape('$helpCommand 2>&1')}',
+        'sh -lc ${shellEscape('$probeCommand 2>&1')}',
       );
       final output = await process.stdout
           .cast<List<int>>()
@@ -847,6 +850,25 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       }
     }
     return discovered.toList(growable: false);
+  }
+
+  List<String> _slashCommandProbeCommands({
+    required _AiSessionRuntimeContext context,
+    required String executable,
+  }) {
+    final helpPrompt = shellEscape('/help');
+    return switch (context.provider) {
+      AiCliProvider.claude => <String>[
+        '$executable --print --max-turns 1 $helpPrompt',
+      ],
+      AiCliProvider.codex => <String>['$executable $helpPrompt'],
+      AiCliProvider.opencode => <String>['$executable run $helpPrompt'],
+      AiCliProvider.copilot => <String>[
+        '$executable -p $helpPrompt --resume ${shellEscape(_copilotResumeSessionId(widget.sessionId))}',
+      ],
+      AiCliProvider.gemini => <String>['$executable $helpPrompt'],
+      AiCliProvider.acp => const <String>[],
+    };
   }
 
   bool _listsEqual(List<String> a, List<String> b) {
@@ -1110,10 +1132,6 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       _promptController.clear();
       return;
     }
-    final effectivePrompt = _applyQueuedSteeringPrompts(
-      prompt: prompt,
-      provider: context.provider,
-    );
     final appliedSteeringPrompts = _steeringPromptQueue.length;
     _promptController.clear();
     setState(() {
@@ -1129,15 +1147,15 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
             : null,
       );
       if (context.provider == AiCliProvider.claude) {
-        await _runClaudePrompt(prompt: effectivePrompt, context: context);
+        await _runClaudePrompt(prompt: prompt, context: context);
         return;
       }
       if (context.provider == AiCliProvider.codex) {
-        await _runCodexPrompt(prompt: effectivePrompt, context: context);
+        await _runCodexPrompt(prompt: prompt, context: context);
         return;
       }
       if (context.provider == AiCliProvider.opencode) {
-        await _runOpenCodePrompt(prompt: effectivePrompt, context: context);
+        await _runOpenCodePrompt(prompt: prompt, context: context);
         return;
       }
       if (widget.autoStartRuntime &&
@@ -1154,7 +1172,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           await _sendAcpPrompt(
             client: acpClient,
             sessionId: acpSession.sessionId,
-            prompt: effectivePrompt,
+            prompt: prompt,
           );
           return;
         }
@@ -1169,18 +1187,14 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
 
         // Legacy: copilot one-shot mode.
         if (context.provider == AiCliProvider.copilot) {
-          await _runCopilotPrompt(prompt: effectivePrompt, context: context);
+          await _runCopilotPrompt(prompt: prompt, context: context);
           return;
         }
 
         // Legacy: raw stdin mode for non-ACP providers.
         await ref
             .read(aiRuntimeServiceProvider)
-            .send(
-              effectivePrompt,
-              appendNewline: true,
-              aiSessionId: widget.sessionId,
-            );
+            .send(prompt, appendNewline: true, aiSessionId: widget.sessionId);
       } else {
         await _insertTimelineEntry(
           role: 'status',
@@ -1206,7 +1220,19 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     required String prompt,
     required _AiSessionRuntimeContext context,
   }) async {
+    final isSteeringCommand =
+        prompt == '/steer-list' ||
+        prompt == '/steer-clear' ||
+        prompt.startsWith('/steer');
     if (!context.provider.capabilities.supportsSteeringPrompts) {
+      if (isSteeringCommand) {
+        await _insertTimelineEntry(
+          role: 'status',
+          message:
+              'Steering queue is not supported for ${context.provider.executable}.',
+        );
+        return true;
+      }
       return false;
     }
     if (prompt == '/steer-list') {
@@ -1249,19 +1275,27 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     return false;
   }
 
-  String _applyQueuedSteeringPrompts({
-    required String prompt,
-    required AiCliProvider provider,
-  }) {
-    if (!provider.capabilities.supportsSteeringPrompts ||
-        _steeringPromptQueue.isEmpty) {
-      return prompt;
+  List<String> _steeringArguments(AiCliProvider provider) {
+    if (_steeringPromptQueue.isEmpty) {
+      return const <String>[];
     }
-    final steeringBlock = StringBuffer('Steering instructions:\n');
-    for (var index = 0; index < _steeringPromptQueue.length; index++) {
-      steeringBlock.writeln('${index + 1}. ${_steeringPromptQueue[index]}');
+    switch (provider) {
+      case AiCliProvider.claude:
+      case AiCliProvider.codex:
+        final arguments = <String>[];
+        for (final steeringPrompt in _steeringPromptQueue) {
+          arguments
+            ..add('--append-system-prompt')
+            ..add(steeringPrompt);
+        }
+        return arguments;
+      case AiCliProvider.opencode:
+        return <String>['--prompt', _steeringPromptQueue.join('\n')];
+      case AiCliProvider.copilot:
+      case AiCliProvider.gemini:
+      case AiCliProvider.acp:
+        return const <String>[];
     }
-    return '$steeringBlock\nUser prompt:\n$prompt';
   }
 
   Future<void> _sendAcpPrompt({
@@ -1450,10 +1484,12 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     required String prompt,
     required _AiSessionRuntimeContext context,
   }) async {
+    final steeringArguments = _steeringArguments(context.provider);
     await _runOneShotPrompt(
       context: context,
       inFlightMessage: 'Previous Claude request is still running.',
       extraArguments: <String>[
+        ...steeringArguments,
         '--print',
         '--verbose',
         '--output-format',
@@ -1469,10 +1505,11 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     required String prompt,
     required _AiSessionRuntimeContext context,
   }) async {
+    final steeringArguments = _steeringArguments(context.provider);
     await _runOneShotPrompt(
       context: context,
       inFlightMessage: 'Previous Codex request is still running.',
-      extraArguments: <String>[prompt],
+      extraArguments: <String>[...steeringArguments, prompt],
     );
   }
 
@@ -1480,10 +1517,11 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     required String prompt,
     required _AiSessionRuntimeContext context,
   }) async {
+    final steeringArguments = _steeringArguments(context.provider);
     await _runOneShotPrompt(
       context: context,
       inFlightMessage: 'Previous OpenCode request is still running.',
-      extraArguments: <String>['run', prompt],
+      extraArguments: <String>['run', ...steeringArguments, prompt],
     );
   }
 

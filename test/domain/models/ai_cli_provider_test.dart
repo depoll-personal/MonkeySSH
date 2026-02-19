@@ -38,10 +38,13 @@ void main() {
       );
       expect(
         AiCliProvider.copilot.capabilities.supportsSteeringPrompts,
-        isTrue,
+        isFalse,
       );
-      expect(AiCliProvider.gemini.capabilities.supportsSteeringPrompts, isTrue);
-      expect(AiCliProvider.acp.capabilities.supportsSteeringPrompts, isTrue);
+      expect(
+        AiCliProvider.gemini.capabilities.supportsSteeringPrompts,
+        isFalse,
+      );
+      expect(AiCliProvider.acp.capabilities.supportsSteeringPrompts, isFalse);
     });
   });
 }

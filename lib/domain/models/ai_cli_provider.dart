@@ -109,19 +109,16 @@ const _opencodeCapabilities = AiCliProviderCapabilities(
 const _copilotCapabilities = AiCliProviderCapabilities(
   supportsStructuredOutput: false,
   composerSlashCommands: <String>['/help', '/clear'],
-  supportsSteeringPrompts: true,
   supportsAcp: true,
   acpLaunchArguments: <String>['--acp', '--allow-all-tools'],
 );
 const _geminiCapabilities = AiCliProviderCapabilities(
   supportsStructuredOutput: false,
   composerSlashCommands: <String>['/help', '/clear', '/model'],
-  supportsSteeringPrompts: true,
 );
 const _acpCapabilities = AiCliProviderCapabilities(
   supportsStructuredOutput: false,
   composerSlashCommands: <String>['/help', '/clear'],
-  supportsSteeringPrompts: true,
   supportsAcp: true,
 );
 
