@@ -69,7 +69,7 @@ class AcpClient {
         'name': clientName,
         'version': clientVersion,
       },
-      'capabilities': <String, dynamic>{},
+      'clientCapabilities': <String, dynamic>{},
     });
     final agentInfoMap = result['agentInfo'];
     if (agentInfoMap is Map<String, dynamic>) {

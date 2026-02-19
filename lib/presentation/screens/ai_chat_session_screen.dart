@@ -892,6 +892,14 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           );
           return;
         }
+        if (context.provider == AiCliProvider.acp) {
+          await _insertTimelineEntry(
+            role: 'error',
+            message:
+                'ACP session is not ready. Reconnect runtime and ensure the provider is authenticated.',
+          );
+          return;
+        }
 
         // Legacy: copilot one-shot mode.
         if (context.provider == AiCliProvider.copilot) {

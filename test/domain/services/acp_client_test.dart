@@ -74,6 +74,9 @@ void main() {
           jsonDecode(process.stdinWrites.first) as Map<String, dynamic>;
       expect(sent['method'], 'initialize');
       expect(sent['id'], 1);
+      final params = sent['params'] as Map<String, dynamic>;
+      expect(params, contains('clientCapabilities'));
+      expect(params, isNot(contains('capabilities')));
 
       process.emitStdout(
         '${jsonEncode(<String, dynamic>{
