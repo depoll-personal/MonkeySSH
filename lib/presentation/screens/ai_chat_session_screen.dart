@@ -199,12 +199,12 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         ? 'ACP · ${acpSession.currentModelId ?? executableLabel}'
         : executableLabel;
     final modelLabel = _currentModelLabel(
-      provider: provider,
       acpSession: acpSession,
+      entries: timelineEntries,
     );
     final modeLabel = _currentModeLabel(
-      provider: provider,
       acpSession: acpSession,
+      entries: timelineEntries,
     );
     final contextLabel = _contextRemainingLabel(entries: timelineEntries);
 
@@ -373,19 +373,20 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
   }
 
   String _currentModelLabel({
-    required AiCliProvider provider,
     required AcpSession? acpSession,
+    required List<AiTimelineEntry>? entries,
   }) {
     final selectedModel = acpSession?.currentModelId ?? _savedAcpModelId;
     if (selectedModel != null && selectedModel.isNotEmpty) {
       return selectedModel;
     }
-    return 'default';
+    final telemetry = _latestCliTelemetry(entries: entries);
+    return telemetry.model ?? '--';
   }
 
   String _currentModeLabel({
-    required AiCliProvider provider,
     required AcpSession? acpSession,
+    required List<AiTimelineEntry>? entries,
   }) {
     if (acpSession != null) {
       final mode = acpSession.currentModeId;
@@ -394,36 +395,136 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       }
       return 'acp';
     }
-    switch (provider) {
-      case AiCliProvider.claude:
-      case AiCliProvider.codex:
-      case AiCliProvider.opencode:
-        return 'one-shot';
-      case AiCliProvider.copilot:
-        return 'one-shot';
-      case AiCliProvider.gemini:
-        return 'interactive';
-      case AiCliProvider.acp:
-        return 'acp';
-    }
+    final telemetry = _latestCliTelemetry(entries: entries);
+    return telemetry.mode ?? '--';
   }
 
   String _contextRemainingLabel({required List<AiTimelineEntry>? entries}) {
-    if (entries == null) {
-      return 'Context: --';
+    final telemetry = _latestCliTelemetry(entries: entries);
+    if (telemetry.contextRemainingTokens != null) {
+      return 'Context: ${telemetry.contextRemainingTokens} tok left';
     }
-    const estimatedContextChars = 120000;
-    var usedChars = 0;
-    for (final entry in entries) {
-      usedChars += entry.message.length;
+    if (telemetry.contextUsedTokens != null) {
+      return 'Context: ${telemetry.contextUsedTokens} tok used';
     }
-    final remainingFraction =
-        ((estimatedContextChars - usedChars) / estimatedContextChars).clamp(
-          0,
-          1,
-        );
-    final percentage = (remainingFraction * 100).round();
-    return 'Context: ~$percentage%';
+    return 'Context: --';
+  }
+
+  _CliRuntimeTelemetry _latestCliTelemetry({
+    required List<AiTimelineEntry>? entries,
+  }) {
+    if (entries == null || entries.isEmpty) {
+      return const _CliRuntimeTelemetry();
+    }
+    String? model;
+    String? mode;
+    int? contextRemainingTokens;
+    int? contextUsedTokens;
+    for (final entry in entries.reversed) {
+      final metadata = AiSessionMetadata.decode(entry.metadata);
+      final payload = _metadataMap(metadata['payload']);
+      model ??= _firstNonEmptyString(<String?>[
+        AiSessionMetadata.readString(metadata, 'currentModelId'),
+        AiSessionMetadata.readString(metadata, 'acpModelId'),
+        _firstNonEmptyString(<String?>[
+          _stringValue(payload?['model']),
+          _stringValue(payload?['modelId']),
+          _stringValue(payload?['currentModelId']),
+          _stringValue(_metadataMap(payload?['message'])?['model']),
+        ]),
+      ]);
+      mode ??= _firstNonEmptyString(<String?>[
+        AiSessionMetadata.readString(metadata, 'currentModeId'),
+        _firstNonEmptyString(<String?>[
+          _stringValue(payload?['mode']),
+          _stringValue(payload?['modeId']),
+          _stringValue(payload?['currentModeId']),
+        ]),
+      ]);
+      final usage = _metadataMap(
+        payload?['usage'] ?? _metadataMap(payload?['message'])?['usage'],
+      );
+      contextRemainingTokens ??= _firstNonNullInt(<int?>[
+        _intValue(usage?['context_window_remaining']),
+        _intValue(usage?['remaining_context_tokens']),
+        _intValue(usage?['remainingTokens']),
+        _intValue(payload?['contextRemainingTokens']),
+      ]);
+      contextUsedTokens ??= _firstNonNullInt(<int?>[
+        _intValue(usage?['total_tokens']),
+        _sumInts(
+          _intValue(usage?['input_tokens']),
+          _intValue(usage?['output_tokens']),
+        ),
+      ]);
+      if (model != null &&
+          mode != null &&
+          (contextRemainingTokens != null || contextUsedTokens != null)) {
+        break;
+      }
+    }
+    return _CliRuntimeTelemetry(
+      model: model,
+      mode: mode,
+      contextRemainingTokens: contextRemainingTokens,
+      contextUsedTokens: contextUsedTokens,
+    );
+  }
+
+  Map<String, dynamic>? _metadataMap(Object? value) {
+    if (value is Map<String, dynamic>) {
+      return value;
+    }
+    if (value is Map<Object?, Object?>) {
+      return value.map((key, mapValue) => MapEntry(key.toString(), mapValue));
+    }
+    return null;
+  }
+
+  String? _stringValue(Object? value) {
+    if (value is! String) {
+      return null;
+    }
+    final trimmed = value.trim();
+    return trimmed.isEmpty ? null : trimmed;
+  }
+
+  int? _intValue(Object? value) {
+    if (value is int) {
+      return value;
+    }
+    if (value is num) {
+      return value.toInt();
+    }
+    if (value is String) {
+      return int.tryParse(value.trim());
+    }
+    return null;
+  }
+
+  int? _sumInts(int? left, int? right) {
+    if (left == null && right == null) {
+      return null;
+    }
+    return (left ?? 0) + (right ?? 0);
+  }
+
+  int? _firstNonNullInt(List<int?> values) {
+    for (final value in values) {
+      if (value != null) {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  String? _firstNonEmptyString(List<String?> values) {
+    for (final value in values) {
+      if (value != null && value.isNotEmpty) {
+        return value;
+      }
+    }
+    return null;
   }
 
   Widget _buildComposer(BuildContext context) {
@@ -1275,27 +1376,38 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     return false;
   }
 
-  List<String> _steeringArguments(AiCliProvider provider) {
+  String? _nativeSteeringCommand(AiCliProvider provider) => switch (provider) {
+    AiCliProvider.claude ||
+    AiCliProvider.codex ||
+    AiCliProvider.opencode => '/steer',
+    AiCliProvider.copilot || AiCliProvider.gemini || AiCliProvider.acp => null,
+  };
+
+  Future<void> _applyQueuedNativeSteering(
+    _AiSessionRuntimeContext context,
+  ) async {
     if (_steeringPromptQueue.isEmpty) {
-      return const <String>[];
+      return;
     }
-    switch (provider) {
-      case AiCliProvider.claude:
-      case AiCliProvider.codex:
-        final arguments = <String>[];
-        for (final steeringPrompt in _steeringPromptQueue) {
-          arguments
-            ..add('--append-system-prompt')
-            ..add(steeringPrompt);
-        }
-        return arguments;
-      case AiCliProvider.opencode:
-        return <String>['--prompt', _steeringPromptQueue.join('\n')];
-      case AiCliProvider.copilot:
-      case AiCliProvider.gemini:
-      case AiCliProvider.acp:
-        return const <String>[];
+    final command = _nativeSteeringCommand(context.provider);
+    if (command == null) {
+      return;
     }
+    final runtimeService = ref.read(aiRuntimeServiceProvider);
+    final queuedPrompts = List<String>.from(_steeringPromptQueue);
+    for (final steeringPrompt in queuedPrompts) {
+      await runtimeService.send(
+        '$command $steeringPrompt',
+        appendNewline: true,
+        aiSessionId: widget.sessionId,
+      );
+    }
+    _steeringPromptQueue.clear();
+    await _insertTimelineEntry(
+      role: 'status',
+      message:
+          'Applied ${queuedPrompts.length} queued steering prompt${queuedPrompts.length == 1 ? '' : 's'}.',
+    );
   }
 
   Future<void> _sendAcpPrompt({
@@ -1484,44 +1596,43 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     required String prompt,
     required _AiSessionRuntimeContext context,
   }) async {
-    final steeringArguments = _steeringArguments(context.provider);
-    await _runOneShotPrompt(
-      context: context,
-      inFlightMessage: 'Previous Claude request is still running.',
-      extraArguments: <String>[
-        ...steeringArguments,
-        '--print',
-        '--verbose',
-        '--output-format',
-        'stream-json',
-        '--max-turns',
-        '1',
-        prompt,
-      ],
-    );
+    await _runProviderPrompt(prompt: prompt, context: context);
   }
 
   Future<void> _runCodexPrompt({
     required String prompt,
     required _AiSessionRuntimeContext context,
   }) async {
-    final steeringArguments = _steeringArguments(context.provider);
-    await _runOneShotPrompt(
-      context: context,
-      inFlightMessage: 'Previous Codex request is still running.',
-      extraArguments: <String>[...steeringArguments, prompt],
-    );
+    await _runProviderPrompt(prompt: prompt, context: context);
   }
 
   Future<void> _runOpenCodePrompt({
     required String prompt,
     required _AiSessionRuntimeContext context,
   }) async {
-    final steeringArguments = _steeringArguments(context.provider);
-    await _runOneShotPrompt(
-      context: context,
-      inFlightMessage: 'Previous OpenCode request is still running.',
-      extraArguments: <String>['run', ...steeringArguments, prompt],
+    await _runProviderPrompt(prompt: prompt, context: context);
+  }
+
+  Future<void> _runProviderPrompt({
+    required String prompt,
+    required _AiSessionRuntimeContext context,
+  }) async {
+    if (widget.autoStartRuntime &&
+        _runtimeAttachmentState != _RuntimeAttachmentState.detached) {
+      await _startRuntimeIfNeeded(force: true);
+      if (_runtimeAttachmentState == _RuntimeAttachmentState.detached) {
+        return;
+      }
+      await _applyQueuedNativeSteering(context);
+      await ref
+          .read(aiRuntimeServiceProvider)
+          .send(prompt, appendNewline: true, aiSessionId: widget.sessionId);
+      return;
+    }
+    await _insertTimelineEntry(
+      role: 'status',
+      message:
+          'Runtime is detached. Prompt saved to transcript until reconnect.',
     );
   }
 
@@ -1568,45 +1679,16 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     required String prompt,
     required _AiSessionRuntimeContext context,
   }) async {
-    final connectionId = context.connectionId;
-    if (connectionId == null || !_hasActiveConnection(connectionId)) {
-      await _enterDetachedMode(
-        'Runtime detached from previous session. Transcript restored; reconnect to continue live.',
-      );
-      return;
-    }
-    final runtimeService = ref.read(aiRuntimeServiceProvider);
-    if (runtimeService.hasActiveRunForSession(widget.sessionId)) {
-      try {
-        await runtimeService.cancel(aiSessionId: widget.sessionId);
-        await Future<void>.delayed(const Duration(milliseconds: 120));
-      } on Exception {
-        // Best effort stale-runtime cleanup.
-      }
-    }
-    if (runtimeService.hasActiveRunForSession(widget.sessionId)) {
-      await _insertTimelineEntry(
-        role: 'status',
-        message: 'Previous Copilot request is still running.',
-      );
-      return;
-    }
-    await runtimeService.launch(
-      AiRuntimeLaunchRequest(
-        aiSessionId: widget.sessionId,
-        connectionId: connectionId,
-        provider: context.provider,
-        executableOverride: context.executableOverride,
-        remoteWorkingDirectory: context.remoteWorkingDirectory,
-        structuredOutput:
-            context.provider.capabilities.supportsStructuredOutput,
-        extraArguments: <String>[
-          '-p',
-          prompt,
-          '--resume',
-          _copilotResumeSessionId(widget.sessionId),
-        ],
-      ),
+    await _runOneShotPrompt(
+      context: context,
+      inFlightMessage: 'Previous Copilot request is still running.',
+      structuredOutput: context.provider.capabilities.supportsStructuredOutput,
+      extraArguments: <String>[
+        '-p',
+        prompt,
+        '--resume',
+        _copilotResumeSessionId(widget.sessionId),
+      ],
     );
   }
 
@@ -2122,6 +2204,20 @@ class _SystemTimelineEntry extends StatelessWidget {
       ),
     );
   }
+}
+
+class _CliRuntimeTelemetry {
+  const _CliRuntimeTelemetry({
+    this.model,
+    this.mode,
+    this.contextRemainingTokens,
+    this.contextUsedTokens,
+  });
+
+  final String? model;
+  final String? mode;
+  final int? contextRemainingTokens;
+  final int? contextUsedTokens;
 }
 
 class _EntryRoleBadge extends StatelessWidget {
