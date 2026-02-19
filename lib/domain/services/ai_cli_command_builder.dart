@@ -61,14 +61,14 @@ class AiCliCommandBuilder {
     const decodeRunCommand =
         r'MONKEYSSH_RUN="$(printf %s "$MONKEYSSH_RUN_B64" | base64 --decode 2>/dev/null || printf %s "$MONKEYSSH_RUN_B64" | base64 -d 2>/dev/null)"';
     const loginShellCommand =
-        r'if [ -n "$SHELL" ] && command -v "$SHELL" >/dev/null 2>&1; then exec "$SHELL" -lc "$MONKEYSSH_RUN"; fi';
+        r'if [ -n "$SHELL" ] && command -v "$SHELL" >/dev/null 2>&1; then "$SHELL" -lc "$MONKEYSSH_RUN"; rc=$?; if [ $rc -ne 127 ]; then exit $rc; fi; fi';
     final loginShellSegments = <String>[
       encodedRunCommandAssignment,
       decodeRunCommand,
       'export MONKEYSSH_RUN',
       loginShellCommand,
-      r'if command -v zsh >/dev/null 2>&1; then exec zsh -lc "$MONKEYSSH_RUN"; fi',
-      r'if command -v bash >/dev/null 2>&1; then exec bash -lc "$MONKEYSSH_RUN"; fi',
+      r'if command -v zsh >/dev/null 2>&1; then zsh -lc "$MONKEYSSH_RUN"; rc=$?; if [ $rc -ne 127 ]; then exit $rc; fi; fi',
+      r'if command -v bash >/dev/null 2>&1; then bash -lc "$MONKEYSSH_RUN"; rc=$?; if [ $rc -ne 127 ]; then exit $rc; fi; fi',
     ];
     final fallbackSegments = <String>[
       r'PATH="$PATH:$HOME/.local/bin:$HOME/bin:$HOME/homebrew/bin:$HOME/.homebrew/bin:/usr/local/bin:/usr/local/sbin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin"',
