@@ -135,5 +135,16 @@ void main() {
       expect(command, contains('--acp'));
       expect(command, isNot(contains('--output-format')));
     });
+
+    test('loads interactive shell exports for TLS environment setup', () {
+      final command = builder.buildLaunchCommand(
+        provider: AiCliProvider.gemini,
+        remoteWorkingDirectory: '/srv/project',
+      );
+
+      expect(command, contains('-ilc'));
+      expect(command, contains(r'. "$HOME/.bash_profile"'));
+      expect(command, contains(r'. "$HOME/.zshrc"'));
+    });
   });
 }
