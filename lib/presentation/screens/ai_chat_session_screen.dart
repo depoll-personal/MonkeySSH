@@ -1493,10 +1493,16 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           return;
         }
 
-        // Use ACP protocol when available.
+        // Use ACP protocol when available. For slash commands, only route
+        // through ACP when the agent has advertised command support;
+        // otherwise fall through to raw stdin so the CLI handles them.
         final acpClient = _acpClient;
         final acpSession = _acpSession;
-        if (acpClient != null && acpSession != null) {
+        final useAcpForPrompt = acpClient != null &&
+            acpSession != null &&
+            (!_isSlashCommand(prompt) ||
+                acpSession.availableCommands.isNotEmpty);
+        if (useAcpForPrompt) {
           await _sendAcpPrompt(
             client: acpClient,
             sessionId: acpSession.sessionId,
@@ -1537,6 +1543,9 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       }
     }
   }
+
+  /// Whether [prompt] starts with a `/` command token.
+  bool _isSlashCommand(String prompt) => prompt.trimLeft().startsWith('/');
 
   Future<void> _sendAcpPrompt({
     required AcpClient client,
@@ -2028,7 +2037,11 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       }
       final acpClient = _acpClient;
       final acpSession = _acpSession;
-      if (acpClient != null && acpSession != null) {
+      final useAcpForPrompt = acpClient != null &&
+          acpSession != null &&
+          (!_isSlashCommand(prompt) ||
+              acpSession.availableCommands.isNotEmpty);
+      if (useAcpForPrompt) {
         await _sendAcpPrompt(
           client: acpClient,
           sessionId: acpSession.sessionId,
@@ -2208,9 +2221,15 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     );
     if (timelineEvent.type == AiTimelineEventType.error) {
       _runtimeStarted = false;
-      if (sanitizedMessage.isEmpty) {
+      if (sanitizedMessage.trim().isEmpty) {
         return;
       }
+    }
+
+    // Drop events whose content is empty after stripping ANSI/control codes.
+    if (timelineEvent.type == AiTimelineEventType.message &&
+        sanitizedMessage.trim().isEmpty) {
+      return;
     }
 
     if (timelineEvent.type == AiTimelineEventType.status) {
@@ -2605,7 +2624,7 @@ class _TimelineMarkdownBody extends StatelessWidget {
   const _TimelineMarkdownBody({required this.data, required this.textColor});
 
   static final RegExp _ansiEscapePattern = RegExp(
-    '\u001B\\[[0-9;?]*[ -/]*[@-~]',
+    '\u001B\\[[0-9;?<=>]*[ -/]*[@-~]',
   );
   static final RegExp _oscEscapePattern = RegExp(
     '\u001B\\][^\\u0007]*(\\u0007|\u001B\\\\)',

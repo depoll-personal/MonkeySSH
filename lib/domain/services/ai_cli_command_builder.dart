@@ -44,7 +44,13 @@ class AiCliCommandBuilder {
       arguments: commandArguments,
     );
     final cdDirectory = _buildCdDirectory(trimmedRemoteWorkingDirectory);
-    final runCommand = 'cd $cdDirectory && $runSegment';
+    // Suppress PTY echo for adapter-mode processes so the user's stdin input
+    // isn't echoed back on stdout as spurious assistant messages.
+    final echoSuppression =
+        !acpMode && provider.capabilities.requiresPty
+            ? 'stty -echo 2>/dev/null; '
+            : '';
+    final runCommand = '${echoSuppression}cd $cdDirectory && $runSegment';
     final encodedRunCommand = base64Encode(utf8.encode(runCommand));
     final encodedRunCommandAssignment =
         'MONKEYSSH_RUN_B64=${shellEscape(encodedRunCommand)}';
