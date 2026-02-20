@@ -46,10 +46,9 @@ class AiCliCommandBuilder {
     final cdDirectory = _buildCdDirectory(trimmedRemoteWorkingDirectory);
     // Suppress PTY echo for adapter-mode processes so the user's stdin input
     // isn't echoed back on stdout as spurious assistant messages.
-    final echoSuppression =
-        !acpMode && provider.capabilities.requiresPty
-            ? 'stty -echo 2>/dev/null; '
-            : '';
+    final echoSuppression = !acpMode && provider.capabilities.requiresPty
+        ? 'stty -echo 2>/dev/null; '
+        : '';
     final runCommand = '${echoSuppression}cd $cdDirectory && $runSegment';
     final encodedRunCommand = base64Encode(utf8.encode(runCommand));
     final encodedRunCommandAssignment =

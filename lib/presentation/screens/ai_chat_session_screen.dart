@@ -1498,7 +1498,8 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         // otherwise fall through to raw stdin so the CLI handles them.
         final acpClient = _acpClient;
         final acpSession = _acpSession;
-        final useAcpForPrompt = acpClient != null &&
+        final useAcpForPrompt =
+            acpClient != null &&
             acpSession != null &&
             (!_isSlashCommand(prompt) ||
                 acpSession.availableCommands.isNotEmpty);
@@ -2037,10 +2038,10 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       }
       final acpClient = _acpClient;
       final acpSession = _acpSession;
-      final useAcpForPrompt = acpClient != null &&
+      final useAcpForPrompt =
+          acpClient != null &&
           acpSession != null &&
-          (!_isSlashCommand(prompt) ||
-              acpSession.availableCommands.isNotEmpty);
+          (!_isSlashCommand(prompt) || acpSession.availableCommands.isNotEmpty);
       if (useAcpForPrompt) {
         await _sendAcpPrompt(
           client: acpClient,
