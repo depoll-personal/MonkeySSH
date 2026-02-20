@@ -49,7 +49,12 @@ class AiCliCommandBuilder {
     final echoSuppression = !acpMode && provider.capabilities.requiresPty
         ? 'stty -echo 2>/dev/null; '
         : '';
-    final runCommand = '${echoSuppression}cd $cdDirectory && $runSegment';
+    final providerEnvBootstrap = provider == AiCliProvider.gemini
+        ? r'if [ -z "${SSL_CERT_FILE:-}" ] && command -v brew >/dev/null 2>&1; then MONKEYSSH_SSL_CERT_FILE="$(brew --prefix)/etc/ca-certificates/certDD.pem"; if [ -f "$MONKEYSSH_SSL_CERT_FILE" ]; then export SSL_CERT_FILE="$MONKEYSSH_SSL_CERT_FILE"; fi; fi; '
+        : '';
+    final runCommand =
+        '$echoSuppression$providerEnvBootstrap'
+        'cd $cdDirectory && $runSegment';
     final encodedRunCommand = base64Encode(utf8.encode(runCommand));
     final encodedRunCommandAssignment =
         'MONKEYSSH_RUN_B64=${shellEscape(encodedRunCommand)}';
