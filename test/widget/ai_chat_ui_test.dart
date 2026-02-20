@@ -525,7 +525,7 @@ void main() {
       await tester.pumpAndSettle();
     });
 
-    testWidgets('queues steering prompts via slash commands', (tester) async {
+    testWidgets('passes slash commands through to runtime', (tester) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
       final workspaceId = await db
@@ -566,16 +566,11 @@ void main() {
       await tester.tap(find.byIcon(Icons.send_rounded));
       await tester.pumpAndSettle();
 
-      expect(find.textContaining('Queued steering prompt #1'), findsOneWidget);
-
-      await tester.enterText(
-        find.byKey(const Key('ai-chat-input')),
-        '/steer-list',
+      expect(
+        find.textContaining('/steer Always return concise answers'),
+        findsOneWidget,
       );
-      await tester.tap(find.byIcon(Icons.send_rounded));
-      await tester.pumpAndSettle();
-
-      expect(find.textContaining('Steering prompts (1):'), findsOneWidget);
+      expect(find.textContaining('Queued steering prompt'), findsNothing);
 
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pumpAndSettle();

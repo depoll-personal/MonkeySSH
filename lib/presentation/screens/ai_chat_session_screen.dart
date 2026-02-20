@@ -68,11 +68,6 @@ class AiChatSessionScreen extends ConsumerStatefulWidget {
 }
 
 class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
-  static const List<String> _steeringSlashCommands = <String>[
-    '/steer',
-    '/steer-list',
-    '/steer-clear',
-  ];
   static final RegExp _slashCommandPattern = RegExp(
     r'(^|[\s(,])\/([a-z][a-z0-9_-]*)(?=\s|$)',
     multiLine: true,
@@ -98,7 +93,6 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
   String? _acpSessionTitle;
   String? _savedAcpModelId;
   String? _savedAcpModeId;
-  final List<String> _steeringPromptQueue = <String>[];
   List<String> _availableSlashCommands = const <String>[];
 
   /// Buffers for aggregating streaming ACP chunks into single timeline entries.
@@ -1054,15 +1048,10 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     );
   }
 
-  List<String> _baseSlashCommands(AiCliProvider provider) {
-    final commands = LinkedHashSet<String>.from(
-      provider.capabilities.composerSlashCommands,
-    );
-    if (provider.capabilities.supportsSteeringPrompts) {
-      commands.addAll(_steeringSlashCommands);
-    }
-    return commands.toList(growable: false);
-  }
+  List<String> _baseSlashCommands(AiCliProvider provider) =>
+      LinkedHashSet<String>.from(
+        provider.capabilities.composerSlashCommands,
+      ).toList(growable: false);
 
   Future<void> _loadProviderSlashCommands(
     _AiSessionRuntimeContext context,
@@ -1573,41 +1562,23 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       return;
     }
 
-    if (await _handleSteeringComposerCommand(
-      prompt: prompt,
-      context: context,
-    )) {
-      _promptController.clear();
-      return;
-    }
-    if (await _handleRuntimeResetComposerCommand(prompt: prompt)) {
-      _promptController.clear();
-      return;
-    }
-    final appliedSteeringPrompts = _steeringPromptQueue.length;
     _promptController.clear();
     setState(() {
       _sending = true;
     });
 
     try {
-      await _insertTimelineEntry(
-        role: 'user',
-        message: prompt,
-        metadata: appliedSteeringPrompts > 0
-            ? <String, dynamic>{'steeringPromptCount': appliedSteeringPrompts}
-            : null,
-      );
+      await _insertTimelineEntry(role: 'user', message: prompt);
       if (context.provider == AiCliProvider.claude) {
-        await _runClaudePrompt(prompt: prompt, context: context);
+        await _runClaudePrompt(prompt: prompt);
         return;
       }
       if (context.provider == AiCliProvider.codex) {
-        await _runCodexPrompt(prompt: prompt, context: context);
+        await _runCodexPrompt(prompt: prompt);
         return;
       }
       if (context.provider == AiCliProvider.opencode) {
-        await _runOpenCodePrompt(prompt: prompt, context: context);
+        await _runOpenCodePrompt(prompt: prompt);
         return;
       }
       if (widget.autoStartRuntime &&
@@ -1660,139 +1631,6 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         });
       }
     }
-  }
-
-  Future<bool> _handleSteeringComposerCommand({
-    required String prompt,
-    required _AiSessionRuntimeContext context,
-  }) async {
-    final isSteeringCommand =
-        prompt == '/steer-list' ||
-        prompt == '/steer-clear' ||
-        prompt.startsWith('/steer');
-    if (!context.provider.capabilities.supportsSteeringPrompts) {
-      if (isSteeringCommand) {
-        await _insertTimelineEntry(
-          role: 'status',
-          message:
-              'Steering queue is not supported for ${context.provider.executable}.',
-        );
-        return true;
-      }
-      return false;
-    }
-    if (prompt == '/steer-list') {
-      final message = _steeringPromptQueue.isEmpty
-          ? 'No queued steering prompts.'
-          : 'Steering prompts (${_steeringPromptQueue.length}):\n'
-                '${_steeringPromptQueue.asMap().entries.map((entry) => '${entry.key + 1}. ${entry.value}').join('\n')}';
-      await _insertTimelineEntry(role: 'status', message: message);
-      return true;
-    }
-    if (prompt == '/steer-clear') {
-      _steeringPromptQueue.clear();
-      await _insertTimelineEntry(
-        role: 'status',
-        message: 'Cleared queued steering prompts.',
-      );
-      return true;
-    }
-    if (prompt.startsWith('/steer')) {
-      final steeringPrompt = prompt.substring('/steer'.length).trim();
-      if (steeringPrompt.isEmpty) {
-        await _insertTimelineEntry(
-          role: 'status',
-          message:
-              'Usage: /steer <instruction>. Use /steer-list to view queued prompts.',
-        );
-        return true;
-      }
-      _steeringPromptQueue.add(steeringPrompt);
-      await _insertTimelineEntry(
-        role: 'status',
-        message: 'Queued steering prompt #${_steeringPromptQueue.length}.',
-        metadata: <String, dynamic>{
-          'steeringPrompt': steeringPrompt,
-          'steeringPromptCount': _steeringPromptQueue.length,
-        },
-      );
-      return true;
-    }
-    return false;
-  }
-
-  Future<bool> _handleRuntimeResetComposerCommand({
-    required String prompt,
-  }) async {
-    if (prompt != '/clear') {
-      return false;
-    }
-    await _insertTimelineEntry(role: 'user', message: prompt);
-
-    final runtimeService = ref.read(aiRuntimeServiceProvider);
-    if (runtimeService.hasActiveRunForSession(widget.sessionId)) {
-      try {
-        await runtimeService.cancel(aiSessionId: widget.sessionId);
-      } on AiRuntimeServiceException {
-        // Runtime may have already exited.
-      }
-    }
-    _runtimeStarted = false;
-    _steeringPromptQueue.clear();
-    _flushAcpBuffers();
-    await _disposeAcpClientState();
-    _acpUnavailableForSession = false;
-
-    if (_runtimeAttachmentState == _RuntimeAttachmentState.detached) {
-      await _insertTimelineEntry(
-        role: 'status',
-        message: 'Conversation context reset. Reconnect runtime to continue.',
-      );
-      return true;
-    }
-
-    await _startRuntimeIfNeeded(force: true);
-    await _insertTimelineEntry(
-      role: 'status',
-      message: _runtimeAttachmentState == _RuntimeAttachmentState.detached
-          ? 'Conversation context reset. Runtime detached; reconnect to continue.'
-          : 'Conversation context reset.',
-    );
-    return true;
-  }
-
-  String? _nativeSteeringCommand(AiCliProvider provider) => switch (provider) {
-    AiCliProvider.claude ||
-    AiCliProvider.codex ||
-    AiCliProvider.opencode => '/steer',
-    AiCliProvider.copilot || AiCliProvider.gemini || AiCliProvider.acp => null,
-  };
-
-  Future<void> _applyQueuedNativeSteering(
-    _AiSessionRuntimeContext context,
-  ) async {
-    if (_steeringPromptQueue.isEmpty) {
-      return;
-    }
-    final command = _nativeSteeringCommand(context.provider);
-    if (command == null) {
-      return;
-    }
-    final runtimeService = ref.read(aiRuntimeServiceProvider);
-    final queuedPrompts = List<String>.from(_steeringPromptQueue);
-    for (final steeringPrompt in queuedPrompts) {
-      await runtimeService.send(
-        '$command $steeringPrompt',
-        appendNewline: true,
-        aiSessionId: widget.sessionId,
-      );
-    }
-    _steeringPromptQueue.clear();
-    await _insertTimelineEntry(
-      role: 'status',
-      message:
-          'Applied ${queuedPrompts.length} queued steering prompt${queuedPrompts.length == 1 ? '' : 's'}.',
-    );
   }
 
   Future<void> _sendAcpPrompt({
@@ -2307,38 +2145,25 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     _acpThoughtInsertPending = false;
   }
 
-  Future<void> _runClaudePrompt({
-    required String prompt,
-    required _AiSessionRuntimeContext context,
-  }) async {
-    await _runProviderPrompt(prompt: prompt, context: context);
+  Future<void> _runClaudePrompt({required String prompt}) async {
+    await _runProviderPrompt(prompt: prompt);
   }
 
-  Future<void> _runCodexPrompt({
-    required String prompt,
-    required _AiSessionRuntimeContext context,
-  }) async {
-    await _runProviderPrompt(prompt: prompt, context: context);
+  Future<void> _runCodexPrompt({required String prompt}) async {
+    await _runProviderPrompt(prompt: prompt);
   }
 
-  Future<void> _runOpenCodePrompt({
-    required String prompt,
-    required _AiSessionRuntimeContext context,
-  }) async {
-    await _runProviderPrompt(prompt: prompt, context: context);
+  Future<void> _runOpenCodePrompt({required String prompt}) async {
+    await _runProviderPrompt(prompt: prompt);
   }
 
-  Future<void> _runProviderPrompt({
-    required String prompt,
-    required _AiSessionRuntimeContext context,
-  }) async {
+  Future<void> _runProviderPrompt({required String prompt}) async {
     if (widget.autoStartRuntime &&
         _runtimeAttachmentState != _RuntimeAttachmentState.detached) {
       await _startRuntimeIfNeeded(force: true);
       if (_runtimeAttachmentState == _RuntimeAttachmentState.detached) {
         return;
       }
-      await _applyQueuedNativeSteering(context);
       final acpClient = _acpClient;
       final acpSession = _acpSession;
       if (acpClient != null && acpSession != null) {
