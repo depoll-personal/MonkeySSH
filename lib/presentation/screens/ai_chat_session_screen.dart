@@ -68,11 +68,6 @@ class AiChatSessionScreen extends ConsumerStatefulWidget {
 }
 
 class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
-  static final RegExp _slashCommandPattern = RegExp(
-    r'(^|[\s(,])\/([a-z][a-z0-9_-]*)(?=\s|$)',
-    multiLine: true,
-  );
-
   late final TextEditingController _promptController;
   late final FocusNode _promptFocusNode;
   late final ScrollController _scrollController;
@@ -978,7 +973,6 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           slashCommands: _availableSlashCommands,
         );
       });
-      unawaited(_loadProviderSlashCommands(context));
       if (widget.autoStartRuntime &&
           context.provider.capabilities.autoStartRuntime) {
         await _startRuntimeIfNeeded();
@@ -1052,96 +1046,6 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       LinkedHashSet<String>.from(
         provider.capabilities.composerSlashCommands,
       ).toList(growable: false);
-
-  Future<void> _loadProviderSlashCommands(
-    _AiSessionRuntimeContext context,
-  ) async {
-    final discovered = await _discoverSlashCommandsFromCli(context);
-    if (!mounted || discovered.isEmpty) {
-      return;
-    }
-    final merged = LinkedHashSet<String>.from(
-      _baseSlashCommands(context.provider),
-    )..addAll(discovered);
-    final nextCommands = merged.toList(growable: false);
-    if (_listsEqual(_availableSlashCommands, nextCommands)) {
-      return;
-    }
-    setState(() {
-      _availableSlashCommands = nextCommands;
-      _composerAutocompleteEngine = AiComposerAutocompleteEngine(
-        slashCommands: _availableSlashCommands,
-      );
-    });
-    await _refreshComposerSuggestions();
-  }
-
-  Future<List<String>> _discoverSlashCommandsFromCli(
-    _AiSessionRuntimeContext context,
-  ) async {
-    final connectionId = context.connectionId;
-    if (connectionId == null) {
-      return const <String>[];
-    }
-    final session = ref
-        .read(activeSessionsProvider.notifier)
-        .getSession(connectionId);
-    if (session == null) {
-      return const <String>[];
-    }
-
-    final executable =
-        (context.executableOverride ?? context.provider.executable).trim();
-    if (executable.isEmpty) {
-      return const <String>[];
-    }
-
-    final probeCommands = _slashCommandProbeCommands(
-      context: context,
-      executable: executable,
-    );
-    if (probeCommands.isEmpty) {
-      return const <String>[];
-    }
-    final discovered = <String>{};
-    for (final probeCommand in probeCommands) {
-      final process = await session.execute(
-        'sh -lc ${shellEscape('$probeCommand 2>&1')}',
-      );
-      final output = await process.stdout
-          .cast<List<int>>()
-          .transform(utf8.decoder)
-          .join();
-      await process.done;
-      for (final match in _slashCommandPattern.allMatches(output)) {
-        final command = match.group(2);
-        if (command == null || command.isEmpty) {
-          continue;
-        }
-        discovered.add('/$command');
-      }
-    }
-    return discovered.toList(growable: false);
-  }
-
-  List<String> _slashCommandProbeCommands({
-    required _AiSessionRuntimeContext context,
-    required String executable,
-  }) {
-    final helpPrompt = shellEscape('/help');
-    return switch (context.provider) {
-      AiCliProvider.claude => <String>[
-        '$executable --print --max-turns 1 $helpPrompt',
-      ],
-      AiCliProvider.codex => <String>['$executable $helpPrompt'],
-      AiCliProvider.opencode => <String>['$executable run $helpPrompt'],
-      AiCliProvider.copilot => <String>[
-        '$executable -p $helpPrompt --resume ${shellEscape(_copilotResumeSessionId(widget.sessionId))}',
-      ],
-      AiCliProvider.gemini => <String>['$executable $helpPrompt'],
-      AiCliProvider.acp => const <String>[],
-    };
-  }
 
   bool _listsEqual(List<String> a, List<String> b) {
     if (identical(a, b)) {
@@ -1549,10 +1453,11 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
   }
 
   Future<void> _sendPrompt() async {
-    final prompt = _promptController.text.trim();
-    if (prompt.isEmpty || _sending) {
+    final promptText = _promptController.text;
+    if (promptText.trim().isEmpty || _sending) {
       return;
     }
+    final prompt = promptText;
     final context = _sessionContext;
     if (context == null) {
       await _insertTimelineEntry(
@@ -1640,14 +1545,10 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
   }) async {
     // Reset streaming buffers for the new turn.
     _flushAcpBuffers();
-    final preferredModelId = _isKnownSlashCommandPrompt(prompt)
-        ? null
-        : _acpSession?.currentModelId;
     try {
       final result = await client.sendPrompt(
         sessionId: sessionId,
         text: prompt,
-        modelId: preferredModelId,
       );
       final stopReason = result['stopReason']?.toString();
       if (stopReason != null && stopReason != 'end_turn') {
@@ -2045,45 +1946,6 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     return commands;
   }
 
-  bool _isKnownSlashCommandPrompt(String prompt) {
-    final commandId = _extractSlashCommandId(prompt);
-    if (commandId == null) {
-      return false;
-    }
-    for (final command in _availableSlashCommands) {
-      final normalized = _normalizeSlashCommand(command);
-      if (normalized == null) {
-        continue;
-      }
-      if (normalized == commandId) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  String? _extractSlashCommandId(String prompt) {
-    final trimmedPrompt = prompt.trimLeft();
-    if (!trimmedPrompt.startsWith('/')) {
-      return null;
-    }
-    final commandToken = trimmedPrompt.split(RegExp(r'\s+')).first;
-    return _normalizeSlashCommand(commandToken);
-  }
-
-  String? _normalizeSlashCommand(String raw) {
-    final trimmed = raw.trim();
-    if (!trimmed.startsWith('/') || trimmed.length < 2) {
-      return null;
-    }
-    final withoutPrefix = trimmed.substring(1);
-    if (withoutPrefix.contains('/') ||
-        !RegExp(r'^[A-Za-z0-9._-]+$').hasMatch(withoutPrefix)) {
-      return null;
-    }
-    return withoutPrefix.toLowerCase();
-  }
-
   /// Appends a streaming chunk to [buffer] and creates or updates
   /// the corresponding timeline entry.
   void _appendAcpChunk({
@@ -2184,14 +2046,6 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       message:
           'Runtime is detached. Prompt saved to transcript until reconnect.',
     );
-  }
-
-  String _copilotResumeSessionId(int aiSessionId) {
-    final hex = aiSessionId.toRadixString(16).toLowerCase();
-    final suffix = hex.length > 12
-        ? hex.substring(hex.length - 12)
-        : hex.padLeft(12, '0');
-    return '00000000-0000-4000-8000-$suffix';
   }
 
   Future<int?> _insertTimelineEntry({
