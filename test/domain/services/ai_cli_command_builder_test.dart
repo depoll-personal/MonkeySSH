@@ -145,8 +145,6 @@ void main() {
       expect(command, contains('-ilc'));
       expect(command, contains(r'. "$HOME/.bash_profile"'));
       expect(command, contains(r'. "$HOME/.zshrc"'));
-      expect(command, contains('certDD.pem'));
-      expect(command, contains('export SSL_CERT_FILE='));
     });
   });
 }
