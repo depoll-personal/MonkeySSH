@@ -13,6 +13,7 @@ import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
 import '../../domain/services/background_ssh_service.dart';
 import '../../domain/services/ssh_service.dart';
+import 'ai_start_session_screen.dart';
 
 /// The main home screen - Termius-style sidebar layout.
 class HomeScreen extends ConsumerStatefulWidget {
@@ -87,6 +88,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           icon: Icon(Icons.code_outlined),
           selectedIcon: Icon(Icons.code_rounded),
           label: 'Snippets',
+        ),
+        NavigationDestination(
+          icon: Icon(Icons.smart_toy_outlined),
+          selectedIcon: Icon(Icons.smart_toy_rounded),
+          label: 'AI Chat',
         ),
       ],
     ),
@@ -163,6 +169,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     selected: _selectedIndex == 3,
                     onTap: () => setState(() => _selectedIndex = 3),
                   ),
+                  _NavItem(
+                    icon: Icons.smart_toy_outlined,
+                    label: 'AI Chat',
+                    selected: _selectedIndex == 4,
+                    onTap: () => setState(() => _selectedIndex = 4),
+                  ),
 
                   const Spacer(),
 
@@ -203,6 +215,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         return const _KeysPanel();
       case 3:
         return const _SnippetsPanel();
+      case 4:
+        return const AiStartSessionScreen(embedInScaffold: false);
       default:
         return const _HostsPanel();
     }

@@ -622,7 +622,8 @@ class SshSession {
   }
 
   /// Execute a command.
-  Future<SSHSession> execute(String command) => client.execute(command);
+  Future<SSHSession> execute(String command, {SSHPtyConfig? pty}) =>
+      client.execute(command, pty: pty);
 
   /// Start an SFTP session.
   Future<SftpClient> sftp() => client.sftp();

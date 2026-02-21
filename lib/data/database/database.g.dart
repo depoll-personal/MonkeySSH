@@ -4428,6 +4428,1251 @@ class SettingsCompanion extends UpdateCompanion<Setting> {
   }
 }
 
+class $AiWorkspacesTable extends AiWorkspaces
+    with TableInfo<$AiWorkspacesTable, AiWorkspace> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $AiWorkspacesTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<int> id = GeneratedColumn<int>(
+    'id',
+    aliasedName,
+    false,
+    hasAutoIncrement: true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'PRIMARY KEY AUTOINCREMENT',
+    ),
+  );
+  static const VerificationMeta _nameMeta = const VerificationMeta('name');
+  @override
+  late final GeneratedColumn<String> name = GeneratedColumn<String>(
+    'name',
+    aliasedName,
+    false,
+    additionalChecks: GeneratedColumn.checkTextLength(
+      minTextLength: 1,
+      maxTextLength: 255,
+    ),
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _pathMeta = const VerificationMeta('path');
+  @override
+  late final GeneratedColumn<String> path = GeneratedColumn<String>(
+    'path',
+    aliasedName,
+    false,
+    additionalChecks: GeneratedColumn.checkTextLength(
+      minTextLength: 1,
+      maxTextLength: 2048,
+    ),
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _createdAtMeta = const VerificationMeta(
+    'createdAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> createdAt = GeneratedColumn<DateTime>(
+    'created_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: false,
+    defaultValue: currentDateAndTime,
+  );
+  static const VerificationMeta _updatedAtMeta = const VerificationMeta(
+    'updatedAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> updatedAt = GeneratedColumn<DateTime>(
+    'updated_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: false,
+    defaultValue: currentDateAndTime,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [id, name, path, createdAt, updatedAt];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'ai_workspaces';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<AiWorkspace> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    }
+    if (data.containsKey('name')) {
+      context.handle(
+        _nameMeta,
+        name.isAcceptableOrUnknown(data['name']!, _nameMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_nameMeta);
+    }
+    if (data.containsKey('path')) {
+      context.handle(
+        _pathMeta,
+        path.isAcceptableOrUnknown(data['path']!, _pathMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_pathMeta);
+    }
+    if (data.containsKey('created_at')) {
+      context.handle(
+        _createdAtMeta,
+        createdAt.isAcceptableOrUnknown(data['created_at']!, _createdAtMeta),
+      );
+    }
+    if (data.containsKey('updated_at')) {
+      context.handle(
+        _updatedAtMeta,
+        updatedAt.isAcceptableOrUnknown(data['updated_at']!, _updatedAtMeta),
+      );
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  AiWorkspace map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return AiWorkspace(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}id'],
+      )!,
+      name: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}name'],
+      )!,
+      path: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}path'],
+      )!,
+      createdAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}created_at'],
+      )!,
+      updatedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}updated_at'],
+      )!,
+    );
+  }
+
+  @override
+  $AiWorkspacesTable createAlias(String alias) {
+    return $AiWorkspacesTable(attachedDatabase, alias);
+  }
+}
+
+class AiWorkspace extends DataClass implements Insertable<AiWorkspace> {
+  /// Unique identifier.
+  final int id;
+
+  /// Workspace display name.
+  final String name;
+
+  /// Workspace directory path.
+  final String path;
+
+  /// Creation timestamp.
+  final DateTime createdAt;
+
+  /// Last modified timestamp.
+  final DateTime updatedAt;
+  const AiWorkspace({
+    required this.id,
+    required this.name,
+    required this.path,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<int>(id);
+    map['name'] = Variable<String>(name);
+    map['path'] = Variable<String>(path);
+    map['created_at'] = Variable<DateTime>(createdAt);
+    map['updated_at'] = Variable<DateTime>(updatedAt);
+    return map;
+  }
+
+  AiWorkspacesCompanion toCompanion(bool nullToAbsent) {
+    return AiWorkspacesCompanion(
+      id: Value(id),
+      name: Value(name),
+      path: Value(path),
+      createdAt: Value(createdAt),
+      updatedAt: Value(updatedAt),
+    );
+  }
+
+  factory AiWorkspace.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return AiWorkspace(
+      id: serializer.fromJson<int>(json['id']),
+      name: serializer.fromJson<String>(json['name']),
+      path: serializer.fromJson<String>(json['path']),
+      createdAt: serializer.fromJson<DateTime>(json['createdAt']),
+      updatedAt: serializer.fromJson<DateTime>(json['updatedAt']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<int>(id),
+      'name': serializer.toJson<String>(name),
+      'path': serializer.toJson<String>(path),
+      'createdAt': serializer.toJson<DateTime>(createdAt),
+      'updatedAt': serializer.toJson<DateTime>(updatedAt),
+    };
+  }
+
+  AiWorkspace copyWith({
+    int? id,
+    String? name,
+    String? path,
+    DateTime? createdAt,
+    DateTime? updatedAt,
+  }) => AiWorkspace(
+    id: id ?? this.id,
+    name: name ?? this.name,
+    path: path ?? this.path,
+    createdAt: createdAt ?? this.createdAt,
+    updatedAt: updatedAt ?? this.updatedAt,
+  );
+  AiWorkspace copyWithCompanion(AiWorkspacesCompanion data) {
+    return AiWorkspace(
+      id: data.id.present ? data.id.value : this.id,
+      name: data.name.present ? data.name.value : this.name,
+      path: data.path.present ? data.path.value : this.path,
+      createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+      updatedAt: data.updatedAt.present ? data.updatedAt.value : this.updatedAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('AiWorkspace(')
+          ..write('id: $id, ')
+          ..write('name: $name, ')
+          ..write('path: $path, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('updatedAt: $updatedAt')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(id, name, path, createdAt, updatedAt);
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is AiWorkspace &&
+          other.id == this.id &&
+          other.name == this.name &&
+          other.path == this.path &&
+          other.createdAt == this.createdAt &&
+          other.updatedAt == this.updatedAt);
+}
+
+class AiWorkspacesCompanion extends UpdateCompanion<AiWorkspace> {
+  final Value<int> id;
+  final Value<String> name;
+  final Value<String> path;
+  final Value<DateTime> createdAt;
+  final Value<DateTime> updatedAt;
+  const AiWorkspacesCompanion({
+    this.id = const Value.absent(),
+    this.name = const Value.absent(),
+    this.path = const Value.absent(),
+    this.createdAt = const Value.absent(),
+    this.updatedAt = const Value.absent(),
+  });
+  AiWorkspacesCompanion.insert({
+    this.id = const Value.absent(),
+    required String name,
+    required String path,
+    this.createdAt = const Value.absent(),
+    this.updatedAt = const Value.absent(),
+  }) : name = Value(name),
+       path = Value(path);
+  static Insertable<AiWorkspace> custom({
+    Expression<int>? id,
+    Expression<String>? name,
+    Expression<String>? path,
+    Expression<DateTime>? createdAt,
+    Expression<DateTime>? updatedAt,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (name != null) 'name': name,
+      if (path != null) 'path': path,
+      if (createdAt != null) 'created_at': createdAt,
+      if (updatedAt != null) 'updated_at': updatedAt,
+    });
+  }
+
+  AiWorkspacesCompanion copyWith({
+    Value<int>? id,
+    Value<String>? name,
+    Value<String>? path,
+    Value<DateTime>? createdAt,
+    Value<DateTime>? updatedAt,
+  }) {
+    return AiWorkspacesCompanion(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      path: path ?? this.path,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<int>(id.value);
+    }
+    if (name.present) {
+      map['name'] = Variable<String>(name.value);
+    }
+    if (path.present) {
+      map['path'] = Variable<String>(path.value);
+    }
+    if (createdAt.present) {
+      map['created_at'] = Variable<DateTime>(createdAt.value);
+    }
+    if (updatedAt.present) {
+      map['updated_at'] = Variable<DateTime>(updatedAt.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('AiWorkspacesCompanion(')
+          ..write('id: $id, ')
+          ..write('name: $name, ')
+          ..write('path: $path, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('updatedAt: $updatedAt')
+          ..write(')'))
+        .toString();
+  }
+}
+
+class $AiSessionsTable extends AiSessions
+    with TableInfo<$AiSessionsTable, AiSession> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $AiSessionsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<int> id = GeneratedColumn<int>(
+    'id',
+    aliasedName,
+    false,
+    hasAutoIncrement: true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'PRIMARY KEY AUTOINCREMENT',
+    ),
+  );
+  static const VerificationMeta _workspaceIdMeta = const VerificationMeta(
+    'workspaceId',
+  );
+  @override
+  late final GeneratedColumn<int> workspaceId = GeneratedColumn<int>(
+    'workspace_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'REFERENCES ai_workspaces (id) ON DELETE CASCADE',
+    ),
+  );
+  static const VerificationMeta _titleMeta = const VerificationMeta('title');
+  @override
+  late final GeneratedColumn<String> title = GeneratedColumn<String>(
+    'title',
+    aliasedName,
+    false,
+    additionalChecks: GeneratedColumn.checkTextLength(
+      minTextLength: 1,
+      maxTextLength: 255,
+    ),
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _statusMeta = const VerificationMeta('status');
+  @override
+  late final GeneratedColumn<String> status = GeneratedColumn<String>(
+    'status',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('active'),
+  );
+  static const VerificationMeta _createdAtMeta = const VerificationMeta(
+    'createdAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> createdAt = GeneratedColumn<DateTime>(
+    'created_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: false,
+    defaultValue: currentDateAndTime,
+  );
+  static const VerificationMeta _updatedAtMeta = const VerificationMeta(
+    'updatedAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> updatedAt = GeneratedColumn<DateTime>(
+    'updated_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: false,
+    defaultValue: currentDateAndTime,
+  );
+  static const VerificationMeta _completedAtMeta = const VerificationMeta(
+    'completedAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> completedAt = GeneratedColumn<DateTime>(
+    'completed_at',
+    aliasedName,
+    true,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: false,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    workspaceId,
+    title,
+    status,
+    createdAt,
+    updatedAt,
+    completedAt,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'ai_sessions';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<AiSession> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    }
+    if (data.containsKey('workspace_id')) {
+      context.handle(
+        _workspaceIdMeta,
+        workspaceId.isAcceptableOrUnknown(
+          data['workspace_id']!,
+          _workspaceIdMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_workspaceIdMeta);
+    }
+    if (data.containsKey('title')) {
+      context.handle(
+        _titleMeta,
+        title.isAcceptableOrUnknown(data['title']!, _titleMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_titleMeta);
+    }
+    if (data.containsKey('status')) {
+      context.handle(
+        _statusMeta,
+        status.isAcceptableOrUnknown(data['status']!, _statusMeta),
+      );
+    }
+    if (data.containsKey('created_at')) {
+      context.handle(
+        _createdAtMeta,
+        createdAt.isAcceptableOrUnknown(data['created_at']!, _createdAtMeta),
+      );
+    }
+    if (data.containsKey('updated_at')) {
+      context.handle(
+        _updatedAtMeta,
+        updatedAt.isAcceptableOrUnknown(data['updated_at']!, _updatedAtMeta),
+      );
+    }
+    if (data.containsKey('completed_at')) {
+      context.handle(
+        _completedAtMeta,
+        completedAt.isAcceptableOrUnknown(
+          data['completed_at']!,
+          _completedAtMeta,
+        ),
+      );
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  AiSession map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return AiSession(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}id'],
+      )!,
+      workspaceId: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}workspace_id'],
+      )!,
+      title: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}title'],
+      )!,
+      status: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}status'],
+      )!,
+      createdAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}created_at'],
+      )!,
+      updatedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}updated_at'],
+      )!,
+      completedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}completed_at'],
+      ),
+    );
+  }
+
+  @override
+  $AiSessionsTable createAlias(String alias) {
+    return $AiSessionsTable(attachedDatabase, alias);
+  }
+}
+
+class AiSession extends DataClass implements Insertable<AiSession> {
+  /// Unique identifier.
+  final int id;
+
+  /// Parent workspace.
+  final int workspaceId;
+
+  /// Session title.
+  final String title;
+
+  /// Session status.
+  final String status;
+
+  /// Creation timestamp.
+  final DateTime createdAt;
+
+  /// Last modified timestamp.
+  final DateTime updatedAt;
+
+  /// Completion timestamp.
+  final DateTime? completedAt;
+  const AiSession({
+    required this.id,
+    required this.workspaceId,
+    required this.title,
+    required this.status,
+    required this.createdAt,
+    required this.updatedAt,
+    this.completedAt,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<int>(id);
+    map['workspace_id'] = Variable<int>(workspaceId);
+    map['title'] = Variable<String>(title);
+    map['status'] = Variable<String>(status);
+    map['created_at'] = Variable<DateTime>(createdAt);
+    map['updated_at'] = Variable<DateTime>(updatedAt);
+    if (!nullToAbsent || completedAt != null) {
+      map['completed_at'] = Variable<DateTime>(completedAt);
+    }
+    return map;
+  }
+
+  AiSessionsCompanion toCompanion(bool nullToAbsent) {
+    return AiSessionsCompanion(
+      id: Value(id),
+      workspaceId: Value(workspaceId),
+      title: Value(title),
+      status: Value(status),
+      createdAt: Value(createdAt),
+      updatedAt: Value(updatedAt),
+      completedAt: completedAt == null && nullToAbsent
+          ? const Value.absent()
+          : Value(completedAt),
+    );
+  }
+
+  factory AiSession.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return AiSession(
+      id: serializer.fromJson<int>(json['id']),
+      workspaceId: serializer.fromJson<int>(json['workspaceId']),
+      title: serializer.fromJson<String>(json['title']),
+      status: serializer.fromJson<String>(json['status']),
+      createdAt: serializer.fromJson<DateTime>(json['createdAt']),
+      updatedAt: serializer.fromJson<DateTime>(json['updatedAt']),
+      completedAt: serializer.fromJson<DateTime?>(json['completedAt']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<int>(id),
+      'workspaceId': serializer.toJson<int>(workspaceId),
+      'title': serializer.toJson<String>(title),
+      'status': serializer.toJson<String>(status),
+      'createdAt': serializer.toJson<DateTime>(createdAt),
+      'updatedAt': serializer.toJson<DateTime>(updatedAt),
+      'completedAt': serializer.toJson<DateTime?>(completedAt),
+    };
+  }
+
+  AiSession copyWith({
+    int? id,
+    int? workspaceId,
+    String? title,
+    String? status,
+    DateTime? createdAt,
+    DateTime? updatedAt,
+    Value<DateTime?> completedAt = const Value.absent(),
+  }) => AiSession(
+    id: id ?? this.id,
+    workspaceId: workspaceId ?? this.workspaceId,
+    title: title ?? this.title,
+    status: status ?? this.status,
+    createdAt: createdAt ?? this.createdAt,
+    updatedAt: updatedAt ?? this.updatedAt,
+    completedAt: completedAt.present ? completedAt.value : this.completedAt,
+  );
+  AiSession copyWithCompanion(AiSessionsCompanion data) {
+    return AiSession(
+      id: data.id.present ? data.id.value : this.id,
+      workspaceId: data.workspaceId.present
+          ? data.workspaceId.value
+          : this.workspaceId,
+      title: data.title.present ? data.title.value : this.title,
+      status: data.status.present ? data.status.value : this.status,
+      createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+      updatedAt: data.updatedAt.present ? data.updatedAt.value : this.updatedAt,
+      completedAt: data.completedAt.present
+          ? data.completedAt.value
+          : this.completedAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('AiSession(')
+          ..write('id: $id, ')
+          ..write('workspaceId: $workspaceId, ')
+          ..write('title: $title, ')
+          ..write('status: $status, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('updatedAt: $updatedAt, ')
+          ..write('completedAt: $completedAt')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    id,
+    workspaceId,
+    title,
+    status,
+    createdAt,
+    updatedAt,
+    completedAt,
+  );
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is AiSession &&
+          other.id == this.id &&
+          other.workspaceId == this.workspaceId &&
+          other.title == this.title &&
+          other.status == this.status &&
+          other.createdAt == this.createdAt &&
+          other.updatedAt == this.updatedAt &&
+          other.completedAt == this.completedAt);
+}
+
+class AiSessionsCompanion extends UpdateCompanion<AiSession> {
+  final Value<int> id;
+  final Value<int> workspaceId;
+  final Value<String> title;
+  final Value<String> status;
+  final Value<DateTime> createdAt;
+  final Value<DateTime> updatedAt;
+  final Value<DateTime?> completedAt;
+  const AiSessionsCompanion({
+    this.id = const Value.absent(),
+    this.workspaceId = const Value.absent(),
+    this.title = const Value.absent(),
+    this.status = const Value.absent(),
+    this.createdAt = const Value.absent(),
+    this.updatedAt = const Value.absent(),
+    this.completedAt = const Value.absent(),
+  });
+  AiSessionsCompanion.insert({
+    this.id = const Value.absent(),
+    required int workspaceId,
+    required String title,
+    this.status = const Value.absent(),
+    this.createdAt = const Value.absent(),
+    this.updatedAt = const Value.absent(),
+    this.completedAt = const Value.absent(),
+  }) : workspaceId = Value(workspaceId),
+       title = Value(title);
+  static Insertable<AiSession> custom({
+    Expression<int>? id,
+    Expression<int>? workspaceId,
+    Expression<String>? title,
+    Expression<String>? status,
+    Expression<DateTime>? createdAt,
+    Expression<DateTime>? updatedAt,
+    Expression<DateTime>? completedAt,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (workspaceId != null) 'workspace_id': workspaceId,
+      if (title != null) 'title': title,
+      if (status != null) 'status': status,
+      if (createdAt != null) 'created_at': createdAt,
+      if (updatedAt != null) 'updated_at': updatedAt,
+      if (completedAt != null) 'completed_at': completedAt,
+    });
+  }
+
+  AiSessionsCompanion copyWith({
+    Value<int>? id,
+    Value<int>? workspaceId,
+    Value<String>? title,
+    Value<String>? status,
+    Value<DateTime>? createdAt,
+    Value<DateTime>? updatedAt,
+    Value<DateTime?>? completedAt,
+  }) {
+    return AiSessionsCompanion(
+      id: id ?? this.id,
+      workspaceId: workspaceId ?? this.workspaceId,
+      title: title ?? this.title,
+      status: status ?? this.status,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+      completedAt: completedAt ?? this.completedAt,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<int>(id.value);
+    }
+    if (workspaceId.present) {
+      map['workspace_id'] = Variable<int>(workspaceId.value);
+    }
+    if (title.present) {
+      map['title'] = Variable<String>(title.value);
+    }
+    if (status.present) {
+      map['status'] = Variable<String>(status.value);
+    }
+    if (createdAt.present) {
+      map['created_at'] = Variable<DateTime>(createdAt.value);
+    }
+    if (updatedAt.present) {
+      map['updated_at'] = Variable<DateTime>(updatedAt.value);
+    }
+    if (completedAt.present) {
+      map['completed_at'] = Variable<DateTime>(completedAt.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('AiSessionsCompanion(')
+          ..write('id: $id, ')
+          ..write('workspaceId: $workspaceId, ')
+          ..write('title: $title, ')
+          ..write('status: $status, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('updatedAt: $updatedAt, ')
+          ..write('completedAt: $completedAt')
+          ..write(')'))
+        .toString();
+  }
+}
+
+class $AiTimelineEntriesTable extends AiTimelineEntries
+    with TableInfo<$AiTimelineEntriesTable, AiTimelineEntry> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $AiTimelineEntriesTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<int> id = GeneratedColumn<int>(
+    'id',
+    aliasedName,
+    false,
+    hasAutoIncrement: true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'PRIMARY KEY AUTOINCREMENT',
+    ),
+  );
+  static const VerificationMeta _sessionIdMeta = const VerificationMeta(
+    'sessionId',
+  );
+  @override
+  late final GeneratedColumn<int> sessionId = GeneratedColumn<int>(
+    'session_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'REFERENCES ai_sessions (id) ON DELETE CASCADE',
+    ),
+  );
+  static const VerificationMeta _roleMeta = const VerificationMeta('role');
+  @override
+  late final GeneratedColumn<String> role = GeneratedColumn<String>(
+    'role',
+    aliasedName,
+    false,
+    additionalChecks: GeneratedColumn.checkTextLength(
+      minTextLength: 1,
+      maxTextLength: 50,
+    ),
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _messageMeta = const VerificationMeta(
+    'message',
+  );
+  @override
+  late final GeneratedColumn<String> message = GeneratedColumn<String>(
+    'message',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _metadataMeta = const VerificationMeta(
+    'metadata',
+  );
+  @override
+  late final GeneratedColumn<String> metadata = GeneratedColumn<String>(
+    'metadata',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _createdAtMeta = const VerificationMeta(
+    'createdAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> createdAt = GeneratedColumn<DateTime>(
+    'created_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: false,
+    defaultValue: currentDateAndTime,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    sessionId,
+    role,
+    message,
+    metadata,
+    createdAt,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'ai_timeline_entries';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<AiTimelineEntry> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    }
+    if (data.containsKey('session_id')) {
+      context.handle(
+        _sessionIdMeta,
+        sessionId.isAcceptableOrUnknown(data['session_id']!, _sessionIdMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_sessionIdMeta);
+    }
+    if (data.containsKey('role')) {
+      context.handle(
+        _roleMeta,
+        role.isAcceptableOrUnknown(data['role']!, _roleMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_roleMeta);
+    }
+    if (data.containsKey('message')) {
+      context.handle(
+        _messageMeta,
+        message.isAcceptableOrUnknown(data['message']!, _messageMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_messageMeta);
+    }
+    if (data.containsKey('metadata')) {
+      context.handle(
+        _metadataMeta,
+        metadata.isAcceptableOrUnknown(data['metadata']!, _metadataMeta),
+      );
+    }
+    if (data.containsKey('created_at')) {
+      context.handle(
+        _createdAtMeta,
+        createdAt.isAcceptableOrUnknown(data['created_at']!, _createdAtMeta),
+      );
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  AiTimelineEntry map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return AiTimelineEntry(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}id'],
+      )!,
+      sessionId: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}session_id'],
+      )!,
+      role: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}role'],
+      )!,
+      message: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}message'],
+      )!,
+      metadata: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}metadata'],
+      ),
+      createdAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}created_at'],
+      )!,
+    );
+  }
+
+  @override
+  $AiTimelineEntriesTable createAlias(String alias) {
+    return $AiTimelineEntriesTable(attachedDatabase, alias);
+  }
+}
+
+class AiTimelineEntry extends DataClass implements Insertable<AiTimelineEntry> {
+  /// Unique identifier.
+  final int id;
+
+  /// Parent AI session.
+  final int sessionId;
+
+  /// Entry role (user/assistant/tool/system).
+  final String role;
+
+  /// Entry message content.
+  final String message;
+
+  /// Optional entry metadata in JSON.
+  final String? metadata;
+
+  /// Creation timestamp.
+  final DateTime createdAt;
+  const AiTimelineEntry({
+    required this.id,
+    required this.sessionId,
+    required this.role,
+    required this.message,
+    this.metadata,
+    required this.createdAt,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<int>(id);
+    map['session_id'] = Variable<int>(sessionId);
+    map['role'] = Variable<String>(role);
+    map['message'] = Variable<String>(message);
+    if (!nullToAbsent || metadata != null) {
+      map['metadata'] = Variable<String>(metadata);
+    }
+    map['created_at'] = Variable<DateTime>(createdAt);
+    return map;
+  }
+
+  AiTimelineEntriesCompanion toCompanion(bool nullToAbsent) {
+    return AiTimelineEntriesCompanion(
+      id: Value(id),
+      sessionId: Value(sessionId),
+      role: Value(role),
+      message: Value(message),
+      metadata: metadata == null && nullToAbsent
+          ? const Value.absent()
+          : Value(metadata),
+      createdAt: Value(createdAt),
+    );
+  }
+
+  factory AiTimelineEntry.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return AiTimelineEntry(
+      id: serializer.fromJson<int>(json['id']),
+      sessionId: serializer.fromJson<int>(json['sessionId']),
+      role: serializer.fromJson<String>(json['role']),
+      message: serializer.fromJson<String>(json['message']),
+      metadata: serializer.fromJson<String?>(json['metadata']),
+      createdAt: serializer.fromJson<DateTime>(json['createdAt']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<int>(id),
+      'sessionId': serializer.toJson<int>(sessionId),
+      'role': serializer.toJson<String>(role),
+      'message': serializer.toJson<String>(message),
+      'metadata': serializer.toJson<String?>(metadata),
+      'createdAt': serializer.toJson<DateTime>(createdAt),
+    };
+  }
+
+  AiTimelineEntry copyWith({
+    int? id,
+    int? sessionId,
+    String? role,
+    String? message,
+    Value<String?> metadata = const Value.absent(),
+    DateTime? createdAt,
+  }) => AiTimelineEntry(
+    id: id ?? this.id,
+    sessionId: sessionId ?? this.sessionId,
+    role: role ?? this.role,
+    message: message ?? this.message,
+    metadata: metadata.present ? metadata.value : this.metadata,
+    createdAt: createdAt ?? this.createdAt,
+  );
+  AiTimelineEntry copyWithCompanion(AiTimelineEntriesCompanion data) {
+    return AiTimelineEntry(
+      id: data.id.present ? data.id.value : this.id,
+      sessionId: data.sessionId.present ? data.sessionId.value : this.sessionId,
+      role: data.role.present ? data.role.value : this.role,
+      message: data.message.present ? data.message.value : this.message,
+      metadata: data.metadata.present ? data.metadata.value : this.metadata,
+      createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('AiTimelineEntry(')
+          ..write('id: $id, ')
+          ..write('sessionId: $sessionId, ')
+          ..write('role: $role, ')
+          ..write('message: $message, ')
+          ..write('metadata: $metadata, ')
+          ..write('createdAt: $createdAt')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode =>
+      Object.hash(id, sessionId, role, message, metadata, createdAt);
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is AiTimelineEntry &&
+          other.id == this.id &&
+          other.sessionId == this.sessionId &&
+          other.role == this.role &&
+          other.message == this.message &&
+          other.metadata == this.metadata &&
+          other.createdAt == this.createdAt);
+}
+
+class AiTimelineEntriesCompanion extends UpdateCompanion<AiTimelineEntry> {
+  final Value<int> id;
+  final Value<int> sessionId;
+  final Value<String> role;
+  final Value<String> message;
+  final Value<String?> metadata;
+  final Value<DateTime> createdAt;
+  const AiTimelineEntriesCompanion({
+    this.id = const Value.absent(),
+    this.sessionId = const Value.absent(),
+    this.role = const Value.absent(),
+    this.message = const Value.absent(),
+    this.metadata = const Value.absent(),
+    this.createdAt = const Value.absent(),
+  });
+  AiTimelineEntriesCompanion.insert({
+    this.id = const Value.absent(),
+    required int sessionId,
+    required String role,
+    required String message,
+    this.metadata = const Value.absent(),
+    this.createdAt = const Value.absent(),
+  }) : sessionId = Value(sessionId),
+       role = Value(role),
+       message = Value(message);
+  static Insertable<AiTimelineEntry> custom({
+    Expression<int>? id,
+    Expression<int>? sessionId,
+    Expression<String>? role,
+    Expression<String>? message,
+    Expression<String>? metadata,
+    Expression<DateTime>? createdAt,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (sessionId != null) 'session_id': sessionId,
+      if (role != null) 'role': role,
+      if (message != null) 'message': message,
+      if (metadata != null) 'metadata': metadata,
+      if (createdAt != null) 'created_at': createdAt,
+    });
+  }
+
+  AiTimelineEntriesCompanion copyWith({
+    Value<int>? id,
+    Value<int>? sessionId,
+    Value<String>? role,
+    Value<String>? message,
+    Value<String?>? metadata,
+    Value<DateTime>? createdAt,
+  }) {
+    return AiTimelineEntriesCompanion(
+      id: id ?? this.id,
+      sessionId: sessionId ?? this.sessionId,
+      role: role ?? this.role,
+      message: message ?? this.message,
+      metadata: metadata ?? this.metadata,
+      createdAt: createdAt ?? this.createdAt,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<int>(id.value);
+    }
+    if (sessionId.present) {
+      map['session_id'] = Variable<int>(sessionId.value);
+    }
+    if (role.present) {
+      map['role'] = Variable<String>(role.value);
+    }
+    if (message.present) {
+      map['message'] = Variable<String>(message.value);
+    }
+    if (metadata.present) {
+      map['metadata'] = Variable<String>(metadata.value);
+    }
+    if (createdAt.present) {
+      map['created_at'] = Variable<DateTime>(createdAt.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('AiTimelineEntriesCompanion(')
+          ..write('id: $id, ')
+          ..write('sessionId: $sessionId, ')
+          ..write('role: $role, ')
+          ..write('message: $message, ')
+          ..write('metadata: $metadata, ')
+          ..write('createdAt: $createdAt')
+          ..write(')'))
+        .toString();
+  }
+}
+
 abstract class _$AppDatabase extends GeneratedDatabase {
   _$AppDatabase(QueryExecutor e) : super(e);
   $AppDatabaseManager get managers => $AppDatabaseManager(this);
@@ -4439,6 +5684,10 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   late final $PortForwardsTable portForwards = $PortForwardsTable(this);
   late final $KnownHostsTable knownHosts = $KnownHostsTable(this);
   late final $SettingsTable settings = $SettingsTable(this);
+  late final $AiWorkspacesTable aiWorkspaces = $AiWorkspacesTable(this);
+  late final $AiSessionsTable aiSessions = $AiSessionsTable(this);
+  late final $AiTimelineEntriesTable aiTimelineEntries =
+      $AiTimelineEntriesTable(this);
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
@@ -4452,7 +5701,27 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     portForwards,
     knownHosts,
     settings,
+    aiWorkspaces,
+    aiSessions,
+    aiTimelineEntries,
   ];
+  @override
+  StreamQueryUpdateRules get streamUpdateRules => const StreamQueryUpdateRules([
+    WritePropagation(
+      on: TableUpdateQuery.onTableName(
+        'ai_workspaces',
+        limitUpdateKind: UpdateKind.delete,
+      ),
+      result: [TableUpdate('ai_sessions', kind: UpdateKind.delete)],
+    ),
+    WritePropagation(
+      on: TableUpdateQuery.onTableName(
+        'ai_sessions',
+        limitUpdateKind: UpdateKind.delete,
+      ),
+      result: [TableUpdate('ai_timeline_entries', kind: UpdateKind.delete)],
+    ),
+  ]);
 }
 
 typedef $$SshKeysTableCreateCompanionBuilder =
@@ -7706,6 +8975,1108 @@ typedef $$SettingsTableProcessedTableManager =
       Setting,
       PrefetchHooks Function()
     >;
+typedef $$AiWorkspacesTableCreateCompanionBuilder =
+    AiWorkspacesCompanion Function({
+      Value<int> id,
+      required String name,
+      required String path,
+      Value<DateTime> createdAt,
+      Value<DateTime> updatedAt,
+    });
+typedef $$AiWorkspacesTableUpdateCompanionBuilder =
+    AiWorkspacesCompanion Function({
+      Value<int> id,
+      Value<String> name,
+      Value<String> path,
+      Value<DateTime> createdAt,
+      Value<DateTime> updatedAt,
+    });
+
+final class $$AiWorkspacesTableReferences
+    extends BaseReferences<_$AppDatabase, $AiWorkspacesTable, AiWorkspace> {
+  $$AiWorkspacesTableReferences(super.$_db, super.$_table, super.$_typedResult);
+
+  static MultiTypedResultKey<$AiSessionsTable, List<AiSession>>
+  _aiSessionsRefsTable(_$AppDatabase db) => MultiTypedResultKey.fromTable(
+    db.aiSessions,
+    aliasName: $_aliasNameGenerator(
+      db.aiWorkspaces.id,
+      db.aiSessions.workspaceId,
+    ),
+  );
+
+  $$AiSessionsTableProcessedTableManager get aiSessionsRefs {
+    final manager = $$AiSessionsTableTableManager(
+      $_db,
+      $_db.aiSessions,
+    ).filter((f) => f.workspaceId.id.sqlEquals($_itemColumn<int>('id')!));
+
+    final cache = $_typedResult.readTableOrNull(_aiSessionsRefsTable($_db));
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: cache),
+    );
+  }
+}
+
+class $$AiWorkspacesTableFilterComposer
+    extends Composer<_$AppDatabase, $AiWorkspacesTable> {
+  $$AiWorkspacesTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<int> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get name => $composableBuilder(
+    column: $table.name,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get path => $composableBuilder(
+    column: $table.path,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  Expression<bool> aiSessionsRefs(
+    Expression<bool> Function($$AiSessionsTableFilterComposer f) f,
+  ) {
+    final $$AiSessionsTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.id,
+      referencedTable: $db.aiSessions,
+      getReferencedColumn: (t) => t.workspaceId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$AiSessionsTableFilterComposer(
+            $db: $db,
+            $table: $db.aiSessions,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return f(composer);
+  }
+}
+
+class $$AiWorkspacesTableOrderingComposer
+    extends Composer<_$AppDatabase, $AiWorkspacesTable> {
+  $$AiWorkspacesTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<int> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get name => $composableBuilder(
+    column: $table.name,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get path => $composableBuilder(
+    column: $table.path,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$AiWorkspacesTableAnnotationComposer
+    extends Composer<_$AppDatabase, $AiWorkspacesTable> {
+  $$AiWorkspacesTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<int> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get name =>
+      $composableBuilder(column: $table.name, builder: (column) => column);
+
+  GeneratedColumn<String> get path =>
+      $composableBuilder(column: $table.path, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get createdAt =>
+      $composableBuilder(column: $table.createdAt, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get updatedAt =>
+      $composableBuilder(column: $table.updatedAt, builder: (column) => column);
+
+  Expression<T> aiSessionsRefs<T extends Object>(
+    Expression<T> Function($$AiSessionsTableAnnotationComposer a) f,
+  ) {
+    final $$AiSessionsTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.id,
+      referencedTable: $db.aiSessions,
+      getReferencedColumn: (t) => t.workspaceId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$AiSessionsTableAnnotationComposer(
+            $db: $db,
+            $table: $db.aiSessions,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return f(composer);
+  }
+}
+
+class $$AiWorkspacesTableTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          $AiWorkspacesTable,
+          AiWorkspace,
+          $$AiWorkspacesTableFilterComposer,
+          $$AiWorkspacesTableOrderingComposer,
+          $$AiWorkspacesTableAnnotationComposer,
+          $$AiWorkspacesTableCreateCompanionBuilder,
+          $$AiWorkspacesTableUpdateCompanionBuilder,
+          (AiWorkspace, $$AiWorkspacesTableReferences),
+          AiWorkspace,
+          PrefetchHooks Function({bool aiSessionsRefs})
+        > {
+  $$AiWorkspacesTableTableManager(_$AppDatabase db, $AiWorkspacesTable table)
+    : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$AiWorkspacesTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$AiWorkspacesTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$AiWorkspacesTableAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<int> id = const Value.absent(),
+                Value<String> name = const Value.absent(),
+                Value<String> path = const Value.absent(),
+                Value<DateTime> createdAt = const Value.absent(),
+                Value<DateTime> updatedAt = const Value.absent(),
+              }) => AiWorkspacesCompanion(
+                id: id,
+                name: name,
+                path: path,
+                createdAt: createdAt,
+                updatedAt: updatedAt,
+              ),
+          createCompanionCallback:
+              ({
+                Value<int> id = const Value.absent(),
+                required String name,
+                required String path,
+                Value<DateTime> createdAt = const Value.absent(),
+                Value<DateTime> updatedAt = const Value.absent(),
+              }) => AiWorkspacesCompanion.insert(
+                id: id,
+                name: name,
+                path: path,
+                createdAt: createdAt,
+                updatedAt: updatedAt,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map(
+                (e) => (
+                  e.readTable(table),
+                  $$AiWorkspacesTableReferences(db, table, e),
+                ),
+              )
+              .toList(),
+          prefetchHooksCallback: ({aiSessionsRefs = false}) {
+            return PrefetchHooks(
+              db: db,
+              explicitlyWatchedTables: [if (aiSessionsRefs) db.aiSessions],
+              addJoins: null,
+              getPrefetchedDataCallback: (items) async {
+                return [
+                  if (aiSessionsRefs)
+                    await $_getPrefetchedData<
+                      AiWorkspace,
+                      $AiWorkspacesTable,
+                      AiSession
+                    >(
+                      currentTable: table,
+                      referencedTable: $$AiWorkspacesTableReferences
+                          ._aiSessionsRefsTable(db),
+                      managerFromTypedResult: (p0) =>
+                          $$AiWorkspacesTableReferences(
+                            db,
+                            table,
+                            p0,
+                          ).aiSessionsRefs,
+                      referencedItemsForCurrentItem: (item, referencedItems) =>
+                          referencedItems.where(
+                            (e) => e.workspaceId == item.id,
+                          ),
+                      typedResults: items,
+                    ),
+                ];
+              },
+            );
+          },
+        ),
+      );
+}
+
+typedef $$AiWorkspacesTableProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      $AiWorkspacesTable,
+      AiWorkspace,
+      $$AiWorkspacesTableFilterComposer,
+      $$AiWorkspacesTableOrderingComposer,
+      $$AiWorkspacesTableAnnotationComposer,
+      $$AiWorkspacesTableCreateCompanionBuilder,
+      $$AiWorkspacesTableUpdateCompanionBuilder,
+      (AiWorkspace, $$AiWorkspacesTableReferences),
+      AiWorkspace,
+      PrefetchHooks Function({bool aiSessionsRefs})
+    >;
+typedef $$AiSessionsTableCreateCompanionBuilder =
+    AiSessionsCompanion Function({
+      Value<int> id,
+      required int workspaceId,
+      required String title,
+      Value<String> status,
+      Value<DateTime> createdAt,
+      Value<DateTime> updatedAt,
+      Value<DateTime?> completedAt,
+    });
+typedef $$AiSessionsTableUpdateCompanionBuilder =
+    AiSessionsCompanion Function({
+      Value<int> id,
+      Value<int> workspaceId,
+      Value<String> title,
+      Value<String> status,
+      Value<DateTime> createdAt,
+      Value<DateTime> updatedAt,
+      Value<DateTime?> completedAt,
+    });
+
+final class $$AiSessionsTableReferences
+    extends BaseReferences<_$AppDatabase, $AiSessionsTable, AiSession> {
+  $$AiSessionsTableReferences(super.$_db, super.$_table, super.$_typedResult);
+
+  static $AiWorkspacesTable _workspaceIdTable(_$AppDatabase db) =>
+      db.aiWorkspaces.createAlias(
+        $_aliasNameGenerator(db.aiSessions.workspaceId, db.aiWorkspaces.id),
+      );
+
+  $$AiWorkspacesTableProcessedTableManager get workspaceId {
+    final $_column = $_itemColumn<int>('workspace_id')!;
+
+    final manager = $$AiWorkspacesTableTableManager(
+      $_db,
+      $_db.aiWorkspaces,
+    ).filter((f) => f.id.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_workspaceIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: [item]),
+    );
+  }
+
+  static MultiTypedResultKey<$AiTimelineEntriesTable, List<AiTimelineEntry>>
+  _aiTimelineEntriesRefsTable(_$AppDatabase db) =>
+      MultiTypedResultKey.fromTable(
+        db.aiTimelineEntries,
+        aliasName: $_aliasNameGenerator(
+          db.aiSessions.id,
+          db.aiTimelineEntries.sessionId,
+        ),
+      );
+
+  $$AiTimelineEntriesTableProcessedTableManager get aiTimelineEntriesRefs {
+    final manager = $$AiTimelineEntriesTableTableManager(
+      $_db,
+      $_db.aiTimelineEntries,
+    ).filter((f) => f.sessionId.id.sqlEquals($_itemColumn<int>('id')!));
+
+    final cache = $_typedResult.readTableOrNull(
+      _aiTimelineEntriesRefsTable($_db),
+    );
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: cache),
+    );
+  }
+}
+
+class $$AiSessionsTableFilterComposer
+    extends Composer<_$AppDatabase, $AiSessionsTable> {
+  $$AiSessionsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<int> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get title => $composableBuilder(
+    column: $table.title,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get status => $composableBuilder(
+    column: $table.status,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get completedAt => $composableBuilder(
+    column: $table.completedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  $$AiWorkspacesTableFilterComposer get workspaceId {
+    final $$AiWorkspacesTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.workspaceId,
+      referencedTable: $db.aiWorkspaces,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$AiWorkspacesTableFilterComposer(
+            $db: $db,
+            $table: $db.aiWorkspaces,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+
+  Expression<bool> aiTimelineEntriesRefs(
+    Expression<bool> Function($$AiTimelineEntriesTableFilterComposer f) f,
+  ) {
+    final $$AiTimelineEntriesTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.id,
+      referencedTable: $db.aiTimelineEntries,
+      getReferencedColumn: (t) => t.sessionId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$AiTimelineEntriesTableFilterComposer(
+            $db: $db,
+            $table: $db.aiTimelineEntries,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return f(composer);
+  }
+}
+
+class $$AiSessionsTableOrderingComposer
+    extends Composer<_$AppDatabase, $AiSessionsTable> {
+  $$AiSessionsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<int> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get title => $composableBuilder(
+    column: $table.title,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get status => $composableBuilder(
+    column: $table.status,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get completedAt => $composableBuilder(
+    column: $table.completedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  $$AiWorkspacesTableOrderingComposer get workspaceId {
+    final $$AiWorkspacesTableOrderingComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.workspaceId,
+      referencedTable: $db.aiWorkspaces,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$AiWorkspacesTableOrderingComposer(
+            $db: $db,
+            $table: $db.aiWorkspaces,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+}
+
+class $$AiSessionsTableAnnotationComposer
+    extends Composer<_$AppDatabase, $AiSessionsTable> {
+  $$AiSessionsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<int> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get title =>
+      $composableBuilder(column: $table.title, builder: (column) => column);
+
+  GeneratedColumn<String> get status =>
+      $composableBuilder(column: $table.status, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get createdAt =>
+      $composableBuilder(column: $table.createdAt, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get updatedAt =>
+      $composableBuilder(column: $table.updatedAt, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get completedAt => $composableBuilder(
+    column: $table.completedAt,
+    builder: (column) => column,
+  );
+
+  $$AiWorkspacesTableAnnotationComposer get workspaceId {
+    final $$AiWorkspacesTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.workspaceId,
+      referencedTable: $db.aiWorkspaces,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$AiWorkspacesTableAnnotationComposer(
+            $db: $db,
+            $table: $db.aiWorkspaces,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+
+  Expression<T> aiTimelineEntriesRefs<T extends Object>(
+    Expression<T> Function($$AiTimelineEntriesTableAnnotationComposer a) f,
+  ) {
+    final $$AiTimelineEntriesTableAnnotationComposer composer =
+        $composerBuilder(
+          composer: this,
+          getCurrentColumn: (t) => t.id,
+          referencedTable: $db.aiTimelineEntries,
+          getReferencedColumn: (t) => t.sessionId,
+          builder:
+              (
+                joinBuilder, {
+                $addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer,
+              }) => $$AiTimelineEntriesTableAnnotationComposer(
+                $db: $db,
+                $table: $db.aiTimelineEntries,
+                $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                joinBuilder: joinBuilder,
+                $removeJoinBuilderFromRootComposer:
+                    $removeJoinBuilderFromRootComposer,
+              ),
+        );
+    return f(composer);
+  }
+}
+
+class $$AiSessionsTableTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          $AiSessionsTable,
+          AiSession,
+          $$AiSessionsTableFilterComposer,
+          $$AiSessionsTableOrderingComposer,
+          $$AiSessionsTableAnnotationComposer,
+          $$AiSessionsTableCreateCompanionBuilder,
+          $$AiSessionsTableUpdateCompanionBuilder,
+          (AiSession, $$AiSessionsTableReferences),
+          AiSession,
+          PrefetchHooks Function({bool workspaceId, bool aiTimelineEntriesRefs})
+        > {
+  $$AiSessionsTableTableManager(_$AppDatabase db, $AiSessionsTable table)
+    : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$AiSessionsTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$AiSessionsTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$AiSessionsTableAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<int> id = const Value.absent(),
+                Value<int> workspaceId = const Value.absent(),
+                Value<String> title = const Value.absent(),
+                Value<String> status = const Value.absent(),
+                Value<DateTime> createdAt = const Value.absent(),
+                Value<DateTime> updatedAt = const Value.absent(),
+                Value<DateTime?> completedAt = const Value.absent(),
+              }) => AiSessionsCompanion(
+                id: id,
+                workspaceId: workspaceId,
+                title: title,
+                status: status,
+                createdAt: createdAt,
+                updatedAt: updatedAt,
+                completedAt: completedAt,
+              ),
+          createCompanionCallback:
+              ({
+                Value<int> id = const Value.absent(),
+                required int workspaceId,
+                required String title,
+                Value<String> status = const Value.absent(),
+                Value<DateTime> createdAt = const Value.absent(),
+                Value<DateTime> updatedAt = const Value.absent(),
+                Value<DateTime?> completedAt = const Value.absent(),
+              }) => AiSessionsCompanion.insert(
+                id: id,
+                workspaceId: workspaceId,
+                title: title,
+                status: status,
+                createdAt: createdAt,
+                updatedAt: updatedAt,
+                completedAt: completedAt,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map(
+                (e) => (
+                  e.readTable(table),
+                  $$AiSessionsTableReferences(db, table, e),
+                ),
+              )
+              .toList(),
+          prefetchHooksCallback:
+              ({workspaceId = false, aiTimelineEntriesRefs = false}) {
+                return PrefetchHooks(
+                  db: db,
+                  explicitlyWatchedTables: [
+                    if (aiTimelineEntriesRefs) db.aiTimelineEntries,
+                  ],
+                  addJoins:
+                      <
+                        T extends TableManagerState<
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic
+                        >
+                      >(state) {
+                        if (workspaceId) {
+                          state =
+                              state.withJoin(
+                                    currentTable: table,
+                                    currentColumn: table.workspaceId,
+                                    referencedTable: $$AiSessionsTableReferences
+                                        ._workspaceIdTable(db),
+                                    referencedColumn:
+                                        $$AiSessionsTableReferences
+                                            ._workspaceIdTable(db)
+                                            .id,
+                                  )
+                                  as T;
+                        }
+
+                        return state;
+                      },
+                  getPrefetchedDataCallback: (items) async {
+                    return [
+                      if (aiTimelineEntriesRefs)
+                        await $_getPrefetchedData<
+                          AiSession,
+                          $AiSessionsTable,
+                          AiTimelineEntry
+                        >(
+                          currentTable: table,
+                          referencedTable: $$AiSessionsTableReferences
+                              ._aiTimelineEntriesRefsTable(db),
+                          managerFromTypedResult: (p0) =>
+                              $$AiSessionsTableReferences(
+                                db,
+                                table,
+                                p0,
+                              ).aiTimelineEntriesRefs,
+                          referencedItemsForCurrentItem:
+                              (item, referencedItems) => referencedItems.where(
+                                (e) => e.sessionId == item.id,
+                              ),
+                          typedResults: items,
+                        ),
+                    ];
+                  },
+                );
+              },
+        ),
+      );
+}
+
+typedef $$AiSessionsTableProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      $AiSessionsTable,
+      AiSession,
+      $$AiSessionsTableFilterComposer,
+      $$AiSessionsTableOrderingComposer,
+      $$AiSessionsTableAnnotationComposer,
+      $$AiSessionsTableCreateCompanionBuilder,
+      $$AiSessionsTableUpdateCompanionBuilder,
+      (AiSession, $$AiSessionsTableReferences),
+      AiSession,
+      PrefetchHooks Function({bool workspaceId, bool aiTimelineEntriesRefs})
+    >;
+typedef $$AiTimelineEntriesTableCreateCompanionBuilder =
+    AiTimelineEntriesCompanion Function({
+      Value<int> id,
+      required int sessionId,
+      required String role,
+      required String message,
+      Value<String?> metadata,
+      Value<DateTime> createdAt,
+    });
+typedef $$AiTimelineEntriesTableUpdateCompanionBuilder =
+    AiTimelineEntriesCompanion Function({
+      Value<int> id,
+      Value<int> sessionId,
+      Value<String> role,
+      Value<String> message,
+      Value<String?> metadata,
+      Value<DateTime> createdAt,
+    });
+
+final class $$AiTimelineEntriesTableReferences
+    extends
+        BaseReferences<
+          _$AppDatabase,
+          $AiTimelineEntriesTable,
+          AiTimelineEntry
+        > {
+  $$AiTimelineEntriesTableReferences(
+    super.$_db,
+    super.$_table,
+    super.$_typedResult,
+  );
+
+  static $AiSessionsTable _sessionIdTable(_$AppDatabase db) =>
+      db.aiSessions.createAlias(
+        $_aliasNameGenerator(db.aiTimelineEntries.sessionId, db.aiSessions.id),
+      );
+
+  $$AiSessionsTableProcessedTableManager get sessionId {
+    final $_column = $_itemColumn<int>('session_id')!;
+
+    final manager = $$AiSessionsTableTableManager(
+      $_db,
+      $_db.aiSessions,
+    ).filter((f) => f.id.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_sessionIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: [item]),
+    );
+  }
+}
+
+class $$AiTimelineEntriesTableFilterComposer
+    extends Composer<_$AppDatabase, $AiTimelineEntriesTable> {
+  $$AiTimelineEntriesTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<int> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get role => $composableBuilder(
+    column: $table.role,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get message => $composableBuilder(
+    column: $table.message,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get metadata => $composableBuilder(
+    column: $table.metadata,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  $$AiSessionsTableFilterComposer get sessionId {
+    final $$AiSessionsTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.sessionId,
+      referencedTable: $db.aiSessions,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$AiSessionsTableFilterComposer(
+            $db: $db,
+            $table: $db.aiSessions,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+}
+
+class $$AiTimelineEntriesTableOrderingComposer
+    extends Composer<_$AppDatabase, $AiTimelineEntriesTable> {
+  $$AiTimelineEntriesTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<int> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get role => $composableBuilder(
+    column: $table.role,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get message => $composableBuilder(
+    column: $table.message,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get metadata => $composableBuilder(
+    column: $table.metadata,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  $$AiSessionsTableOrderingComposer get sessionId {
+    final $$AiSessionsTableOrderingComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.sessionId,
+      referencedTable: $db.aiSessions,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$AiSessionsTableOrderingComposer(
+            $db: $db,
+            $table: $db.aiSessions,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+}
+
+class $$AiTimelineEntriesTableAnnotationComposer
+    extends Composer<_$AppDatabase, $AiTimelineEntriesTable> {
+  $$AiTimelineEntriesTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<int> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get role =>
+      $composableBuilder(column: $table.role, builder: (column) => column);
+
+  GeneratedColumn<String> get message =>
+      $composableBuilder(column: $table.message, builder: (column) => column);
+
+  GeneratedColumn<String> get metadata =>
+      $composableBuilder(column: $table.metadata, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get createdAt =>
+      $composableBuilder(column: $table.createdAt, builder: (column) => column);
+
+  $$AiSessionsTableAnnotationComposer get sessionId {
+    final $$AiSessionsTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.sessionId,
+      referencedTable: $db.aiSessions,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$AiSessionsTableAnnotationComposer(
+            $db: $db,
+            $table: $db.aiSessions,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+}
+
+class $$AiTimelineEntriesTableTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          $AiTimelineEntriesTable,
+          AiTimelineEntry,
+          $$AiTimelineEntriesTableFilterComposer,
+          $$AiTimelineEntriesTableOrderingComposer,
+          $$AiTimelineEntriesTableAnnotationComposer,
+          $$AiTimelineEntriesTableCreateCompanionBuilder,
+          $$AiTimelineEntriesTableUpdateCompanionBuilder,
+          (AiTimelineEntry, $$AiTimelineEntriesTableReferences),
+          AiTimelineEntry,
+          PrefetchHooks Function({bool sessionId})
+        > {
+  $$AiTimelineEntriesTableTableManager(
+    _$AppDatabase db,
+    $AiTimelineEntriesTable table,
+  ) : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$AiTimelineEntriesTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$AiTimelineEntriesTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$AiTimelineEntriesTableAnnotationComposer(
+                $db: db,
+                $table: table,
+              ),
+          updateCompanionCallback:
+              ({
+                Value<int> id = const Value.absent(),
+                Value<int> sessionId = const Value.absent(),
+                Value<String> role = const Value.absent(),
+                Value<String> message = const Value.absent(),
+                Value<String?> metadata = const Value.absent(),
+                Value<DateTime> createdAt = const Value.absent(),
+              }) => AiTimelineEntriesCompanion(
+                id: id,
+                sessionId: sessionId,
+                role: role,
+                message: message,
+                metadata: metadata,
+                createdAt: createdAt,
+              ),
+          createCompanionCallback:
+              ({
+                Value<int> id = const Value.absent(),
+                required int sessionId,
+                required String role,
+                required String message,
+                Value<String?> metadata = const Value.absent(),
+                Value<DateTime> createdAt = const Value.absent(),
+              }) => AiTimelineEntriesCompanion.insert(
+                id: id,
+                sessionId: sessionId,
+                role: role,
+                message: message,
+                metadata: metadata,
+                createdAt: createdAt,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map(
+                (e) => (
+                  e.readTable(table),
+                  $$AiTimelineEntriesTableReferences(db, table, e),
+                ),
+              )
+              .toList(),
+          prefetchHooksCallback: ({sessionId = false}) {
+            return PrefetchHooks(
+              db: db,
+              explicitlyWatchedTables: [],
+              addJoins:
+                  <
+                    T extends TableManagerState<
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic
+                    >
+                  >(state) {
+                    if (sessionId) {
+                      state =
+                          state.withJoin(
+                                currentTable: table,
+                                currentColumn: table.sessionId,
+                                referencedTable:
+                                    $$AiTimelineEntriesTableReferences
+                                        ._sessionIdTable(db),
+                                referencedColumn:
+                                    $$AiTimelineEntriesTableReferences
+                                        ._sessionIdTable(db)
+                                        .id,
+                              )
+                              as T;
+                    }
+
+                    return state;
+                  },
+              getPrefetchedDataCallback: (items) async {
+                return [];
+              },
+            );
+          },
+        ),
+      );
+}
+
+typedef $$AiTimelineEntriesTableProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      $AiTimelineEntriesTable,
+      AiTimelineEntry,
+      $$AiTimelineEntriesTableFilterComposer,
+      $$AiTimelineEntriesTableOrderingComposer,
+      $$AiTimelineEntriesTableAnnotationComposer,
+      $$AiTimelineEntriesTableCreateCompanionBuilder,
+      $$AiTimelineEntriesTableUpdateCompanionBuilder,
+      (AiTimelineEntry, $$AiTimelineEntriesTableReferences),
+      AiTimelineEntry,
+      PrefetchHooks Function({bool sessionId})
+    >;
 
 class $AppDatabaseManager {
   final _$AppDatabase _db;
@@ -7726,4 +10097,10 @@ class $AppDatabaseManager {
       $$KnownHostsTableTableManager(_db, _db.knownHosts);
   $$SettingsTableTableManager get settings =>
       $$SettingsTableTableManager(_db, _db.settings);
+  $$AiWorkspacesTableTableManager get aiWorkspaces =>
+      $$AiWorkspacesTableTableManager(_db, _db.aiWorkspaces);
+  $$AiSessionsTableTableManager get aiSessions =>
+      $$AiSessionsTableTableManager(_db, _db.aiSessions);
+  $$AiTimelineEntriesTableTableManager get aiTimelineEntries =>
+      $$AiTimelineEntriesTableTableManager(_db, _db.aiTimelineEntries);
 }

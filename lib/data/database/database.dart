@@ -246,6 +246,71 @@ class Settings extends Table {
   Set<Column<Object>>? get primaryKey => {key};
 }
 
+/// AI workspaces for grouping CLI sessions by project.
+class AiWorkspaces extends Table {
+  /// Unique identifier.
+  IntColumn get id => integer().autoIncrement()();
+
+  /// Workspace display name.
+  TextColumn get name => text().withLength(min: 1, max: 255)();
+
+  /// Workspace directory path.
+  TextColumn get path => text().withLength(min: 1, max: 2048)();
+
+  /// Creation timestamp.
+  DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
+
+  /// Last modified timestamp.
+  DateTimeColumn get updatedAt => dateTime().withDefault(currentDateAndTime)();
+}
+
+/// AI CLI sessions within a workspace.
+class AiSessions extends Table {
+  /// Unique identifier.
+  IntColumn get id => integer().autoIncrement()();
+
+  /// Parent workspace.
+  IntColumn get workspaceId =>
+      integer().references(AiWorkspaces, #id, onDelete: KeyAction.cascade)();
+
+  /// Session title.
+  TextColumn get title => text().withLength(min: 1, max: 255)();
+
+  /// Session status.
+  TextColumn get status => text().withDefault(const Constant('active'))();
+
+  /// Creation timestamp.
+  DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
+
+  /// Last modified timestamp.
+  DateTimeColumn get updatedAt => dateTime().withDefault(currentDateAndTime)();
+
+  /// Completion timestamp.
+  DateTimeColumn get completedAt => dateTime().nullable()();
+}
+
+/// Timeline entries captured for AI CLI sessions.
+class AiTimelineEntries extends Table {
+  /// Unique identifier.
+  IntColumn get id => integer().autoIncrement()();
+
+  /// Parent AI session.
+  IntColumn get sessionId =>
+      integer().references(AiSessions, #id, onDelete: KeyAction.cascade)();
+
+  /// Entry role (user/assistant/tool/thinking/status/error).
+  TextColumn get role => text().withLength(min: 1, max: 50)();
+
+  /// Entry message content.
+  TextColumn get message => text()();
+
+  /// Optional entry metadata in JSON.
+  TextColumn get metadata => text().nullable()();
+
+  /// Creation timestamp.
+  DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
+}
+
 /// The main database class.
 @DriftDatabase(
   tables: [
@@ -257,6 +322,9 @@ class Settings extends Table {
     PortForwards,
     KnownHosts,
     Settings,
+    AiWorkspaces,
+    AiSessions,
+    AiTimelineEntries,
   ],
 )
 class AppDatabase extends _$AppDatabase {
@@ -267,7 +335,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.e);
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -279,6 +347,11 @@ class AppDatabase extends _$AppDatabase {
       }
       if (from < 3) {
         await m.addColumn(hosts, hosts.terminalFontFamily);
+      }
+      if (from < 4) {
+        await m.createTable(aiWorkspaces);
+        await m.createTable(aiSessions);
+        await m.createTable(aiTimelineEntries);
       }
     },
     beforeOpen: (details) async {
