@@ -100,6 +100,17 @@ void main() {
       expect(command, contains('--workspace'));
     });
 
+    test('rejects unsafe executable override shell control characters', () {
+      expect(
+        () => builder.buildLaunchCommand(
+          provider: AiCliProvider.acp,
+          executableOverride: 'copilot; rm -rf /',
+          remoteWorkingDirectory: '/srv/project',
+        ),
+        throwsArgumentError,
+      );
+    });
+
     test('throws when remote working directory is empty', () {
       expect(
         () => builder.buildLaunchCommand(

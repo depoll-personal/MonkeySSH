@@ -7,6 +7,9 @@ import 'shell_escape.dart';
 class AiCliCommandBuilder {
   /// Creates a command builder.
   const AiCliCommandBuilder();
+  static final RegExp _unsafeExecutablePattern = RegExp(
+    r'''[;&|<>`$'"\\\n\r]''',
+  );
 
   /// Builds a command that launches [provider] from [remoteWorkingDirectory].
   ///
@@ -110,14 +113,10 @@ class AiCliCommandBuilder {
     required String? executableOverride,
     required List<String> arguments,
   }) {
-    final executable = (executableOverride ?? provider.executable).trim();
-    if (executable.isEmpty) {
-      throw ArgumentError.value(
-        executableOverride,
-        'executableOverride',
-        'Executable override cannot be empty.',
-      );
-    }
+    final executable = _validatedExecutable(
+      provider: provider,
+      executableOverride: executableOverride,
+    );
     if (arguments.isEmpty) {
       return executable;
     }
@@ -129,15 +128,37 @@ class AiCliCommandBuilder {
     required AiCliProvider provider,
     required String? executableOverride,
   }) {
-    final executable = (executableOverride ?? provider.executable).trim();
-    if (executable.isEmpty) {
-      return provider.executable;
-    }
+    final executable = _validatedExecutable(
+      provider: provider,
+      executableOverride: executableOverride,
+    );
     final firstSpace = executable.indexOf(' ');
     if (firstSpace == -1) {
       return executable;
     }
     return executable.substring(0, firstSpace).trim();
+  }
+
+  String _validatedExecutable({
+    required AiCliProvider provider,
+    required String? executableOverride,
+  }) {
+    final executable = (executableOverride ?? provider.executable).trim();
+    if (executable.isEmpty) {
+      throw ArgumentError.value(
+        executableOverride,
+        'executableOverride',
+        'Executable override cannot be empty.',
+      );
+    }
+    if (_unsafeExecutablePattern.hasMatch(executable)) {
+      throw ArgumentError.value(
+        executableOverride,
+        'executableOverride',
+        'Executable override contains unsafe shell control characters.',
+      );
+    }
+    return executable;
   }
 
   String _buildRunSegment({

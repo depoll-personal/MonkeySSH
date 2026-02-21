@@ -899,9 +899,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     }
 
     final remoteDir = context.remoteWorkingDirectory;
-    final cdDirectory = remoteDir.startsWith('~')
-        ? remoteDir
-        : shellEscape(remoteDir);
+    final cdDirectory = _buildRemoteCdDirectory(remoteDir);
     final process = await session.execute(
       'cd $cdDirectory && '
       'find . -maxdepth 4 -type f 2>/dev/null | sed "s#^./##" | head -n 250',
@@ -1423,9 +1421,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       return '/';
     }
     final remoteDir = context.remoteWorkingDirectory.trim();
-    final cdDirectory = remoteDir.startsWith('~')
-        ? remoteDir
-        : shellEscape(remoteDir);
+    final cdDirectory = _buildRemoteCdDirectory(remoteDir);
     final process = await session.execute(
       'cd $cdDirectory >/dev/null 2>&1 && pwd -P',
     );
@@ -1450,6 +1446,18 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       return trimmed;
     }
     return null;
+  }
+
+  String _buildRemoteCdDirectory(String remoteWorkingDirectory) {
+    final trimmed = remoteWorkingDirectory.trim();
+    if (trimmed == '~') {
+      return '~';
+    }
+    if (trimmed.startsWith('~/')) {
+      final rest = trimmed.substring(2);
+      return rest.isEmpty ? '~' : '~/${shellEscape(rest)}';
+    }
+    return shellEscape(trimmed);
   }
 
   Future<void> _sendPrompt() async {

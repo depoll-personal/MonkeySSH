@@ -41,7 +41,7 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
     super.initState();
     _workingDirectoryController = TextEditingController(text: '~');
     _acpClientCommandController = TextEditingController();
-    _restoreLastUsedProviderSelection();
+    unawaited(_restoreLastUsedProviderSelection());
   }
 
   @override
