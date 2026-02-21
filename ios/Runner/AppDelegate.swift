@@ -6,13 +6,34 @@ import UIKit
   /// Background task identifier used to keep SSH connections alive
   /// for a short period after the app enters the background.
   private var backgroundTaskId: UIBackgroundTaskIdentifier = .invalid
+  private var pendingTransferPayload: String?
+  private let transferChannelName = "xyz.depollsoft.monkeyssh/transfer"
+  private let maxTransferPayloadBytes = 10 * 1024 * 1024
+  private var transferChannel: FlutterMethodChannel?
 
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
     GeneratedPluginRegistrant.register(with: self)
+    if let controller = window?.rootViewController as? FlutterViewController {
+      setupTransferChannel(with: controller)
+    }
+    if let launchUrl = launchOptions?[.url] as? URL {
+      _ = handleTransferFile(url: launchUrl)
+    }
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
+
+  override func application(
+    _ app: UIApplication,
+    open url: URL,
+    options: [UIApplication.OpenURLOptionsKey: Any] = [:]
+  ) -> Bool {
+    if handleTransferFile(url: url) {
+      return true
+    }
+    return super.application(app, open: url, options: options)
   }
 
   override func applicationDidEnterBackground(_ application: UIApplication) {
@@ -32,5 +53,63 @@ import UIKit
       application.endBackgroundTask(backgroundTaskId)
       backgroundTaskId = .invalid
     }
+  }
+
+  private func setupTransferChannel(with controller: FlutterViewController) {
+    let channel = FlutterMethodChannel(
+      name: transferChannelName,
+      binaryMessenger: controller.binaryMessenger
+    )
+    transferChannel = channel
+    channel.setMethodCallHandler { [weak self] call, result in
+      guard let self = self else {
+        result(nil)
+        return
+      }
+      switch call.method {
+      case "consumeIncomingTransferPayload":
+        result(self.pendingTransferPayload)
+        self.pendingTransferPayload = nil
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+    notifyIncomingTransferPayload()
+  }
+
+  private func handleTransferFile(url: URL) -> Bool {
+    guard url.pathExtension.lowercased() == "monkeysshx" else {
+      return false
+    }
+    do {
+      pendingTransferPayload = try readTransferPayload(from: url)
+      notifyIncomingTransferPayload()
+      return true
+    } catch {
+      pendingTransferPayload = nil
+      return false
+    }
+  }
+
+  private func readTransferPayload(from url: URL) throws -> String {
+    let fileSize = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize
+    if let fileSize, fileSize > maxTransferPayloadBytes {
+      throw NSError(domain: "MonkeySSHTransfer", code: 1)
+    }
+    let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+    if data.count > maxTransferPayloadBytes {
+      throw NSError(domain: "MonkeySSHTransfer", code: 1)
+    }
+    guard let payload = String(data: data, encoding: .utf8) else {
+      throw NSError(domain: "MonkeySSHTransfer", code: 2)
+    }
+    return payload
+  }
+
+  private func notifyIncomingTransferPayload() {
+    guard let payload = pendingTransferPayload else {
+      return
+    }
+    transferChannel?.invokeMethod("onIncomingTransferPayload", arguments: payload)
   }
 }
