@@ -46,7 +46,7 @@ on:
 jobs:
   build-android:
     name: Build & Deploy Android (${{ inputs.flavor }})
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       apk-artifact-id: ${{ steps.upload-apk.outputs.artifact-id }}
     steps:
@@ -156,7 +156,7 @@ jobs:
 
   build-ios:
     name: Build & Deploy iOS (${{ inputs.flavor }})
-    runs-on: macos-26
+    runs-on: [self-hosted, macOS]
     outputs:
       source-sha: ${{ steps.source-sha.outputs.value }}
     env:
