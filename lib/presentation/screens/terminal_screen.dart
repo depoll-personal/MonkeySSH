@@ -41,7 +41,14 @@ class TerminalScreen extends ConsumerStatefulWidget {
 
 class _TerminalScreenState extends ConsumerState<TerminalScreen>
     with WidgetsBindingObserver {
+  static const _terminalViewportPadding = EdgeInsets.all(8);
+
   late Terminal _terminal;
+  late final TerminalController _terminalController;
+  late final ScrollController _terminalScrollController;
+  late final ScrollController _nativeSelectionScrollController;
+  late final TextEditingController _nativeSelectionController;
+  late final FocusNode _nativeSelectionFocusNode;
   late FocusNode _terminalFocusNode;
   final _toolbarKey = GlobalKey<KeyboardToolbarState>();
   SSHSession? _shell;
@@ -50,6 +57,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _error;
   bool _showKeyboard = true;
   bool _isUsingAltBuffer = false;
+  bool _hasTerminalSelection = false;
+  bool _isNativeSelectionMode = false;
+  bool _isSyncingNativeScroll = false;
+  bool _hadNativeSelection = false;
+  Timer? _nativeSelectionClearTimer;
   int? _connectionId;
 
   // Theme state
@@ -65,13 +77,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _wasBackgrounded = false;
   bool _connectionLostWhileBackgrounded = false;
 
+  bool get _isMobilePlatform =>
+      defaultTargetPlatform == TargetPlatform.android ||
+      defaultTargetPlatform == TargetPlatform.iOS;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _terminal = Terminal(maxLines: 10000);
+    _terminalController = TerminalController();
+    _terminalScrollController = ScrollController()
+      ..addListener(_syncNativeScrollFromTerminal);
+    _nativeSelectionScrollController = ScrollController()
+      ..addListener(_syncTerminalScrollFromNative);
+    _nativeSelectionController = TextEditingController();
+    _nativeSelectionController.addListener(_onNativeSelectionChanged);
+    _nativeSelectionFocusNode = FocusNode();
     _isUsingAltBuffer = _terminal.isUsingAltBuffer;
     _terminal.addListener(_onTerminalStateChanged);
+    _terminalController.addListener(_onSelectionChanged);
     _terminalFocusNode = FocusNode();
     // Defer connection to avoid modifying provider state during widget build
     Future.microtask(_loadHostAndConnect);
@@ -86,6 +111,89 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     setState(() {
       _isUsingAltBuffer = isUsingAltBuffer;
     });
+  }
+
+  void _onSelectionChanged() {
+    if (!mounted) {
+      return;
+    }
+
+    final selection = _terminalController.selection;
+    final hasSelection = selection != null;
+    if (_isMobilePlatform && hasSelection && !_isNativeSelectionMode) {
+      _enterNativeSelectionMode(initialRange: selection);
+      return;
+    }
+
+    if (_hasTerminalSelection == hasSelection) {
+      return;
+    }
+
+    setState(() {
+      _hasTerminalSelection = hasSelection;
+    });
+  }
+
+  void _onNativeSelectionChanged() {
+    if (!_isNativeSelectionMode) {
+      return;
+    }
+
+    final hasSelection = !_nativeSelectionController.selection.isCollapsed;
+    if (hasSelection) {
+      _nativeSelectionClearTimer?.cancel();
+      _hadNativeSelection = true;
+      return;
+    }
+
+    if (!_hadNativeSelection) {
+      return;
+    }
+
+    _nativeSelectionClearTimer?.cancel();
+    _nativeSelectionClearTimer = Timer(const Duration(milliseconds: 250), () {
+      if (!_isNativeSelectionMode) {
+        return;
+      }
+      if (_nativeSelectionController.selection.isCollapsed) {
+        _hadNativeSelection = false;
+        _exitNativeSelectionMode();
+      }
+    });
+  }
+
+  void _syncNativeScrollFromTerminal() {
+    if (!_isNativeSelectionMode ||
+        _isSyncingNativeScroll ||
+        !_terminalScrollController.hasClients ||
+        !_nativeSelectionScrollController.hasClients) {
+      return;
+    }
+
+    _isSyncingNativeScroll = true;
+    final targetOffset = _terminalScrollController.offset.clamp(
+      0.0,
+      _nativeSelectionScrollController.position.maxScrollExtent,
+    );
+    _nativeSelectionScrollController.jumpTo(targetOffset);
+    _isSyncingNativeScroll = false;
+  }
+
+  void _syncTerminalScrollFromNative() {
+    if (!_isNativeSelectionMode ||
+        _isSyncingNativeScroll ||
+        !_nativeSelectionScrollController.hasClients ||
+        !_terminalScrollController.hasClients) {
+      return;
+    }
+
+    _isSyncingNativeScroll = true;
+    final targetOffset = _nativeSelectionScrollController.offset.clamp(
+      0.0,
+      _terminalScrollController.position.maxScrollExtent,
+    );
+    _terminalScrollController.jumpTo(targetOffset);
+    _isSyncingNativeScroll = false;
   }
 
   Future<void> _loadHostAndConnect() async {
@@ -388,6 +496,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _terminal.removeListener(_onTerminalStateChanged);
+    _terminalController
+      ..removeListener(_onSelectionChanged)
+      ..dispose();
+    _terminalScrollController
+      ..removeListener(_syncNativeScrollFromTerminal)
+      ..dispose();
+    _nativeSelectionScrollController
+      ..removeListener(_syncTerminalScrollFromNative)
+      ..dispose();
+    _nativeSelectionController
+      ..removeListener(_onNativeSelectionChanged)
+      ..dispose();
+    _nativeSelectionClearTimer?.cancel();
+    _nativeSelectionFocusNode.dispose();
     _doneSubscription?.cancel();
     _terminalFocusNode.dispose();
     super.dispose();
@@ -465,6 +587,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             itemBuilder: (context) => [
               const PopupMenuItem(value: 'snippets', child: Text('Snippets')),
               const PopupMenuDivider(),
+              PopupMenuItem(
+                value: 'native_select',
+                child: Text(
+                  _isNativeSelectionMode
+                      ? 'Exit Native Selection'
+                      : 'Native Selection',
+                ),
+              ),
               const PopupMenuItem(value: 'copy', child: Text('Copy')),
               const PopupMenuItem(value: 'paste', child: Text('Paste')),
               const PopupMenuItem(value: 'clear', child: Text('Clear')),
@@ -480,7 +610,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       body: Column(
         children: [
           Expanded(child: _buildTerminalView(terminalTheme, isMobile)),
-          if (_showKeyboard)
+          if (_showKeyboard && !_isNativeSelectionMode)
             KeyboardToolbar(
               key: _toolbarKey,
               terminal: _terminal,
@@ -632,17 +762,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final hostFont = _host?.terminalFontFamily;
     final globalFont = ref.watch(fontFamilyNotifierProvider);
     final fontFamily = hostFont ?? globalFont;
-    final textStyle = _getTerminalTextStyle(fontFamily, fontSize);
+    final terminalTextStyle = _getTerminalTextStyle(fontFamily, fontSize);
+    final nativeSelectionTextStyle = _getNativeSelectionTextStyle(
+      terminalTextStyle,
+    );
 
     final terminalView = TerminalView(
       _terminal,
+      controller: _terminalController,
+      scrollController: _terminalScrollController,
       focusNode: isMobile ? null : _terminalFocusNode,
       theme: terminalTheme.toXtermTheme(),
-      textStyle: textStyle,
-      padding: const EdgeInsets.all(8),
+      textStyle: terminalTextStyle,
+      padding: _terminalViewportPadding,
       deleteDetection: !isMobile,
       autofocus: !isMobile,
       hardwareKeyboardOnly: isMobile,
+      readOnly: _isNativeSelectionMode,
       // On touch devices, simulating wheel scroll with Up/Down keys in alt
       // buffer makes swipe scroll behave like rapid history navigation.
       simulateScroll: !isMobile && _isUsingAltBuffer,
@@ -668,63 +804,326 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     // On mobile, wrap with our own text input handler that enables
     // IME suggestions so swipe typing correctly inserts spaces.
+    if (_isNativeSelectionMode) {
+      mobileTerminalView = Stack(
+        fit: StackFit.expand,
+        children: [
+          mobileTerminalView,
+          _nativeSelectionOverlay(nativeSelectionTextStyle),
+        ],
+      );
+    } else if (_hasTerminalSelection) {
+      mobileTerminalView = Stack(
+        fit: StackFit.expand,
+        children: [
+          mobileTerminalView,
+          Positioned(left: 12, right: 12, bottom: 12, child: _selectionActions),
+        ],
+      );
+    }
+
     return TerminalTextInputHandler(
       terminal: _terminal,
       focusNode: _terminalFocusNode,
       deleteDetection: true,
+      readOnly: _isNativeSelectionMode,
       child: mobileTerminalView,
     );
   }
 
+  Widget _nativeSelectionOverlay(TextStyle textStyle) => Positioned.fill(
+    child: Padding(
+      padding: _terminalViewportPadding,
+      child: TextField(
+        controller: _nativeSelectionController,
+        focusNode: _nativeSelectionFocusNode,
+        readOnly: true,
+        enableInteractiveSelection: true,
+        showCursor: false,
+        scrollController: _nativeSelectionScrollController,
+        expands: true,
+        textAlignVertical: TextAlignVertical.top,
+        style: textStyle,
+        strutStyle: StrutStyle.fromTextStyle(textStyle, forceStrutHeight: true),
+        decoration: null,
+      ),
+    ),
+  );
+
   /// Gets the terminal text style for the given font family using Google Fonts.
   TerminalStyle _getTerminalTextStyle(String fontFamily, double fontSize) {
-    final textStyle = switch (fontFamily) {
-      'JetBrains Mono' => GoogleFonts.jetBrainsMono(fontSize: fontSize),
-      'Fira Code' => GoogleFonts.firaCode(fontSize: fontSize),
-      'Source Code Pro' => GoogleFonts.sourceCodePro(fontSize: fontSize),
-      'Ubuntu Mono' => GoogleFonts.ubuntuMono(fontSize: fontSize),
-      'Roboto Mono' => GoogleFonts.robotoMono(fontSize: fontSize),
-      'IBM Plex Mono' => GoogleFonts.ibmPlexMono(fontSize: fontSize),
-      'Inconsolata' => GoogleFonts.inconsolata(fontSize: fontSize),
-      'Anonymous Pro' => GoogleFonts.anonymousPro(fontSize: fontSize),
-      'Cousine' => GoogleFonts.cousine(fontSize: fontSize),
-      'PT Mono' => GoogleFonts.ptMono(fontSize: fontSize),
-      'Space Mono' => GoogleFonts.spaceMono(fontSize: fontSize),
-      'VT323' => GoogleFonts.vt323(fontSize: fontSize),
-      'Share Tech Mono' => GoogleFonts.shareTechMono(fontSize: fontSize),
-      'Overpass Mono' => GoogleFonts.overpassMono(fontSize: fontSize),
-      'Oxygen Mono' => GoogleFonts.oxygenMono(fontSize: fontSize),
-      _ => null,
-    };
-
+    final textStyle = _resolveTerminalTextStyle(fontFamily, fontSize);
     if (textStyle != null) {
       return TerminalStyle.fromTextStyle(textStyle);
     }
     return TerminalStyle(fontSize: fontSize);
   }
 
+  TextStyle _getNativeSelectionTextStyle(TerminalStyle terminalTextStyle) =>
+      terminalTextStyle
+          .toTextStyle(color: Colors.transparent)
+          .copyWith(
+            letterSpacing: 0,
+            fontFeatures: const [
+              FontFeature.disable('liga'),
+              FontFeature.disable('calt'),
+            ],
+          );
+
+  TextStyle? _resolveTerminalTextStyle(String fontFamily, double fontSize) =>
+      switch (fontFamily) {
+        'JetBrains Mono' => GoogleFonts.jetBrainsMono(fontSize: fontSize),
+        'Fira Code' => GoogleFonts.firaCode(fontSize: fontSize),
+        'Source Code Pro' => GoogleFonts.sourceCodePro(fontSize: fontSize),
+        'Ubuntu Mono' => GoogleFonts.ubuntuMono(fontSize: fontSize),
+        'Roboto Mono' => GoogleFonts.robotoMono(fontSize: fontSize),
+        'IBM Plex Mono' => GoogleFonts.ibmPlexMono(fontSize: fontSize),
+        'Inconsolata' => GoogleFonts.inconsolata(fontSize: fontSize),
+        'Anonymous Pro' => GoogleFonts.anonymousPro(fontSize: fontSize),
+        'Cousine' => GoogleFonts.cousine(fontSize: fontSize),
+        'PT Mono' => GoogleFonts.ptMono(fontSize: fontSize),
+        'Space Mono' => GoogleFonts.spaceMono(fontSize: fontSize),
+        'VT323' => GoogleFonts.vt323(fontSize: fontSize),
+        'Share Tech Mono' => GoogleFonts.shareTechMono(fontSize: fontSize),
+        'Overpass Mono' => GoogleFonts.overpassMono(fontSize: fontSize),
+        'Oxygen Mono' => GoogleFonts.oxygenMono(fontSize: fontSize),
+        _ => null,
+      };
+
   Future<void> _handleMenuAction(String action) async {
     switch (action) {
       case 'snippets':
         await _showSnippetPicker();
+        break;
+      case 'native_select':
+        _toggleNativeSelectionMode();
+        break;
       case 'copy':
-        // xterm doesn't expose selectedText directly
-        // Copy functionality requires integration with TerminalView's selection
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Use long-press to select and copy')),
-          );
-        }
+        await _copySelection();
+        break;
       case 'paste':
-        final data = await Clipboard.getData(Clipboard.kTextPlain);
-        if (data?.text != null) {
-          _terminal.paste(data!.text!);
-        }
+        await _pasteClipboard();
+        break;
       case 'clear':
         _terminal.buffer.clear();
+        _terminalController.clearSelection();
+        break;
       case 'disconnect':
         await _disconnect();
+        break;
     }
+  }
+
+  void _toggleNativeSelectionMode() {
+    if (_isNativeSelectionMode) {
+      _exitNativeSelectionMode();
+      return;
+    }
+
+    _enterNativeSelectionMode(initialRange: _terminalController.selection);
+  }
+
+  void _enterNativeSelectionMode({BufferRange? initialRange}) {
+    if (_isNativeSelectionMode) {
+      return;
+    }
+
+    _terminalFocusNode.unfocus();
+    final snapshot = _buildNativeSelectionSnapshotData();
+    final selection = initialRange == null
+        ? const TextSelection.collapsed(offset: 0)
+        : _bufferRangeToTextSelection(
+            initialRange,
+            viewWidth: _terminal.buffer.viewWidth,
+            lineCount: _terminal.buffer.height,
+            lineStarts: snapshot.lineStarts,
+            columnOffsets: snapshot.columnOffsets,
+            textLength: snapshot.text.length,
+          );
+    _nativeSelectionController.value = TextEditingValue(
+      text: snapshot.text,
+      selection: selection,
+    );
+    _hadNativeSelection = !selection.isCollapsed;
+    setState(() {
+      _isNativeSelectionMode = true;
+      _hasTerminalSelection = false;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _syncNativeScrollFromTerminal();
+      _nativeSelectionFocusNode.requestFocus();
+      if (!selection.isCollapsed) {
+        _nativeSelectionController.selection = selection;
+      }
+    });
+    if (_terminalController.selection != null) {
+      _terminalController.clearSelection();
+    }
+  }
+
+  void _exitNativeSelectionMode() {
+    _nativeSelectionClearTimer?.cancel();
+    setState(() {
+      _isNativeSelectionMode = false;
+      _hasTerminalSelection = false;
+    });
+    _hadNativeSelection = false;
+    _nativeSelectionController.clear();
+    _terminalController.clearSelection();
+    _terminalFocusNode.requestFocus();
+  }
+
+  ({String text, List<int> lineStarts, List<List<int>> columnOffsets})
+  _buildNativeSelectionSnapshotData() {
+    final buffer = _terminal.buffer;
+    final builder = StringBuffer();
+    final lineStarts = <int>[];
+    final lineColumnOffsets = <List<int>>[];
+
+    for (var i = 0; i < buffer.height; i++) {
+      lineStarts.add(builder.length);
+      final lineSnapshot = _buildNativeSelectionLineSnapshot(
+        buffer.lines[i],
+        buffer.viewWidth,
+      );
+      builder.write(lineSnapshot.text);
+      lineColumnOffsets.add(lineSnapshot.columnOffsets);
+      if (i < buffer.height - 1) {
+        builder.write('\n');
+      }
+    }
+
+    return (
+      text: builder.toString(),
+      lineStarts: lineStarts,
+      columnOffsets: lineColumnOffsets,
+    );
+  }
+
+  ({String text, List<int> columnOffsets}) _buildNativeSelectionLineSnapshot(
+    BufferLine line,
+    int viewWidth,
+  ) {
+    final builder = StringBuffer();
+    final columnOffsets = List<int>.filled(viewWidth + 1, 0);
+    var col = 0;
+
+    while (col < viewWidth) {
+      final startOffset = builder.length;
+      columnOffsets[col] = startOffset;
+      final codePoint = line.getCodePoint(col);
+      final width = line.getWidth(col);
+
+      if (codePoint == 0) {
+        builder.writeCharCode(0x20);
+        columnOffsets[col + 1] = builder.length;
+        col++;
+        continue;
+      }
+
+      builder.writeCharCode(codePoint);
+      final step = (width <= 0 ? 1 : width).clamp(1, viewWidth - col);
+      for (var i = col + 1; i < col + step; i++) {
+        columnOffsets[i] = startOffset;
+      }
+      columnOffsets[col + step] = builder.length;
+      col += step;
+    }
+
+    return (text: builder.toString(), columnOffsets: columnOffsets);
+  }
+
+  TextSelection _bufferRangeToTextSelection(
+    BufferRange range, {
+    required int viewWidth,
+    required int lineCount,
+    required List<int> lineStarts,
+    required List<List<int>> columnOffsets,
+    required int textLength,
+  }) {
+    final normalized = range.normalized;
+
+    int toOffset(CellOffset position) {
+      final y = position.y.clamp(0, lineCount - 1);
+      final x = position.x.clamp(0, viewWidth);
+      final lineStart = lineStarts[y];
+      final lineOffset = columnOffsets[y][x];
+      return (lineStart + lineOffset).clamp(0, textLength);
+    }
+
+    final start = toOffset(normalized.begin);
+    final end = toOffset(normalized.end);
+    return TextSelection(baseOffset: start, extentOffset: end);
+  }
+
+  Widget get _selectionActions => SafeArea(
+    top: false,
+    child: Material(
+      elevation: 2,
+      borderRadius: BorderRadius.circular(12),
+      color: Theme.of(context).colorScheme.surfaceContainerHigh,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        child: Row(
+          children: [
+            Expanded(
+              child: TextButton.icon(
+                onPressed: () => unawaited(_copySelection()),
+                icon: const Icon(Icons.copy_outlined),
+                label: const Text('Copy'),
+              ),
+            ),
+            Expanded(
+              child: TextButton.icon(
+                onPressed: () => unawaited(_pasteClipboard()),
+                icon: const Icon(Icons.paste_outlined),
+                label: const Text('Paste'),
+              ),
+            ),
+            Expanded(
+              child: TextButton.icon(
+                onPressed: _terminalController.clearSelection,
+                icon: const Icon(Icons.close),
+                label: const Text('Clear'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  Future<void> _copySelection() async {
+    final selection = _terminalController.selection;
+    if (selection == null) {
+      return;
+    }
+
+    final text = _terminal.buffer.getText(selection);
+    if (text.isEmpty) {
+      return;
+    }
+
+    await Clipboard.setData(ClipboardData(text: text));
+    _terminalController.clearSelection();
+
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Copied')));
+  }
+
+  Future<void> _pasteClipboard() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = data?.text;
+    if (text == null || text.isEmpty) {
+      return;
+    }
+
+    _terminal.paste(text);
+    _terminalController.clearSelection();
   }
 
   /// Shows snippet picker and inserts selected snippet into terminal.
