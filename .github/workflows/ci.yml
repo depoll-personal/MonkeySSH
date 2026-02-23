@@ -93,7 +93,7 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.gradle/caches
@@ -125,7 +125,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: ios/Pods
           key: pods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
@@ -155,7 +155,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: macos/Pods
           key: pods-macos-${{ runner.os }}-${{ hashFiles('macos/Podfile.lock') }}
