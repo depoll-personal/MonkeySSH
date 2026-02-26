@@ -1501,17 +1501,10 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           return;
         }
 
-        // Use ACP protocol when available. For slash commands, only route
-        // through ACP when the agent has advertised command support;
-        // otherwise fall through to raw stdin so the CLI handles them.
+        // Use ACP protocol whenever an ACP session is active.
         final acpClient = _acpClient;
         final acpSession = _acpSession;
-        final useAcpForPrompt =
-            acpClient != null &&
-            acpSession != null &&
-            (!_isSlashCommand(prompt) ||
-                acpSession.availableCommands.isNotEmpty);
-        if (useAcpForPrompt) {
+        if (acpClient != null && acpSession != null) {
           await _sendAcpPrompt(
             client: acpClient,
             sessionId: acpSession.sessionId,
@@ -1552,9 +1545,6 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       }
     }
   }
-
-  /// Whether [prompt] starts with a `/` command token.
-  bool _isSlashCommand(String prompt) => prompt.trimLeft().startsWith('/');
 
   Future<void> _sendAcpPrompt({
     required AcpClient client,
@@ -2046,11 +2036,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       }
       final acpClient = _acpClient;
       final acpSession = _acpSession;
-      final useAcpForPrompt =
-          acpClient != null &&
-          acpSession != null &&
-          (!_isSlashCommand(prompt) || acpSession.availableCommands.isNotEmpty);
-      if (useAcpForPrompt) {
+      if (acpClient != null && acpSession != null) {
         await _sendAcpPrompt(
           client: acpClient,
           sessionId: acpSession.sessionId,
