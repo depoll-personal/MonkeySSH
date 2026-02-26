@@ -98,10 +98,7 @@ class AcpClient {
         'ACP session cwd must be an absolute path.',
       );
     }
-    final params = <String, dynamic>{
-      'cwd': normalizedCwd,
-      'mcpServers': <dynamic>[],
-    };
+    final params = <String, dynamic>{'cwd': normalizedCwd};
     final result = await _sendRequest('session/new', params);
 
     final sessionId = result['sessionId']?.toString() ?? '';

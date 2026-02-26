@@ -170,7 +170,7 @@ void main() {
       final sent = jsonDecode(process.stdinWrites[1]) as Map<String, dynamic>;
       final sentParams = sent['params'] as Map<String, dynamic>;
       expect(sentParams['cwd'], '/test');
-      expect(sentParams['mcpServers'], isA<List<dynamic>>());
+      expect(sentParams.containsKey('mcpServers'), isFalse);
       process.emitStdout(
         '${jsonEncode(<String, dynamic>{
           'jsonrpc': '2.0',
