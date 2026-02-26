@@ -1466,6 +1466,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       return;
     }
     final prompt = promptText;
+    final outboundPrompt = _normalizePromptForDispatch(prompt);
     final context = _sessionContext;
     if (context == null) {
       await _insertTimelineEntry(
@@ -1483,15 +1484,15 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     try {
       await _insertTimelineEntry(role: 'user', message: prompt);
       if (context.provider == AiCliProvider.claude) {
-        await _runClaudePrompt(prompt: prompt);
+        await _runClaudePrompt(prompt: outboundPrompt);
         return;
       }
       if (context.provider == AiCliProvider.codex) {
-        await _runCodexPrompt(prompt: prompt);
+        await _runCodexPrompt(prompt: outboundPrompt);
         return;
       }
       if (context.provider == AiCliProvider.opencode) {
-        await _runOpenCodePrompt(prompt: prompt);
+        await _runOpenCodePrompt(prompt: outboundPrompt);
         return;
       }
       if (widget.autoStartRuntime &&
@@ -1508,7 +1509,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           await _sendAcpPrompt(
             client: acpClient,
             sessionId: acpSession.sessionId,
-            prompt: prompt,
+            prompt: outboundPrompt,
           );
           return;
         }
@@ -1524,7 +1525,11 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         // Adapter mode: raw stdin transport for non-ACP providers.
         await ref
             .read(aiRuntimeServiceProvider)
-            .send(prompt, appendNewline: true, aiSessionId: widget.sessionId);
+            .send(
+              outboundPrompt,
+              appendNewline: true,
+              aiSessionId: widget.sessionId,
+            );
       } else {
         await _insertTimelineEntry(
           role: 'status',
@@ -2028,6 +2033,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
   }
 
   Future<void> _runProviderPrompt({required String prompt}) async {
+    final outboundPrompt = _normalizePromptForDispatch(prompt);
     if (widget.autoStartRuntime &&
         _runtimeAttachmentState != _RuntimeAttachmentState.detached) {
       await _startRuntimeIfNeeded(force: true);
@@ -2040,13 +2046,17 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         await _sendAcpPrompt(
           client: acpClient,
           sessionId: acpSession.sessionId,
-          prompt: prompt,
+          prompt: outboundPrompt,
         );
         return;
       }
       await ref
           .read(aiRuntimeServiceProvider)
-          .send(prompt, appendNewline: true, aiSessionId: widget.sessionId);
+          .send(
+            outboundPrompt,
+            appendNewline: true,
+            aiSessionId: widget.sessionId,
+          );
       return;
     }
     await _insertTimelineEntry(
@@ -2054,6 +2064,14 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       message:
           'Runtime is detached. Prompt saved to transcript until reconnect.',
     );
+  }
+
+  String _normalizePromptForDispatch(String prompt) {
+    final trimmedLeft = prompt.trimLeft();
+    if (trimmedLeft.startsWith('/')) {
+      return trimmedLeft.trimRight();
+    }
+    return prompt;
   }
 
   Future<int?> _insertTimelineEntry({
