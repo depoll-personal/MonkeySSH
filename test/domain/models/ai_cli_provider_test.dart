@@ -53,5 +53,13 @@ void main() {
       expect(AiCliProvider.opencode.capabilities.requiresPty, isTrue);
       expect(AiCliProvider.copilot.capabilities.requiresPty, isFalse);
     });
+
+    test('copilot ACP preset includes required ACP flags', () {
+      final copilotPreset = knownAcpClientPresets.firstWhere(
+        (preset) => preset.id == 'copilot',
+      );
+      expect(copilotPreset.command, contains('--acp'));
+      expect(copilotPreset.command, contains('--allow-all-tools'));
+    });
   });
 }

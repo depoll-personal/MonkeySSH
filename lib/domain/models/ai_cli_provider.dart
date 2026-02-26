@@ -149,7 +149,11 @@ const knownAcpClientPresets = <AcpClientPreset>[
   AcpClientPreset(id: 'claude', label: 'Claude Code', command: 'claude'),
   AcpClientPreset(id: 'codex', label: 'Codex', command: 'codex'),
   AcpClientPreset(id: 'opencode', label: 'OpenCode', command: 'opencode'),
-  AcpClientPreset(id: 'copilot', label: 'GitHub Copilot', command: 'copilot'),
+  AcpClientPreset(
+    id: 'copilot',
+    label: 'GitHub Copilot',
+    command: 'copilot --acp --allow-all-tools',
+  ),
   AcpClientPreset(id: 'gemini', label: 'Gemini CLI', command: 'gemini'),
   AcpClientPreset(
     id: 'generic-stdio',
