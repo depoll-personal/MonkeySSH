@@ -22,6 +22,7 @@ class HostsScreen extends ConsumerStatefulWidget {
 class _HostsScreenState extends ConsumerState<HostsScreen> {
   String _searchQuery = '';
   int? _selectedGroupId;
+  String? _selectedGroupName;
 
   @override
   Widget build(BuildContext context) {
@@ -33,14 +34,20 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
         title: const Text('Hosts'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.search),
+            icon: Icon(
+              _searchQuery.isEmpty ? Icons.search : Icons.search_rounded,
+            ),
             onPressed: _showSearchDialog,
             tooltip: 'Search',
+            color: _searchQuery.isEmpty ? null : theme.colorScheme.primary,
           ),
           IconButton(
-            icon: const Icon(Icons.folder),
+            icon: Icon(
+              _selectedGroupId == null ? Icons.folder : Icons.folder_open,
+            ),
             onPressed: _showGroupsDialog,
             tooltip: 'Groups',
+            color: _selectedGroupId == null ? null : theme.colorScheme.primary,
           ),
         ],
       ),
@@ -77,9 +84,11 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
 
   Widget _buildHostList(List<Host> hosts) {
     var filteredHosts = hosts;
+    final hasSearch = _searchQuery.isNotEmpty;
+    final hasGroupFilter = _selectedGroupId != null;
 
     // Apply search filter
-    if (_searchQuery.isNotEmpty) {
+    if (hasSearch) {
       final query = _searchQuery.toLowerCase();
       filteredHosts = filteredHosts
           .where(
@@ -92,56 +101,115 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
     }
 
     // Apply group filter
-    if (_selectedGroupId != null) {
+    if (hasGroupFilter) {
       filteredHosts = filteredHosts
           .where((h) => h.groupId == _selectedGroupId)
           .toList();
     }
 
-    if (filteredHosts.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              _searchQuery.isNotEmpty ? Icons.search_off : Icons.dns_outlined,
-              size: 64,
-              color: Theme.of(context).colorScheme.outline,
-            ),
-            const SizedBox(height: 16),
-            Text(
-              _searchQuery.isNotEmpty
-                  ? 'No hosts match your search'
-                  : 'No hosts yet',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            if (_searchQuery.isEmpty) ...[
-              const SizedBox(height: 8),
-              Text(
-                'Tap + to add your first host',
-                style: Theme.of(context).textTheme.bodyMedium,
-              ),
-            ],
-          ],
-        ),
-      );
+    final content = filteredHosts.isEmpty
+        ? _buildEmptyState(hasSearch: hasSearch, hasGroupFilter: hasGroupFilter)
+        : ListView.builder(
+            padding: const EdgeInsets.only(bottom: 88),
+            itemCount: filteredHosts.length,
+            itemBuilder: (context, index) {
+              final host = filteredHosts[index];
+              return _HostListTile(
+                host: host,
+                onTap: () => _connectToHost(host),
+                onNewConnection: () => unawaited(_openNewConnection(host)),
+                onEdit: () => context.push('/hosts/edit/${host.id}'),
+                onDelete: () => _deleteHost(host),
+              );
+            },
+          );
+
+    if (!hasSearch && !hasGroupFilter) {
+      return content;
     }
 
-    return ListView.builder(
-      padding: const EdgeInsets.only(bottom: 88),
-      itemCount: filteredHosts.length,
-      itemBuilder: (context, index) {
-        final host = filteredHosts[index];
-        return _HostListTile(
-          host: host,
-          onTap: () => _connectToHost(host),
-          onNewConnection: () => unawaited(_openNewConnection(host)),
-          onEdit: () => context.push('/hosts/edit/${host.id}'),
-          onDelete: () => _deleteHost(host),
-        );
-      },
+    return Column(
+      children: [
+        _buildActiveFilters(),
+        Expanded(child: content),
+      ],
     );
   }
+
+  Widget _buildEmptyState({
+    required bool hasSearch,
+    required bool hasGroupFilter,
+  }) => Center(
+    child: Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(
+          hasSearch || hasGroupFilter
+              ? Icons.filter_alt_off
+              : Icons.dns_outlined,
+          size: 64,
+          color: Theme.of(context).colorScheme.outline,
+        ),
+        const SizedBox(height: 16),
+        Text(
+          hasSearch && hasGroupFilter
+              ? 'No hosts match your search in ${_selectedGroupName ?? 'the selected group'}'
+              : hasSearch
+              ? 'No hosts match your search'
+              : hasGroupFilter
+              ? 'No hosts in ${_selectedGroupName ?? 'the selected group'}'
+              : 'No hosts yet',
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
+        const SizedBox(height: 8),
+        Text(
+          hasSearch || hasGroupFilter
+              ? 'Try clearing one or more filters.'
+              : 'Tap + to add your first host',
+          style: Theme.of(context).textTheme.bodyMedium,
+          textAlign: TextAlign.center,
+        ),
+      ],
+    ),
+  );
+
+  Widget _buildActiveFilters() => Container(
+    width: double.infinity,
+    padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+    child: Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        if (_searchQuery.isNotEmpty)
+          InputChip(
+            label: Text('Search: $_searchQuery'),
+            onDeleted: () => setState(() => _searchQuery = ''),
+          ),
+        if (_selectedGroupId != null)
+          InputChip(
+            label: Text('Group: ${_selectedGroupName ?? 'Selected'}'),
+            onDeleted: () {
+              setState(() {
+                _selectedGroupId = null;
+                _selectedGroupName = null;
+              });
+            },
+          ),
+        TextButton.icon(
+          onPressed: () {
+            setState(() {
+              _searchQuery = '';
+              _selectedGroupId = null;
+              _selectedGroupName = null;
+            });
+          },
+          icon: const Icon(Icons.clear_all),
+          label: const Text('Clear all'),
+        ),
+      ],
+    ),
+  );
 
   Future<void> _openNewConnection(Host host) async {
     final result = await ref
@@ -280,18 +348,21 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
   }
 
   void _showSearchDialog() {
+    final controller = TextEditingController(text: _searchQuery);
     showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Search Hosts'),
         content: TextField(
+          controller: controller,
           autofocus: true,
           decoration: const InputDecoration(
             hintText: 'Search by name, hostname, or username',
             prefixIcon: Icon(Icons.search),
           ),
-          onChanged: (value) {
-            setState(() => _searchQuery = value);
+          textInputAction: TextInputAction.search,
+          onSubmitted: (_) {
+            setState(() => _searchQuery = controller.text.trim());
             Navigator.pop(context);
           },
         ),
@@ -299,6 +370,7 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
           if (_searchQuery.isNotEmpty)
             TextButton(
               onPressed: () {
+                controller.clear();
                 setState(() => _searchQuery = '');
                 Navigator.pop(context);
               },
@@ -306,7 +378,14 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
             ),
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              setState(() => _searchQuery = controller.text.trim());
+              Navigator.pop(context);
+            },
+            child: const Text('Apply'),
           ),
         ],
       ),
@@ -314,86 +393,94 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
   }
 
   Future<void> _showGroupsDialog() async {
-    final selection = await showModalBottomSheet<({int? groupId})>(
-      context: context,
-      showDragHandle: true,
-      builder: (context) {
-        final theme = Theme.of(context);
-        final groupRepo = ref.read(groupRepositoryProvider);
+    final selection =
+        await showModalBottomSheet<({int? groupId, String? groupName})>(
+          context: context,
+          showDragHandle: true,
+          builder: (context) {
+            final theme = Theme.of(context);
+            final groupRepo = ref.read(groupRepositoryProvider);
 
-        return SafeArea(
-          child: StreamBuilder<List<Group>>(
-            stream: groupRepo.watchAll(),
-            builder: (context, snapshot) {
-              final groups = snapshot.data ?? const <Group>[];
-              return SizedBox(
-                height: 420,
-                child: Column(
-                  children: [
-                    ListTile(
-                      title: const Text('Groups'),
-                      subtitle: Text(
-                        _selectedGroupId == null
-                            ? 'Showing all hosts'
-                            : 'Filtered by selected group',
-                      ),
-                      trailing: IconButton(
-                        icon: const Icon(Icons.create_new_folder_outlined),
-                        tooltip: 'Create group',
-                        onPressed: () {
-                          Navigator.pop(context);
-                          unawaited(_showCreateGroupDialog());
-                        },
-                      ),
-                    ),
-                    Expanded(
-                      child: ListView(
-                        children: [
-                          ListTile(
-                            leading: const Icon(Icons.list),
-                            title: const Text('All hosts'),
-                            selected: _selectedGroupId == null,
-                            onTap: () =>
-                                Navigator.pop(context, (groupId: null)),
+            return SafeArea(
+              child: StreamBuilder<List<Group>>(
+                stream: groupRepo.watchAll(),
+                builder: (context, snapshot) {
+                  final groups = snapshot.data ?? const <Group>[];
+                  return SizedBox(
+                    height: 420,
+                    child: Column(
+                      children: [
+                        ListTile(
+                          title: const Text('Groups'),
+                          subtitle: Text(
+                            _selectedGroupId == null
+                                ? 'Showing all hosts'
+                                : 'Filtered by selected group',
                           ),
-                          for (final group in groups)
-                            ListTile(
-                              leading: const Icon(Icons.folder_outlined),
-                              title: Text(group.name),
-                              selected: _selectedGroupId == group.id,
-                              trailing: _selectedGroupId == group.id
-                                  ? Icon(
-                                      Icons.check,
-                                      color: theme.colorScheme.primary,
-                                    )
-                                  : null,
-                              onTap: () =>
-                                  Navigator.pop(context, (groupId: group.id)),
-                            ),
-                          if (groups.isEmpty)
-                            const Padding(
-                              padding: EdgeInsets.fromLTRB(16, 0, 16, 16),
-                              child: Text(
-                                'No groups yet. Create one to organize hosts.',
+                          trailing: IconButton(
+                            icon: const Icon(Icons.create_new_folder_outlined),
+                            tooltip: 'Create group',
+                            onPressed: () {
+                              Navigator.pop(context);
+                              unawaited(_showCreateGroupDialog());
+                            },
+                          ),
+                        ),
+                        Expanded(
+                          child: ListView(
+                            children: [
+                              ListTile(
+                                leading: const Icon(Icons.list),
+                                title: const Text('All hosts'),
+                                selected: _selectedGroupId == null,
+                                onTap: () => Navigator.pop(context, (
+                                  groupId: null,
+                                  groupName: null,
+                                )),
                               ),
-                            ),
-                        ],
-                      ),
+                              for (final group in groups)
+                                ListTile(
+                                  leading: const Icon(Icons.folder_outlined),
+                                  title: Text(group.name),
+                                  selected: _selectedGroupId == group.id,
+                                  trailing: _selectedGroupId == group.id
+                                      ? Icon(
+                                          Icons.check,
+                                          color: theme.colorScheme.primary,
+                                        )
+                                      : null,
+                                  onTap: () => Navigator.pop(context, (
+                                    groupId: group.id,
+                                    groupName: group.name,
+                                  )),
+                                ),
+                              if (groups.isEmpty)
+                                const Padding(
+                                  padding: EdgeInsets.fromLTRB(16, 0, 16, 16),
+                                  child: Text(
+                                    'No groups yet. Create one to organize hosts.',
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
-              );
-            },
-          ),
+                  );
+                },
+              ),
+            );
+          },
         );
-      },
-    );
 
     if (!mounted || selection == null) {
       return;
     }
 
-    setState(() => _selectedGroupId = selection.groupId);
+    setState(() {
+      _selectedGroupId = selection.groupId;
+      _selectedGroupName = selection.groupName;
+    });
   }
 
   Future<void> _showCreateGroupDialog() async {

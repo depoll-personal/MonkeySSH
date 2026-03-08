@@ -197,7 +197,7 @@ void main() {
 
       await tester.pumpAndSettle();
 
-      expect(find.text('Change PIN'), findsOneWidget);
+      expect(find.text('Set up app lock'), findsOneWidget);
       expect(find.text('Biometric authentication'), findsOneWidget);
       expect(find.text('Auto-lock timeout'), findsOneWidget);
     });

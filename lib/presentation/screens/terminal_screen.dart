@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:xterm/xterm.dart' hide TerminalThemes;
 
@@ -430,6 +431,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  void _leaveConnectionError() {
+    final navigator = Navigator.of(context);
+    if (navigator.canPop()) {
+      navigator.pop();
+      return;
+    }
+
+    context.go('/');
+  }
+
   void _handleShellClosed() {
     final connectionId = _connectionId;
     if (!mounted) {
@@ -720,6 +731,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               ElevatedButton(
                 onPressed: () => _connect(preferredConnectionId: _connectionId),
                 child: const Text('Retry'),
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton(
+                onPressed: _leaveConnectionError,
+                child: const Text('Back to Hosts'),
               ),
             ],
           ),

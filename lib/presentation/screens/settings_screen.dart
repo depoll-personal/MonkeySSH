@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import '../../domain/models/terminal_themes.dart';
@@ -132,15 +133,18 @@ class _SecuritySection extends ConsumerWidget {
       children: [
         const _SectionHeader(title: 'Security'),
         ListTile(
-          leading: const Icon(Icons.pin_outlined),
-          title: const Text('Change PIN'),
-          subtitle: Text(
-            isAuthEnabled ? 'Update your PIN code' : 'PIN not set',
+          leading: Icon(
+            isAuthEnabled ? Icons.pin_outlined : Icons.lock_outline,
           ),
-          enabled: isAuthEnabled,
+          title: Text(isAuthEnabled ? 'Change PIN' : 'Set up app lock'),
+          subtitle: Text(
+            isAuthEnabled
+                ? 'Update your PIN code'
+                : 'Protect saved hosts, keys, and snippets with a PIN',
+          ),
           onTap: isAuthEnabled
               ? () => _showChangePinDialog(context, ref)
-              : null,
+              : () => context.push('/auth-setup'),
         ),
         FutureBuilder<bool>(
           future: ref.read(authServiceProvider).isBiometricAvailable(),
@@ -154,7 +158,9 @@ class _SecuritySection extends ConsumerWidget {
                   secondary: const Icon(Icons.fingerprint),
                   title: const Text('Biometric authentication'),
                   subtitle: Text(
-                    isAvailable
+                    !isAuthEnabled
+                        ? 'Set up a PIN before enabling biometrics'
+                        : isAvailable
                         ? 'Use fingerprint or face to unlock'
                         : 'Not available on this device',
                   ),
@@ -171,7 +177,9 @@ class _SecuritySection extends ConsumerWidget {
           leading: const Icon(Icons.timer_outlined),
           title: const Text('Auto-lock timeout'),
           subtitle: Text(
-            autoLockTimeout == 0
+            !isAuthEnabled
+                ? 'Set up a PIN to use auto-lock'
+                : autoLockTimeout == 0
                 ? 'Disabled'
                 : '$autoLockTimeout minute${autoLockTimeout == 1 ? '' : 's'}',
           ),

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../domain/services/auth_service.dart';
 
@@ -63,13 +64,47 @@ class _AuthSetupScreenState extends ConsumerState<AuthSetupScreen> {
     setState(() => _isLoading = false);
 
     if (mounted) {
-      Navigator.of(context).pop(true);
+      _closeSetup(true);
     }
   }
 
-  void _skip() {
+  void _closeSetup(bool configured) {
+    final navigator = Navigator.of(context);
+    if (navigator.canPop()) {
+      navigator.pop(configured);
+      return;
+    }
+
+    context.go('/');
+  }
+
+  Future<void> _skip() async {
+    final shouldSkip = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Skip security setup?'),
+        content: const Text(
+          'Your saved hosts, keys, and snippets will stay accessible until you '
+          'set up a PIN. You can always enable app lock later from Settings.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Keep setup'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Skip for now'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || shouldSkip != true) {
+      return;
+    }
+
     ref.read(authStateProvider.notifier).skip();
-    Navigator.of(context).pop(false);
+    _closeSetup(false);
   }
 
   @override
@@ -87,7 +122,9 @@ class _AuthSetupScreenState extends ConsumerState<AuthSetupScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Security Setup'),
-        actions: [TextButton(onPressed: _skip, child: const Text('Skip'))],
+        actions: [
+          TextButton(onPressed: _skip, child: const Text('Skip for now')),
+        ],
       ),
       body: SafeArea(
         child: Padding(
