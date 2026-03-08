@@ -38,6 +38,9 @@ const _qaPublicKey =
 const _qaPrivateKey =
     '-----BEGIN OPENSSH PRIVATE KEY-----\nqa-private-key\n-----END OPENSSH PRIVATE KEY-----';
 const _qaSnippetCommand = 'echo "qa clipboard snippet"';
+const _qaCopyMarker = 'qatouchcopymarker';
+const _qaPasteMarker = 'qatouchpastemarker';
+const _qaResumeMarker = 'qaresumemarker';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -224,6 +227,83 @@ void main() {
       expect(find.byType(TerminalView), findsOneWidget);
       expect(find.text(_seededHostLabel), findsWidgets);
     }, skip: !_testSshEnabled);
+
+    testWidgets(
+      'mobile terminal supports touch copy and paste',
+      (tester) async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        await AuthService().disableAuth();
+        await _seedSshHost(db);
+
+        await _launchApp(tester, db);
+        await _pumpUntilVisible(tester, find.text(_seededHostLabel));
+
+        await tester.tap(find.text(_seededHostLabel).first);
+        await tester.pump();
+        await _pumpUntilTerminalReady(tester);
+
+        await _pasteCommandAndWaitForOutput(
+          tester,
+          command: "printf 'qatouchcopymarker\\n'\n",
+          output: _qaCopyMarker,
+        );
+        await _copyFromNativeOverlay(tester, _qaCopyMarker);
+
+        await _pasteCommandAndWaitForOutput(
+          tester,
+          command: "printf 'qatouchpastemarker\\n'\n",
+          output: _qaPasteMarker,
+        );
+      },
+      skip: !_testSshEnabled || !_isMobileDevice,
+    );
+
+    testWidgets(
+      'mobile terminal survives leaving app and returning',
+      (tester) async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        await AuthService().disableAuth();
+        await _seedSshHost(db);
+
+        await _launchApp(tester, db);
+        await _pumpUntilVisible(tester, find.text(_seededHostLabel));
+
+        await tester.tap(find.text(_seededHostLabel).first);
+        await tester.pump();
+        await _pumpUntilTerminalReady(tester);
+
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.inactive,
+        );
+        await tester.pump();
+        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+        await tester.pump();
+        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+        await tester.pump();
+        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+        await tester.pump();
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.inactive,
+        );
+        await tester.pump();
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.byType(TerminalView), findsOneWidget);
+        expect(find.text('Connection Error'), findsNothing);
+
+        await _pasteCommandAndWaitForOutput(
+          tester,
+          command: "printf 'qaresumemarker\\n'\n",
+          output: _qaResumeMarker,
+        );
+      },
+      skip: !_testSshEnabled || !_isMobileDevice,
+    );
   });
 }
 
@@ -334,7 +414,76 @@ String _runtimeSshHost() {
   return _testSshHost;
 }
 
-Future<void> _pumpUntilVisible(
+bool get _isMobileDevice => Platform.isAndroid || Platform.isIOS;
+
+Future<void> _openTerminalMenu(WidgetTester tester) async {
+  final menuFinder = find.byType(PopupMenuButton<String>);
+  await _pumpUntilVisible(tester, menuFinder);
+  await tester.ensureVisible(menuFinder);
+  await tester.tap(menuFinder, warnIfMissed: false);
+  await tester.pumpAndSettle();
+  await _pumpUntilVisible(tester, find.text('Paste'));
+}
+
+Future<void> _pasteCommandAndWaitForOutput(
+  WidgetTester tester, {
+  required String command,
+  required String output,
+  int attempts = 3,
+}) async {
+  final outputFinder = find.textContaining(output);
+  for (var i = 0; i < attempts; i++) {
+    await Clipboard.setData(ClipboardData(text: command));
+    await _openTerminalMenu(tester);
+    await tester.tap(find.text('Paste'));
+    await tester.pumpAndSettle();
+    if (await _pumpUntilVisibleOrTimeout(tester, outputFinder)) {
+      return;
+    }
+  }
+
+  fail('Timed out waiting for terminal paste output: $output');
+}
+
+Future<void> _copyFromNativeOverlay(
+  WidgetTester tester,
+  String expectedText,
+) async {
+  final editableTextState = _nativeOverlayEditableTextState(tester);
+  final controller = editableTextState.widget.controller;
+  final start = controller.text.indexOf(expectedText);
+  expect(start, isNonNegative);
+
+  final localPoint = editableTextState.renderEditable
+      .getLocalRectForCaret(TextPosition(offset: start + 1))
+      .center;
+  final globalPoint = editableTextState.renderEditable.localToGlobal(
+    localPoint,
+  );
+
+  await tester.longPressAt(globalPoint);
+  await tester.pumpAndSettle();
+
+  final selection = controller.selection;
+  final selectedText = selection.textInside(controller.text);
+  expect(selectedText, contains(expectedText));
+
+  editableTextState.copySelection(SelectionChangedCause.toolbar);
+  await tester.pumpAndSettle();
+
+  final clipboard = await Clipboard.getData(Clipboard.kTextPlain);
+  expect(clipboard?.text, contains(expectedText));
+}
+
+EditableTextState _nativeOverlayEditableTextState(WidgetTester tester) {
+  final editableTextFinder = find.descendant(
+    of: find.byKey(const ValueKey('terminal-native-selection-field')),
+    matching: find.byType(EditableText),
+  );
+  return tester.state<EditableTextState>(editableTextFinder.first);
+}
+
+Future<bool> _pumpUntilVisibleOrTimeout(
   WidgetTester tester,
   Finder finder, {
   Duration step = const Duration(milliseconds: 200),
@@ -343,8 +492,26 @@ Future<void> _pumpUntilVisible(
   for (var i = 0; i < maxTicks; i++) {
     await tester.pump(step);
     if (finder.evaluate().isNotEmpty) {
-      return;
+      return true;
     }
+  }
+
+  return false;
+}
+
+Future<void> _pumpUntilVisible(
+  WidgetTester tester,
+  Finder finder, {
+  Duration step = const Duration(milliseconds: 200),
+  int maxTicks = 50,
+}) async {
+  if (await _pumpUntilVisibleOrTimeout(
+    tester,
+    finder,
+    step: step,
+    maxTicks: maxTicks,
+  )) {
+    return;
   }
 
   fail('Timed out waiting for expected widget to appear');

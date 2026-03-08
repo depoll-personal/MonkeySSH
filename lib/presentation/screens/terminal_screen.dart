@@ -845,12 +845,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     child: Padding(
       padding: _terminalViewportPadding,
       child: SingleChildScrollView(
+        key: const ValueKey('terminal-native-selection-scroll-view'),
         controller: _nativeSelectionScrollController,
         physics: const ClampingScrollPhysics(),
         child: ValueListenableBuilder<TextEditingValue>(
           valueListenable: _nativeSelectionController,
-          builder: (context, value, _) => SelectableText(
-            value.text,
+          builder: (context, value, _) => TextField(
+            key: const ValueKey('terminal-native-selection-field'),
+            controller: _nativeSelectionController,
+            readOnly: true,
+            showCursor: false,
+            enableInteractiveSelection: true,
+            maxLines: null,
+            scrollPhysics: const NeverScrollableScrollPhysics(),
+            keyboardType: TextInputType.multiline,
+            decoration: const InputDecoration(
+              border: InputBorder.none,
+              isCollapsed: true,
+              contentPadding: EdgeInsets.zero,
+            ),
             style: textStyle,
             strutStyle: StrutStyle.fromTextStyle(
               textStyle,
