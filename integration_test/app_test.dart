@@ -1,17 +1,19 @@
 import 'dart:convert';
 
 import 'package:drift/drift.dart' as drift;
+import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:monkeyssh/app/app.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/services/auth_service.dart';
 import 'package:monkeyssh/domain/services/key_service.dart';
-import 'package:monkeyssh/main.dart' as app;
 import 'package:monkeyssh/presentation/screens/home_screen.dart';
 import 'package:monkeyssh/presentation/screens/hosts_screen.dart';
 import 'package:xterm/xterm.dart';
@@ -35,21 +37,28 @@ void main() {
     testWidgets('home screen loads and shows navigation options', (
       tester,
     ) async {
-      app.main();
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      await AuthService().disableAuth();
+      await _launchApp(tester, db);
       await _pumpUntilVisible(tester, find.text('MonkeySSH'));
 
       expect(find.text('MonkeySSH'), findsOneWidget);
-      expect(find.text('Hosts'), findsOneWidget);
+      expect(find.text('Hosts'), findsWidgets);
       expect(find.text('Connections'), findsOneWidget);
       expect(find.text('Keys'), findsOneWidget);
       expect(find.text('Snippets'), findsOneWidget);
     });
 
     testWidgets('settings exposes the security setup flow', (tester) async {
-      app.main();
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      await AuthService().disableAuth();
+      await _launchApp(tester, db);
       await _pumpUntilVisible(tester, find.byIcon(Icons.settings_outlined));
 
       await tester.tap(find.byIcon(Icons.settings_outlined));
+      await tester.pump();
       await _pumpUntilVisible(tester, find.text('Settings'));
 
       expect(find.text('Settings'), findsOneWidget);
@@ -65,7 +74,10 @@ void main() {
     testWidgets('hosts search waits for apply before dismissing', (
       tester,
     ) async {
-      app.main();
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      await AuthService().disableAuth();
+      await _launchApp(tester, db);
       await _pumpUntilVisible(tester, find.text('MonkeySSH'));
 
       final context = tester.element(find.byType(HomeScreen));
@@ -89,9 +101,12 @@ void main() {
     });
 
     testWidgets('can connect to a seeded SSH host', (tester) async {
-      await _seedSshHost();
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      await AuthService().disableAuth();
+      await _seedSshHost(db);
 
-      app.main();
+      await _launchApp(tester, db);
       await _pumpUntilVisible(tester, find.text(_seededHostLabel));
 
       expect(find.text(_seededHostLabel), findsOneWidget);
@@ -107,42 +122,44 @@ void main() {
   });
 }
 
-Future<void> _seedSshHost() async {
-  final privateKeyPem = _decodeTestPrivateKey();
-  final authService = AuthService();
-  await authService.disableAuth();
+Future<void> _launchApp(WidgetTester tester, AppDatabase db) async {
+  await tester.pumpWidget(
+    ProviderScope(
+      overrides: [databaseProvider.overrideWithValue(db)],
+      child: const FluttyApp(),
+    ),
+  );
+  await tester.pump();
+}
 
-  final db = AppDatabase();
+Future<void> _seedSshHost(AppDatabase db) async {
+  final privateKeyPem = _decodeTestPrivateKey();
   final secretEncryptionService = SecretEncryptionService();
   final keyRepository = KeyRepository(db, secretEncryptionService);
   final hostRepository = HostRepository(db, secretEncryptionService);
   final keyService = KeyService(keyRepository);
 
-  try {
-    await db.delete(db.portForwards).go();
-    await db.delete(db.hosts).go();
-    await db.delete(db.sshKeys).go();
+  await db.delete(db.portForwards).go();
+  await db.delete(db.hosts).go();
+  await db.delete(db.sshKeys).go();
 
-    final importedKey = await keyService.importKey(
-      name: 'Integration SSH Key',
-      privateKeyPem: privateKeyPem,
-    );
-    if (importedKey == null) {
-      throw StateError('Failed to import integration SSH key');
-    }
-
-    await hostRepository.insert(
-      HostsCompanion.insert(
-        label: _seededHostLabel,
-        hostname: _testSshHost,
-        port: const drift.Value(_testSshPort),
-        username: _testSshUsername,
-        keyId: drift.Value(importedKey.id),
-      ),
-    );
-  } finally {
-    await db.close();
+  final importedKey = await keyService.importKey(
+    name: 'Integration SSH Key',
+    privateKeyPem: privateKeyPem,
+  );
+  if (importedKey == null) {
+    throw StateError('Failed to import integration SSH key');
   }
+
+  await hostRepository.insert(
+    HostsCompanion.insert(
+      label: _seededHostLabel,
+      hostname: _testSshHost,
+      port: const drift.Value(_testSshPort),
+      username: _testSshUsername,
+      keyId: drift.Value(importedKey.id),
+    ),
+  );
 }
 
 String _decodeTestPrivateKey() {

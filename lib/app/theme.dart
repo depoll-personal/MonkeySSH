@@ -28,6 +28,40 @@ abstract final class FluttyTheme {
   /// Dark theme.
   static ThemeData get dark => _buildTheme(Brightness.dark);
 
+  /// Builds the input decoration theme for the provided [brightness].
+  static InputDecorationTheme buildInputDecorationTheme(Brightness brightness) {
+    final isDark = brightness == Brightness.dark;
+
+    return InputDecorationTheme(
+      filled: true,
+      fillColor: isDark ? _cardDark : Colors.grey.shade50,
+      hoverColor: isDark ? _borderDark : Colors.grey.shade100,
+      helperMaxLines: 3,
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: BorderSide(color: isDark ? _borderDark : _borderLight),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: BorderSide(color: isDark ? _borderDark : _borderLight),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: const BorderSide(color: _neonGreen, width: 2),
+      ),
+      errorBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: const BorderSide(color: _errorColor),
+      ),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+      labelStyle: TextStyle(color: isDark ? _textSecondary : Colors.black54),
+      hintStyle: TextStyle(
+        color: isDark ? _textSecondary.withAlpha(150) : Colors.black38,
+      ),
+      prefixIconColor: isDark ? _textSecondary : Colors.black45,
+    );
+  }
+
   static ThemeData _buildTheme(Brightness brightness) {
     final isDark = brightness == Brightness.dark;
 
@@ -146,36 +180,7 @@ abstract final class FluttyTheme {
       ),
 
       // Modern input fields
-      inputDecorationTheme: InputDecorationTheme(
-        filled: true,
-        fillColor: isDark ? _cardDark : Colors.grey.shade50,
-        hoverColor: isDark ? _borderDark : Colors.grey.shade100,
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: isDark ? _borderDark : _borderLight),
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: isDark ? _borderDark : _borderLight),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: _neonGreen, width: 2),
-        ),
-        errorBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: _errorColor),
-        ),
-        contentPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 16,
-        ),
-        labelStyle: TextStyle(color: isDark ? _textSecondary : Colors.black54),
-        hintStyle: TextStyle(
-          color: isDark ? _textSecondary.withAlpha(150) : Colors.black38,
-        ),
-        prefixIconColor: isDark ? _textSecondary : Colors.black45,
-      ),
+      inputDecorationTheme: buildInputDecorationTheme(brightness),
 
       // Buttons with glow
       filledButtonTheme: FilledButtonThemeData(
