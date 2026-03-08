@@ -432,9 +432,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _leaveConnectionError() {
-    final navigator = Navigator.of(context);
-    if (navigator.canPop()) {
-      navigator.pop();
+    if (GoRouter.of(context).canPop()) {
+      context.pop();
       return;
     }
 
@@ -529,6 +528,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS;
     final systemKeyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
+    final appBarTitleMaxWidth =
+        MediaQuery.sizeOf(context).width - (isMobile ? 144 : 220);
 
     // Use session override, or loaded theme, or fallback
     final terminalTheme =
@@ -538,13 +539,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(_host?.label ?? 'Terminal'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.palette_outlined),
-            onPressed: _showThemePicker,
-            tooltip: 'Change theme',
+        centerTitle: false,
+        title: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: appBarTitleMaxWidth > 0 ? appBarTitleMaxWidth : 120,
           ),
+          child: Text(
+            _host?.label ?? 'Terminal',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        actions: [
+          if (!isMobile)
+            IconButton(
+              icon: const Icon(Icons.palette_outlined),
+              onPressed: _showThemePicker,
+              tooltip: 'Change theme',
+            ),
           if (isMobile)
             IconButton(
               icon: Icon(
@@ -557,16 +569,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   ? 'Hide system keyboard'
                   : 'Show system keyboard',
             ),
-          IconButton(
-            icon: Icon(
-              _showKeyboard ? Icons.space_bar : Icons.keyboard_outlined,
+          if (!isMobile)
+            IconButton(
+              icon: Icon(
+                _showKeyboard ? Icons.space_bar : Icons.keyboard_outlined,
+              ),
+              onPressed: () => setState(() => _showKeyboard = !_showKeyboard),
+              tooltip: _showKeyboard ? 'Hide toolbar' : 'Show toolbar',
             ),
-            onPressed: () => setState(() => _showKeyboard = !_showKeyboard),
-            tooltip: _showKeyboard ? 'Hide toolbar' : 'Show toolbar',
-          ),
           PopupMenuButton<String>(
             onSelected: _handleMenuAction,
             itemBuilder: (context) => [
+              if (isMobile)
+                const PopupMenuItem(
+                  value: 'theme',
+                  child: Text('Change Theme'),
+                ),
+              if (isMobile)
+                PopupMenuItem(
+                  value: 'toggle_toolbar',
+                  child: Text(_showKeyboard ? 'Hide Toolbar' : 'Show Toolbar'),
+                ),
+              if (isMobile) const PopupMenuDivider(),
               const PopupMenuItem(value: 'snippets', child: Text('Snippets')),
               const PopupMenuDivider(),
               if (!isMobile)
@@ -882,6 +906,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     switch (action) {
       case 'snippets':
         await _showSnippetPicker();
+        break;
+      case 'theme':
+        await _showThemePicker();
+        break;
+      case 'toggle_toolbar':
+        setState(() => _showKeyboard = !_showKeyboard);
         break;
       case 'native_select':
         _toggleNativeSelectionMode();

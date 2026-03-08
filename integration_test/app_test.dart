@@ -1,8 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:drift/drift.dart' as drift;
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
@@ -11,6 +14,7 @@ import 'package:monkeyssh/app/app.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
+import 'package:monkeyssh/data/repositories/snippet_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/services/auth_service.dart';
 import 'package:monkeyssh/domain/services/key_service.dart';
@@ -29,6 +33,11 @@ const _testSshPrivateKeyBase64 = String.fromEnvironment(
   'TEST_SSH_PRIVATE_KEY_B64',
 );
 const _seededHostLabel = 'Local SSH Target';
+const _qaPublicKey =
+    'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIClipboardQaKey qa@device';
+const _qaPrivateKey =
+    '-----BEGIN OPENSSH PRIVATE KEY-----\nqa-private-key\n-----END OPENSSH PRIVATE KEY-----';
+const _qaSnippetCommand = 'echo "qa clipboard snippet"';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -100,6 +109,103 @@ void main() {
       expect(find.text('Clear all'), findsOneWidget);
     });
 
+    testWidgets('keys screen copies public and private keys to clipboard', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      await AuthService().disableAuth();
+      await _seedClipboardKey(db);
+
+      await _launchApp(tester, db);
+      await _pumpUntilVisible(tester, find.text('MonkeySSH'));
+
+      final context = tester.element(find.byType(HomeScreen));
+      GoRouter.of(context).go('/keys');
+      await _pumpUntilVisible(tester, find.text('QA Clipboard Key'));
+
+      await tester.tap(find.text('QA Clipboard Key'));
+      await _pumpUntilVisible(tester, find.text('Copy Public Key'));
+
+      await tester.tap(find.text('Copy Public Key'));
+      await _pumpUntilVisible(tester, find.text('Copied to clipboard'));
+      expect(
+        (await Clipboard.getData(Clipboard.kTextPlain))?.text,
+        _qaPublicKey,
+      );
+
+      await tester.tap(find.text('Reveal Private Key'));
+      await _pumpUntilVisible(tester, find.text('Copy Private Key'));
+      await tester.tap(find.text('Copy Private Key'));
+      await _pumpUntilVisible(tester, find.text('Copy private key?'));
+      await tester.tap(
+        find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.widgetWithText(FilledButton, 'Copy'),
+        ),
+      );
+      await _pumpUntilVisible(tester, find.text('Copied to clipboard'));
+      expect(
+        (await Clipboard.getData(Clipboard.kTextPlain))?.text,
+        _qaPrivateKey,
+      );
+    });
+
+    testWidgets('snippets list scrolls and copies commands to clipboard', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      await AuthService().disableAuth();
+      await _seedClipboardSnippets(db);
+
+      await _launchApp(tester, db);
+      await _pumpUntilVisible(tester, find.text('MonkeySSH'));
+
+      final context = tester.element(find.byType(HomeScreen));
+      GoRouter.of(context).go('/snippets');
+      await _pumpUntilVisible(tester, find.text('QA Snippet 00'));
+
+      await tester.drag(find.byType(ListView).first, const Offset(0, -900));
+      await tester.pumpAndSettle();
+      await _pumpUntilVisible(tester, find.text('QA Snippet 11'));
+
+      await tester.tap(find.text('QA Snippet 11'));
+      await _pumpUntilVisible(
+        tester,
+        find.text('Copied "QA Snippet 11" to clipboard'),
+      );
+      expect(
+        (await Clipboard.getData(Clipboard.kTextPlain))?.text,
+        'printf "snippet-11"',
+      );
+    });
+
+    testWidgets('terminal connection error can navigate back to hosts', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      await AuthService().disableAuth();
+      final hostId = await _seedInvalidHost(db);
+
+      await _launchApp(tester, db);
+      await _pumpUntilVisible(tester, find.text('MonkeySSH'));
+
+      final context = tester.element(find.byType(HomeScreen));
+      unawaited(GoRouter.of(context).push('/terminal/$hostId'));
+      await _pumpUntilVisible(tester, find.text('Connection Error'));
+
+      expect(find.text('Back to Hosts'), findsOneWidget);
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Back to Hosts'));
+      await tester.pumpAndSettle();
+      expect(
+        find.widgetWithText(OutlinedButton, 'Back to Hosts'),
+        findsNothing,
+      );
+      expect(find.text('Connection Error'), findsNothing);
+    });
+
     testWidgets('can connect to a seeded SSH host', (tester) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
@@ -115,9 +221,8 @@ void main() {
       await tester.pump();
       await _pumpUntilTerminalReady(tester);
 
-      await tester.tap(find.byType(PopupMenuButton<String>));
-      await _pumpUntilVisible(tester, find.text('Disconnect'));
-      expect(find.text('Disconnect'), findsOneWidget);
+      expect(find.byType(TerminalView), findsOneWidget);
+      expect(find.text(_seededHostLabel), findsWidgets);
     }, skip: !_testSshEnabled);
   });
 }
@@ -130,6 +235,55 @@ Future<void> _launchApp(WidgetTester tester, AppDatabase db) async {
     ),
   );
   await tester.pump();
+}
+
+Future<void> _seedClipboardKey(AppDatabase db) async {
+  final secretEncryptionService = SecretEncryptionService();
+  final keyRepository = KeyRepository(db, secretEncryptionService);
+
+  await db.delete(db.sshKeys).go();
+
+  await keyRepository.insert(
+    SshKeysCompanion.insert(
+      name: 'QA Clipboard Key',
+      keyType: 'ed25519',
+      publicKey: _qaPublicKey,
+      privateKey: _qaPrivateKey,
+    ),
+  );
+}
+
+Future<void> _seedClipboardSnippets(AppDatabase db) async {
+  final snippetRepository = SnippetRepository(db);
+
+  await db.delete(db.snippets).go();
+
+  for (var index = 0; index < 12; index++) {
+    final number = index.toString().padLeft(2, '0');
+    await snippetRepository.insert(
+      SnippetsCompanion.insert(
+        name: 'QA Snippet $number',
+        command: index == 11 ? 'printf "snippet-11"' : _qaSnippetCommand,
+      ),
+    );
+  }
+}
+
+Future<int> _seedInvalidHost(AppDatabase db) async {
+  final secretEncryptionService = SecretEncryptionService();
+  final hostRepository = HostRepository(db, secretEncryptionService);
+
+  await db.delete(db.portForwards).go();
+  await db.delete(db.hosts).go();
+
+  return hostRepository.insert(
+    HostsCompanion.insert(
+      label: 'Broken QA Host',
+      hostname: '127.0.0.1',
+      port: const drift.Value(1),
+      username: 'qa',
+    ),
+  );
 }
 
 Future<void> _seedSshHost(AppDatabase db) async {
@@ -154,7 +308,7 @@ Future<void> _seedSshHost(AppDatabase db) async {
   await hostRepository.insert(
     HostsCompanion.insert(
       label: _seededHostLabel,
-      hostname: _testSshHost,
+      hostname: _runtimeSshHost(),
       port: const drift.Value(_testSshPort),
       username: _testSshUsername,
       keyId: drift.Value(importedKey.id),
@@ -170,6 +324,14 @@ String _decodeTestPrivateKey() {
   }
 
   return utf8.decode(base64Decode(_testSshPrivateKeyBase64));
+}
+
+String _runtimeSshHost() {
+  if (Platform.isAndroid && _testSshHost == '127.0.0.1') {
+    return '10.0.2.2';
+  }
+
+  return _testSshHost;
 }
 
 Future<void> _pumpUntilVisible(
