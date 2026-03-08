@@ -1,7 +1,10 @@
+import 'dart:async';
+
 // ignore_for_file: public_member_api_docs
 
 import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:monkeyssh/data/database/database.dart';
@@ -47,6 +50,79 @@ class _CountingKeyRepository extends KeyRepository {
       return null;
     }
     return super.getById(id);
+  }
+}
+
+class _FakeSshSession implements SshSession {
+  _FakeSshSession({required this.connectionId, required this.hostId});
+
+  @override
+  final int connectionId;
+
+  @override
+  final int hostId;
+
+  @override
+  final DateTime createdAt = DateTime(2026);
+
+  @override
+  final SshConnectionConfig config = const SshConnectionConfig(
+    hostname: 'example.com',
+    port: 22,
+    username: 'depoll',
+  );
+
+  final _shellDoneController = StreamController<void>.broadcast();
+
+  void emitShellDone() {
+    _shellDoneController.add(null);
+  }
+
+  Future<void> disposeFake() => _shellDoneController.close();
+
+  @override
+  Stream<void> get shellDoneStream => _shellDoneController.stream;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _TrackingSshService extends SshService {
+  _TrackingSshService(this.session);
+
+  final _FakeSshSession session;
+  int disconnectCallCount = 0;
+  bool _isConnected = false;
+
+  @override
+  Map<int, SshSession> get sessions =>
+      _isConnected ? {session.connectionId: session} : const {};
+
+  @override
+  Future<SshConnectionResult> connectToHost(int hostId) async {
+    _isConnected = true;
+    return SshConnectionResult(
+      success: true,
+      connectionId: session.connectionId,
+    );
+  }
+
+  @override
+  SshSession? getSession(int connectionId) {
+    if (_isConnected && connectionId == session.connectionId) {
+      return session;
+    }
+    return null;
+  }
+
+  @override
+  Future<void> disconnect(int connectionId) async {
+    if (!_isConnected || connectionId != session.connectionId) {
+      return;
+    }
+    disconnectCallCount++;
+    _isConnected = false;
+    await session.disposeFake();
   }
 }
 
@@ -700,5 +776,35 @@ void main() {
         throwsA(isA<Error>()),
       );
     });
+  });
+
+  group('ActiveSessionsNotifier', () {
+    test(
+      'removes closed shell sessions even without a mounted terminal',
+      () async {
+        final session = _FakeSshSession(connectionId: 7, hostId: 42);
+        final service = _TrackingSshService(session);
+        final container = ProviderContainer(
+          overrides: [sshServiceProvider.overrideWith((ref) => service)],
+        );
+        addTearDown(container.dispose);
+
+        final notifier = container.read(activeSessionsProvider.notifier);
+        final result = await notifier.connect(42, forceNew: true);
+
+        expect(result.success, isTrue);
+        expect(result.connectionId, 7);
+        expect(container.read(activeSessionsProvider), {
+          7: SshConnectionState.connected,
+        });
+
+        session.emitShellDone();
+        await Future<void>.delayed(Duration.zero);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(container.read(activeSessionsProvider), isEmpty);
+        expect(service.disconnectCallCount, 1);
+      },
+    );
   });
 }

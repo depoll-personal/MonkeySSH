@@ -506,9 +506,12 @@ class SshSession {
   final DateTime createdAt;
 
   SSHSession? _shell;
-  StreamController<String>? _shellStdoutController;
-  StreamController<String>? _shellStderrController;
-  StreamController<void>? _shellDoneController;
+  final StreamController<String> _shellStdoutController =
+      StreamController<String>.broadcast();
+  final StreamController<String> _shellStderrController =
+      StreamController<String>.broadcast();
+  final StreamController<void> _shellDoneController =
+      StreamController<void>.broadcast();
   StreamSubscription<String>? _shellStdoutSubscription;
   StreamSubscription<String>? _shellStderrSubscription;
   StreamSubscription<void>? _shellDoneSubscription;
@@ -555,16 +558,13 @@ class SshSession {
   }
 
   /// Shell stdout as a broadcast stream for screen re-attachment.
-  Stream<String> get shellStdoutStream =>
-      _shellStdoutController?.stream ?? const Stream.empty();
+  Stream<String> get shellStdoutStream => _shellStdoutController.stream;
 
   /// Shell stderr as a broadcast stream for screen re-attachment.
-  Stream<String> get shellStderrStream =>
-      _shellStderrController?.stream ?? const Stream.empty();
+  Stream<String> get shellStderrStream => _shellStderrController.stream;
 
   /// Shell done event stream for screen re-attachment.
-  Stream<void> get shellDoneStream =>
-      _shellDoneController?.stream ?? const Stream.empty();
+  Stream<void> get shellDoneStream => _shellDoneController.stream;
 
   /// Close only the interactive shell channel while keeping the SSH client.
   Future<void> closeShell() async {
@@ -574,45 +574,36 @@ class SshSession {
     _shellStdoutSubscription = null;
     _shellStderrSubscription = null;
     _shellDoneSubscription = null;
-    await _shellStdoutController?.close();
-    await _shellStderrController?.close();
-    await _shellDoneController?.close();
-    _shellStdoutController = null;
-    _shellStderrController = null;
-    _shellDoneController = null;
     _shell?.close();
     _shell = null;
     _terminal = null;
   }
 
   void _ensureShellStreamPipes() {
-    if (_shell == null || _shellStdoutController != null) {
+    if (_shell == null || _shellStdoutSubscription != null) {
       return;
     }
 
     final shell = _shell!;
     final terminal = getOrCreateTerminal();
-    _shellStdoutController = StreamController<String>.broadcast();
-    _shellStderrController = StreamController<String>.broadcast();
-    _shellDoneController = StreamController<void>.broadcast();
 
     _shellStdoutSubscription = shell.stdout
         .cast<List<int>>()
         .transform(utf8.decoder)
         .listen((data) {
           terminal.write(data);
-          _shellStdoutController!.add(data);
-        }, onError: _shellStdoutController!.addError);
+          _shellStdoutController.add(data);
+        }, onError: _shellStdoutController.addError);
     _shellStderrSubscription = shell.stderr
         .cast<List<int>>()
         .transform(utf8.decoder)
         .listen((data) {
           terminal.write(data);
-          _shellStderrController!.add(data);
-        }, onError: _shellStderrController!.addError);
+          _shellStderrController.add(data);
+        }, onError: _shellStderrController.addError);
     _shellDoneSubscription = shell.done.asStream().listen(
-      (_) => _shellDoneController!.add(null),
-      onError: _shellDoneController!.addError,
+      (_) => _shellDoneController.add(null),
+      onError: _shellDoneController.addError,
     );
 
     // Wire terminal keyboard output → shell stdin (persistent).
@@ -777,6 +768,9 @@ class SshSession {
   Future<void> close() async {
     await stopAllForwards();
     await closeShell();
+    await _shellStdoutController.close();
+    await _shellStderrController.close();
+    await _shellDoneController.close();
     client.close();
     for (final dependentClient in dependentClients) {
       dependentClient.close();
@@ -884,11 +878,18 @@ final activeSessionsProvider =
 class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   late final SshService _sshService;
   final Map<int, int> _connectionHostIds = {};
+  final Map<int, StreamSubscription<void>> _shellDoneSubscriptions = {};
 
   @override
   Map<int, SshConnectionState> build() {
     _sshService = ref.watch(sshServiceProvider);
     _connectionHostIds.clear();
+    ref.onDispose(() {
+      for (final subscription in _shellDoneSubscriptions.values) {
+        unawaited(subscription.cancel());
+      }
+      _shellDoneSubscriptions.clear();
+    });
     return {};
   }
 
@@ -914,6 +915,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       final connectionId = result.connectionId!;
       _connectionHostIds[connectionId] = hostId;
       state = {...state, connectionId: SshConnectionState.connected};
+      _subscribeToShellDone(connectionId);
     }
 
     return result;
@@ -921,6 +923,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
 
   /// Disconnect from a connection.
   Future<void> disconnect(int connectionId) async {
+    await _shellDoneSubscriptions.remove(connectionId)?.cancel();
     await _sshService.disconnect(connectionId);
     _connectionHostIds.remove(connectionId);
     final next = {...state}..remove(connectionId);
@@ -929,9 +932,37 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
 
   /// Disconnect all active sessions.
   Future<void> disconnectAll() async {
+    for (final subscription in _shellDoneSubscriptions.values) {
+      await subscription.cancel();
+    }
+    _shellDoneSubscriptions.clear();
     await _sshService.disconnectAll();
     _connectionHostIds.clear();
     state = {};
+  }
+
+  void _subscribeToShellDone(int connectionId) {
+    if (_shellDoneSubscriptions.containsKey(connectionId)) {
+      return;
+    }
+
+    final session = _sshService.getSession(connectionId);
+    if (session == null) {
+      return;
+    }
+
+    _shellDoneSubscriptions[connectionId] = session.shellDoneStream.listen(
+      (_) => unawaited(_handleShellDone(connectionId)),
+      onError: (error, stackTrace) => unawaited(_handleShellDone(connectionId)),
+    );
+  }
+
+  Future<void> _handleShellDone(int connectionId) async {
+    if (!state.containsKey(connectionId)) {
+      return;
+    }
+
+    await disconnect(connectionId);
   }
 
   /// Get the state of a connection.
