@@ -207,26 +207,28 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Setup code signing
-        if: inputs.deploy-ios-to != 'none'
+      - name: Build iOS
         env:
           BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
         run: |
-          cd ios
-          if [ "${{ inputs.flavor }}" = "private" ]; then
-            bundle exec fastlane setup_signing app_identifier:xyz.depollsoft.monkeyssh.private
+          if [ "${{ inputs.deploy-ios-to }}" = "none" ]; then
+            flutter build ios \
+              --flavor ${{ inputs.flavor }} \
+              --release \
+              --no-codesign \
+              --build-name=${{ inputs.build-name }} \
+              --build-number=${{ inputs.build-number }}
           else
-            bundle exec fastlane setup_signing app_identifier:xyz.depollsoft.monkeyssh
+            flutter build ios \
+              --flavor ${{ inputs.flavor }} \
+              --release \
+              --config-only \
+              --build-name=${{ inputs.build-name }} \
+              --build-number=${{ inputs.build-number }}
+            cd ios
+            SCHEME="${{ inputs.flavor == 'private' && 'Private' || 'Production' }}"
+            bundle exec fastlane archive scheme:"$SCHEME"
           fi
-
-      - name: Build iOS
-        run: |
-          flutter build ios \
-            --flavor ${{ inputs.flavor }} \
-            --release \
-            --no-codesign \
-            --build-name=${{ inputs.build-name }} \
-            --build-number=${{ inputs.build-number }}
 
       - name: Archive, sign & deploy via Fastlane
         if: inputs.deploy-ios-to != 'none'
@@ -237,7 +239,7 @@ jobs:
           SCHEME="${{ inputs.flavor == 'private' && 'Private' || 'Production' }}"
           SKIP_META=${{ inputs.sync-metadata && 'false' || 'true' }}
           if [ "${{ inputs.deploy-ios-to }}" = "testflight" ]; then
-            bundle exec fastlane beta scheme:"$SCHEME" skip_metadata:"$SKIP_META"
+            bundle exec fastlane beta scheme:"$SCHEME" skip_metadata:"$SKIP_META" skip_waiting_for_build_processing:"true"
           elif [ "${{ inputs.deploy-ios-to }}" = "appstore" ]; then
             bundle exec fastlane release scheme:"$SCHEME" skip_metadata:"$SKIP_META"
           fi

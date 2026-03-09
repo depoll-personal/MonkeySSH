@@ -47,7 +47,7 @@ platform :ios do
     )
   end
 
-  private_lane :build_and_sign do |options|
+  private_lane :prepare_signing do |options|
     scheme = options[:scheme]
     app_id = APP_IDS[scheme]
     live_activity_app_id = LIVE_ACTIVITY_APP_IDS[scheme]
@@ -85,14 +85,43 @@ platform :ios do
       targets: ['ConnectionStatusLiveActivityExtension'],
       build_configurations: ["Release-#{scheme}"],
     )
+  end
+
+  private_lane :archive_build do |options|
+    scheme = options[:scheme]
+
+    prepare_signing(scheme: scheme)
 
     build_app(
       workspace: 'Runner.xcworkspace',
       scheme: scheme,
       configuration: "Release-#{scheme}",
+      skip_package_ipa: true,
+      export_method: 'app-store',
+      archive_path: '../build/ios/archive/Runner.xcarchive',
+      xcargs: "DEVELOPMENT_TEAM=#{TEAM_ID}",
+    )
+  end
+
+  private_lane :export_archive do |options|
+    scheme = options[:scheme]
+    app_id = APP_IDS[scheme]
+    live_activity_app_id = LIVE_ACTIVITY_APP_IDS[scheme]
+
+    build_app(
+      workspace: 'Runner.xcworkspace',
+      scheme: scheme,
+      configuration: "Release-#{scheme}",
+      skip_build_archive: true,
       export_method: 'app-store',
       output_directory: '../build/ios/ipa',
       archive_path: '../build/ios/archive/Runner.xcarchive',
+      export_options: {
+        provisioningProfiles: {
+          app_id => "match AppStore #{app_id}",
+          live_activity_app_id => "match AppStore #{live_activity_app_id}",
+        },
+      },
       xcargs: "DEVELOPMENT_TEAM=#{TEAM_ID}",
     )
   end
@@ -103,19 +132,26 @@ platform :ios do
     sync_certs(app_identifier: app_id, type: 'appstore')
   end
 
+  desc 'Archive the app once for later export'
+  lane :archive do |options|
+    scheme = options[:scheme] || 'Private'
+    archive_build(scheme: scheme)
+  end
+
   desc 'Build, sign, and upload to TestFlight'
   lane :beta do |options|
     scheme = options[:scheme] || 'Private'
     app_id = APP_IDS[scheme]
     skip_meta = options[:skip_metadata].to_s == 'true'
+    skip_processing_wait = options[:skip_waiting_for_build_processing].to_s != 'false'
 
-    build_and_sign(scheme: scheme)
+    export_archive(scheme: scheme)
 
     pilot(
       api_key: get_api_key,
       app_identifier: app_id,
       ipa: lane_context[SharedValues::IPA_OUTPUT_PATH],
-      skip_waiting_for_build_processing: false,
+      skip_waiting_for_build_processing: skip_processing_wait,
       skip_submission: false,
       distribute_external: false,
       uses_non_exempt_encryption: false,
@@ -130,7 +166,7 @@ platform :ios do
     app_id = APP_IDS[scheme]
     skip_meta = options[:skip_metadata].to_s == 'true'
 
-    build_and_sign(scheme: scheme)
+    export_archive(scheme: scheme)
 
     deliver(
       api_key: get_api_key,
