@@ -223,6 +223,7 @@ jobs:
               --flavor ${{ inputs.flavor }} \
               --release \
               --config-only \
+              --no-codesign \
               --build-name=${{ inputs.build-name }} \
               --build-number=${{ inputs.build-number }}
             cd ios
