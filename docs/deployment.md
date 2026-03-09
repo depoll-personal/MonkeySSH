@@ -131,7 +131,7 @@ Supports selecting:
 
 ### Build Numbers
 
-All builds use a GitHub-run-based build number that stays under Android's versionCode limit while remaining monotonic across workflows and rerun attempts: `1700000000 + (GITHUB_RUN_ID / 200) + GITHUB_RUN_ATTEMPT - 1`. PR info is encoded in the version name (`X.Y.Z-pr.N`), not the build number.
+All builds use a direct offset from the GitHub run ID so the value remains unique and monotonic across workflows while staying under Android's versionCode limit: `GITHUB_RUN_ID - 21000000000 + GITHUB_RUN_ATTEMPT - 1`. PR info is encoded in the version name (`X.Y.Z-pr.N`), not the build number.
 
 ## Store Metadata
 

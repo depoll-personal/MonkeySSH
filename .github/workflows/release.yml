@@ -33,7 +33,7 @@ jobs:
             BUILD_NAME="${{ inputs.version }}"
           fi
 
-          BUILD_NUMBER=$(( 1700000000 + ( GITHUB_RUN_ID / 200 ) + GITHUB_RUN_ATTEMPT - 1 ))
+          BUILD_NUMBER=$(( GITHUB_RUN_ID - 21000000000 + GITHUB_RUN_ATTEMPT - 1 ))
 
           echo "build-name=${BUILD_NAME}" >> "$GITHUB_OUTPUT"
           echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
