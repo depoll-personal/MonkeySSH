@@ -132,56 +132,56 @@ platform :ios do
     sync_certs(app_identifier: app_id, type: 'appstore')
   end
 
-  desc 'Archive the app once for later export'
-  lane :ci_archive do |options|
-    scheme = options[:scheme] || 'Private'
-    archive_build(scheme: scheme)
-  end
-
   desc 'Build, sign, and upload to TestFlight'
   lane :beta do |options|
     scheme = options[:scheme] || 'Private'
     app_id = APP_IDS[scheme]
     skip_meta = options[:skip_metadata].to_s == 'true'
+    prepare_only = options[:prepare_only].to_s == 'true'
     skip_processing_wait = options[:skip_waiting_for_build_processing].to_s != 'false'
     skip_archive_build = options[:skip_archive_build].to_s == 'true'
 
     archive_build(scheme: scheme) unless skip_archive_build
-    export_archive(scheme: scheme)
+    unless prepare_only
+      export_archive(scheme: scheme)
 
-    pilot(
-      api_key: get_api_key,
-      app_identifier: app_id,
-      ipa: lane_context[SharedValues::IPA_OUTPUT_PATH],
-      skip_waiting_for_build_processing: skip_processing_wait,
-      skip_submission: false,
-      distribute_external: false,
-      uses_non_exempt_encryption: false,
-    )
+      pilot(
+        api_key: get_api_key,
+        app_identifier: app_id,
+        ipa: lane_context[SharedValues::IPA_OUTPUT_PATH],
+        skip_waiting_for_build_processing: skip_processing_wait,
+        skip_submission: false,
+        distribute_external: false,
+        uses_non_exempt_encryption: false,
+      )
 
-    sync_metadata(app_identifier: app_id) unless skip_meta
+      sync_metadata(app_identifier: app_id) unless skip_meta
+    end
   end
 
   desc 'Build, sign, and upload to App Store'
   lane :release do |options|
     scheme = options[:scheme] || 'Production'
     app_id = APP_IDS[scheme]
+    prepare_only = options[:prepare_only].to_s == 'true'
     skip_meta = options[:skip_metadata].to_s == 'true'
 
     archive_build(scheme: scheme) unless options[:skip_archive_build].to_s == 'true'
-    export_archive(scheme: scheme)
+    unless prepare_only
+      export_archive(scheme: scheme)
 
-    deliver(
-      api_key: get_api_key,
-      app_identifier: app_id,
-      ipa: lane_context[SharedValues::IPA_OUTPUT_PATH],
-      skip_metadata: true,
-      skip_screenshots: true,
-      submit_for_review: false,
-      automatic_release: false,
-    )
+      deliver(
+        api_key: get_api_key,
+        app_identifier: app_id,
+        ipa: lane_context[SharedValues::IPA_OUTPUT_PATH],
+        skip_metadata: true,
+        skip_screenshots: true,
+        submit_for_review: false,
+        automatic_release: false,
+      )
 
-    sync_metadata(app_identifier: app_id) unless skip_meta
+      sync_metadata(app_identifier: app_id) unless skip_meta
+    end
   end
 
   desc 'Sync metadata and app icon to App Store Connect (no build required)'

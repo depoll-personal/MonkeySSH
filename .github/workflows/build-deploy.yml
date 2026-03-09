@@ -228,7 +228,11 @@ jobs:
               --build-number=${{ inputs.build-number }}
             cd ios
             SCHEME="${{ inputs.flavor == 'private' && 'Private' || 'Production' }}"
-            bundle exec fastlane ci_archive scheme:"$SCHEME"
+            if [ "${{ inputs.deploy-ios-to }}" = "testflight" ]; then
+              bundle exec fastlane beta scheme:"$SCHEME" prepare_only:"true"
+            elif [ "${{ inputs.deploy-ios-to }}" = "appstore" ]; then
+              bundle exec fastlane release scheme:"$SCHEME" prepare_only:"true"
+            fi
           fi
 
       - name: Archive, sign & deploy via Fastlane
