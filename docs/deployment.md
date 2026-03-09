@@ -131,7 +131,7 @@ Supports selecting:
 
 ### Build Numbers
 
-All builds use epoch-second build numbers (`$(date +%s)`) so App Store Connect and Play always see a monotonically increasing integer. PR info is encoded in the version name (`X.Y.Z-pr.N`), not the build number.
+All builds use an offset epoch-based build number that stays under Android's versionCode limit while still increasing over time and avoiding same-second collisions: `1650000000 + ((now - 2024-01-01T00:00:00Z) * 2) + (GITHUB_RUN_NUMBER % 2)`. PR info is encoded in the version name (`X.Y.Z-pr.N`), not the build number.
 
 ## Store Metadata
 
