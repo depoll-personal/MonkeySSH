@@ -133,7 +133,7 @@ platform :ios do
   end
 
   desc 'Archive the app once for later export'
-  lane :build_archive do |options|
+  lane :ci_archive do |options|
     scheme = options[:scheme] || 'Private'
     archive_build(scheme: scheme)
   end

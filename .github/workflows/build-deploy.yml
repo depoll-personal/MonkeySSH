@@ -228,7 +228,7 @@ jobs:
               --build-number=${{ inputs.build-number }}
             cd ios
             SCHEME="${{ inputs.flavor == 'private' && 'Private' || 'Production' }}"
-            bundle exec fastlane build_archive scheme:"$SCHEME"
+            bundle exec fastlane ci_archive scheme:"$SCHEME"
           fi
 
       - name: Archive, sign & deploy via Fastlane
