@@ -126,6 +126,16 @@ platform :ios do
     )
   end
 
+  private_lane :uploaded_build_already_exists? do |options|
+    error_message = options[:error_message].to_s
+    build_number = options[:build_number].to_s
+
+    !build_number.empty? &&
+      error_message.include?('already been used') &&
+      error_message.include?('The bundle version must be higher than the previously uploaded version') &&
+      error_message.include?(build_number)
+  end
+
   desc 'Setup code signing for CI builds'
   lane :setup_signing do |options|
     app_id = options[:app_identifier] || 'xyz.depollsoft.monkeyssh.private'
@@ -136,6 +146,7 @@ platform :ios do
   lane :beta do |options|
     scheme = options[:scheme] || 'Private'
     app_id = APP_IDS[scheme]
+    build_number = options[:build_number].to_s
     skip_meta = options[:skip_metadata].to_s == 'true'
     prepare_only = options[:prepare_only].to_s == 'true'
     skip_processing_wait = options[:skip_waiting_for_build_processing].to_s != 'false'
@@ -145,15 +156,23 @@ platform :ios do
     unless prepare_only
       export_archive(scheme: scheme)
 
-      pilot(
-        api_key: get_api_key,
-        app_identifier: app_id,
-        ipa: lane_context[SharedValues::IPA_OUTPUT_PATH],
-        skip_waiting_for_build_processing: skip_processing_wait,
-        skip_submission: false,
-        distribute_external: false,
-        uses_non_exempt_encryption: false,
-      )
+      begin
+        pilot(
+          api_key: get_api_key,
+          app_identifier: app_id,
+          ipa: lane_context[SharedValues::IPA_OUTPUT_PATH],
+          skip_waiting_for_build_processing: skip_processing_wait,
+          skip_submission: false,
+          distribute_external: false,
+          uses_non_exempt_encryption: false,
+        )
+      rescue StandardError => e
+        if uploaded_build_already_exists?(error_message: e.message, build_number: build_number)
+          UI.important("TestFlight build #{build_number} was already uploaded; continuing.")
+        else
+          raise e
+        end
+      end
 
       sync_metadata(app_identifier: app_id) unless skip_meta
     end

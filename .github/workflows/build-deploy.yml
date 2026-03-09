@@ -229,9 +229,9 @@ jobs:
             cd ios
             SCHEME="${{ inputs.flavor == 'private' && 'Private' || 'Production' }}"
             if [ "${{ inputs.deploy-ios-to }}" = "testflight" ]; then
-              bundle exec fastlane beta scheme:"$SCHEME" prepare_only:"true"
+              bundle exec fastlane beta scheme:"$SCHEME" build_number:"${{ inputs.build-number }}" prepare_only:"true"
             elif [ "${{ inputs.deploy-ios-to }}" = "appstore" ]; then
-              bundle exec fastlane release scheme:"$SCHEME" prepare_only:"true"
+              bundle exec fastlane release scheme:"$SCHEME" build_number:"${{ inputs.build-number }}" prepare_only:"true"
             fi
           fi
 
@@ -244,9 +244,9 @@ jobs:
           SCHEME="${{ inputs.flavor == 'private' && 'Private' || 'Production' }}"
           SKIP_META=${{ inputs.sync-metadata && 'false' || 'true' }}
           if [ "${{ inputs.deploy-ios-to }}" = "testflight" ]; then
-            bundle exec fastlane beta scheme:"$SCHEME" skip_metadata:"$SKIP_META" skip_archive_build:"true" skip_waiting_for_build_processing:"true"
+            bundle exec fastlane beta scheme:"$SCHEME" build_number:"${{ inputs.build-number }}" skip_metadata:"$SKIP_META" skip_archive_build:"true" skip_waiting_for_build_processing:"true"
           elif [ "${{ inputs.deploy-ios-to }}" = "appstore" ]; then
-            bundle exec fastlane release scheme:"$SCHEME" skip_metadata:"$SKIP_META" skip_archive_build:"true"
+            bundle exec fastlane release scheme:"$SCHEME" build_number:"${{ inputs.build-number }}" skip_metadata:"$SKIP_META" skip_archive_build:"true"
           fi
 
       - name: Upload IPA artifact
