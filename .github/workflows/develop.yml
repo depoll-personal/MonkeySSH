@@ -28,8 +28,7 @@ jobs:
         id: version
         run: |
           BASE_VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
-          EPOCH_BASE=1704067200 # 2024-01-01T00:00:00Z
-          BUILD_NUMBER=$(( 1650000000 + ( $(date +%s) - EPOCH_BASE ) * 2 + ( GITHUB_RUN_NUMBER % 2 ) ))
+          BUILD_NUMBER=$(( 1700000000 + ( GITHUB_RUN_ID / 200 ) + GITHUB_RUN_ATTEMPT - 1 ))
 
           echo "build-name=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
           echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
