@@ -133,7 +133,7 @@ platform :ios do
   end
 
   desc 'Archive the app once for later export'
-  lane :archive do |options|
+  lane :build_archive do |options|
     scheme = options[:scheme] || 'Private'
     archive_build(scheme: scheme)
   end
@@ -144,7 +144,9 @@ platform :ios do
     app_id = APP_IDS[scheme]
     skip_meta = options[:skip_metadata].to_s == 'true'
     skip_processing_wait = options[:skip_waiting_for_build_processing].to_s != 'false'
+    skip_archive_build = options[:skip_archive_build].to_s == 'true'
 
+    archive_build(scheme: scheme) unless skip_archive_build
     export_archive(scheme: scheme)
 
     pilot(
@@ -166,6 +168,7 @@ platform :ios do
     app_id = APP_IDS[scheme]
     skip_meta = options[:skip_metadata].to_s == 'true'
 
+    archive_build(scheme: scheme) unless options[:skip_archive_build].to_s == 'true'
     export_archive(scheme: scheme)
 
     deliver(

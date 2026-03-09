@@ -228,7 +228,7 @@ jobs:
               --build-number=${{ inputs.build-number }}
             cd ios
             SCHEME="${{ inputs.flavor == 'private' && 'Private' || 'Production' }}"
-            bundle exec fastlane archive scheme:"$SCHEME"
+            bundle exec fastlane build_archive scheme:"$SCHEME"
           fi
 
       - name: Archive, sign & deploy via Fastlane
@@ -240,9 +240,9 @@ jobs:
           SCHEME="${{ inputs.flavor == 'private' && 'Private' || 'Production' }}"
           SKIP_META=${{ inputs.sync-metadata && 'false' || 'true' }}
           if [ "${{ inputs.deploy-ios-to }}" = "testflight" ]; then
-            bundle exec fastlane beta scheme:"$SCHEME" skip_metadata:"$SKIP_META" skip_waiting_for_build_processing:"true"
+            bundle exec fastlane beta scheme:"$SCHEME" skip_metadata:"$SKIP_META" skip_archive_build:"true" skip_waiting_for_build_processing:"true"
           elif [ "${{ inputs.deploy-ios-to }}" = "appstore" ]; then
-            bundle exec fastlane release scheme:"$SCHEME" skip_metadata:"$SKIP_META"
+            bundle exec fastlane release scheme:"$SCHEME" skip_metadata:"$SKIP_META" skip_archive_build:"true"
           fi
 
       - name: Upload IPA artifact
