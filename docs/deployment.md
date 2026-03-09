@@ -131,7 +131,7 @@ Supports selecting:
 
 ### Build Numbers
 
-All builds use epoch-minute build numbers (`$(date +%s) / 60`) — monotonically increasing regardless of how many PRs are active. PR info is encoded in the version name (`X.Y.Z-pr.N`), not the build number.
+All builds use epoch-second build numbers (`$(date +%s)`) so App Store Connect and Play always see a monotonically increasing integer. PR info is encoded in the version name (`X.Y.Z-pr.N`), not the build number.
 
 ## Store Metadata
 
