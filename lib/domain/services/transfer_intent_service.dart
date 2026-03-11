@@ -7,8 +7,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 class TransferIntentService {
   static const _channel = MethodChannel('xyz.depollsoft.monkeyssh/transfer');
   static const _duplicateDeliveryWindow = Duration(seconds: 5);
+  static final _edgeWhitespacePattern = RegExp(r'^\s|\s$');
   final _incomingController = StreamController<String>.broadcast();
-  final _recentLivePayloads = <String, DateTime>{};
+  final _recentLivePayloadFingerprints = <int, DateTime>{};
   bool _initialized = false;
 
   /// Stream of incoming transfer payloads forwarded by native platforms.
@@ -29,7 +30,8 @@ class TransferIntentService {
         return null;
       }
       _pruneRecentLivePayloads();
-      final lastLiveDelivery = _recentLivePayloads[normalizedPayload];
+      final fingerprint = _payloadFingerprint(normalizedPayload);
+      final lastLiveDelivery = _recentLivePayloadFingerprints[fingerprint];
       if (lastLiveDelivery == null) {
         return normalizedPayload;
       }
@@ -37,7 +39,7 @@ class TransferIntentService {
           _duplicateDeliveryWindow) {
         return null;
       }
-      _recentLivePayloads.remove(normalizedPayload);
+      _recentLivePayloadFingerprints.remove(fingerprint);
       return normalizedPayload;
     } on PlatformException {
       return null;
@@ -58,7 +60,8 @@ class TransferIntentService {
       final payload = _normalizePayload(call.arguments);
       if (payload != null) {
         _pruneRecentLivePayloads();
-        _recentLivePayloads[payload] = DateTime.now();
+        _recentLivePayloadFingerprints[_payloadFingerprint(payload)] =
+            DateTime.now();
         _incomingController.add(payload);
       }
     });
@@ -68,6 +71,12 @@ class TransferIntentService {
     if (payload is! String) {
       return null;
     }
+    if (payload.isEmpty) {
+      return null;
+    }
+    if (!_edgeWhitespacePattern.hasMatch(payload)) {
+      return payload;
+    }
     final normalizedPayload = payload.trim();
     if (normalizedPayload.isEmpty) {
       return null;
@@ -75,9 +84,17 @@ class TransferIntentService {
     return normalizedPayload;
   }
 
+  int _payloadFingerprint(String payload) => Object.hash(
+    payload.length,
+    payload.hashCode,
+    payload.codeUnitAt(0),
+    payload.codeUnitAt(payload.length ~/ 2),
+    payload.codeUnitAt(payload.length - 1),
+  );
+
   void _pruneRecentLivePayloads() {
     final cutoff = DateTime.now().subtract(_duplicateDeliveryWindow);
-    _recentLivePayloads.removeWhere(
+    _recentLivePayloadFingerprints.removeWhere(
       (_, deliveredAt) => deliveredAt.isBefore(cutoff),
     );
   }

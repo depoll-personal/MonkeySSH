@@ -10,6 +10,7 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
+import java.util.concurrent.Executors
 
 class MainActivity : FlutterActivity() {
     companion object {
@@ -19,6 +20,7 @@ class MainActivity : FlutterActivity() {
     private val channel = "xyz.depollsoft.monkeyssh/ssh_service"
     private val transferChannel = "xyz.depollsoft.monkeyssh/transfer"
     private val maxTransferPayloadBytes = 10 * 1024 * 1024
+    private val transferExecutor = Executors.newSingleThreadExecutor()
     private var transferMethodChannel: MethodChannel? = null
     private var pendingTransferPayload: String? = null
     private var hasRequestedNotificationPermission = false
@@ -87,6 +89,7 @@ class MainActivity : FlutterActivity() {
     override fun onDestroy() {
         transferMethodChannel?.setMethodCallHandler(null)
         transferMethodChannel = null
+        transferExecutor.shutdownNow()
         super.onDestroy()
     }
 
@@ -132,24 +135,30 @@ class MainActivity : FlutterActivity() {
         }
 
         val sourceUri = intent.data ?: return
-        try {
-            pendingTransferPayload = contentResolver.openInputStream(sourceUri)?.use { stream ->
-                val buffer = ByteArray(8192)
-                val output = ByteArrayOutputStream()
-                var bytesRead: Int
-                var totalBytes = 0
-                while (stream.read(buffer).also { bytesRead = it } != -1) {
-                    totalBytes += bytesRead
-                    if (totalBytes > maxTransferPayloadBytes) {
-                        return@use null
+        transferExecutor.execute {
+            val payload = try {
+                contentResolver.openInputStream(sourceUri)?.use { stream ->
+                    val buffer = ByteArray(8192)
+                    val output = ByteArrayOutputStream()
+                    var bytesRead: Int
+                    var totalBytes = 0
+                    while (stream.read(buffer).also { bytesRead = it } != -1) {
+                        totalBytes += bytesRead
+                        if (totalBytes > maxTransferPayloadBytes) {
+                            return@use null
+                        }
+                        output.write(buffer, 0, bytesRead)
                     }
-                    output.write(buffer, 0, bytesRead)
+                    output.toString(Charsets.UTF_8.name())
                 }
-                output.toString(Charsets.UTF_8.name())
+            } catch (_: Exception) {
+                null
             }
-            notifyIncomingTransferPayload()
-        } catch (_: Exception) {
-            pendingTransferPayload = null
+
+            runOnUiThread {
+                pendingTransferPayload = payload
+                notifyIncomingTransferPayload()
+            }
         }
     }
 

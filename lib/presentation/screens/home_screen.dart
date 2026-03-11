@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 
 import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
@@ -36,6 +37,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     with WidgetsBindingObserver {
   int _selectedIndex = 0;
   StreamSubscription<String>? _incomingTransferSubscription;
+  final Queue<String> _pendingIncomingTransferPayloads = Queue<String>();
   bool _isHandlingIncomingTransfer = false;
 
   // Breakpoint for switching between mobile and desktop layout
@@ -49,7 +51,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     _incomingTransferSubscription = transferIntentService.incomingPayloads
         .listen((payload) {
           if (payload.isNotEmpty && mounted) {
-            unawaited(_handleIncomingTransferPayload(payload));
+            _enqueueIncomingTransferPayload(payload);
           }
         });
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -80,14 +82,33 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     if (!mounted || payload == null || payload.isEmpty) {
       return;
     }
-    await _handleIncomingTransferPayload(payload);
+    _enqueueIncomingTransferPayload(payload);
   }
 
-  Future<void> _handleIncomingTransferPayload(String encodedPayload) async {
+  void _enqueueIncomingTransferPayload(String encodedPayload) {
+    _pendingIncomingTransferPayloads.addLast(encodedPayload);
+    if (_isHandlingIncomingTransfer) {
+      return;
+    }
+    unawaited(_drainIncomingTransferPayloadQueue());
+  }
+
+  Future<void> _drainIncomingTransferPayloadQueue() async {
     if (_isHandlingIncomingTransfer) {
       return;
     }
     _isHandlingIncomingTransfer = true;
+    try {
+      while (mounted && _pendingIncomingTransferPayloads.isNotEmpty) {
+        final encodedPayload = _pendingIncomingTransferPayloads.removeFirst();
+        await _handleIncomingTransferPayload(encodedPayload);
+      }
+    } finally {
+      _isHandlingIncomingTransfer = false;
+    }
+  }
+
+  Future<void> _handleIncomingTransferPayload(String encodedPayload) async {
     try {
       final transferPassphrase = await showTransferPassphraseDialog(
         context: context,
@@ -173,8 +194,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Import failed: $error')));
-    } finally {
-      _isHandlingIncomingTransfer = false;
     }
   }
 

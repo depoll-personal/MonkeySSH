@@ -82,5 +82,41 @@ void main() {
         await service.dispose();
       },
     );
+
+    test(
+      'trims surrounding whitespace before comparing duplicate deliveries',
+      () async {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(transferChannel, (call) async {
+              if (call.method == 'consumeIncomingTransferPayload') {
+                return '\nencoded-transfer-payload  ';
+              }
+              return null;
+            });
+
+        final service = TransferIntentService();
+        final livePayloads = <String>[];
+        final subscription = service.incomingPayloads.listen(livePayloads.add);
+
+        await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .handlePlatformMessage(
+              transferChannel.name,
+              transferChannel.codec.encodeMethodCall(
+                const MethodCall(
+                  'onIncomingTransferPayload',
+                  'encoded-transfer-payload',
+                ),
+              ),
+              null,
+            );
+
+        final payload = await service.consumeIncomingTransferPayload();
+
+        expect(livePayloads, ['encoded-transfer-payload']);
+        expect(payload, isNull);
+        await subscription.cancel();
+        await service.dispose();
+      },
+    );
   });
 }

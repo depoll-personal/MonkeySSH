@@ -175,14 +175,17 @@ import UIKit
     guard url.pathExtension.lowercased() == "monkeysshx" else {
       return false
     }
-    do {
-      pendingTransferPayload = try readTransferPayload(from: url)
-      notifyIncomingTransferPayload()
-      return true
-    } catch {
-      pendingTransferPayload = nil
-      return false
+    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+      let payload = try? self?.readTransferPayload(from: url)
+      DispatchQueue.main.async {
+        guard let self else {
+          return
+        }
+        self.pendingTransferPayload = payload ?? nil
+        self.notifyIncomingTransferPayload()
+      }
     }
+    return true
   }
 
   private func readTransferPayload(from url: URL) throws -> String {
