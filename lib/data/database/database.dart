@@ -66,6 +66,13 @@ class Hosts extends Table {
 
   /// Terminal font family (null = use global default).
   TextColumn get terminalFontFamily => text().nullable()();
+
+  /// Cached command to run automatically after connecting/reconnecting.
+  TextColumn get autoConnectCommand => text().nullable()();
+
+  /// Referenced snippet to run automatically after connecting/reconnecting.
+  IntColumn get autoConnectSnippetId =>
+      integer().nullable().references(Snippets, #id)();
 }
 
 /// SSH Keys table - stores SSH key pairs.
@@ -335,7 +342,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.e);
 
   @override
-  int get schemaVersion => 4;
+  int get schemaVersion => 5;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -349,6 +356,15 @@ class AppDatabase extends _$AppDatabase {
         await m.addColumn(hosts, hosts.terminalFontFamily);
       }
       if (from < 4) {
+        final hostColumnNames = await _readColumnNames('hosts');
+        if (!hostColumnNames.contains(hosts.autoConnectCommand.$name)) {
+          await m.addColumn(hosts, hosts.autoConnectCommand);
+        }
+        if (!hostColumnNames.contains(hosts.autoConnectSnippetId.$name)) {
+          await m.addColumn(hosts, hosts.autoConnectSnippetId);
+        }
+      }
+      if (from < 5) {
         await m.createTable(aiWorkspaces);
         await m.createTable(aiSessions);
         await m.createTable(aiTimelineEntries);
@@ -390,6 +406,11 @@ class AppDatabase extends _$AppDatabase {
       }
     },
   );
+
+  Future<Set<String>> _readColumnNames(String tableName) async {
+    final columns = await customSelect('PRAGMA table_info($tableName)').get();
+    return columns.map((row) => row.read<String>('name')).toSet();
+  }
 
   String _detectKeyTypeFromPublicKey(String publicKey) {
     final trimmed = publicKey.trim();

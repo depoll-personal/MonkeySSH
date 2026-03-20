@@ -70,7 +70,7 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.gradle/caches
@@ -88,12 +88,14 @@ jobs:
         run: flutter pub get
 
       - name: Decode keystore
+        if: inputs.deploy-android-to != 'none'
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
           echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/upload-keystore.jks
 
       - name: Create key.properties
+        if: inputs.deploy-android-to != 'none'
         env:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
@@ -125,14 +127,14 @@ jobs:
 
       - name: Upload AAB artifact
         if: inputs.deploy-android-to != 'none'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: android-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
           path: build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab
 
       - name: Upload APK artifact
         id: upload-apk
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: android-apk-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
           path: build/app/outputs/flutter-apk/app-${{ inputs.flavor }}-release.apk
@@ -187,7 +189,7 @@ jobs:
         id: source-sha
         run: echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: ios/Pods
           key: pods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
@@ -244,7 +246,7 @@ jobs:
 
       - name: Upload IPA artifact
         if: inputs.deploy-ios-to != 'none'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ios-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
           path: build/ios/ipa/*.ipa

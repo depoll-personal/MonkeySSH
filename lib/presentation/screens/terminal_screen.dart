@@ -14,15 +14,120 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
+import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
-import '../../domain/services/background_ssh_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../widgets/keyboard_toolbar.dart';
+import '../widgets/monkey_terminal_view.dart';
+import '../widgets/terminal_pinch_zoom_gesture_handler.dart';
 import '../widgets/terminal_text_input_handler.dart';
 import '../widgets/terminal_theme_picker.dart';
+
+const _minTerminalFontSize = 8.0;
+const _maxTerminalFontSize = 32.0;
+const _terminalFollowOutputTolerance = 1.0;
+final _trailingTerminalPaddingPattern = RegExp(r' +$');
+
+/// Clamps a terminal font size into the supported zoom range.
+@visibleForTesting
+double clampTerminalFontSize(num size) =>
+    size.clamp(_minTerminalFontSize, _maxTerminalFontSize).toDouble();
+
+/// Scales a terminal font size while keeping it within the supported range.
+@visibleForTesting
+double scaleTerminalFontSize(double baseSize, double scale) =>
+    clampTerminalFontSize(baseSize * scale);
+
+/// Applies an incremental pinch delta to the currently displayed font size.
+@visibleForTesting
+double applyTerminalScaleDelta(
+  double currentFontSize,
+  double previousScale,
+  double nextScale,
+) {
+  final safePreviousScale = previousScale <= 0 ? 1.0 : previousScale;
+  return scaleTerminalFontSize(currentFontSize, nextScale / safePreviousScale);
+}
+
+/// Resolves the currently displayed terminal font size.
+@visibleForTesting
+double resolveTerminalFontSize({
+  required double globalFontSize,
+  double? sessionFontSize,
+  double? pinchFontSize,
+}) => pinchFontSize ?? sessionFontSize ?? globalFontSize;
+
+/// Trims terminal cell padding from the end of a rendered line.
+@visibleForTesting
+String trimTerminalLinePadding(String line) =>
+    line.replaceFirst(_trailingTerminalPaddingPattern, '');
+
+/// Trims per-line terminal padding from copied or overlaid terminal text.
+@visibleForTesting
+String trimTerminalSelectionText(String text) =>
+    text.split('\n').map(trimTerminalLinePadding).join('\n');
+
+/// Whether to let xterm synthesize Up/Down keys for alt-buffer scroll.
+///
+/// We prefer explicit mouse-wheel reporting from terminal applications like
+/// tmux, but still need the synthetic fallback whenever the active alt-buffer
+/// app has not enabled wheel reporting yet.
+@visibleForTesting
+bool shouldUseSyntheticAltBufferScrollFallback({
+  required bool isUsingAltBuffer,
+  required bool preferExplicitMouseReporting,
+  required bool terminalReportsMouseWheel,
+}) {
+  if (!isUsingAltBuffer) {
+    return false;
+  }
+
+  if (!preferExplicitMouseReporting) {
+    return true;
+  }
+
+  return !terminalReportsMouseWheel;
+}
+
+/// Whether mobile touch drags should be routed into terminal scroll input.
+///
+/// Full-screen apps like tmux or Copilot CLI need direct wheel or synthetic
+/// arrow events instead of letting the Flutter viewport absorb the gesture.
+@visibleForTesting
+bool shouldRouteTouchScrollToTerminal({
+  required bool isMobile,
+  required bool isUsingAltBuffer,
+  required bool terminalReportsMouseWheel,
+}) => isMobile && (isUsingAltBuffer || terminalReportsMouseWheel);
+
+/// Whether live terminal output should keep following the current viewport.
+@visibleForTesting
+bool shouldFollowTerminalOutput({
+  required bool hasScrollClients,
+  required double currentOffset,
+  required double maxScrollExtent,
+  double tolerance = _terminalFollowOutputTolerance,
+}) {
+  if (!hasScrollClients) {
+    return true;
+  }
+
+  return currentOffset >= maxScrollExtent - tolerance;
+}
+
+/// Whether terminal scroll policy state changed enough to require a rebuild.
+@visibleForTesting
+bool didTerminalScrollPolicyChange({
+  required bool previousIsUsingAltBuffer,
+  required bool nextIsUsingAltBuffer,
+  required bool previousReportsMouseWheel,
+  required bool nextReportsMouseWheel,
+}) =>
+    previousIsUsingAltBuffer != nextIsUsingAltBuffer ||
+    previousReportsMouseWheel != nextReportsMouseWheel;
 
 /// Terminal screen for SSH sessions.
 class TerminalScreen extends ConsumerStatefulWidget {
@@ -56,10 +161,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _error;
   bool _showKeyboard = true;
   bool _isUsingAltBuffer = false;
+  bool _terminalReportsMouseWheel = false;
   bool _hasTerminalSelection = false;
   bool _isNativeSelectionMode = false;
   bool _isSyncingNativeScroll = false;
   int? _connectionId;
+  double? _pinchFontSize;
+  double? _lastPinchScale;
+  double? _sessionFontSizeOverride;
+  bool _isPinchZooming = false;
+  bool _shouldFollowLiveOutput = true;
+  bool _isTerminalScrollToBottomQueued = false;
 
   // Theme state
   Host? _host;
@@ -78,6 +190,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       defaultTargetPlatform == TargetPlatform.android ||
       defaultTargetPlatform == TargetPlatform.iOS;
 
+  bool get _routesTouchScrollToTerminal => shouldRouteTouchScrollToTerminal(
+    isMobile: _isMobilePlatform,
+    isUsingAltBuffer: _isUsingAltBuffer,
+    terminalReportsMouseWheel: _terminalReportsMouseWheel,
+  );
+
+  bool get _showsNativeSelectionOverlay =>
+      _isNativeSelectionMode && !_routesTouchScrollToTerminal;
+
   @override
   void initState() {
     super.initState();
@@ -85,7 +206,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminal = Terminal(maxLines: 10000);
     _terminalController = TerminalController();
     _terminalScrollController = ScrollController()
-      ..addListener(_syncNativeScrollFromTerminal);
+      ..addListener(_handleTerminalScroll);
     _nativeSelectionScrollController = ScrollController()
       ..addListener(_syncTerminalScrollFromNative);
     _nativeSelectionController = TextEditingController();
@@ -94,6 +215,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _refreshNativeOverlayText(preserveSelection: false);
     }
     _isUsingAltBuffer = _terminal.isUsingAltBuffer;
+    _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
     _terminal.addListener(_onTerminalStateChanged);
     _terminalController.addListener(_onSelectionChanged);
     _terminalFocusNode = FocusNode();
@@ -106,13 +228,70 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _refreshNativeOverlayText(preserveSelection: true);
     }
 
+    if (_shouldFollowLiveOutput) {
+      _queueTerminalScrollToBottom();
+    }
+
     final isUsingAltBuffer = _terminal.isUsingAltBuffer;
-    if (!mounted || _isUsingAltBuffer == isUsingAltBuffer) {
+    final terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
+    if (!mounted ||
+        !didTerminalScrollPolicyChange(
+          previousIsUsingAltBuffer: _isUsingAltBuffer,
+          nextIsUsingAltBuffer: isUsingAltBuffer,
+          previousReportsMouseWheel: _terminalReportsMouseWheel,
+          nextReportsMouseWheel: terminalReportsMouseWheel,
+        )) {
       return;
     }
 
     setState(() {
       _isUsingAltBuffer = isUsingAltBuffer;
+      _terminalReportsMouseWheel = terminalReportsMouseWheel;
+    });
+  }
+
+  void _handleTerminalScroll() {
+    _shouldFollowLiveOutput = shouldFollowTerminalOutput(
+      hasScrollClients: _terminalScrollController.hasClients,
+      currentOffset: _terminalScrollController.hasClients
+          ? _terminalScrollController.offset
+          : 0,
+      maxScrollExtent: _terminalScrollController.hasClients
+          ? _terminalScrollController.position.maxScrollExtent
+          : 0,
+    );
+    _syncNativeScrollFromTerminal();
+  }
+
+  void _followLiveOutput() {
+    _shouldFollowLiveOutput = true;
+    _queueTerminalScrollToBottom();
+  }
+
+  void _queueTerminalScrollToBottom() {
+    if (_isTerminalScrollToBottomQueued) {
+      return;
+    }
+
+    _isTerminalScrollToBottomQueued = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _isTerminalScrollToBottomQueued = false;
+      if (!mounted ||
+          !_shouldFollowLiveOutput ||
+          !_terminalScrollController.hasClients) {
+        return;
+      }
+
+      final position = _terminalScrollController.position;
+      if (shouldFollowTerminalOutput(
+        hasScrollClients: true,
+        currentOffset: _terminalScrollController.offset,
+        maxScrollExtent: position.maxScrollExtent,
+      )) {
+        return;
+      }
+
+      _terminalScrollController.jumpTo(position.maxScrollExtent);
     });
   }
 
@@ -138,7 +317,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _syncNativeScrollFromTerminal() {
-    if (!_isNativeSelectionMode ||
+    if (!_showsNativeSelectionOverlay ||
         _isSyncingNativeScroll ||
         !_terminalScrollController.hasClients ||
         !_nativeSelectionScrollController.hasClients) {
@@ -155,7 +334,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _syncTerminalScrollFromNative() {
-    if (!_isNativeSelectionMode ||
+    if (!_showsNativeSelectionOverlay ||
         _isSyncingNativeScroll ||
         !_nativeSelectionScrollController.hasClients ||
         !_terminalScrollController.hasClients) {
@@ -191,6 +370,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  Future<bool> _restoreSessionThemeOverride(SshSession session) async {
+    final brightness = Theme.of(context).brightness;
+    final themeId = brightness == Brightness.dark
+        ? session.terminalThemeDarkId
+        : session.terminalThemeLightId;
+
+    if (themeId == null) {
+      if (mounted) {
+        setState(() => _sessionThemeOverride = null);
+      }
+      return false;
+    }
+
+    final themeService = ref.read(terminalThemeServiceProvider);
+    final resolvedTheme = await themeService.getThemeById(themeId);
+    if (!mounted) {
+      return false;
+    }
+    setState(() => _sessionThemeOverride = resolvedTheme);
+    return resolvedTheme != null;
+  }
+
   Future<void> _connect({
     int? preferredConnectionId,
     bool forceNew = false,
@@ -215,6 +416,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         preferredConnectionId,
       );
       if (existingSession != null) {
+        await _sessionsNotifier!.syncBackgroundStatus();
         await _openShell(existingSession);
         return;
       }
@@ -262,15 +464,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _terminal.removeListener(_onTerminalStateChanged);
         _terminal = existingTerminal;
         _isUsingAltBuffer = _terminal.isUsingAltBuffer;
+        _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
         _terminal.addListener(_onTerminalStateChanged);
         _shell = await session.getShell();
         _wireTerminalCallbacks(session);
-        setState(() => _isConnecting = false);
-        unawaited(
-          BackgroundSshService.start(
-            hostName: _host?.label ?? _host?.hostname ?? 'SSH server',
-          ),
-        );
+        await _restoreSessionThemeOverride(session);
+        setState(() {
+          _sessionFontSizeOverride = session.terminalFontSize;
+          _isConnecting = false;
+        });
+        _restoreTerminalFocus();
         return;
       }
 
@@ -279,6 +482,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _terminal.removeListener(_onTerminalStateChanged);
       _terminal = sessionTerminal;
       _isUsingAltBuffer = _terminal.isUsingAltBuffer;
+      _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
       _terminal.addListener(_onTerminalStateChanged);
 
       _shell = await session.getShell(
@@ -292,18 +496,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       if (!mounted) return;
 
-      setState(() => _isConnecting = false);
-
-      // Start the background service to keep the connection alive
-      // when the app is backgrounded.
-      unawaited(
-        BackgroundSshService.start(
-          hostName: _host?.label ?? _host?.hostname ?? 'SSH server',
-        ),
-      );
+      await _restoreSessionThemeOverride(session);
+      setState(() {
+        _sessionFontSizeOverride = session.terminalFontSize;
+        _isConnecting = false;
+      });
+      _restoreTerminalFocus();
 
       // Start port forwards
       await _startPortForwards(session);
+      await _runAutoConnectCommand();
     } on Object catch (e) {
       if (!mounted) return;
       setState(() {
@@ -430,13 +632,54 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  Future<void> _runAutoConnectCommand() async {
+    final host = _host;
+    final shell = _shell;
+    if (host == null || shell == null) {
+      return;
+    }
+
+    final mode = resolveAutoConnectCommandMode(
+      command: host.autoConnectCommand,
+      snippetId: host.autoConnectSnippetId,
+    );
+    if (mode == AutoConnectCommandMode.none) {
+      return;
+    }
+
+    String? snippetCommand;
+    final snippetId = host.autoConnectSnippetId;
+    if (snippetId != null) {
+      final snippetRepo = ref.read(snippetRepositoryProvider);
+      final snippet = await snippetRepo.getById(snippetId);
+      if (snippet == null) {
+        debugPrint(
+          'Auto-connect snippet $snippetId is unavailable; using cached command.',
+        );
+      } else {
+        snippetCommand = snippet.command;
+        unawaited(snippetRepo.incrementUsage(snippet.id));
+      }
+    }
+
+    final command = resolveAutoConnectCommandText(
+      mode: mode,
+      storedCommand: host.autoConnectCommand,
+      snippetCommand: snippetCommand,
+    );
+    if (command == null) {
+      return;
+    }
+
+    shell.write(utf8.encode(formatAutoConnectCommandForShell(command)));
+  }
+
   void _handleShellClosed() {
     final connectionId = _connectionId;
     if (!mounted) {
       if (connectionId != null) {
         unawaited(_sessionsNotifier?.disconnect(connectionId));
       }
-      _stopBackgroundServiceIfNoConnections();
       return;
     }
     // If the app is in the background, don't show the error screen
@@ -452,7 +695,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (connectionId != null) {
       unawaited(_sessionsNotifier?.disconnect(connectionId));
     }
-    _stopBackgroundServiceIfNoConnections();
   }
 
   Future<void> _disconnect() async {
@@ -461,7 +703,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (_connectionId != null) {
       await _sessionsNotifier?.disconnect(_connectionId!);
     }
-    _stopBackgroundServiceIfNoConnections();
     if (mounted) {
       Navigator.of(context).pop();
     }
@@ -475,7 +716,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ..removeListener(_onSelectionChanged)
       ..dispose();
     _terminalScrollController
-      ..removeListener(_syncNativeScrollFromTerminal)
+      ..removeListener(_handleTerminalScroll)
       ..dispose();
     _nativeSelectionScrollController
       ..removeListener(_syncTerminalScrollFromNative)
@@ -505,7 +746,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void didChangeDependencies() {
     super.didChangeDependencies();
     // Reload theme when system brightness changes
-    if (_currentTheme != null && _sessionThemeOverride == null) {
+    if (_currentTheme == null) {
+      return;
+    }
+
+    final session = _connectionId == null
+        ? null
+        : _sessionsNotifier?.getSession(_connectionId!);
+    if (session != null) {
+      unawaited(
+        _restoreSessionThemeOverride(session).then((restored) {
+          if (!restored) {
+            return _loadTheme();
+          }
+        }),
+      );
+      return;
+    }
+
+    if (_sessionThemeOverride == null) {
       _loadTheme();
     }
   }
@@ -582,29 +841,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       body: Column(
         children: [
           Expanded(child: _buildTerminalView(terminalTheme, isMobile)),
-          if (_showKeyboard && !_isNativeSelectionMode)
+          if (_showKeyboard && (!_isNativeSelectionMode || _isMobilePlatform))
             KeyboardToolbar(
               key: _toolbarKey,
               terminal: _terminal,
+              onKeyPressed: _followLiveOutput,
               terminalFocusNode: _terminalFocusNode,
             ),
         ],
       ),
     );
-  }
-
-  void _stopBackgroundServiceIfNoConnections() {
-    final connectionStates = ref.read(activeSessionsProvider);
-    final hasActiveConnection = connectionStates.values.any(
-      (state) =>
-          state == SshConnectionState.connected ||
-          state == SshConnectionState.connecting ||
-          state == SshConnectionState.authenticating ||
-          state == SshConnectionState.reconnecting,
-    );
-    if (!hasActiveConnection) {
-      unawaited(BackgroundSshService.stop());
-    }
   }
 
   /// Toggles the system keyboard visibility on mobile platforms.
@@ -613,9 +859,70 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
       _terminalFocusNode.unfocus();
     } else {
-      _terminalFocusNode.requestFocus();
-      unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.show'));
+      _restoreTerminalFocus(showSystemKeyboard: true);
     }
+  }
+
+  void _restoreTerminalFocus({bool showSystemKeyboard = false}) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      _terminalFocusNode.requestFocus();
+      if (showSystemKeyboard && _isMobilePlatform) {
+        unawaited(
+          SystemChannels.textInput.invokeMethod<void>('TextInput.show'),
+        );
+      }
+    });
+  }
+
+  void _handleTerminalScaleStart(double currentFontSize) {
+    _pinchFontSize = currentFontSize;
+    _lastPinchScale = 1;
+    _isPinchZooming = false;
+  }
+
+  void _handleTerminalScaleUpdate(double scale, double currentFontSize) {
+    final displayedFontSize = _pinchFontSize ?? currentFontSize;
+    final previousScale = _lastPinchScale ?? 1;
+    final nextFontSize = applyTerminalScaleDelta(
+      displayedFontSize,
+      previousScale,
+      scale,
+    );
+    if (_isPinchZooming && _pinchFontSize == nextFontSize) {
+      return;
+    }
+
+    setState(() {
+      _isPinchZooming = true;
+      _pinchFontSize = nextFontSize;
+      _lastPinchScale = scale;
+    });
+  }
+
+  void _handleTerminalScaleEnd() {
+    final nextFontSize = _pinchFontSize;
+    final connectionId = _connectionId;
+    final shouldPersist =
+        _isPinchZooming && nextFontSize != null && connectionId != null;
+    setState(() {
+      if (shouldPersist) {
+        _sessionFontSizeOverride = nextFontSize;
+      }
+      _isPinchZooming = false;
+      _lastPinchScale = null;
+      _pinchFontSize = null;
+    });
+
+    if (!shouldPersist) {
+      return;
+    }
+
+    ref
+        .read(activeSessionsProvider.notifier)
+        .updateSessionFontSize(connectionId, nextFontSize);
   }
 
   Future<void> _showThemePicker() async {
@@ -626,11 +933,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
 
     if (theme != null && mounted) {
+      final isDark = Theme.of(context).brightness == Brightness.dark;
+      if (_connectionId != null) {
+        ref
+            .read(activeSessionsProvider.notifier)
+            .updateSessionTheme(_connectionId!, theme.id, isDark: isDark);
+      }
       setState(() => _sessionThemeOverride = theme);
 
       // Show option to save to host
       if (_host != null) {
-        final isDark = Theme.of(context).brightness == Brightness.dark;
         final scaffoldMessenger = ScaffoldMessenger.of(context);
 
         // Clear any existing snackbar first to prevent stacking
@@ -680,6 +992,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Widget _buildTerminalView(TerminalThemeData terminalTheme, bool isMobile) {
+    final theme = Theme.of(context);
+
     if (_isConnecting) {
       return const Center(
         child: Column(
@@ -727,8 +1041,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
 
-    // Get font size from settings (use setting value, not responsive calculation)
-    final fontSize = ref.watch(fontSizeNotifierProvider);
+    // Use a session override when pinch-zoom has customized this connection.
+    final globalFontSize = ref.watch(fontSizeNotifierProvider);
+    final storedFontSize = _sessionFontSizeOverride ?? globalFontSize;
+    final fontSize = resolveTerminalFontSize(
+      globalFontSize: globalFontSize,
+      sessionFontSize: _sessionFontSizeOverride,
+      pinchFontSize: _pinchFontSize,
+    );
 
     // Get font family from host (if set) or global settings
     final hostFont = _host?.terminalFontFamily;
@@ -738,8 +1058,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final nativeSelectionTextStyle = _getNativeSelectionTextStyle(
       terminalTextStyle,
     );
+    final routeTouchScrollToTerminal = _routesTouchScrollToTerminal;
 
-    final terminalView = TerminalView(
+    final terminalView = MonkeyTerminalView(
       _terminal,
       controller: _terminalController,
       scrollController: _terminalScrollController,
@@ -750,32 +1071,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       deleteDetection: !isMobile,
       autofocus: !isMobile,
       hardwareKeyboardOnly: isMobile,
-      // On touch devices, simulating wheel scroll with Up/Down keys in alt
-      // buffer makes swipe scroll behave like rapid history navigation.
-      simulateScroll: !isMobile && _isUsingAltBuffer,
+      // Let alt-buffer apps keep raw wheel events when they explicitly enable
+      // mouse reporting, but fall back to synthetic arrows when they do not.
+      simulateScroll: shouldUseSyntheticAltBufferScrollFallback(
+        isUsingAltBuffer: _isUsingAltBuffer,
+        preferExplicitMouseReporting: true,
+        terminalReportsMouseWheel: _terminalReportsMouseWheel,
+      ),
+      touchScrollToTerminal: routeTouchScrollToTerminal,
     );
 
     if (!isMobile) return terminalView;
 
     Widget mobileTerminalView = terminalView;
-    if (_isUsingAltBuffer) {
-      // xterm's alt-buffer scroll handler can convert touch scroll into input
-      // events for some TUIs. On mobile, consume vertical drags at this layer
-      // so swipe scrolling never becomes terminal key/mouse input.
-      mobileTerminalView = GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onVerticalDragDown: (_) {},
-        onVerticalDragStart: (_) {},
-        onVerticalDragUpdate: (_) {},
-        onVerticalDragEnd: (_) {},
-        onVerticalDragCancel: () {},
-        child: mobileTerminalView,
-      );
-    }
 
     // On mobile, wrap with our own text input handler that enables
     // IME suggestions so swipe typing correctly inserts spaces.
-    if (_isNativeSelectionMode) {
+    if (_showsNativeSelectionOverlay) {
       mobileTerminalView = Stack(
         fit: StackFit.expand,
         children: [
@@ -793,11 +1105,50 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
 
+    if (_isPinchZooming) {
+      mobileTerminalView = Stack(
+        fit: StackFit.expand,
+        children: [
+          mobileTerminalView,
+          Positioned(
+            top: 12,
+            right: 12,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surface.withAlpha(220),
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(color: theme.colorScheme.outlineVariant),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
+                child: Text(
+                  '${fontSize.toStringAsFixed(0)} pt',
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
     return TerminalTextInputHandler(
       terminal: _terminal,
       focusNode: _terminalFocusNode,
       deleteDetection: true,
-      child: mobileTerminalView,
+      onUserInput: _followLiveOutput,
+      child: TerminalPinchZoomGestureHandler(
+        onPinchStart: () => _handleTerminalScaleStart(storedFontSize),
+        onPinchUpdate: (scale) =>
+            _handleTerminalScaleUpdate(scale, storedFontSize),
+        onPinchEnd: _handleTerminalScaleEnd,
+        child: mobileTerminalView,
+      ),
     );
   }
 
@@ -879,6 +1230,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       case 'clear':
         _terminal.buffer.clear();
         _terminalController.clearSelection();
+        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
         break;
       case 'disconnect':
         await _disconnect();
@@ -1020,7 +1372,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       col += step;
     }
 
-    return (text: builder.toString(), columnOffsets: columnOffsets);
+    final trimmedText = trimTerminalLinePadding(builder.toString());
+    if (trimmedText.length == builder.length) {
+      return (text: trimmedText, columnOffsets: columnOffsets);
+    }
+
+    for (var i = 0; i < columnOffsets.length; i++) {
+      if (columnOffsets[i] > trimmedText.length) {
+        columnOffsets[i] = trimmedText.length;
+      }
+    }
+    return (text: trimmedText, columnOffsets: columnOffsets);
   }
 
   TextSelection _bufferRangeToTextSelection(
@@ -1072,7 +1434,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             ),
             Expanded(
               child: TextButton.icon(
-                onPressed: _terminalController.clearSelection,
+                onPressed: () {
+                  _terminalController.clearSelection();
+                  _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+                },
                 icon: const Icon(Icons.close),
                 label: const Text('Clear'),
               ),
@@ -1089,13 +1454,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    final text = _terminal.buffer.getText(selection);
+    final text = trimTerminalSelectionText(_terminal.buffer.getText(selection));
     if (text.isEmpty) {
+      _restoreTerminalFocus();
       return;
     }
 
     await Clipboard.setData(ClipboardData(text: text));
     _terminalController.clearSelection();
+    _restoreTerminalFocus();
 
     if (!mounted) {
       return;
@@ -1109,11 +1476,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     final text = data?.text;
     if (text == null || text.isEmpty) {
+      _restoreTerminalFocus();
       return;
     }
 
+    _followLiveOutput();
     _terminal.paste(text);
     _terminalController.clearSelection();
+    _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
   }
 
   /// Shows snippet picker and inserts selected snippet into terminal.
@@ -1217,7 +1587,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           ),
         );
 
+    _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
     if (result != null && result.command.isNotEmpty) {
+      _followLiveOutput();
       // Insert the command into terminal
       _terminal.paste(result.command);
       // Track usage

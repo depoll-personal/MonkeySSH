@@ -166,7 +166,8 @@ class SecureTransferService {
     final hostData = Map<String, dynamic>.from(host.toJson())
       ..['keyId'] = referencedKey == null ? null : host.keyId
       ..['groupId'] = null
-      ..['jumpHostId'] = null;
+      ..['jumpHostId'] = null
+      ..['autoConnectSnippetId'] = null;
 
     final payload = TransferPayload(
       type: TransferPayloadType.host,
@@ -366,6 +367,10 @@ class SecureTransferService {
           terminalFontFamily: Value(
             _optionalString(hostData['terminalFontFamily']),
           ),
+          autoConnectCommand: Value(
+            _optionalString(hostData['autoConnectCommand']),
+          ),
+          autoConnectSnippetId: const Value(null),
         ),
       );
 
@@ -420,36 +425,47 @@ class SecureTransferService {
     }
 
     await _db.transaction(() async {
-      if (mode == MigrationImportMode.replace) {
-        await _db.customStatement('PRAGMA defer_foreign_keys = ON');
-        await _clearMigrationTables();
-      }
+      var deferForeignKeysEnabled = false;
+      try {
+        if (mode == MigrationImportMode.replace) {
+          await _db.customStatement('PRAGMA defer_foreign_keys = ON');
+          deferForeignKeysEnabled = true;
+          await _clearMigrationTables();
+        }
 
-      final groupMapping = await _importGroups(
-        _listFromData(payload.data, 'groups'),
-      );
-      final keyMapping = await _importKeys(_listFromData(payload.data, 'keys'));
-      final hostMapping = await _importHosts(
-        _listFromData(payload.data, 'hosts'),
-        groupMapping: groupMapping,
-        keyMapping: keyMapping,
-      );
-      final snippetFolderMapping = await _importSnippetFolders(
-        _listFromData(payload.data, 'snippetFolders'),
-      );
-      await _importSnippets(
-        _listFromData(payload.data, 'snippets'),
-        snippetFolderMapping: snippetFolderMapping,
-      );
-      await _importPortForwards(
-        _listFromData(payload.data, 'portForwards'),
-        hostMapping: hostMapping,
-      );
-      await _importKnownHosts(_listFromData(payload.data, 'knownHosts'));
-      await _importSettings(
-        _settingsFromData(payload.data),
-        clearExisting: mode == MigrationImportMode.replace,
-      );
+        final groupMapping = await _importGroups(
+          _listFromData(payload.data, 'groups'),
+        );
+        final keyMapping = await _importKeys(
+          _listFromData(payload.data, 'keys'),
+        );
+        final snippetFolderMapping = await _importSnippetFolders(
+          _listFromData(payload.data, 'snippetFolders'),
+        );
+        final snippetMapping = await _importSnippets(
+          _listFromData(payload.data, 'snippets'),
+          snippetFolderMapping: snippetFolderMapping,
+        );
+        final hostMapping = await _importHosts(
+          _listFromData(payload.data, 'hosts'),
+          groupMapping: groupMapping,
+          keyMapping: keyMapping,
+          snippetMapping: snippetMapping,
+        );
+        await _importPortForwards(
+          _listFromData(payload.data, 'portForwards'),
+          hostMapping: hostMapping,
+        );
+        await _importKnownHosts(_listFromData(payload.data, 'knownHosts'));
+        await _importSettings(
+          _settingsFromData(payload.data),
+          clearExisting: mode == MigrationImportMode.replace,
+        );
+      } finally {
+        if (deferForeignKeysEnabled) {
+          await _db.customStatement('PRAGMA defer_foreign_keys = OFF');
+        }
+      }
     });
   }
 
@@ -562,7 +578,6 @@ class SecureTransferService {
     await _db.customStatement('DELETE FROM ssh_keys');
     await _db.customStatement('DELETE FROM groups');
     await _db.customStatement('DELETE FROM known_hosts');
-    await _db.customStatement('DELETE FROM settings');
   }
 
   Future<Map<int, int>> _importGroups(
@@ -641,6 +656,7 @@ class SecureTransferService {
     List<Map<String, dynamic>> rawHosts, {
     required Map<int, int> groupMapping,
     required Map<int, int> keyMapping,
+    required Map<int, int> snippetMapping,
   }) async {
     final idMapping = <int, int>{};
     final jumpMapping = <int, int?>{};
@@ -650,8 +666,10 @@ class SecureTransferService {
       final oldGroupId = _optionalInt(item['groupId']);
       final oldKeyId = _optionalInt(item['keyId']);
       final oldJumpId = _optionalInt(item['jumpHostId']);
+      final oldSnippetId = _optionalInt(item['autoConnectSnippetId']);
       int? mappedGroupId;
       int? mappedKeyId;
+      int? mappedSnippetId;
       if (oldGroupId != null) {
         mappedGroupId = groupMapping[oldGroupId];
         if (mappedGroupId == null) {
@@ -665,6 +683,14 @@ class SecureTransferService {
         if (mappedKeyId == null) {
           throw const FormatException(
             'Invalid key reference in migration payload',
+          );
+        }
+      }
+      if (oldSnippetId != null) {
+        mappedSnippetId = snippetMapping[oldSnippetId];
+        if (mappedSnippetId == null) {
+          throw const FormatException(
+            'Invalid snippet reference in migration payload',
           );
         }
       }
@@ -699,6 +725,10 @@ class SecureTransferService {
           terminalFontFamily: Value(
             _optionalString(item['terminalFontFamily']),
           ),
+          autoConnectCommand: Value(
+            _optionalString(item['autoConnectCommand']),
+          ),
+          autoConnectSnippetId: Value(mappedSnippetId),
         ),
       );
 
@@ -781,10 +811,11 @@ class SecureTransferService {
     return idMapping;
   }
 
-  Future<void> _importSnippets(
+  Future<Map<int, int>> _importSnippets(
     List<Map<String, dynamic>> rawSnippets, {
     required Map<int, int> snippetFolderMapping,
   }) async {
+    final idMapping = <int, int>{};
     for (final item in rawSnippets) {
       final oldFolderId = _optionalInt(item['folderId']);
       if (oldFolderId != null &&
@@ -793,7 +824,7 @@ class SecureTransferService {
           'Invalid snippet folder reference in migration payload',
         );
       }
-      await _db
+      final newId = await _db
           .into(_db.snippets)
           .insert(
             SnippetsCompanion.insert(
@@ -811,7 +842,12 @@ class SecureTransferService {
               usageCount: Value(_optionalInt(item['usageCount']) ?? 0),
             ),
           );
+      final oldId = _optionalInt(item['id']);
+      if (oldId != null) {
+        idMapping[oldId] = newId;
+      }
     }
+    return idMapping;
   }
 
   Future<void> _importPortForwards(
