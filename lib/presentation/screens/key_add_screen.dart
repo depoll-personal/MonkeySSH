@@ -306,10 +306,18 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
                   style: Theme.of(context).textTheme.titleSmall,
                 ),
                 const SizedBox(height: 8),
-                _TransferImportActions(
-                  isImporting: _isImporting,
-                  onImportFromQrTransfer: _importFromQrTransfer,
-                  onImportFromEncryptedFile: _importFromEncryptedFile,
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: _isImporting
+                            ? null
+                            : _importFromEncryptedFile,
+                        icon: const Icon(Icons.file_open),
+                        label: const Text('Import Encrypted File'),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -420,14 +428,6 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
     } finally {
       if (mounted) setState(() => _isImporting = false);
     }
-  }
-
-  Future<void> _importFromQrTransfer() async {
-    if (_isImporting) {
-      return;
-    }
-    final encodedPayload = await scanTransferPayload(context);
-    await _importFromTransferPayload(encodedPayload);
   }
 
   Future<void> _importFromFile() async {
@@ -572,55 +572,6 @@ class _KeyTabFooter extends StatelessWidget {
           ],
         ),
       ),
-    );
-  }
-}
-
-class _TransferImportActions extends StatelessWidget {
-  const _TransferImportActions({
-    required this.isImporting,
-    required this.onImportFromQrTransfer,
-    required this.onImportFromEncryptedFile,
-  });
-
-  final bool isImporting;
-  final VoidCallback onImportFromQrTransfer;
-  final VoidCallback onImportFromEncryptedFile;
-
-  @override
-  Widget build(BuildContext context) {
-    final scanQrButton = OutlinedButton.icon(
-      onPressed: isImporting ? null : onImportFromQrTransfer,
-      icon: const Icon(Icons.qr_code_scanner),
-      label: const Text('Scan QR'),
-    );
-    final importEncryptedFileButton = OutlinedButton.icon(
-      onPressed: isImporting ? null : onImportFromEncryptedFile,
-      icon: const Icon(Icons.file_open),
-      label: const Text('Import Encrypted File'),
-    );
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        if (constraints.maxWidth < 420) {
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              scanQrButton,
-              const SizedBox(height: 8),
-              importEncryptedFileButton,
-            ],
-          );
-        }
-
-        return Row(
-          children: [
-            Expanded(child: scanQrButton),
-            const SizedBox(width: 8),
-            Expanded(child: importEncryptedFileButton),
-          ],
-        );
-      },
     );
   }
 }
