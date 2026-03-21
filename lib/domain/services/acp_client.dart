@@ -198,12 +198,12 @@ class AcpClient {
         'shutdown',
         const <String, dynamic>{},
       ).timeout(const Duration(milliseconds: 300));
-    } on Exception {
+    } on Object {
       // Best effort.
     }
     try {
       _sendNotification('exit');
-    } on Exception {
+    } on Object {
       // Best effort.
     }
   }
@@ -222,6 +222,7 @@ class AcpClient {
 
     for (final completer in _pendingRequests.values) {
       if (!completer.isCompleted) {
+        unawaited(completer.future.catchError((_) => <String, dynamic>{}));
         completer.completeError(
           const AcpClientException('ACP client disposed while awaiting reply.'),
         );

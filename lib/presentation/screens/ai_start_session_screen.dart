@@ -16,10 +16,31 @@ import '../../domain/services/ssh_service.dart';
 /// Start flow for creating a new AI chat session.
 class AiStartSessionScreen extends ConsumerStatefulWidget {
   /// Creates an [AiStartSessionScreen].
-  const AiStartSessionScreen({super.key, this.embedInScaffold = true});
+  const AiStartSessionScreen({
+    super.key,
+    this.embedInScaffold = true,
+    this.acpAdapterInstalledChecker,
+    this.acpAdapterInstaller,
+  });
 
   /// Whether this screen should render with its own [Scaffold].
   final bool embedInScaffold;
+
+  /// Optional override for checking whether the ACP adapter is installed.
+  final Future<bool> Function(
+    WidgetRef ref,
+    int connectionId,
+    AiCliProvider provider,
+  )?
+  acpAdapterInstalledChecker;
+
+  /// Optional override for installing the ACP adapter on the remote host.
+  final Future<bool> Function(
+    WidgetRef ref,
+    int connectionId,
+    AiCliProvider provider,
+  )?
+  acpAdapterInstaller;
 
   @override
   ConsumerState<AiStartSessionScreen> createState() =>
@@ -28,6 +49,28 @@ class AiStartSessionScreen extends ConsumerStatefulWidget {
 
 class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
   static const _customAcpClientId = '__custom__';
+  static const _acpAdapterInstallCommand =
+      r'export INSTALL_DIR="$HOME/.local/bin"; '
+      r'mkdir -p "$INSTALL_DIR"; '
+      'if ! command -v curl >/dev/null 2>&1; then '
+      'echo "curl is required to install acp-adapter." >&2; '
+      'exit 1; '
+      'fi; '
+      'curl -sSL '
+      'https://raw.githubusercontent.com/beyond5959/acp-adapter/master/install.sh '
+      '| sh';
+  static const _acpAdapterProbeCommand =
+      'if command -v acp-adapter >/dev/null 2>&1 '
+      r'|| [ -x "$HOME/.local/bin/acp-adapter" ] '
+      r'|| [ -x "$HOME/bin/acp-adapter" ] '
+      r'|| [ -x "$HOME/homebrew/bin/acp-adapter" ] '
+      r'|| [ -x "$HOME/.homebrew/bin/acp-adapter" ] '
+      '|| [ -x "/usr/local/bin/acp-adapter" ] '
+      '|| [ -x "/opt/homebrew/bin/acp-adapter" ]; then '
+      'printf installed; '
+      'else '
+      'printf missing; '
+      'fi';
 
   late final TextEditingController _workingDirectoryController;
   late final TextEditingController _acpClientCommandController;
@@ -35,6 +78,8 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
   String _selectedAcpClientId = knownAcpClientPresets.first.id;
   int? _selectedHostId;
   bool _isStarting = false;
+  bool _providerSelectionTouched = false;
+  bool _acpClientSelectionTouched = false;
 
   @override
   void initState() {
@@ -109,7 +154,12 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
                             .map(
                               (provider) => DropdownMenuItem<AiCliProvider>(
                                 value: provider,
-                                child: Text(provider.executable),
+                                child: Text(
+                                  provider.executable,
+                                  key: Key(
+                                    'ai-provider-option-${provider.name}',
+                                  ),
+                                ),
                               ),
                             )
                             .toList(growable: false),
@@ -118,6 +168,7 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
                             return;
                           }
                           setState(() {
+                            _providerSelectionTouched = true;
                             _selectedProvider = provider;
                             if (provider == AiCliProvider.acp &&
                                 _selectedAcpClientId != _customAcpClientId) {
@@ -131,10 +182,31 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
                         },
                       ),
                       if (_selectedProvider == AiCliProvider.acp) ...[
+                        if (!_isValidAcpClientSelection(
+                          _selectedAcpClientId,
+                        )) ...[
+                          Builder(
+                            builder: (context) {
+                              WidgetsBinding.instance.addPostFrameCallback((_) {
+                                if (!mounted) {
+                                  return;
+                                }
+                                final fallbackClientId =
+                                    knownAcpClientPresets.first.id;
+                                setState(() {
+                                  _selectedAcpClientId = fallbackClientId;
+                                  _acpClientCommandController.text =
+                                      knownAcpClientPresets.first.command;
+                                });
+                              });
+                              return const SizedBox.shrink();
+                            },
+                          ),
+                        ],
                         const SizedBox(height: 12),
                         DropdownButtonFormField<String>(
                           key: const Key('ai-acp-client-preset-field'),
-                          initialValue: _selectedAcpClientId,
+                          initialValue: _resolvedAcpClientSelection,
                           decoration: const InputDecoration(
                             labelText: 'ACP client',
                             border: OutlineInputBorder(),
@@ -156,6 +228,7 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
                               return;
                             }
                             setState(() {
+                              _acpClientSelectionTouched = true;
                               _selectedAcpClientId = value;
                               final preset = _selectedAcpClientPreset;
                               if (value == _customAcpClientId) {
@@ -287,15 +360,32 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
     return DropdownButtonFormField<int>(
       key: const Key('ai-host-field'),
       initialValue: resolvedHostId,
+      isExpanded: true,
       decoration: const InputDecoration(
         labelText: 'Host',
         border: OutlineInputBorder(),
       ),
+      selectedItemBuilder: (context) => hosts
+          .map(
+            (host) => Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                host.label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          )
+          .toList(growable: false),
       items: hosts
           .map(
             (host) => DropdownMenuItem<int>(
               value: host.id,
-              child: Text('${host.label} (${host.username}@${host.hostname})'),
+              child: Text(
+                '${host.label} (${host.username}@${host.hostname})',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
           )
           .toList(growable: false),
@@ -311,6 +401,7 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
     AsyncValue<List<_AiSessionResumeSummary>> recentSessionsAsync, {
     required Map<int, SshConnectionState> activeConnections,
   }) => Card(
+    key: const Key('ai-recent-sessions-card'),
     child: Padding(
       padding: const EdgeInsets.all(16),
       child: Column(
@@ -391,6 +482,7 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
       if (canReattach) 'runtime ready' else 'runtime detached',
     ];
     return ListTile(
+      key: Key('ai-recent-session-tile-${session.sessionId}'),
       contentPadding: EdgeInsets.zero,
       title: Text(session.title, maxLines: 1, overflow: TextOverflow.ellipsis),
       subtitle: Text(
@@ -446,10 +538,11 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
       _showSnackBar('Working directory is required.');
       return;
     }
+    var providerForSession = _selectedProvider;
     String? acpExecutableOverride;
     String? acpClientLabel;
     String? acpClientId;
-    if (_selectedProvider == AiCliProvider.acp) {
+    if (providerForSession == AiCliProvider.acp) {
       if (_selectedAcpClientId == _customAcpClientId) {
         final customCommand = _acpClientCommandController.text.trim();
         if (customCommand.isEmpty) {
@@ -482,20 +575,6 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
       _showSnackBar('Selected host is no longer available.');
       return;
     }
-    final acpExecutableMetadata = acpExecutableOverride == null
-        ? null
-        : <String, dynamic>{'executableOverride': acpExecutableOverride};
-    final acpClientMetadata = <String, dynamic>{};
-    if (acpClientLabel != null) {
-      acpClientMetadata['acpClientLabel'] = acpClientLabel;
-    }
-    if (acpClientId != null) {
-      acpClientMetadata['acpClientId'] = acpClientId;
-    }
-    final acpExecutableQueryParam = acpExecutableOverride == null
-        ? null
-        : <String, String>{'executable': acpExecutableOverride};
-
     setState(() {
       _isStarting = true;
     });
@@ -509,13 +588,43 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
         return;
       }
 
+      final adapterSelection = await _resolveClaudeOrCodexAdapterSelection(
+        connectionId: connectionResult.connectionId!,
+        provider: providerForSession,
+      );
+      if (adapterSelection == null) {
+        if (!connectionResult.reusedConnection) {
+          await ref
+              .read(activeSessionsProvider.notifier)
+              .disconnect(connectionResult.connectionId!);
+        }
+        return;
+      }
+      providerForSession = adapterSelection.provider;
+      acpExecutableOverride = adapterSelection.executableOverride;
+      acpClientLabel = adapterSelection.acpClientLabel;
+      acpClientId = adapterSelection.acpClientId;
+      final acpExecutableMetadata = acpExecutableOverride == null
+          ? null
+          : <String, dynamic>{'executableOverride': acpExecutableOverride};
+      final acpClientMetadata = <String, dynamic>{};
+      if (acpClientLabel != null) {
+        acpClientMetadata['acpClientLabel'] = acpClientLabel;
+      }
+      if (acpClientId != null) {
+        acpClientMetadata['acpClientId'] = acpClientId;
+      }
+      final acpExecutableQueryParam = acpExecutableOverride == null
+          ? null
+          : <String, String>{'executable': acpExecutableOverride};
+
       final repository = ref.read(aiRepositoryProvider);
       final workspaceId = await _resolveWorkspaceId(
         repository: repository,
         host: selectedHost,
         workingDirectory: workingDirectory,
       );
-      final sessionTitle = acpClientLabel ?? _selectedProvider.executable;
+      final sessionTitle = acpClientLabel ?? providerForSession.executable;
       final sessionId = await repository.insertSession(
         AiSessionsCompanion.insert(
           workspaceId: workspaceId,
@@ -532,7 +641,9 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
           metadata: drift.Value(
             jsonEncode(<String, dynamic>{
               'connectionId': connectionResult.connectionId,
-              'provider': _selectedProvider.name,
+              'provider': providerForSession.name,
+              'transport':
+                  providerForSession.capabilities.defaultTransport.name,
               'hostId': selectedHost.id,
               'workingDirectory': workingDirectory,
               ...?acpExecutableMetadata,
@@ -551,7 +662,7 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
         path: '/ai/session/$sessionId',
         queryParameters: <String, String>{
           'connectionId': connectionResult.connectionId!.toString(),
-          'provider': _selectedProvider.name,
+          'provider': providerForSession.name,
           'workingDir': workingDirectory,
           ...?acpExecutableQueryParam,
         },
@@ -595,6 +706,199 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
+  Future<_AiStartSessionLaunchSelection?>
+  _resolveClaudeOrCodexAdapterSelection({
+    required int connectionId,
+    required AiCliProvider provider,
+  }) async {
+    if (!_supportsRecommendedAcpAdapter(provider)) {
+      return _AiStartSessionLaunchSelection(provider: provider);
+    }
+
+    final isInstalled = await _isAcpAdapterInstalled(
+      connectionId: connectionId,
+      provider: provider,
+    );
+    if (isInstalled) {
+      _showSnackBar('Using acp-adapter for ${provider.executable}.');
+      return _recommendedAcpSelection(provider);
+    }
+
+    if (!mounted) {
+      return null;
+    }
+
+    final action = await _showAcpAdapterInstallDialog(provider: provider);
+    if (!mounted) {
+      return null;
+    }
+    switch (action) {
+      case _AcpAdapterPromptAction.install:
+        final installed = await _installAcpAdapter(
+          connectionId: connectionId,
+          provider: provider,
+        );
+        if (!installed) {
+          return null;
+        }
+        _showSnackBar(
+          'Installed acp-adapter. Starting ${provider.executable} via ACP.',
+        );
+        return _recommendedAcpSelection(provider);
+      case _AcpAdapterPromptAction.continueWithoutAdapter:
+        return _AiStartSessionLaunchSelection(provider: provider);
+      case _AcpAdapterPromptAction.cancel:
+      case null:
+        return null;
+    }
+  }
+
+  bool _supportsRecommendedAcpAdapter(AiCliProvider provider) =>
+      provider == AiCliProvider.claude || provider == AiCliProvider.codex;
+
+  _AiStartSessionLaunchSelection _recommendedAcpSelection(
+    AiCliProvider provider,
+  ) {
+    final presetId = switch (provider) {
+      AiCliProvider.claude => 'claude-acp',
+      AiCliProvider.codex => 'codex-acp',
+      _ => throw ArgumentError.value(provider, 'provider'),
+    };
+    final preset = knownAcpClientPresets.firstWhere(
+      (candidate) => candidate.id == presetId,
+    );
+    return _AiStartSessionLaunchSelection(
+      provider: AiCliProvider.acp,
+      executableOverride: preset.command,
+      acpClientLabel: preset.label,
+      acpClientId: preset.id,
+    );
+  }
+
+  Future<bool> _isAcpAdapterInstalled({
+    required int connectionId,
+    required AiCliProvider provider,
+  }) async {
+    final overrideChecker = widget.acpAdapterInstalledChecker;
+    if (overrideChecker != null) {
+      return overrideChecker(ref, connectionId, provider);
+    }
+    try {
+      final result = await _runRemoteCommand(
+        connectionId: connectionId,
+        command: _acpAdapterProbeCommand,
+      );
+      return result.exitCode == 0 && result.stdout.trim() == 'installed';
+    } on Exception catch (error) {
+      _showSnackBar('Unable to check acp-adapter on the remote host: $error');
+      return false;
+    }
+  }
+
+  Future<bool> _installAcpAdapter({
+    required int connectionId,
+    required AiCliProvider provider,
+  }) async {
+    final overrideInstaller = widget.acpAdapterInstaller;
+    if (overrideInstaller != null) {
+      return overrideInstaller(ref, connectionId, provider);
+    }
+    try {
+      final result = await _runRemoteCommand(
+        connectionId: connectionId,
+        command: _acpAdapterInstallCommand,
+      );
+      if (result.exitCode != 0) {
+        final summary = [
+          result.stderr.trim(),
+          result.stdout.trim(),
+        ].where((value) => value.isNotEmpty).join('\n').trim();
+        _showSnackBar(
+          summary.isEmpty
+              ? 'Unable to install acp-adapter on the remote host.'
+              : 'ACP adapter install failed: $summary',
+        );
+        return false;
+      }
+      return _isAcpAdapterInstalled(
+        connectionId: connectionId,
+        provider: provider,
+      );
+    } on Exception catch (error) {
+      _showSnackBar('ACP adapter install failed: $error');
+      return false;
+    }
+  }
+
+  Future<_RemoteCommandResult> _runRemoteCommand({
+    required int connectionId,
+    required String command,
+  }) async {
+    final session = ref
+        .read(activeSessionsProvider.notifier)
+        .getSession(connectionId);
+    if (session == null) {
+      throw StateError('SSH session $connectionId is no longer available.');
+    }
+    final process = await session.execute(
+      'sh -lc ${_shellSingleQuote(command)}',
+    );
+    final stdoutFuture = process.stdout
+        .cast<List<int>>()
+        .transform(utf8.decoder)
+        .join();
+    final stderrFuture = process.stderr
+        .cast<List<int>>()
+        .transform(utf8.decoder)
+        .join();
+    await process.done;
+    return _RemoteCommandResult(
+      stdout: await stdoutFuture,
+      stderr: await stderrFuture,
+      exitCode: process.exitCode,
+    );
+  }
+
+  Future<_AcpAdapterPromptAction?> _showAcpAdapterInstallDialog({
+    required AiCliProvider provider,
+  }) => showDialog<_AcpAdapterPromptAction>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      key: const Key('ai-acp-adapter-install-dialog'),
+      title: Text('Install ACP adapter for ${provider.executable}?'),
+      content: Text(
+        '${provider.executable} works best in MonkeySSH through `acp-adapter`, '
+        'which enables the native ACP chat flow for slash commands, tool calls, '
+        'and session control.\n\n'
+        'MonkeySSH can install the adapter on the remote host now and then start '
+        'the session using the ACP bridge automatically.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () =>
+              Navigator.of(dialogContext).pop(_AcpAdapterPromptAction.cancel),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          key: const Key('ai-continue-without-acp-adapter-button'),
+          onPressed: () => Navigator.of(
+            dialogContext,
+          ).pop(_AcpAdapterPromptAction.continueWithoutAdapter),
+          child: const Text('Continue Directly'),
+        ),
+        FilledButton(
+          key: const Key('ai-install-acp-adapter-button'),
+          onPressed: () =>
+              Navigator.of(dialogContext).pop(_AcpAdapterPromptAction.install),
+          child: const Text('Install Adapter'),
+        ),
+      ],
+    ),
+  );
+
+  String _shellSingleQuote(String value) =>
+      "'${value.replaceAll("'", r"'\''")}'";
+
   /// Restores the last-used provider and ACP preset from the most recent
   /// session metadata.
   Future<void> _restoreLastUsedProviderSelection() async {
@@ -612,13 +916,13 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
     }
     final metadata = AiSessionMetadata.decode(latestEntry.metadata);
     final provider = AiSessionMetadata.readProvider(metadata);
-    if (provider != null && mounted) {
+    if (provider != null && mounted && !_providerSelectionTouched) {
       setState(() {
         _selectedProvider = provider;
       });
     }
     final acpClientId = AiSessionMetadata.readString(metadata, 'acpClientId');
-    if (acpClientId != null && mounted) {
+    if (acpClientId != null && mounted && !_acpClientSelectionTouched) {
       setState(() {
         _selectedAcpClientId = acpClientId;
       });
@@ -640,6 +944,43 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
     }
     return null;
   }
+
+  String get _resolvedAcpClientSelection =>
+      _isValidAcpClientSelection(_selectedAcpClientId)
+      ? _selectedAcpClientId
+      : knownAcpClientPresets.first.id;
+
+  bool _isValidAcpClientSelection(String clientId) =>
+      clientId == _customAcpClientId ||
+      knownAcpClientPresets.any((preset) => preset.id == clientId);
+}
+
+enum _AcpAdapterPromptAction { install, continueWithoutAdapter, cancel }
+
+class _AiStartSessionLaunchSelection {
+  const _AiStartSessionLaunchSelection({
+    required this.provider,
+    this.executableOverride,
+    this.acpClientLabel,
+    this.acpClientId,
+  });
+
+  final AiCliProvider provider;
+  final String? executableOverride;
+  final String? acpClientLabel;
+  final String? acpClientId;
+}
+
+class _RemoteCommandResult {
+  const _RemoteCommandResult({
+    required this.stdout,
+    required this.stderr,
+    required this.exitCode,
+  });
+
+  final String stdout;
+  final String stderr;
+  final int? exitCode;
 }
 
 final _aiHostsProvider = FutureProvider.autoDispose<List<Host>>((ref) {
@@ -648,40 +989,52 @@ final _aiHostsProvider = FutureProvider.autoDispose<List<Host>>((ref) {
 });
 
 final _recentAiSessionsProvider =
-    FutureProvider.autoDispose<List<_AiSessionResumeSummary>>((ref) async {
-      final repository = ref.watch(aiRepositoryProvider);
-      final sessions = await repository.getRecentSessions();
-      return Future.wait(
-        sessions.map((session) async {
-          final workspace = await repository.getWorkspaceById(
-            session.workspaceId,
-          );
-          final timelineEntry = await repository.getLatestTimelineEntry(
-            session.id,
-          );
-          final metadata = AiSessionMetadata.decode(timelineEntry?.metadata);
-          return _AiSessionResumeSummary(
-            sessionId: session.id,
-            title: session.title,
-            provider: AiSessionMetadata.readProvider(metadata),
-            executableOverride: AiSessionMetadata.readString(
-              metadata,
-              'executableOverride',
+    StreamProvider.autoDispose<List<_AiSessionResumeSummary>>(
+      (ref) => ref
+          .watch(aiRepositoryProvider)
+          .watchRecentSessions()
+          .asyncMap(
+            (sessions) => Future.wait(
+              sessions.map((session) async {
+                final repository = ref.read(aiRepositoryProvider);
+                final workspace = await repository.getWorkspaceById(
+                  session.workspaceId,
+                );
+                final timelineEntry = await repository.getLatestTimelineEntry(
+                  session.id,
+                );
+                final metadata = AiSessionMetadata.decode(
+                  timelineEntry?.metadata,
+                );
+                return _AiSessionResumeSummary(
+                  sessionId: session.id,
+                  title: session.title,
+                  provider: AiSessionMetadata.readProvider(metadata),
+                  executableOverride: AiSessionMetadata.readString(
+                    metadata,
+                    'executableOverride',
+                  ),
+                  acpClientLabel: AiSessionMetadata.readString(
+                    metadata,
+                    'acpClientLabel',
+                  ),
+                  connectionId: AiSessionMetadata.readInt(
+                    metadata,
+                    'connectionId',
+                  ),
+                  hostId: AiSessionMetadata.readInt(metadata, 'hostId'),
+                  workingDirectory:
+                      AiSessionMetadata.readString(
+                        metadata,
+                        'workingDirectory',
+                      ) ??
+                      workspace?.path ??
+                      '~',
+                );
+              }),
             ),
-            acpClientLabel: AiSessionMetadata.readString(
-              metadata,
-              'acpClientLabel',
-            ),
-            connectionId: AiSessionMetadata.readInt(metadata, 'connectionId'),
-            hostId: AiSessionMetadata.readInt(metadata, 'hostId'),
-            workingDirectory:
-                AiSessionMetadata.readString(metadata, 'workingDirectory') ??
-                workspace?.path ??
-                '~',
-          );
-        }),
-      );
-    });
+          ),
+    );
 
 class _AiSessionResumeSummary {
   const _AiSessionResumeSummary({

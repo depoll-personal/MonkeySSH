@@ -123,36 +123,91 @@ void main() {
       expect(shell.executedRunInPty, const <bool>[false]);
     });
 
-    test('send writes to stdin and throws when runtime is inactive', () async {
+    test('launch honors PTY overrides for headless prompt runs', () async {
       final process = _FakeRuntimeProcess();
       final shell = _FakeRuntimeShell(
         processes: <_FakeRuntimeProcess>[process],
       );
       final service = AiRuntimeService(
         shellResolver: _FakeRuntimeShellResolver(<int, AiRuntimeShell>{
-          99: shell,
+          90: shell,
         }),
       );
       addTearDown(service.dispose);
 
       await service.launch(
         const AiRuntimeLaunchRequest(
-          aiSessionId: 11,
-          connectionId: 99,
+          aiSessionId: 14,
+          connectionId: 90,
           provider: AiCliProvider.claude,
           remoteWorkingDirectory: '/repo',
+          runInPtyOverride: false,
+          extraArguments: <String>['-p', 'hello'],
+        ),
+      );
+
+      expect(shell.executedRunInPty, const <bool>[false]);
+    });
+
+    test(
+      'send writes carriage return for PTY sessions and throws when runtime is inactive',
+      () async {
+        final process = _FakeRuntimeProcess();
+        final shell = _FakeRuntimeShell(
+          processes: <_FakeRuntimeProcess>[process],
+        );
+        final service = AiRuntimeService(
+          shellResolver: _FakeRuntimeShellResolver(<int, AiRuntimeShell>{
+            99: shell,
+          }),
+        );
+        addTearDown(service.dispose);
+
+        await service.launch(
+          const AiRuntimeLaunchRequest(
+            aiSessionId: 11,
+            connectionId: 99,
+            provider: AiCliProvider.claude,
+            remoteWorkingDirectory: '/repo',
+          ),
+        );
+        await service.send('test-input', appendNewline: true);
+        expect(process.writes, const <String>['test-input\r']);
+
+        await process.finish(exitCode: 0);
+        await Future<void>.delayed(Duration.zero);
+
+        await expectLater(
+          () => service.send('later'),
+          throwsA(isA<AiRuntimeServiceException>()),
+        );
+      },
+    );
+
+    test('send keeps newline for non-PTY sessions', () async {
+      final process = _FakeRuntimeProcess();
+      final shell = _FakeRuntimeShell(
+        processes: <_FakeRuntimeProcess>[process],
+      );
+      final service = AiRuntimeService(
+        shellResolver: _FakeRuntimeShellResolver(<int, AiRuntimeShell>{
+          100: shell,
+        }),
+      );
+      addTearDown(service.dispose);
+
+      await service.launch(
+        const AiRuntimeLaunchRequest(
+          aiSessionId: 15,
+          connectionId: 100,
+          provider: AiCliProvider.claude,
+          remoteWorkingDirectory: '/repo',
+          runInPtyOverride: false,
         ),
       );
       await service.send('test-input', appendNewline: true);
+
       expect(process.writes, const <String>['test-input\n']);
-
-      await process.finish(exitCode: 0);
-      await Future<void>.delayed(Duration.zero);
-
-      await expectLater(
-        () => service.send('later'),
-        throwsA(isA<AiRuntimeServiceException>()),
-      );
     });
 
     test(
@@ -253,8 +308,8 @@ void main() {
 
       await service.send('first', appendNewline: true, aiSessionId: 101);
       await service.send('second', appendNewline: true, aiSessionId: 202);
-      expect(firstProcess.writes, const <String>['first\n']);
-      expect(secondProcess.writes, const <String>['second\n']);
+      expect(firstProcess.writes, const <String>['first\r']);
+      expect(secondProcess.writes, const <String>['second\r']);
       await expectLater(
         () => service.send('ambiguous', appendNewline: true),
         throwsA(isA<AiRuntimeServiceException>()),

@@ -12,6 +12,8 @@ import '../../data/database/database.dart';
 import '../../data/repositories/ai_repository.dart';
 import '../../domain/models/ai_cli_provider.dart';
 import '../../domain/services/acp_client.dart';
+import '../../domain/services/ai_cli_launch_arguments_builder.dart';
+import '../../domain/services/ai_cli_session_preferences.dart';
 import '../../domain/services/ai_runtime_event_parser_pipeline.dart';
 import '../../domain/services/ai_runtime_service.dart';
 import '../../domain/services/ai_session_metadata.dart';
@@ -68,9 +70,12 @@ class AiChatSessionScreen extends ConsumerStatefulWidget {
 }
 
 class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
+  static const AiCliLaunchArgumentsBuilder _launchArgumentsBuilder =
+      AiCliLaunchArgumentsBuilder();
   late final TextEditingController _promptController;
   late final FocusNode _promptFocusNode;
   late final ScrollController _scrollController;
+  late final AiRepository _aiRepository;
   late AiComposerAutocompleteEngine _composerAutocompleteEngine;
 
   StreamSubscription<AiTimelineEvent>? _runtimeTimelineSubscription;
@@ -88,6 +93,9 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
   String? _acpSessionTitle;
   String? _savedAcpModelId;
   String? _savedAcpModeId;
+  String? _savedProviderSessionId;
+  String? _savedSystemPrompt;
+  String? _savedAppendSystemPrompt;
   List<String> _availableSlashCommands = const <String>[];
 
   /// Buffers for aggregating streaming ACP chunks into single timeline entries.
@@ -102,6 +110,8 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
   bool _runtimeStarted = false;
   bool _reconnecting = false;
   bool _sending = false;
+  bool _awaitingInteractiveTurnCompletion = false;
+  Timer? _interactiveTurnIdleTimer;
   var _lastRenderedTimelineCount = 0;
   _RuntimeAttachmentState _runtimeAttachmentState =
       _RuntimeAttachmentState.restoring;
@@ -112,6 +122,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     _promptController = TextEditingController();
     _promptFocusNode = FocusNode();
     _scrollController = ScrollController();
+    _aiRepository = ref.read(aiRepositoryProvider);
     _availableSlashCommands = _baseSlashCommands(
       widget.provider ?? AiCliProvider.claude,
     );
@@ -144,6 +155,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     _promptController.dispose();
     _promptFocusNode.dispose();
     _scrollController.dispose();
+    _interactiveTurnIdleTimer?.cancel();
     unawaited(_runtimeTimelineSubscription?.cancel());
     unawaited(_disposeAcpClientState());
     super.dispose();
@@ -199,11 +211,18 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       entries: timelineEntries,
     );
     final contextLabel = _contextRemainingLabel(entries: timelineEntries);
+    final transportLabel = _currentTransportLabel(acpSession: acpSession);
 
     return Scaffold(
       appBar: AppBar(
         title: Text(_acpSessionTitle ?? 'AI Session #${widget.sessionId}'),
         actions: [
+          IconButton(
+            key: const Key('ai-session-preferences-button'),
+            icon: const Icon(Icons.tune_outlined),
+            tooltip: 'Session preferences',
+            onPressed: _showSessionPreferencesSheet,
+          ),
           if (isAcp && _sending)
             IconButton(
               icon: const Icon(Icons.stop_circle_outlined),
@@ -327,7 +346,8 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  'Model: $modelLabel · $contextLabel · Mode: $modeLabel',
+                  'Model: $modelLabel · $contextLabel · Mode: $modeLabel · '
+                  'Transport: $transportLabel',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: theme.textTheme.labelSmall,
@@ -503,6 +523,272 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           ),
         );
       },
+    );
+  }
+
+  void _showSessionPreferencesSheet() {
+    final sessionContext = _sessionContext;
+    if (sessionContext == null) {
+      return;
+    }
+    final provider = sessionContext.provider;
+    final supportedTransports = provider.capabilities.supportedTransports;
+    final preferences = _sessionPreferences();
+    final supportsModel = preferences.supportsModelSelection(provider);
+    final supportsMode = preferences.supportsModeSelection(provider);
+    final supportsSystemPrompt = preferences.supportsSystemPrompt(provider);
+    final supportsAppendSystemPrompt = preferences.supportsAppendSystemPrompt(
+      provider,
+    );
+    final modelController = TextEditingController(text: _savedAcpModelId ?? '');
+    final modeController = TextEditingController(text: _savedAcpModeId ?? '');
+    final systemPromptController = TextEditingController(
+      text: _savedSystemPrompt ?? '',
+    );
+    final appendSystemPromptController = TextEditingController(
+      text: _savedAppendSystemPrompt ?? '',
+    );
+    var selectedTransport = sessionContext.transport;
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setModalState) => Padding(
+          padding: EdgeInsets.only(
+            left: 16,
+            right: 16,
+            top: 8,
+            bottom: MediaQuery.viewInsetsOf(context).bottom + 16,
+          ),
+          child: SafeArea(
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Session preferences',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '${provider.executable} · ${selectedTransport.label}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  if (_savedProviderSessionId != null) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      'Provider session: $_savedProviderSessionId',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                  const SizedBox(height: 16),
+                  if (supportedTransports.length > 1) ...[
+                    DropdownButtonFormField<AiCliTransport>(
+                      key: const Key('ai-session-transport-field'),
+                      initialValue: selectedTransport,
+                      decoration: const InputDecoration(labelText: 'Transport'),
+                      items: supportedTransports
+                          .map(
+                            (transport) => DropdownMenuItem<AiCliTransport>(
+                              value: transport,
+                              child: Text(transport.label),
+                            ),
+                          )
+                          .toList(growable: false),
+                      onChanged: (value) {
+                        if (value == null) {
+                          return;
+                        }
+                        setModalState(() {
+                          selectedTransport = value;
+                        });
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                  if (!supportsModel &&
+                      !supportsMode &&
+                      !supportsSystemPrompt &&
+                      !supportsAppendSystemPrompt)
+                    Text(
+                      'This provider does not expose editable launch-time '
+                      'steering settings in MonkeySSH yet.',
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                  if (supportsModel) ...[
+                    TextField(
+                      key: const Key('ai-session-model-field'),
+                      controller: modelController,
+                      decoration: const InputDecoration(
+                        labelText: 'Model',
+                        hintText: 'Leave empty to use provider default',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                  if (supportsMode) ...[
+                    TextField(
+                      key: const Key('ai-session-mode-field'),
+                      controller: modeController,
+                      decoration: const InputDecoration(
+                        labelText: 'Mode / approval policy',
+                        hintText: 'Example: plan, auto_edit, on-request',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                  if (supportsSystemPrompt) ...[
+                    TextField(
+                      key: const Key('ai-session-system-prompt-field'),
+                      controller: systemPromptController,
+                      minLines: 2,
+                      maxLines: 6,
+                      decoration: const InputDecoration(
+                        labelText: 'System prompt',
+                        hintText: 'Replace the provider system prompt',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                  if (supportsAppendSystemPrompt) ...[
+                    TextField(
+                      key: const Key('ai-session-append-system-prompt-field'),
+                      controller: appendSystemPromptController,
+                      minLines: 2,
+                      maxLines: 6,
+                      decoration: const InputDecoration(
+                        labelText: 'Append system prompt',
+                        hintText:
+                            'Append instructions to the default system prompt',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                  if (_acpSession != null &&
+                      selectedTransport == AiCliTransport.acp) ...[
+                    Text(
+                      'ACP model and mode changes are applied live from the '
+                      'toolbar menus above.',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      TextButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        child: const Text('Cancel'),
+                      ),
+                      const SizedBox(width: 8),
+                      FilledButton(
+                        onPressed: () async {
+                          Navigator.of(context).pop();
+                          await _saveSessionPreferences(
+                            transport: selectedTransport,
+                            modelId: _normalizeOptionalField(
+                              modelController.text,
+                            ),
+                            modeId: _normalizeOptionalField(
+                              modeController.text,
+                            ),
+                            systemPrompt: _normalizeOptionalField(
+                              systemPromptController.text,
+                            ),
+                            appendSystemPrompt: _normalizeOptionalField(
+                              appendSystemPromptController.text,
+                            ),
+                          );
+                        },
+                        child: const Text('Save'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  String? _normalizeOptionalField(String value) {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) {
+      return null;
+    }
+    return trimmed;
+  }
+
+  Future<void> _saveSessionPreferences({
+    required AiCliTransport transport,
+    required String? modelId,
+    required String? modeId,
+    required String? systemPrompt,
+    required String? appendSystemPrompt,
+  }) async {
+    final previousContext = _sessionContext;
+    final transportChanged =
+        previousContext != null && previousContext.transport != transport;
+    if (mounted) {
+      setState(() {
+        if (previousContext != null) {
+          _sessionContext = previousContext.copyWith(transport: transport);
+        }
+        _savedAcpModelId = modelId;
+        _savedAcpModeId = modeId;
+        _savedSystemPrompt = systemPrompt;
+        _savedAppendSystemPrompt = appendSystemPrompt;
+      });
+    } else {
+      if (previousContext != null) {
+        _sessionContext = previousContext.copyWith(transport: transport);
+      }
+      _savedAcpModelId = modelId;
+      _savedAcpModeId = modeId;
+      _savedSystemPrompt = systemPrompt;
+      _savedAppendSystemPrompt = appendSystemPrompt;
+    }
+
+    if (transportChanged) {
+      final runtimeService = ref.read(aiRuntimeServiceProvider);
+      if (runtimeService.hasActiveRunForSession(widget.sessionId)) {
+        try {
+          await runtimeService.cancel(aiSessionId: widget.sessionId);
+        } on AiRuntimeServiceException {
+          // Runtime may already have exited.
+        }
+      }
+      _runtimeStarted = false;
+      await _disposeAcpClientState();
+      _availableSlashCommands = _baseSlashCommands(
+        _sessionContext?.provider ?? AiCliProvider.claude,
+      );
+      _composerAutocompleteEngine = AiComposerAutocompleteEngine(
+        slashCommands: _availableSlashCommands,
+      );
+    }
+
+    final context = _sessionContext;
+    final message = switch (context?.transport) {
+      AiCliTransport.headlessPrompt when transportChanged =>
+        'Session preferences saved. Prompt transport will relaunch on the next turn.',
+      AiCliTransport.headlessPrompt =>
+        'Session preferences saved. The next prompt will use the updated launch settings.',
+      AiCliTransport.persistentShell =>
+        'Session preferences saved. The interactive runtime will relaunch on the next prompt.',
+      AiCliTransport.acp when transportChanged =>
+        'Session preferences saved. ACP transport will reinitialize on the next prompt.',
+      AiCliTransport.acp || null => 'Session preferences saved.',
+    };
+    await _persistTimelineEntrySafely(
+      role: 'status',
+      message: message,
+      metadata: _sessionPreferences().toMetadata(),
     );
   }
 
@@ -769,7 +1055,11 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
                         controller: _promptController,
                         maxLines: 4,
                         textInputAction: TextInputAction.send,
-                        onSubmitted: (_) => unawaited(_sendPrompt()),
+                        onSubmitted: (_) {
+                          if (_canAttemptPromptSend) {
+                            unawaited(_sendPrompt());
+                          }
+                        },
                         decoration: const InputDecoration(
                           hintText: 'Send a prompt…',
                           border: OutlineInputBorder(),
@@ -798,9 +1088,10 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
                   ],
                   const SizedBox(width: 8),
                   FilledButton(
-                    onPressed: _sending || _sessionContext == null
-                        ? null
-                        : () => unawaited(_sendPrompt()),
+                    key: const Key('ai-chat-send-button'),
+                    onPressed: _canAttemptPromptSend
+                        ? () => unawaited(_sendPrompt())
+                        : null,
                     child: _sending
                         ? const SizedBox.square(
                             dimension: 14,
@@ -986,7 +1277,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
   }
 
   Future<_AiSessionRuntimeContext> _loadSessionRuntimeContext() async {
-    final repository = ref.read(aiRepositoryProvider);
+    final repository = _aiRepository;
     final session = await repository.getSessionById(widget.sessionId);
     if (session == null) {
       throw StateError('Session ${widget.sessionId} not found.');
@@ -1003,6 +1294,10 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         widget.provider ??
         AiSessionMetadata.readProvider(latestMetadata) ??
         AiCliProvider.claude;
+    final transport = _resolvePreferredTransport(
+      provider: provider,
+      savedTransport: AiSessionMetadata.readTransport(latestMetadata),
+    );
     final executableOverride =
         widget.executableOverride ??
         AiSessionMetadata.readString(latestMetadata, 'executableOverride');
@@ -1025,6 +1320,18 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       latestMetadata,
       'currentModeId',
     );
+    _savedProviderSessionId = AiSessionMetadata.readString(
+      latestMetadata,
+      'providerSessionId',
+    );
+    _savedSystemPrompt = AiSessionMetadata.readString(
+      latestMetadata,
+      'systemPrompt',
+    );
+    _savedAppendSystemPrompt = AiSessionMetadata.readString(
+      latestMetadata,
+      'appendSystemPrompt',
+    );
     _acpSessionTitle = AiSessionMetadata.readString(
       latestMetadata,
       'acpSessionTitle',
@@ -1034,6 +1341,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       connectionId: connectionId,
       hostId: hostId,
       provider: provider,
+      transport: transport,
       executableOverride: executableOverride,
       remoteWorkingDirectory: remoteWorkingDirectory,
       resumedSession: widget.isResumeRequest || widget.connectionId == null,
@@ -1077,11 +1385,48 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       ref.read(activeSessionsProvider.notifier).getSession(connectionId) !=
       null;
 
-  bool _prefersAcpTransport(AiCliProvider provider) =>
-      provider.capabilities.supportsAcp;
+  AiCliTransport _resolvePreferredTransport({
+    required AiCliProvider provider,
+    AiCliTransport? savedTransport,
+  }) {
+    final capabilities = provider.capabilities;
+    if (savedTransport != null &&
+        capabilities.supportsTransport(savedTransport)) {
+      return savedTransport;
+    }
+    return capabilities.defaultTransport;
+  }
 
-  bool _requiresAcpTransport(AiCliProvider provider) =>
-      provider == AiCliProvider.acp;
+  String _transportStatusLabel(AiCliTransport transport) => switch (transport) {
+    AiCliTransport.acp => 'ACP transport',
+    AiCliTransport.persistentShell => 'interactive transport',
+    AiCliTransport.headlessPrompt => 'prompt transport',
+  };
+
+  String _currentTransportLabel({required AcpSession? acpSession}) {
+    if (acpSession != null) {
+      return AiCliTransport.acp.label;
+    }
+    return _sessionContext?.transport.label ?? '--';
+  }
+
+  AiCliSessionPreferences _sessionPreferences() => AiCliSessionPreferences(
+    providerSessionId: _savedProviderSessionId,
+    modelId: _savedAcpModelId,
+    modeId: _savedAcpModeId,
+    systemPrompt: _savedSystemPrompt,
+    appendSystemPrompt: _savedAppendSystemPrompt,
+  );
+
+  void _updateSessionContext(_AiSessionRuntimeContext nextContext) {
+    if (mounted) {
+      setState(() {
+        _sessionContext = nextContext;
+      });
+      return;
+    }
+    _sessionContext = nextContext;
+  }
 
   Future<void> _launchAdapterRuntime({
     required _AiSessionRuntimeContext context,
@@ -1098,6 +1443,54 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
             remoteWorkingDirectory: context.remoteWorkingDirectory,
           ),
         );
+  }
+
+  Future<void> _handleTransportFallback({
+    required _AiSessionRuntimeContext context,
+    required int connectionId,
+  }) async {
+    _acpUnavailableForSession = true;
+    final runtimeService = ref.read(aiRuntimeServiceProvider);
+    if (runtimeService.hasActiveRunForSession(widget.sessionId)) {
+      try {
+        await runtimeService.cancel(aiSessionId: widget.sessionId);
+      } on AiRuntimeServiceException {
+        // Runtime may have already exited before cancellation.
+      }
+    }
+
+    final fallbackTransport = context.provider.capabilities
+        .fallbackTransportFor(context.transport);
+    if (fallbackTransport == null) {
+      _runtimeStarted = false;
+      await _insertTimelineEntry(
+        role: 'error',
+        message:
+            '${_transportStatusLabel(context.transport)} is unavailable for '
+            '${context.provider.executable}, and no fallback transport is '
+            'configured.',
+      );
+      return;
+    }
+
+    final nextContext = context.copyWith(transport: fallbackTransport);
+    _updateSessionContext(nextContext);
+    if (fallbackTransport == AiCliTransport.persistentShell) {
+      await _launchAdapterRuntime(
+        context: nextContext,
+        connectionId: connectionId,
+      );
+      _runtimeStarted = true;
+    } else {
+      _runtimeStarted = false;
+    }
+    await _insertTimelineEntry(
+      role: 'status',
+      message:
+          '${_transportStatusLabel(context.transport)} unavailable for '
+          '${context.provider.executable}; switched to '
+          '${_transportStatusLabel(fallbackTransport)}.',
+    );
   }
 
   Future<void> _startRuntimeIfNeeded({bool force = false}) async {
@@ -1117,13 +1510,14 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       return;
     }
 
-    final useAcp = _prefersAcpTransport(context.provider);
-    final requiresAcp = _requiresAcpTransport(context.provider);
+    final transport = context.transport;
+    final useAcp = transport == AiCliTransport.acp;
+    final useHeadlessPromptMode = transport == AiCliTransport.headlessPrompt;
     final hasActiveRun = runtimeService.hasActiveRunForSession(
       widget.sessionId,
     );
     if ((_runtimeStarted && hasActiveRun) || hasActiveRun) {
-      _runtimeStarted = true;
+      _runtimeStarted = !useHeadlessPromptMode;
       if (mounted) {
         setState(() {
           _runtimeAttachmentState = context.resumedSession
@@ -1132,22 +1526,32 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         });
       }
       if (useAcp && _acpClient == null && !_acpUnavailableForSession) {
-        final acpReady = await _initializeAcpClient(
-          context,
-          emitFailure: requiresAcp,
-        );
+        final acpReady = await _initializeAcpClient(context);
         if (acpReady) {
           _acpUnavailableForSession = false;
         }
-        if (!acpReady && !requiresAcp) {
-          _acpUnavailableForSession = true;
-          await _insertTimelineEntry(
-            role: 'status',
-            message:
-                'ACP unavailable for ${context.provider.executable}; using provider adapter mode.',
+        if (!acpReady) {
+          await _handleTransportFallback(
+            context: context,
+            connectionId: connectionId,
           );
         }
       }
+      return;
+    }
+    if (useHeadlessPromptMode) {
+      _runtimeStarted = false;
+      if (mounted) {
+        setState(() {
+          _runtimeAttachmentState = context.resumedSession
+              ? _RuntimeAttachmentState.resumed
+              : _RuntimeAttachmentState.attached;
+        });
+      }
+      await _aiRepository.updateSessionStatus(
+        sessionId: widget.sessionId,
+        status: 'active',
+      );
       return;
     }
     if (_runtimeStarted) {
@@ -1157,6 +1561,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     _runtimeStarted = true;
     _acpUnavailableForSession = false;
     try {
+      final preferences = _sessionPreferences();
       await runtimeService.launch(
         AiRuntimeLaunchRequest(
           aiSessionId: widget.sessionId,
@@ -1165,8 +1570,16 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           executableOverride: context.executableOverride,
           remoteWorkingDirectory: context.remoteWorkingDirectory,
           structuredOutput:
-              !useAcp && context.provider.capabilities.supportsStructuredOutput,
+              useHeadlessPromptMode &&
+              context.provider.capabilities.supportsStructuredOutput,
           acpMode: useAcp,
+          extraArguments: useAcp
+              ? const <String>[]
+              : _launchArgumentsBuilder.buildPersistentLaunchArguments(
+                  provider: context.provider,
+                  preferences: preferences,
+                  resumedSession: context.resumedSession,
+                ),
         ),
       );
 
@@ -1178,36 +1591,21 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         });
       }
       if (useAcp) {
-        final acpReady = await _initializeAcpClient(
-          context,
-          emitFailure: requiresAcp,
-        );
+        final acpReady = await _initializeAcpClient(context);
         if (acpReady) {
           _acpUnavailableForSession = false;
         }
-        if (!acpReady && !requiresAcp) {
-          _acpUnavailableForSession = true;
-          if (runtimeService.hasActiveRunForSession(widget.sessionId)) {
-            try {
-              await runtimeService.cancel(aiSessionId: widget.sessionId);
-            } on AiRuntimeServiceException {
-              // Runtime may have already exited before cancellation.
-            }
-          }
-          await _launchAdapterRuntime(
+        if (!acpReady) {
+          await _handleTransportFallback(
             context: context,
             connectionId: connectionId,
           );
-          await _insertTimelineEntry(
-            role: 'status',
-            message:
-                'ACP unavailable for ${context.provider.executable}; switched to provider adapter mode.',
-          );
         }
       }
-      await ref
-          .read(aiRepositoryProvider)
-          .updateSessionStatus(sessionId: widget.sessionId, status: 'active');
+      await _aiRepository.updateSessionStatus(
+        sessionId: widget.sessionId,
+        status: 'active',
+      );
     } on Exception catch (exception) {
       _runtimeStarted = false;
       await _insertTimelineEntry(
@@ -1460,6 +1858,20 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     return shellEscape(trimmed);
   }
 
+  bool get _canAttemptPromptSend {
+    final context = _sessionContext;
+    if (_sending || context == null) {
+      return false;
+    }
+    if (_runtimeAttachmentState == _RuntimeAttachmentState.detached) {
+      return true;
+    }
+    if (widget.autoStartRuntime && context.transport == AiCliTransport.acp) {
+      return _acpClient != null && _acpSession != null;
+    }
+    return true;
+  }
+
   Future<void> _sendPrompt() async {
     final promptText = _promptController.text;
     if (promptText.trim().isEmpty || _sending) {
@@ -1480,27 +1892,17 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     setState(() {
       _sending = true;
     });
+    var awaitingInteractiveTurnCompletion = false;
 
     try {
       await _insertTimelineEntry(role: 'user', message: prompt);
-      if (context.provider == AiCliProvider.claude) {
-        await _runClaudePrompt(prompt: outboundPrompt);
-        return;
-      }
-      if (context.provider == AiCliProvider.codex) {
-        await _runCodexPrompt(prompt: outboundPrompt);
-        return;
-      }
-      if (context.provider == AiCliProvider.opencode) {
-        await _runOpenCodePrompt(prompt: outboundPrompt);
-        return;
-      }
       if (widget.autoStartRuntime &&
           _runtimeAttachmentState != _RuntimeAttachmentState.detached) {
         await _startRuntimeIfNeeded(force: true);
         if (_runtimeAttachmentState == _RuntimeAttachmentState.detached) {
           return;
         }
+        final activeContext = _sessionContext ?? context;
 
         // Use ACP protocol whenever an ACP session is active.
         final acpClient = _acpClient;
@@ -1513,7 +1915,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           );
           return;
         }
-        if (context.provider == AiCliProvider.acp) {
+        if (activeContext.transport == AiCliTransport.acp) {
           await _insertTimelineEntry(
             role: 'error',
             message:
@@ -1522,7 +1924,15 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           return;
         }
 
-        // Adapter mode: raw stdin transport for non-ACP providers.
+        if (activeContext.transport == AiCliTransport.headlessPrompt) {
+          await _runHeadlessPrompt(
+            context: activeContext,
+            prompt: outboundPrompt,
+          );
+          return;
+        }
+
+        // Interactive shell mode: raw stdin transport for long-lived providers.
         await ref
             .read(aiRuntimeServiceProvider)
             .send(
@@ -1530,6 +1940,8 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
               appendNewline: true,
               aiSessionId: widget.sessionId,
             );
+        awaitingInteractiveTurnCompletion = true;
+        _awaitingInteractiveTurnCompletion = true;
       } else {
         await _insertTimelineEntry(
           role: 'status',
@@ -1543,11 +1955,44 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         message: 'Unable to send prompt: $exception',
       );
     } finally {
-      if (mounted) {
+      if (mounted && !awaitingInteractiveTurnCompletion) {
         setState(() {
           _sending = false;
         });
       }
+    }
+  }
+
+  Future<void> _runHeadlessPrompt({
+    required _AiSessionRuntimeContext context,
+    required String prompt,
+  }) async {
+    final connectionId = context.connectionId;
+    if (connectionId == null) {
+      await _insertTimelineEntry(
+        role: 'error',
+        message: 'No active SSH connection is available for this prompt.',
+      );
+      return;
+    }
+    final runtimeService = ref.read(aiRuntimeServiceProvider);
+    await runtimeService.launch(
+      AiRuntimeLaunchRequest(
+        aiSessionId: widget.sessionId,
+        connectionId: connectionId,
+        provider: context.provider,
+        executableOverride: context.executableOverride,
+        remoteWorkingDirectory: context.remoteWorkingDirectory,
+        extraArguments: _headlessPromptArguments(
+          provider: context.provider,
+          prompt: prompt,
+        ),
+        runInPtyOverride: false,
+      ),
+    );
+    final process = runtimeService.getActiveProcess(widget.sessionId);
+    if (process != null) {
+      await process.done;
     }
   }
 
@@ -1976,9 +2421,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     if (entryId != null) {
       // Update the existing entry with accumulated text.
       unawaited(
-        ref
-            .read(aiRepositoryProvider)
-            .updateTimelineEntryMessage(entryId, buffer.toString()),
+        _aiRepository.updateTimelineEntryMessage(entryId, buffer.toString()),
       );
     } else {
       if (insertPendingGetter()) {
@@ -1994,9 +2437,10 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
               }
               if (insertedId != null) {
                 entryIdSetter(insertedId);
-                await ref
-                    .read(aiRepositoryProvider)
-                    .updateTimelineEntryMessage(insertedId, buffer.toString());
+                await _aiRepository.updateTimelineEntryMessage(
+                  insertedId,
+                  buffer.toString(),
+                );
               }
             })
             .whenComplete(() {
@@ -2020,52 +2464,6 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     _acpThoughtInsertPending = false;
   }
 
-  Future<void> _runClaudePrompt({required String prompt}) async {
-    await _runProviderPrompt(prompt: prompt);
-  }
-
-  Future<void> _runCodexPrompt({required String prompt}) async {
-    await _runProviderPrompt(prompt: prompt);
-  }
-
-  Future<void> _runOpenCodePrompt({required String prompt}) async {
-    await _runProviderPrompt(prompt: prompt);
-  }
-
-  Future<void> _runProviderPrompt({required String prompt}) async {
-    final outboundPrompt = _normalizePromptForDispatch(prompt);
-    if (widget.autoStartRuntime &&
-        _runtimeAttachmentState != _RuntimeAttachmentState.detached) {
-      await _startRuntimeIfNeeded(force: true);
-      if (_runtimeAttachmentState == _RuntimeAttachmentState.detached) {
-        return;
-      }
-      final acpClient = _acpClient;
-      final acpSession = _acpSession;
-      if (acpClient != null && acpSession != null) {
-        await _sendAcpPrompt(
-          client: acpClient,
-          sessionId: acpSession.sessionId,
-          prompt: outboundPrompt,
-        );
-        return;
-      }
-      await ref
-          .read(aiRuntimeServiceProvider)
-          .send(
-            outboundPrompt,
-            appendNewline: true,
-            aiSessionId: widget.sessionId,
-          );
-      return;
-    }
-    await _insertTimelineEntry(
-      role: 'status',
-      message:
-          'Runtime is detached. Prompt saved to transcript until reconnect.',
-    );
-  }
-
   String _normalizePromptForDispatch(String prompt) {
     final trimmedLeft = prompt.trimLeft();
     if (trimmedLeft.startsWith('/')) {
@@ -2073,6 +2471,15 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     }
     return prompt;
   }
+
+  List<String> _headlessPromptArguments({
+    required AiCliProvider provider,
+    required String prompt,
+  }) => _launchArgumentsBuilder.buildHeadlessPromptArguments(
+    provider: provider,
+    preferences: _sessionPreferences(),
+    prompt: prompt,
+  );
 
   Future<int?> _insertTimelineEntry({
     required String role,
@@ -2086,17 +2493,17 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       'runtimeState': _runtimeAttachmentState.name,
     };
     final encodedMetadata = _encodeTimelineMetadata(metadataPayload);
-    final insertedId = await ref
-        .read(aiRepositoryProvider)
-        .insertTimelineEntry(
-          AiTimelineEntriesCompanion.insert(
-            sessionId: widget.sessionId,
-            role: role,
-            message: message,
-            metadata: drift.Value(encodedMetadata),
-          ),
-        );
-    _scrollToBottom();
+    final insertedId = await _aiRepository.insertTimelineEntry(
+      AiTimelineEntriesCompanion.insert(
+        sessionId: widget.sessionId,
+        role: role,
+        message: message,
+        metadata: drift.Value(encodedMetadata),
+      ),
+    );
+    if (mounted) {
+      _scrollToBottom();
+    }
     return insertedId;
   }
 
@@ -2147,14 +2554,17 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     if (context == null) {
       return const <String, dynamic>{};
     }
+    final preferences = _sessionPreferences();
     return <String, dynamic>{
       'provider': context.provider.name,
+      'transport': context.transport.name,
       if (context.executableOverride != null)
         'executableOverride': context.executableOverride,
       'workingDirectory': context.remoteWorkingDirectory,
       'resumedSession': context.resumedSession,
       if (context.connectionId != null) 'connectionId': context.connectionId,
       if (context.hostId != null) 'hostId': context.hostId,
+      ...preferences.toMetadata(),
       if (_acpSessionTitle != null) 'acpSessionTitle': _acpSessionTitle,
       if (_acpSession?.currentModelId != null)
         'currentModelId': _acpSession!.currentModelId,
@@ -2169,9 +2579,10 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         _runtimeAttachmentState = _RuntimeAttachmentState.detached;
       });
     }
-    await ref
-        .read(aiRepositoryProvider)
-        .updateSessionStatus(sessionId: widget.sessionId, status: 'detached');
+    await _aiRepository.updateSessionStatus(
+      sessionId: widget.sessionId,
+      status: 'detached',
+    );
     await _insertTimelineEntry(
       role: 'status',
       message: message,
@@ -2229,6 +2640,44 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     if (timelineEvent.aiSessionId != widget.sessionId) {
       return;
     }
+    final nextProviderSessionId = AiSessionMetadata.readString(
+      timelineEvent.metadata,
+      'providerSessionId',
+    );
+    final nextModelId = AiSessionMetadata.readString(
+      timelineEvent.metadata,
+      'currentModelId',
+    );
+    final nextModeId = AiSessionMetadata.readString(
+      timelineEvent.metadata,
+      'currentModeId',
+    );
+    final nextSlashCommands = _parseTimelineSlashCommands(
+      timelineEvent.metadata['availableSlashCommands'],
+    );
+    if (nextProviderSessionId != null &&
+        nextProviderSessionId != _savedProviderSessionId) {
+      _savedProviderSessionId = nextProviderSessionId;
+    }
+    if (nextModelId != null && nextModelId != _savedAcpModelId) {
+      _savedAcpModelId = nextModelId;
+    }
+    if (nextModeId != null && nextModeId != _savedAcpModeId) {
+      _savedAcpModeId = nextModeId;
+    }
+    if (nextSlashCommands.isNotEmpty) {
+      final merged = LinkedHashSet<String>.from(
+        _baseSlashCommands(_sessionContext?.provider ?? timelineEvent.provider),
+      )..addAll(nextSlashCommands);
+      final nextCommands = merged.toList(growable: false);
+      if (!_listsEqual(_availableSlashCommands, nextCommands)) {
+        _availableSlashCommands = nextCommands;
+        _composerAutocompleteEngine = AiComposerAutocompleteEngine(
+          slashCommands: _availableSlashCommands,
+        );
+        unawaited(_refreshComposerSuggestions());
+      }
+    }
     final sanitizedMessage = _TimelineMarkdownBody.sanitizeText(
       timelineEvent.message,
     );
@@ -2248,12 +2697,23 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     if (timelineEvent.type == AiTimelineEventType.status) {
       final runtimeEventType = timelineEvent.metadata['runtimeEventType']
           ?.toString();
+      final turnLifecycle = timelineEvent.metadata['turnLifecycle']?.toString();
       if (runtimeEventType == AiRuntimeEventType.completed.name ||
           runtimeEventType == AiRuntimeEventType.cancelled.name) {
         _runtimeStarted = false;
+        _finishPromptSend();
       } else if (runtimeEventType == AiRuntimeEventType.started.name) {
         _runtimeStarted = true;
       }
+      if (turnLifecycle == 'completed') {
+        _finishPromptSend();
+      }
+    } else if (timelineEvent.type == AiTimelineEventType.error && _sending) {
+      _finishPromptSend();
+    }
+
+    if (_awaitingInteractiveTurnCompletion) {
+      _scheduleInteractiveTurnIdleCompletion();
     }
 
     // For ACP sessions, the AcpClient handles errors directly — downgrade
@@ -2280,6 +2740,26 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     );
   }
 
+  void _scheduleInteractiveTurnIdleCompletion() {
+    _interactiveTurnIdleTimer?.cancel();
+    _interactiveTurnIdleTimer = Timer(
+      const Duration(seconds: 2),
+      _finishPromptSend,
+    );
+  }
+
+  void _finishPromptSend() {
+    _interactiveTurnIdleTimer?.cancel();
+    _interactiveTurnIdleTimer = null;
+    _awaitingInteractiveTurnCompletion = false;
+    if (!_sending || !mounted) {
+      return;
+    }
+    setState(() {
+      _sending = false;
+    });
+  }
+
   void _handleRuntimeTimelineStreamError(Object error, StackTrace stackTrace) {
     unawaited(
       _persistTimelineEntrySafely(
@@ -2288,6 +2768,21 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         metadata: <String, dynamic>{'stackTrace': stackTrace.toString()},
       ),
     );
+  }
+
+  List<String> _parseTimelineSlashCommands(Object? value) {
+    if (value is! List<dynamic>) {
+      return const <String>[];
+    }
+    final commands = <String>[];
+    for (final entry in value) {
+      final command = entry?.toString().trim();
+      if (command == null || command.isEmpty) {
+        continue;
+      }
+      commands.add(command.startsWith('/') ? command : '/$command');
+    }
+    return commands;
   }
 
   void _scrollToBottom() {
@@ -2896,6 +3391,7 @@ class _AiSessionRuntimeContext {
     required this.connectionId,
     required this.hostId,
     required this.provider,
+    required this.transport,
     required this.executableOverride,
     required this.remoteWorkingDirectory,
     required this.resumedSession,
@@ -2904,6 +3400,7 @@ class _AiSessionRuntimeContext {
   final int? connectionId;
   final int? hostId;
   final AiCliProvider provider;
+  final AiCliTransport transport;
   final String? executableOverride;
   final String remoteWorkingDirectory;
   final bool resumedSession;
@@ -2912,6 +3409,7 @@ class _AiSessionRuntimeContext {
     int? connectionId,
     int? hostId,
     AiCliProvider? provider,
+    AiCliTransport? transport,
     String? executableOverride,
     String? remoteWorkingDirectory,
     bool? resumedSession,
@@ -2919,6 +3417,7 @@ class _AiSessionRuntimeContext {
     connectionId: connectionId ?? this.connectionId,
     hostId: hostId ?? this.hostId,
     provider: provider ?? this.provider,
+    transport: transport ?? this.transport,
     executableOverride: executableOverride ?? this.executableOverride,
     remoteWorkingDirectory:
         remoteWorkingDirectory ?? this.remoteWorkingDirectory,

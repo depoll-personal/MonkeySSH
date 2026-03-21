@@ -45,6 +45,7 @@ class AiRuntimeLaunchRequest {
     this.structuredOutput = false,
     this.acpMode = false,
     this.extraArguments = const <String>[],
+    this.runInPtyOverride,
   });
 
   /// AI session ID from the persistence layer.
@@ -70,6 +71,9 @@ class AiRuntimeLaunchRequest {
 
   /// Extra CLI arguments appended to the provider command.
   final List<String> extraArguments;
+
+  /// Optional PTY override for this specific launch.
+  final bool? runInPtyOverride;
 }
 
 /// Runtime event payload.
@@ -80,6 +84,7 @@ class AiRuntimeEvent {
     required this.aiSessionId,
     required this.connectionId,
     required this.provider,
+    this.structuredOutput,
     this.chunk,
     this.exitCode,
     this.error,
@@ -97,6 +102,9 @@ class AiRuntimeEvent {
 
   /// Provider associated with this event.
   final AiCliProvider provider;
+
+  /// Whether the associated runtime emits structured provider payloads.
+  final bool? structuredOutput;
 
   /// Incremental output content for stdout/stderr events.
   final String? chunk;
@@ -207,17 +215,25 @@ class SshAiRuntimeShell implements AiRuntimeShell {
 /// [AiRuntimeProcess] adapter for [SSHSession].
 class SshAiRuntimeProcess implements AiRuntimeProcess {
   /// Creates an [SshAiRuntimeProcess].
-  const SshAiRuntimeProcess(this._session);
+  SshAiRuntimeProcess(this._session)
+    : _stdout = _session.stdout
+          .cast<List<int>>()
+          .transform(utf8.decoder)
+          .asBroadcastStream(),
+      _stderr = _session.stderr
+          .cast<List<int>>()
+          .transform(utf8.decoder)
+          .asBroadcastStream();
 
   final SSHSession _session;
+  final Stream<String> _stdout;
+  final Stream<String> _stderr;
 
   @override
-  Stream<String> get stdout =>
-      _session.stdout.cast<List<int>>().transform(utf8.decoder);
+  Stream<String> get stdout => _stdout;
 
   @override
-  Stream<String> get stderr =>
-      _session.stderr.cast<List<int>>().transform(utf8.decoder);
+  Stream<String> get stderr => _stderr;
 
   @override
   Future<void> get done => _session.done;
@@ -340,6 +356,7 @@ class AiRuntimeService {
           aiSessionId: request.aiSessionId,
           connectionId: request.connectionId,
           provider: request.provider,
+          structuredOutput: request.structuredOutput,
         ),
       );
 
@@ -376,7 +393,11 @@ class AiRuntimeService {
       );
     }
 
-    final payload = appendNewline ? '$input\n' : input;
+    final payload = appendNewline
+        ? _shouldRunInPty(request)
+              ? '$input\r'
+              : '$input\n'
+        : input;
     try {
       process.write(payload);
     } on Exception catch (exception, stackTrace) {
@@ -492,6 +513,7 @@ class AiRuntimeService {
             aiSessionId: request.aiSessionId,
             connectionId: request.connectionId,
             provider: request.provider,
+            structuredOutput: request.structuredOutput,
             chunk: chunk,
           ),
         );
@@ -509,6 +531,7 @@ class AiRuntimeService {
             aiSessionId: request.aiSessionId,
             connectionId: request.connectionId,
             provider: request.provider,
+            structuredOutput: request.structuredOutput,
             chunk: chunk,
           ),
         );
@@ -549,6 +572,7 @@ class AiRuntimeService {
           aiSessionId: completion.request.aiSessionId,
           connectionId: completion.request.connectionId,
           provider: completion.request.provider,
+          structuredOutput: completion.request.structuredOutput,
         ),
       );
       return;
@@ -560,6 +584,7 @@ class AiRuntimeService {
         aiSessionId: completion.request.aiSessionId,
         connectionId: completion.request.connectionId,
         provider: completion.request.provider,
+        structuredOutput: completion.request.structuredOutput,
         exitCode: completion.exitCode,
       ),
     );
@@ -625,6 +650,7 @@ class AiRuntimeService {
       aiSessionId: request.aiSessionId,
       connectionId: request.connectionId,
       provider: request.provider,
+      structuredOutput: request.structuredOutput,
       error: error,
       stackTrace: stackTrace,
     ),
@@ -683,7 +709,7 @@ class AiRuntimeService {
   }
 
   bool _shouldRunInPty(AiRuntimeLaunchRequest request) =>
-      request.provider.capabilities.requiresPty;
+      request.runInPtyOverride ?? request.provider.capabilities.requiresPty;
 }
 
 class _AiRuntimeCompletion {

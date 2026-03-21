@@ -57,4 +57,18 @@ abstract final class AiSessionMetadata {
     }
     return null;
   }
+
+  /// Resolves an [AiCliTransport] from metadata key `transport`.
+  static AiCliTransport? readTransport(Map<String, dynamic> metadata) {
+    final transportName = readString(metadata, 'transport');
+    if (transportName == null) {
+      return null;
+    }
+    for (final transport in AiCliTransport.values) {
+      if (transport.name == transportName) {
+        return transport;
+      }
+    }
+    return null;
+  }
 }

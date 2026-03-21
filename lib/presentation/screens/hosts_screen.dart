@@ -74,6 +74,7 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
         data: _buildHostList,
       ),
       floatingActionButton: FloatingActionButton.extended(
+        key: const Key('hosts-add-fab'),
         onPressed: () => context.push('/hosts/add'),
         icon: const Icon(Icons.add),
         label: const Text('Add Host'),

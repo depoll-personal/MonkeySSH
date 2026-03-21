@@ -76,10 +76,10 @@ class AiRuntimeEventParserPipeline {
   static const Map<AiCliProvider, AiRuntimeProviderEventAdapter>
   _defaultAdapters = <AiCliProvider, AiRuntimeProviderEventAdapter>{
     AiCliProvider.claude: _ClaudeAiRuntimeProviderEventAdapter(),
-    AiCliProvider.codex: _DefaultAiRuntimeProviderEventAdapter(),
-    AiCliProvider.opencode: _DefaultAiRuntimeProviderEventAdapter(),
-    AiCliProvider.copilot: _DefaultAiRuntimeProviderEventAdapter(),
-    AiCliProvider.gemini: _DefaultAiRuntimeProviderEventAdapter(),
+    AiCliProvider.codex: _CodexAiRuntimeProviderEventAdapter(),
+    AiCliProvider.opencode: _OpenCodeAiRuntimeProviderEventAdapter(),
+    AiCliProvider.copilot: _CopilotJsonRuntimeProviderEventAdapter(),
+    AiCliProvider.gemini: _GeminiAiRuntimeProviderEventAdapter(),
     AiCliProvider.acp: _DefaultAiRuntimeProviderEventAdapter(),
   };
 
@@ -173,7 +173,8 @@ class AiRuntimeEventParserPipeline {
       return const <AiTimelineEvent>[];
     }
 
-    if (!runtimeEvent.provider.capabilities.supportsStructuredOutput) {
+    if (!(runtimeEvent.structuredOutput ??
+        runtimeEvent.provider.capabilities.supportsStructuredOutput)) {
       return <AiTimelineEvent>[
         _plainTextEvent(runtimeEvent, chunk, fromStderr: fromStderr),
       ];
@@ -205,7 +206,8 @@ class AiRuntimeEventParserPipeline {
     required _AiRuntimeParserState state,
     required AiRuntimeEvent runtimeEvent,
   }) {
-    if (!runtimeEvent.provider.capabilities.supportsStructuredOutput) {
+    if (!(runtimeEvent.structuredOutput ??
+        runtimeEvent.provider.capabilities.supportsStructuredOutput)) {
       return const <AiTimelineEvent>[];
     }
 
@@ -393,20 +395,35 @@ class _DefaultAiRuntimeProviderEventAdapter
   }) {
     final message = _extractMessage(payload) ?? jsonEncode(payload);
     return <AiTimelineEvent>[
-      AiTimelineEvent(
+      _buildEvent(
+        runtimeEvent: runtimeEvent,
         type: _resolveType(payload),
-        aiSessionId: runtimeEvent.aiSessionId,
-        connectionId: runtimeEvent.connectionId,
-        provider: runtimeEvent.provider,
         message: message,
-        metadata: <String, dynamic>{
-          'runtimeEventType': runtimeEvent.type.name,
-          'structured': true,
-          'payload': payload,
-        },
+        payload: payload,
       ),
     ];
   }
+
+  AiTimelineEvent _buildEvent({
+    required AiRuntimeEvent runtimeEvent,
+    required AiTimelineEventType type,
+    required String message,
+    required Map<String, dynamic> payload,
+    Map<String, dynamic> extraMetadata = const <String, dynamic>{},
+  }) => AiTimelineEvent(
+    type: type,
+    aiSessionId: runtimeEvent.aiSessionId,
+    connectionId: runtimeEvent.connectionId,
+    provider: runtimeEvent.provider,
+    message: message,
+    metadata: <String, dynamic>{
+      'runtimeEventType': runtimeEvent.type.name,
+      'structured': true,
+      'payload': payload,
+      ..._commonSessionMetadata(payload),
+      ...extraMetadata,
+    },
+  );
 
   AiTimelineEventType _resolveType(Map<String, dynamic> payload) {
     final rawType = _extractFirstString(payload, const <String>[
@@ -511,6 +528,47 @@ class _DefaultAiRuntimeProviderEventAdapter
     }
     return null;
   }
+
+  Map<String, dynamic>? _mapFromValue(Object? value) {
+    if (value is Map<String, dynamic>) {
+      return value;
+    }
+    if (value is Map<Object?, Object?>) {
+      return value.map((key, mapValue) => MapEntry(key.toString(), mapValue));
+    }
+    return null;
+  }
+
+  Map<String, dynamic> _commonSessionMetadata(Map<String, dynamic> payload) {
+    final metadata = <String, dynamic>{};
+    final providerSessionId = _extractFirstString(payload, const <String>[
+      'session_id',
+      'sessionId',
+      'sessionID',
+      'thread_id',
+      'threadId',
+    ]);
+    if (providerSessionId != null) {
+      metadata['providerSessionId'] = providerSessionId;
+    }
+    final currentModelId = _extractFirstString(payload, const <String>[
+      'model',
+      'currentModelId',
+      'modelId',
+    ]);
+    if (currentModelId != null) {
+      metadata['currentModelId'] = currentModelId;
+    }
+    final currentModeId = _extractFirstString(payload, const <String>[
+      'currentModeId',
+      'modeId',
+      'approvalMode',
+    ]);
+    if (currentModeId != null) {
+      metadata['currentModeId'] = currentModeId;
+    }
+    return metadata;
+  }
 }
 
 class _ClaudeAiRuntimeProviderEventAdapter
@@ -522,6 +580,50 @@ class _ClaudeAiRuntimeProviderEventAdapter
     required Map<String, dynamic> payload,
     required AiRuntimeEvent runtimeEvent,
   }) {
+    final type = payload['type']?.toString();
+    if (type == 'system') {
+      final subtype = payload['subtype']?.toString();
+      if (subtype == 'init') {
+        final model = payload['model']?.toString();
+        final message = model == null || model.trim().isEmpty
+            ? 'Claude session initialized.'
+            : 'Claude session initialized · model: $model';
+        return <AiTimelineEvent>[
+          _buildEvent(
+            runtimeEvent: runtimeEvent,
+            type: AiTimelineEventType.status,
+            message: message,
+            payload: payload,
+            extraMetadata: <String, dynamic>{
+              if (payload['session_id'] != null)
+                'providerSessionId': payload['session_id'],
+              if (payload['model'] != null) 'currentModelId': payload['model'],
+              if (payload['slash_commands'] != null)
+                'availableSlashCommands': payload['slash_commands'],
+            },
+          ),
+        ];
+      }
+    }
+    if (type == 'result') {
+      final stopReason = payload['stop_reason']?.toString();
+      final message = stopReason == null || stopReason.trim().isEmpty
+          ? 'Claude turn completed.'
+          : 'Claude turn completed · $stopReason';
+      return <AiTimelineEvent>[
+        _buildEvent(
+          runtimeEvent: runtimeEvent,
+          type: AiTimelineEventType.status,
+          message: message,
+          payload: payload,
+          extraMetadata: <String, dynamic>{
+            'turnLifecycle': 'completed',
+            if (payload['session_id'] != null)
+              'providerSessionId': payload['session_id'],
+          },
+        ),
+      ];
+    }
     final normalizedPayload = <String, dynamic>{...payload};
     final message = _extractClaudeMessage(payload);
     if (message != null) {
@@ -564,6 +666,368 @@ class _ClaudeAiRuntimeProviderEventAdapter
     }
 
     return null;
+  }
+}
+
+class _CodexAiRuntimeProviderEventAdapter
+    extends _DefaultAiRuntimeProviderEventAdapter {
+  const _CodexAiRuntimeProviderEventAdapter();
+
+  @override
+  List<AiTimelineEvent> parseStructuredPayload({
+    required Map<String, dynamic> payload,
+    required AiRuntimeEvent runtimeEvent,
+  }) {
+    final type = payload['type']?.toString();
+    switch (type) {
+      case 'thread.started':
+        return <AiTimelineEvent>[
+          _buildEvent(
+            runtimeEvent: runtimeEvent,
+            type: AiTimelineEventType.status,
+            message: 'Codex session started.',
+            payload: payload,
+            extraMetadata: <String, dynamic>{
+              if (payload['thread_id'] != null)
+                'providerSessionId': payload['thread_id'],
+            },
+          ),
+        ];
+      case 'turn.started':
+        return <AiTimelineEvent>[
+          _buildEvent(
+            runtimeEvent: runtimeEvent,
+            type: AiTimelineEventType.status,
+            message: 'Codex turn started.',
+            payload: payload,
+          ),
+        ];
+      case 'turn.completed':
+        return <AiTimelineEvent>[
+          _buildEvent(
+            runtimeEvent: runtimeEvent,
+            type: AiTimelineEventType.status,
+            message: 'Codex turn completed.',
+            payload: payload,
+            extraMetadata: const <String, dynamic>{
+              'turnLifecycle': 'completed',
+            },
+          ),
+        ];
+      case 'item.completed':
+        final item = payload['item'];
+        if (item is! Map<String, dynamic>) {
+          break;
+        }
+        final itemType = item['type']?.toString() ?? '';
+        final message =
+            item['text']?.toString() ??
+            item['content']?.toString() ??
+            jsonEncode(item);
+        if (message.trim().isEmpty) {
+          return const <AiTimelineEvent>[];
+        }
+        final timelineType = itemType.contains('tool')
+            ? AiTimelineEventType.tool
+            : itemType.contains('reason') || itemType.contains('think')
+            ? AiTimelineEventType.thinking
+            : AiTimelineEventType.message;
+        return <AiTimelineEvent>[
+          _buildEvent(
+            runtimeEvent: runtimeEvent,
+            type: timelineType,
+            message: message,
+            payload: payload,
+          ),
+        ];
+    }
+    return super.parseStructuredPayload(
+      payload: payload,
+      runtimeEvent: runtimeEvent,
+    );
+  }
+}
+
+class _GeminiAiRuntimeProviderEventAdapter
+    extends _DefaultAiRuntimeProviderEventAdapter {
+  const _GeminiAiRuntimeProviderEventAdapter();
+
+  @override
+  List<AiTimelineEvent> parseStructuredPayload({
+    required Map<String, dynamic> payload,
+    required AiRuntimeEvent runtimeEvent,
+  }) {
+    final type = payload['type']?.toString();
+    switch (type) {
+      case 'init':
+        final model = payload['model']?.toString();
+        final message = model == null || model.trim().isEmpty
+            ? 'Gemini session initialized.'
+            : 'Gemini session initialized · model: $model';
+        return <AiTimelineEvent>[
+          _buildEvent(
+            runtimeEvent: runtimeEvent,
+            type: AiTimelineEventType.status,
+            message: message,
+            payload: payload,
+            extraMetadata: <String, dynamic>{
+              if (payload['session_id'] != null)
+                'providerSessionId': payload['session_id'],
+              if (payload['model'] != null) 'currentModelId': payload['model'],
+            },
+          ),
+        ];
+      case 'message':
+        final role = payload['role']?.toString();
+        if (role == 'user') {
+          return const <AiTimelineEvent>[];
+        }
+        final content = payload['content']?.toString();
+        if (content == null || content.trim().isEmpty) {
+          return const <AiTimelineEvent>[];
+        }
+        return <AiTimelineEvent>[
+          _buildEvent(
+            runtimeEvent: runtimeEvent,
+            type: role == 'assistant'
+                ? AiTimelineEventType.message
+                : AiTimelineEventType.status,
+            message: content,
+            payload: payload,
+            extraMetadata: <String, dynamic>{
+              if (payload['session_id'] != null)
+                'providerSessionId': payload['session_id'],
+            },
+          ),
+        ];
+      case 'result':
+        final status = payload['status']?.toString();
+        final message = status == null || status.trim().isEmpty
+            ? 'Gemini turn completed.'
+            : 'Gemini turn completed · $status';
+        return <AiTimelineEvent>[
+          _buildEvent(
+            runtimeEvent: runtimeEvent,
+            type: AiTimelineEventType.status,
+            message: message,
+            payload: payload,
+            extraMetadata: const <String, dynamic>{
+              'turnLifecycle': 'completed',
+            },
+          ),
+        ];
+    }
+    return super.parseStructuredPayload(
+      payload: payload,
+      runtimeEvent: runtimeEvent,
+    );
+  }
+}
+
+class _CopilotJsonRuntimeProviderEventAdapter
+    extends _DefaultAiRuntimeProviderEventAdapter {
+  const _CopilotJsonRuntimeProviderEventAdapter();
+
+  @override
+  List<AiTimelineEvent> parseStructuredPayload({
+    required Map<String, dynamic> payload,
+    required AiRuntimeEvent runtimeEvent,
+  }) {
+    final type = payload['type']?.toString();
+    final data = payload['data'];
+    switch (type) {
+      case 'session.tools_updated':
+        if (data is! Map<String, dynamic>) {
+          break;
+        }
+        final model = data['model']?.toString();
+        final message = model == null || model.trim().isEmpty
+            ? 'Copilot session initialized.'
+            : 'Copilot session initialized · model: $model';
+        return <AiTimelineEvent>[
+          _buildEvent(
+            runtimeEvent: runtimeEvent,
+            type: AiTimelineEventType.status,
+            message: message,
+            payload: payload,
+            extraMetadata: <String, dynamic>{
+              if (model != null && model.trim().isNotEmpty)
+                'currentModelId': model,
+            },
+          ),
+        ];
+      case 'assistant.message_delta':
+      case 'user.message':
+        return const <AiTimelineEvent>[];
+      case 'assistant.message':
+        if (data is! Map<String, dynamic>) {
+          break;
+        }
+        final content = data['content']?.toString();
+        if (content == null || content.trim().isEmpty) {
+          return const <AiTimelineEvent>[];
+        }
+        return <AiTimelineEvent>[
+          _buildEvent(
+            runtimeEvent: runtimeEvent,
+            type: AiTimelineEventType.message,
+            message: content,
+            payload: payload,
+            extraMetadata: <String, dynamic>{
+              if (data['reasoningOpaque'] != null)
+                'reasoningOpaque': data['reasoningOpaque'],
+              if (data['toolRequests'] != null)
+                'toolRequests': data['toolRequests'],
+            },
+          ),
+        ];
+      case 'tool.execution_start':
+        if (data is! Map<String, dynamic>) {
+          break;
+        }
+        final toolName = data['toolName']?.toString();
+        if (toolName == null || toolName.trim().isEmpty) {
+          return const <AiTimelineEvent>[];
+        }
+        return <AiTimelineEvent>[
+          _buildEvent(
+            runtimeEvent: runtimeEvent,
+            type: AiTimelineEventType.tool,
+            message: 'Running $toolName',
+            payload: payload,
+            extraMetadata: <String, dynamic>{
+              'toolName': toolName,
+              'toolStatus': 'started',
+              if (data['toolCallId'] != null) 'toolCallId': data['toolCallId'],
+              if (data['arguments'] != null) 'input': data['arguments'],
+            },
+          ),
+        ];
+      case 'tool.execution_complete':
+        if (data is! Map<String, dynamic>) {
+          break;
+        }
+        final toolName = data['toolName']?.toString();
+        if (toolName == null || toolName.trim().isEmpty) {
+          return const <AiTimelineEvent>[];
+        }
+        final result = _mapFromValue(data['result']);
+        final status = data['success'] == false ? 'failed' : 'completed';
+        final message = result?['content']?.toString().trim();
+        return <AiTimelineEvent>[
+          _buildEvent(
+            runtimeEvent: runtimeEvent,
+            type: AiTimelineEventType.tool,
+            message: message?.isNotEmpty ?? false
+                ? message!
+                : '$toolName $status.',
+            payload: payload,
+            extraMetadata: <String, dynamic>{
+              'toolName': toolName,
+              'toolStatus': status,
+              if (data['toolCallId'] != null) 'toolCallId': data['toolCallId'],
+              ...?result == null ? null : <String, dynamic>{'output': result},
+            },
+          ),
+        ];
+      case 'result':
+        final sessionId = payload['sessionId']?.toString();
+        final message = payload['exitCode'] == 0
+            ? 'Copilot turn completed.'
+            : 'Copilot turn completed with exit code ${payload['exitCode']}.';
+        return <AiTimelineEvent>[
+          _buildEvent(
+            runtimeEvent: runtimeEvent,
+            type: AiTimelineEventType.status,
+            message: message,
+            payload: payload,
+            extraMetadata: <String, dynamic>{
+              'turnLifecycle': 'completed',
+              ...?sessionId == null
+                  ? null
+                  : <String, dynamic>{'providerSessionId': sessionId},
+            },
+          ),
+        ];
+    }
+    return super.parseStructuredPayload(
+      payload: payload,
+      runtimeEvent: runtimeEvent,
+    );
+  }
+}
+
+class _OpenCodeAiRuntimeProviderEventAdapter
+    extends _DefaultAiRuntimeProviderEventAdapter {
+  const _OpenCodeAiRuntimeProviderEventAdapter();
+
+  @override
+  List<AiTimelineEvent> parseStructuredPayload({
+    required Map<String, dynamic> payload,
+    required AiRuntimeEvent runtimeEvent,
+  }) {
+    final type = payload['type']?.toString();
+    switch (type) {
+      case 'text':
+        final part = payload['part'];
+        if (part is! Map<String, dynamic>) {
+          break;
+        }
+        final text = part['text']?.toString();
+        if (text == null || text.trim().isEmpty) {
+          return const <AiTimelineEvent>[];
+        }
+        return <AiTimelineEvent>[
+          _buildEvent(
+            runtimeEvent: runtimeEvent,
+            type: AiTimelineEventType.message,
+            message: text,
+            payload: payload,
+            extraMetadata: <String, dynamic>{
+              if (payload['sessionID'] != null)
+                'providerSessionId': payload['sessionID'],
+            },
+          ),
+        ];
+      case 'step_start':
+        return <AiTimelineEvent>[
+          _buildEvent(
+            runtimeEvent: runtimeEvent,
+            type: AiTimelineEventType.status,
+            message: 'OpenCode step started.',
+            payload: payload,
+            extraMetadata: <String, dynamic>{
+              if (payload['sessionID'] != null)
+                'providerSessionId': payload['sessionID'],
+            },
+          ),
+        ];
+      case 'step_finish':
+        final part = payload['part'];
+        final reason = part is Map<String, dynamic>
+            ? part['reason']?.toString()
+            : null;
+        final message = reason == null || reason.trim().isEmpty
+            ? 'OpenCode step completed.'
+            : 'OpenCode step completed · $reason';
+        return <AiTimelineEvent>[
+          _buildEvent(
+            runtimeEvent: runtimeEvent,
+            type: AiTimelineEventType.status,
+            message: message,
+            payload: payload,
+            extraMetadata: <String, dynamic>{
+              'turnLifecycle': 'completed',
+              if (payload['sessionID'] != null)
+                'providerSessionId': payload['sessionID'],
+            },
+          ),
+        ];
+    }
+    return super.parseStructuredPayload(
+      payload: payload,
+      runtimeEvent: runtimeEvent,
+    );
   }
 }
 

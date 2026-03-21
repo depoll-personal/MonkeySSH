@@ -244,26 +244,31 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       height: 65,
       destinations: const [
         NavigationDestination(
+          key: Key('nav-hosts'),
           icon: Icon(Icons.dns_outlined),
           selectedIcon: Icon(Icons.dns_rounded),
           label: 'Hosts',
         ),
         NavigationDestination(
+          key: Key('nav-connections'),
           icon: Icon(Icons.link_outlined),
           selectedIcon: Icon(Icons.link),
           label: 'Connections',
         ),
         NavigationDestination(
+          key: Key('nav-keys'),
           icon: Icon(Icons.key_outlined),
           selectedIcon: Icon(Icons.key_rounded),
           label: 'Keys',
         ),
         NavigationDestination(
+          key: Key('nav-snippets'),
           icon: Icon(Icons.code_outlined),
           selectedIcon: Icon(Icons.code_rounded),
           label: 'Snippets',
         ),
         NavigationDestination(
+          key: Key('nav-ai-chat'),
           icon: Icon(Icons.smart_toy_outlined),
           selectedIcon: Icon(Icons.smart_toy_rounded),
           label: 'AI Chat',
@@ -486,6 +491,7 @@ class _HostsPanel extends ConsumerWidget {
               ),
               const Spacer(),
               _ActionButton(
+                key: const Key('home-hosts-add-button'),
                 icon: Icons.add,
                 label: 'New Host',
                 onTap: () => context.push('/hosts/add'),
@@ -1319,6 +1325,7 @@ class _ActionButton extends StatelessWidget {
     required this.label,
     required this.onTap,
     this.primary = false,
+    super.key,
   });
 
   final IconData icon;
@@ -1423,6 +1430,7 @@ class _KeysPanel extends ConsumerWidget {
               ),
               const Spacer(),
               _ActionButton(
+                key: const Key('home-keys-add-button'),
                 icon: Icons.add,
                 label: 'Add Key',
                 onTap: () => context.push('/keys/add'),

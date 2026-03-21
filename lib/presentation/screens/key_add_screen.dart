@@ -80,10 +80,22 @@ class _GenerateKeyTabState extends ConsumerState<_GenerateKeyTab> {
   @override
   Widget build(BuildContext context) => Form(
     key: _formKey,
-    child: ListView(
-      padding: const EdgeInsets.all(16),
+    child: _KeyTabLayout(
+      footerChildren: [
+        FilledButton.icon(
+          key: const Key('generate-key-primary-action'),
+          onPressed: _isGenerating ? null : _generateKey,
+          icon: _isGenerating
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.add),
+          label: Text(_isGenerating ? 'Generating...' : 'Generate Key'),
+        ),
+      ],
       children: [
-        // Name
         TextFormField(
           controller: _nameController,
           decoration: const InputDecoration(
@@ -100,8 +112,6 @@ class _GenerateKeyTabState extends ConsumerState<_GenerateKeyTab> {
           },
         ),
         const SizedBox(height: 24),
-
-        // Key type
         Text('Key Type', style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 8),
         SegmentedButton<String>(
@@ -123,8 +133,6 @@ class _GenerateKeyTabState extends ConsumerState<_GenerateKeyTab> {
           },
         ),
         const SizedBox(height: 16),
-
-        // RSA bits (only shown for RSA)
         if (_keyType == 'rsa') ...[
           Text('RSA Key Size', style: Theme.of(context).textTheme.titleSmall),
           const SizedBox(height: 8),
@@ -140,8 +148,6 @@ class _GenerateKeyTabState extends ConsumerState<_GenerateKeyTab> {
           ),
           const SizedBox(height: 16),
         ],
-
-        // Passphrase (optional)
         TextFormField(
           controller: _passphraseController,
           decoration: InputDecoration(
@@ -165,23 +171,8 @@ class _GenerateKeyTabState extends ConsumerState<_GenerateKeyTab> {
             color: Theme.of(context).colorScheme.outline,
           ),
         ),
-        const SizedBox(height: 32),
-
-        // Generate button
-        FilledButton.icon(
-          onPressed: _isGenerating ? null : _generateKey,
-          icon: _isGenerating
-              ? const SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Icon(Icons.add),
-          label: Text(_isGenerating ? 'Generating...' : 'Generate Key'),
-        ),
-
         if (_keyType == 'ed25519') ...[
-          const SizedBox(height: 16),
+          const SizedBox(height: 24),
           Card(
             child: Padding(
               padding: const EdgeInsets.all(12),
@@ -282,8 +273,27 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
   @override
   Widget build(BuildContext context) => Form(
     key: _formKey,
-    child: ListView(
-      padding: const EdgeInsets.all(16),
+    child: _KeyTabLayout(
+      footerChildren: [
+        FilledButton.icon(
+          key: const Key('import-key-primary-action'),
+          onPressed: _isImporting ? null : _importKey,
+          icon: _isImporting
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.download),
+          label: Text(_isImporting ? 'Importing...' : 'Import Key'),
+        ),
+        OutlinedButton.icon(
+          key: const Key('import-key-file-action'),
+          onPressed: _isImporting ? null : _importFromFile,
+          icon: const Icon(Icons.file_open),
+          label: const Text('Import from File'),
+        ),
+      ],
       children: [
         Card(
           child: Padding(
@@ -296,34 +306,21 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
                   style: Theme.of(context).textTheme.titleSmall,
                 ),
                 const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: _isImporting ? null : _importFromQrTransfer,
-                        icon: const Icon(Icons.qr_code_scanner),
-                        label: const Text('Scan QR'),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: _isImporting
-                            ? null
-                            : _importFromEncryptedFile,
-                        icon: const Icon(Icons.file_open),
-                        label: const Text('Import Encrypted File'),
-                      ),
-                    ),
-                  ],
+                _TransferImportActions(
+                  isImporting: _isImporting,
+                  onImportFromQrTransfer: _importFromQrTransfer,
+                  onImportFromEncryptedFile: _importFromEncryptedFile,
                 ),
               ],
             ),
           ),
         ),
         const SizedBox(height: 16),
-
-        // Name
+        Text(
+          'Paste a PEM-formatted private key below, or use one of the shortcuts above.',
+          style: Theme.of(context).textTheme.bodyMedium,
+        ),
+        const SizedBox(height: 16),
         TextFormField(
           controller: _nameController,
           decoration: const InputDecoration(
@@ -340,8 +337,6 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
           },
         ),
         const SizedBox(height: 16),
-
-        // Private key content
         TextFormField(
           controller: _privateKeyController,
           decoration: const InputDecoration(
@@ -362,8 +357,6 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
           },
         ),
         const SizedBox(height: 16),
-
-        // Passphrase (if encrypted)
         TextFormField(
           controller: _passphraseController,
           decoration: InputDecoration(
@@ -379,28 +372,6 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
             ),
           ),
           obscureText: !_showPassphrase,
-        ),
-        const SizedBox(height: 32),
-
-        // Import button
-        FilledButton.icon(
-          onPressed: _isImporting ? null : _importKey,
-          icon: _isImporting
-              ? const SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Icon(Icons.download),
-          label: Text(_isImporting ? 'Importing...' : 'Import Key'),
-        ),
-        const SizedBox(height: 16),
-
-        // Import from file button
-        OutlinedButton.icon(
-          onPressed: _isImporting ? null : _importFromFile,
-          icon: const Icon(Icons.file_open),
-          label: const Text('Import from File'),
         ),
       ],
     ),
@@ -550,5 +521,106 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
         setState(() => _isImporting = false);
       }
     }
+  }
+}
+
+class _KeyTabLayout extends StatelessWidget {
+  const _KeyTabLayout({required this.children, required this.footerChildren});
+
+  final List<Widget> children;
+  final List<Widget> footerChildren;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    children: [
+      Expanded(
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+          children: children,
+        ),
+      ),
+      _KeyTabFooter(children: footerChildren),
+    ],
+  );
+}
+
+class _KeyTabFooter extends StatelessWidget {
+  const _KeyTabFooter({required this.children});
+
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: theme.scaffoldBackgroundColor,
+        border: Border(top: BorderSide(color: theme.dividerColor)),
+      ),
+      child: SafeArea(
+        top: false,
+        minimum: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            for (var index = 0; index < children.length; index++) ...[
+              if (index > 0) const SizedBox(height: 12),
+              children[index],
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TransferImportActions extends StatelessWidget {
+  const _TransferImportActions({
+    required this.isImporting,
+    required this.onImportFromQrTransfer,
+    required this.onImportFromEncryptedFile,
+  });
+
+  final bool isImporting;
+  final VoidCallback onImportFromQrTransfer;
+  final VoidCallback onImportFromEncryptedFile;
+
+  @override
+  Widget build(BuildContext context) {
+    final scanQrButton = OutlinedButton.icon(
+      onPressed: isImporting ? null : onImportFromQrTransfer,
+      icon: const Icon(Icons.qr_code_scanner),
+      label: const Text('Scan QR'),
+    );
+    final importEncryptedFileButton = OutlinedButton.icon(
+      onPressed: isImporting ? null : onImportFromEncryptedFile,
+      icon: const Icon(Icons.file_open),
+      label: const Text('Import Encrypted File'),
+    );
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth < 420) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              scanQrButton,
+              const SizedBox(height: 8),
+              importEncryptedFileButton,
+            ],
+          );
+        }
+
+        return Row(
+          children: [
+            Expanded(child: scanQrButton),
+            const SizedBox(width: 8),
+            Expanded(child: importEncryptedFileButton),
+          ],
+        );
+      },
+    );
   }
 }

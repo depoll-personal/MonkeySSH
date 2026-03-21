@@ -48,7 +48,7 @@ void main() {
     test('throws for structured output when provider does not support it', () {
       expect(
         () => builder.buildLaunchCommand(
-          provider: AiCliProvider.copilot,
+          provider: AiCliProvider.acp,
           remoteWorkingDirectory: '/srv/project',
           structuredOutput: true,
         ),

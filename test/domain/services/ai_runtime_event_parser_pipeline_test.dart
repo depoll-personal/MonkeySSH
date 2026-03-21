@@ -88,7 +88,7 @@ void main() {
         _runtimeEvent(
           type: AiRuntimeEventType.stderr,
           provider: AiCliProvider.copilot,
-          chunk: 'plain stderr line',
+          chunk: 'plain stderr line\n',
         ),
       );
 
@@ -181,6 +181,92 @@ void main() {
       expect(streamErrors, hasLength(1));
       expect(timelineEvents, hasLength(1));
       expect(timelineEvents.single.type, AiTimelineEventType.status);
+    });
+
+    test('parses Codex JSONL sessions and assistant messages', () {
+      final pipeline = AiRuntimeEventParserPipeline();
+
+      final started = pipeline.parse(
+        _runtimeEvent(
+          type: AiRuntimeEventType.stdout,
+          provider: AiCliProvider.codex,
+          chunk:
+              '{"type":"thread.started","thread_id":"thread-123"}\n'
+              '{"type":"item.completed","item":{"type":"agent_message","text":"HELLO"}}\n',
+        ),
+      );
+
+      expect(started, hasLength(2));
+      expect(started.first.type, AiTimelineEventType.status);
+      expect(started.first.metadata['providerSessionId'], 'thread-123');
+      expect(started.last.type, AiTimelineEventType.message);
+      expect(started.last.message, 'HELLO');
+    });
+
+    test('parses Gemini stream-json init and assistant messages', () {
+      final pipeline = AiRuntimeEventParserPipeline();
+
+      final output = pipeline.parse(
+        _runtimeEvent(
+          type: AiRuntimeEventType.stdout,
+          provider: AiCliProvider.gemini,
+          chunk:
+              '{"type":"init","session_id":"gemini-1","model":"gemini-3.1-pro-preview"}\n'
+              '{"type":"message","role":"assistant","content":"HELLO","delta":true}\n',
+        ),
+      );
+
+      expect(output, hasLength(2));
+      expect(output.first.type, AiTimelineEventType.status);
+      expect(output.first.metadata['providerSessionId'], 'gemini-1');
+      expect(output.first.metadata['currentModelId'], 'gemini-3.1-pro-preview');
+      expect(output.last.type, AiTimelineEventType.message);
+      expect(output.last.message, 'HELLO');
+    });
+
+    test('parses OpenCode json events and extracts session IDs', () {
+      final pipeline = AiRuntimeEventParserPipeline();
+
+      final output = pipeline.parse(
+        _runtimeEvent(
+          type: AiRuntimeEventType.stdout,
+          provider: AiCliProvider.opencode,
+          chunk:
+              '{"type":"step_start","sessionID":"ses-opencode"}\n'
+              '{"type":"text","sessionID":"ses-opencode","part":{"text":"HELLO"}}\n',
+        ),
+      );
+
+      expect(output, hasLength(2));
+      expect(output.first.type, AiTimelineEventType.status);
+      expect(output.first.metadata['providerSessionId'], 'ses-opencode');
+      expect(output.last.type, AiTimelineEventType.message);
+      expect(output.last.message, 'HELLO');
+    });
+
+    test('parses Copilot tool execution updates into tool timeline events', () {
+      final pipeline = AiRuntimeEventParserPipeline();
+
+      final output = pipeline.parse(
+        _runtimeEvent(
+          type: AiRuntimeEventType.stdout,
+          provider: AiCliProvider.copilot,
+          chunk:
+              '{"type":"session.tools_updated","data":{"model":"gpt-5.4"}}\n'
+              '{"type":"tool.execution_start","data":{"toolCallId":"call-1","toolName":"fetch_copilot_cli_documentation","arguments":{}}}\n'
+              '{"type":"tool.execution_complete","data":{"toolCallId":"call-1","toolName":"fetch_copilot_cli_documentation","success":true,"result":{"content":"Fetched docs"}}}\n',
+        ),
+      );
+
+      expect(output, hasLength(3));
+      expect(output.first.type, AiTimelineEventType.status);
+      expect(output.first.metadata['currentModelId'], 'gpt-5.4');
+      expect(output[1].type, AiTimelineEventType.tool);
+      expect(output[1].metadata['toolName'], 'fetch_copilot_cli_documentation');
+      expect(output[1].metadata['toolStatus'], 'started');
+      expect(output[2].type, AiTimelineEventType.tool);
+      expect(output[2].message, 'Fetched docs');
+      expect(output[2].metadata['toolStatus'], 'completed');
     });
   });
 }
