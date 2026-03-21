@@ -281,6 +281,10 @@ class AiRuntimeService {
       <int, StreamSubscription<String>>{};
   final Map<int, StreamSubscription<String>> _stderrSubscriptions =
       <int, StreamSubscription<String>>{};
+  final Map<int, Completer<void>> _stdoutDrainCompleters =
+      <int, Completer<void>>{};
+  final Map<int, Completer<void>> _stderrDrainCompleters =
+      <int, Completer<void>>{};
   final Set<int> _cancelRequestedSessionIds = <int>{};
   final Set<int> _launchingSessionIds = <int>{};
   bool _disposed = false;
@@ -505,6 +509,10 @@ class AiRuntimeService {
     AiRuntimeLaunchRequest request,
   ) {
     final aiSessionId = request.aiSessionId;
+    final stdoutDrain = Completer<void>();
+    final stderrDrain = Completer<void>();
+    _stdoutDrainCompleters[aiSessionId] = stdoutDrain;
+    _stderrDrainCompleters[aiSessionId] = stderrDrain;
     _stdoutSubscriptions[aiSessionId] = process.stdout.listen(
       (chunk) {
         _emitEvent(
@@ -520,6 +528,11 @@ class AiRuntimeService {
       },
       onError: (Object error, StackTrace stackTrace) {
         _emitErrorEvent(request, error, stackTrace);
+      },
+      onDone: () {
+        if (!stdoutDrain.isCompleted) {
+          stdoutDrain.complete();
+        }
       },
     );
 
@@ -538,6 +551,11 @@ class AiRuntimeService {
       },
       onError: (Object error, StackTrace stackTrace) {
         _emitErrorEvent(request, error, stackTrace);
+      },
+      onDone: () {
+        if (!stderrDrain.isCompleted) {
+          stderrDrain.complete();
+        }
       },
     );
   }
@@ -609,24 +627,30 @@ class AiRuntimeService {
       return null;
     }
 
-    final request = _activeLaunchRequests[aiSessionId];
+    final request = _activeLaunchRequests.remove(aiSessionId);
     if (request == null) {
       return null;
     }
+    _activeProcesses.remove(aiSessionId);
+    final wasCancelled = _cancelRequestedSessionIds.remove(aiSessionId);
 
     final completion = _AiRuntimeCompletion(
       request: request,
       exitCode: process.exitCode,
-      wasCancelled: _cancelRequestedSessionIds.contains(aiSessionId),
+      wasCancelled: wasCancelled,
     );
 
+    final stdoutDrain = _stdoutDrainCompleters.remove(aiSessionId)?.future;
+    final stderrDrain = _stderrDrainCompleters.remove(aiSessionId)?.future;
+    if (stdoutDrain != null) {
+      await stdoutDrain.timeout(const Duration(seconds: 1), onTimeout: () {});
+    }
+    if (stderrDrain != null) {
+      await stderrDrain.timeout(const Duration(seconds: 1), onTimeout: () {});
+    }
     await _stdoutSubscriptions.remove(aiSessionId)?.cancel();
     await _stderrSubscriptions.remove(aiSessionId)?.cancel();
     await process.close();
-
-    _activeProcesses.remove(aiSessionId);
-    _activeLaunchRequests.remove(aiSessionId);
-    _cancelRequestedSessionIds.remove(aiSessionId);
 
     return completion;
   }

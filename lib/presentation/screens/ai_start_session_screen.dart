@@ -49,6 +49,7 @@ class AiStartSessionScreen extends ConsumerStatefulWidget {
 
 class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
   static const _customAcpClientId = '__custom__';
+  static const _acpAdapterVersion = 'v0.3.3';
   static const _acpAdapterInstallCommand =
       r'export INSTALL_DIR="$HOME/.local/bin"; '
       r'mkdir -p "$INSTALL_DIR"; '
@@ -56,9 +57,48 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
       'echo "curl is required to install acp-adapter." >&2; '
       'exit 1; '
       'fi; '
-      'curl -sSL '
-      'https://raw.githubusercontent.com/beyond5959/acp-adapter/master/install.sh '
-      '| sh';
+      'if ! command -v sha256sum >/dev/null 2>&1 && '
+      '! command -v shasum >/dev/null 2>&1; then '
+      'echo "sha256 verification requires sha256sum or shasum." >&2; '
+      'exit 1; '
+      'fi; '
+      r'OS="$(uname -s)"; ARCH="$(uname -m)"; '
+      r'case "$OS" in Linux) OS=linux ;; Darwin) OS=darwin ;; '
+      r'*) echo "Unsupported operating system: $OS" >&2; exit 1 ;; esac; '
+      r'case "$ARCH" in x86_64|amd64) ARCH=x86_64 ;; arm64|aarch64) ARCH=aarch64 ;; '
+      r'*) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;; esac; '
+      'FILENAME="acp-adapter-'
+      '$_acpAdapterVersion'
+      r'-${ARCH}-${OS}.tar.gz"; '
+      'URL="https://github.com/beyond5959/acp-adapter/releases/download/'
+      '$_acpAdapterVersion'
+      r'/${FILENAME}"; '
+      r'EXPECTED_SHA="$(case "${ARCH}-${OS}" in '
+      'x86_64-darwin) printf %s 1c03d3d1e396ba0e978c3b8265744537f9600bffa559362277f456f1468a23be ;; '
+      'aarch64-darwin) printf %s 78637244a753c9a1efcfd386062920516ebddbe1bf2809aab019aabe754dbb36 ;; '
+      'x86_64-linux) printf %s 0ae60e30db2daad2a803c6b38c8d2514a6744b62c1cb1ac4561ba80b33ae6fb7 ;; '
+      'aarch64-linux) printf %s 20d235dd70d3e98bcab1a06f51bef3c25c95293cd91d3fcce1ac643810aa02da ;; '
+      '*) exit 1 ;; esac)"; '
+      'TMP_DIR="\$(mktemp -d)"; trap \'rm -rf "\$TMP_DIR"\' EXIT; '
+      r'ARCHIVE="$TMP_DIR/$FILENAME"; '
+      r'curl -fsSL "$URL" -o "$ARCHIVE"; '
+      r'ACTUAL_SHA="$(if command -v sha256sum >/dev/null 2>&1; then '
+      r'''sha256sum "$ARCHIVE" | awk '{print $1}'; '''
+      r'''else shasum -a 256 "$ARCHIVE" | awk '{print $1}'; fi)"; '''
+      r'if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then '
+      'echo "Checksum verification failed for acp-adapter." >&2; '
+      'exit 1; '
+      'fi; '
+      r'tar -xzf "$ARCHIVE" -C "$TMP_DIR"; '
+      r'BINARY_PATH="$TMP_DIR/acp-adapter-'
+      '$_acpAdapterVersion'
+      r'-${ARCH}-${OS}/acp-adapter"; '
+      r'if [ ! -f "$BINARY_PATH" ]; then '
+      'echo "acp-adapter binary not found in extracted archive." >&2; '
+      'exit 1; '
+      'fi; '
+      r'chmod +x "$BINARY_PATH"; '
+      r'mv "$BINARY_PATH" "$INSTALL_DIR/acp-adapter"';
   static const _acpAdapterProbeCommand =
       'if command -v acp-adapter >/dev/null 2>&1 '
       r'|| [ -x "$HOME/.local/bin/acp-adapter" ] '
@@ -144,7 +184,9 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
                       ),
                       const SizedBox(height: 12),
                       DropdownButtonFormField<AiCliProvider>(
-                        key: const Key('ai-provider-field'),
+                        key: ValueKey<String>(
+                          'ai-provider-field-${_selectedProvider.name}',
+                        ),
                         initialValue: _selectedProvider,
                         decoration: const InputDecoration(
                           labelText: 'AI provider',
@@ -205,7 +247,9 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
                         ],
                         const SizedBox(height: 12),
                         DropdownButtonFormField<String>(
-                          key: const Key('ai-acp-client-preset-field'),
+                          key: ValueKey<String>(
+                            'ai-acp-client-preset-field-$_resolvedAcpClientSelection',
+                          ),
                           initialValue: _resolvedAcpClientSelection,
                           decoration: const InputDecoration(
                             labelText: 'ACP client',
@@ -358,7 +402,7 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
     }
 
     return DropdownButtonFormField<int>(
-      key: const Key('ai-host-field'),
+      key: ValueKey<int>(resolvedHostId),
       initialValue: resolvedHostId,
       isExpanded: true,
       decoration: const InputDecoration(
@@ -462,11 +506,11 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
     final provider = session.provider;
     final providerLabel = provider == null
         ? 'Provider unknown'
-        : provider == AiCliProvider.acp
-        ? session.acpClientLabel ??
-              session.executableOverride ??
-              provider.executable
-        : provider.executable;
+        : session.acpClientLabel ??
+              (provider == AiCliProvider.acp
+                  ? session.executableOverride
+                  : null) ??
+              provider.executable;
     final trailing = canReattach
         ? const Tooltip(
             message: 'Runtime available for resume',
@@ -601,6 +645,9 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
         return;
       }
       providerForSession = adapterSelection.provider;
+      final transportForSession =
+          adapterSelection.transport ??
+          providerForSession.capabilities.defaultTransport;
       acpExecutableOverride = adapterSelection.executableOverride;
       acpClientLabel = adapterSelection.acpClientLabel;
       acpClientId = adapterSelection.acpClientId;
@@ -642,8 +689,8 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
             jsonEncode(<String, dynamic>{
               'connectionId': connectionResult.connectionId,
               'provider': providerForSession.name,
-              'transport':
-                  providerForSession.capabilities.defaultTransport.name,
+              'transport': transportForSession.name,
+              'originalProvider': providerForSession.name,
               'hostId': selectedHost.id,
               'workingDirectory': workingDirectory,
               ...?acpExecutableMetadata,
@@ -664,6 +711,7 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
           'connectionId': connectionResult.connectionId!.toString(),
           'provider': providerForSession.name,
           'workingDir': workingDirectory,
+          'transport': transportForSession.name,
           ...?acpExecutableQueryParam,
         },
       );
@@ -768,7 +816,8 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
       (candidate) => candidate.id == presetId,
     );
     return _AiStartSessionLaunchSelection(
-      provider: AiCliProvider.acp,
+      provider: provider,
+      transport: AiCliTransport.acp,
       executableOverride: preset.command,
       acpClientLabel: preset.label,
       acpClientId: preset.id,
@@ -960,12 +1009,14 @@ enum _AcpAdapterPromptAction { install, continueWithoutAdapter, cancel }
 class _AiStartSessionLaunchSelection {
   const _AiStartSessionLaunchSelection({
     required this.provider,
+    this.transport,
     this.executableOverride,
     this.acpClientLabel,
     this.acpClientId,
   });
 
   final AiCliProvider provider;
+  final AiCliTransport? transport;
   final String? executableOverride;
   final String? acpClientLabel;
   final String? acpClientId;
@@ -1009,7 +1060,7 @@ final _recentAiSessionsProvider =
                 return _AiSessionResumeSummary(
                   sessionId: session.id,
                   title: session.title,
-                  provider: AiSessionMetadata.readProvider(metadata),
+                  provider: AiSessionMetadata.readOriginalProvider(metadata),
                   executableOverride: AiSessionMetadata.readString(
                     metadata,
                     'executableOverride',

@@ -644,8 +644,8 @@ class _ClaudeAiRuntimeProviderEventAdapter
             .whereType<Map<String, dynamic>>()
             .map((entry) {
               final text = entry['text'];
-              if (text is String && text.trim().isNotEmpty) {
-                return text.trim();
+              if (text is String && text.isNotEmpty) {
+                return text;
               }
               return null;
             })
@@ -660,8 +660,8 @@ class _ClaudeAiRuntimeProviderEventAdapter
     final delta = payload['delta'];
     if (delta is Map<String, dynamic>) {
       final text = delta['text'];
-      if (text is String && text.trim().isNotEmpty) {
-        return text.trim();
+      if (text is String && text.isNotEmpty) {
+        return text;
       }
     }
 

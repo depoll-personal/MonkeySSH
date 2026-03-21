@@ -532,7 +532,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       return;
     }
     final provider = sessionContext.provider;
-    final supportedTransports = provider.capabilities.supportedTransports;
+    final supportedTransports = _supportedTransportsForContext(sessionContext);
     final preferences = _sessionPreferences();
     final supportsModel = preferences.supportsModelSelection(provider);
     final supportsMode = preferences.supportsModeSelection(provider);
@@ -1262,8 +1262,10 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           slashCommands: _availableSlashCommands,
         );
       });
-      if (widget.autoStartRuntime &&
-          context.provider.capabilities.autoStartRuntime) {
+      final shouldAutoStart =
+          context.transport == AiCliTransport.acp ||
+          context.provider.capabilities.autoStartRuntime;
+      if (widget.autoStartRuntime && shouldAutoStart) {
         await _startRuntimeIfNeeded();
       }
     } on Exception {
@@ -1292,15 +1294,16 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
 
     final provider =
         widget.provider ??
-        AiSessionMetadata.readProvider(latestMetadata) ??
+        AiSessionMetadata.readOriginalProvider(latestMetadata) ??
         AiCliProvider.claude;
-    final transport = _resolvePreferredTransport(
-      provider: provider,
-      savedTransport: AiSessionMetadata.readTransport(latestMetadata),
-    );
     final executableOverride =
         widget.executableOverride ??
         AiSessionMetadata.readString(latestMetadata, 'executableOverride');
+    final transport = _resolvePreferredTransport(
+      provider: provider,
+      executableOverride: executableOverride,
+      savedTransport: AiSessionMetadata.readTransport(latestMetadata),
+    );
     final connectionId =
         widget.connectionId ??
         AiSessionMetadata.readInt(latestMetadata, 'connectionId');
@@ -1387,14 +1390,41 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
 
   AiCliTransport _resolvePreferredTransport({
     required AiCliProvider provider,
+    String? executableOverride,
     AiCliTransport? savedTransport,
   }) {
-    final capabilities = provider.capabilities;
+    final supportedTransports = _supportedTransports(
+      provider: provider,
+      executableOverride: executableOverride,
+    );
     if (savedTransport != null &&
-        capabilities.supportsTransport(savedTransport)) {
+        supportedTransports.contains(savedTransport)) {
       return savedTransport;
     }
-    return capabilities.defaultTransport;
+    return supportedTransports.first;
+  }
+
+  List<AiCliTransport> _supportedTransportsForContext(
+    _AiSessionRuntimeContext context,
+  ) => _supportedTransports(
+    provider: context.provider,
+    executableOverride: context.executableOverride,
+  );
+
+  List<AiCliTransport> _supportedTransports({
+    required AiCliProvider provider,
+    required String? executableOverride,
+  }) {
+    final base = provider.capabilities.supportedTransports;
+    if (provider != AiCliProvider.acp &&
+        executableOverride != null &&
+        executableOverride.trim().isNotEmpty) {
+      return <AiCliTransport>[
+        AiCliTransport.acp,
+        ...base.where((transport) => transport != AiCliTransport.acp),
+      ];
+    }
+    return base;
   }
 
   String _transportStatusLabel(AiCliTransport transport) => switch (transport) {
@@ -1439,7 +1469,6 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
             aiSessionId: widget.sessionId,
             connectionId: connectionId,
             provider: context.provider,
-            executableOverride: context.executableOverride,
             remoteWorkingDirectory: context.remoteWorkingDirectory,
           ),
         );
@@ -1459,8 +1488,12 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       }
     }
 
-    final fallbackTransport = context.provider.capabilities
-        .fallbackTransportFor(context.transport);
+    final supportedTransports = _supportedTransportsForContext(context);
+    final currentIndex = supportedTransports.indexOf(context.transport);
+    final fallbackTransport =
+        currentIndex == -1 || currentIndex + 1 >= supportedTransports.length
+        ? null
+        : supportedTransports[currentIndex + 1];
     if (fallbackTransport == null) {
       _runtimeStarted = false;
       await _insertTimelineEntry(
@@ -1499,7 +1532,12 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     if (context == null) {
       return;
     }
-    if (!force && !context.provider.capabilities.autoStartRuntime) {
+    final transport = context.transport;
+    final useAcp = transport == AiCliTransport.acp;
+    final useHeadlessPromptMode = transport == AiCliTransport.headlessPrompt;
+    final shouldAutoStart =
+        useAcp || context.provider.capabilities.autoStartRuntime;
+    if (!force && !shouldAutoStart) {
       return;
     }
     final connectionId = context.connectionId;
@@ -1510,9 +1548,6 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       return;
     }
 
-    final transport = context.transport;
-    final useAcp = transport == AiCliTransport.acp;
-    final useHeadlessPromptMode = transport == AiCliTransport.headlessPrompt;
     final hasActiveRun = runtimeService.hasActiveRunForSession(
       widget.sessionId,
     );
@@ -1567,12 +1602,13 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           aiSessionId: widget.sessionId,
           connectionId: connectionId,
           provider: context.provider,
-          executableOverride: context.executableOverride,
+          executableOverride: useAcp ? context.executableOverride : null,
           remoteWorkingDirectory: context.remoteWorkingDirectory,
           structuredOutput:
               useHeadlessPromptMode &&
               context.provider.capabilities.supportsStructuredOutput,
           acpMode: useAcp,
+          runInPtyOverride: useAcp ? false : null,
           extraArguments: useAcp
               ? const <String>[]
               : _launchArgumentsBuilder.buildPersistentLaunchArguments(
@@ -1810,13 +1846,17 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     }
     final connectionId = context.connectionId;
     if (connectionId == null) {
-      return '/';
+      throw StateError(
+        'Unable to resolve ACP working directory "${context.remoteWorkingDirectory}" without an active SSH connection.',
+      );
     }
     final session = ref
         .read(activeSessionsProvider.notifier)
         .getSession(connectionId);
     if (session == null) {
-      return '/';
+      throw StateError(
+        'Unable to resolve ACP working directory "${context.remoteWorkingDirectory}" because the SSH session is unavailable.',
+      );
     }
     final remoteDir = context.remoteWorkingDirectory.trim();
     final cdDirectory = _buildRemoteCdDirectory(remoteDir);
@@ -1835,7 +1875,12 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         resolved = trimmedLine;
       }
     }
-    return resolved != null && resolved.startsWith('/') ? resolved : '/';
+    if (resolved != null && resolved.startsWith('/')) {
+      return resolved;
+    }
+    throw StateError(
+      'Unable to resolve remote working directory "${context.remoteWorkingDirectory}" for ACP startup.',
+    );
   }
 
   String? _acpSessionCwd(String remoteWorkingDirectory) {
@@ -1981,7 +2026,6 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         aiSessionId: widget.sessionId,
         connectionId: connectionId,
         provider: context.provider,
-        executableOverride: context.executableOverride,
         remoteWorkingDirectory: context.remoteWorkingDirectory,
         extraArguments: _headlessPromptArguments(
           provider: context.provider,
@@ -2557,6 +2601,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     final preferences = _sessionPreferences();
     return <String, dynamic>{
       'provider': context.provider.name,
+      'originalProvider': context.provider.name,
       'transport': context.transport.name,
       if (context.executableOverride != null)
         'executableOverride': context.executableOverride,
@@ -2613,20 +2658,29 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         connectionId: result.connectionId,
         resumedSession: true,
       );
+      if (!mounted) {
+        return;
+      }
       setState(() {
         _sessionContext = nextContext;
         _runtimeStarted = false;
         _runtimeAttachmentState = _RuntimeAttachmentState.resumed;
       });
+      await _startRuntimeIfNeeded(force: true);
+      final reattachedMessage =
+          nextContext.transport == AiCliTransport.headlessPrompt
+          ? 'Session reconnected on a new SSH connection.'
+          : _runtimeAttachmentState == _RuntimeAttachmentState.detached
+          ? 'SSH reconnected, but the runtime could not be reattached.'
+          : 'Runtime reattached on a new SSH connection.';
       await _insertTimelineEntry(
         role: 'status',
-        message: 'Runtime reattached on a new SSH connection.',
+        message: reattachedMessage,
         metadata: <String, dynamic>{
-          'runtimeState': 'resumed',
+          'runtimeState': _runtimeAttachmentState.name,
           'connectionId': result.connectionId,
         },
       );
-      await _startRuntimeIfNeeded();
     } finally {
       if (mounted) {
         setState(() {

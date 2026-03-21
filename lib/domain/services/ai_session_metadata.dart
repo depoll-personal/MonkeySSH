@@ -58,6 +58,24 @@ abstract final class AiSessionMetadata {
     return null;
   }
 
+  /// Resolves the underlying provider for adapter-backed sessions.
+  ///
+  /// Falls back to `provider` when no separate original provider was stored.
+  static AiCliProvider? readOriginalProvider(Map<String, dynamic> metadata) {
+    final providerName =
+        readString(metadata, 'originalProvider') ??
+        readString(metadata, 'provider');
+    if (providerName == null) {
+      return null;
+    }
+    for (final provider in AiCliProvider.values) {
+      if (provider.name == providerName) {
+        return provider;
+      }
+    }
+    return null;
+  }
+
   /// Resolves an [AiCliTransport] from metadata key `transport`.
   static AiCliTransport? readTransport(Map<String, dynamic> metadata) {
     final transportName = readString(metadata, 'transport');

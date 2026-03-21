@@ -30,8 +30,10 @@ class AcpClient {
   final StreamController<AcpEvent> _eventsController =
       StreamController<AcpEvent>.broadcast();
   String _stdoutBuffer = '';
-  final StringBuffer _stderrBuffer = StringBuffer();
+  static const _maxCapturedStderrChars = 16384;
+  String _stderrBuffer = '';
   bool _disposed = false;
+  bool _streamClosed = false;
 
   /// Stream of ACP events (session updates, errors).
   Stream<AcpEvent> get events => _eventsController.stream;
@@ -656,6 +658,7 @@ class AcpClient {
   }
 
   void _onStreamError(Object error, StackTrace stackTrace) {
+    _streamClosed = true;
     for (final completer in _pendingRequests.values) {
       if (!completer.isCompleted) {
         completer.completeError(error, stackTrace);
@@ -666,11 +669,17 @@ class AcpClient {
   }
 
   void _onStderrChunk(String chunk) {
-    _stderrBuffer.write(chunk);
+    final next = _stderrBuffer + chunk;
+    if (next.length <= _maxCapturedStderrChars) {
+      _stderrBuffer = next;
+      return;
+    }
+    _stderrBuffer = next.substring(next.length - _maxCapturedStderrChars);
   }
 
   void _onStreamDone() {
-    final stderrContent = _stderrBuffer.toString().trim();
+    _streamClosed = true;
+    final stderrContent = _stderrBuffer.trim();
     final errorMessage = stderrContent.isNotEmpty
         ? 'ACP process ended: $stderrContent'
         : 'ACP process stdout stream closed.';
@@ -740,6 +749,11 @@ class AcpClient {
   void _ensureNotDisposed() {
     if (_disposed) {
       throw const AcpClientException('AcpClient is already disposed.');
+    }
+    if (_streamClosed) {
+      throw const AcpClientException(
+        'ACP process stream is no longer available.',
+      );
     }
   }
 }

@@ -22,6 +22,21 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  Finder findProviderDropdown() => find.byWidgetPredicate(
+    (widget) => widget is DropdownButtonFormField<AiCliProvider>,
+    description: 'AI provider dropdown',
+  );
+
+  Finder findAcpClientDropdown() => find.byWidgetPredicate(
+    (widget) => widget is DropdownButtonFormField<String>,
+    description: 'ACP client dropdown',
+  );
+
+  Finder findHostDropdown() => find.byWidgetPredicate(
+    (widget) => widget is DropdownButtonFormField<int>,
+    description: 'Host dropdown',
+  );
+
   group('AI start flow', () {
     testWidgets('shows empty-host guidance', (tester) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
@@ -107,7 +122,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.byKey(const Key('ai-host-field')), findsOneWidget);
+      expect(findHostDropdown(), findsOneWidget);
       expect(tester.takeException(), isNull);
       await disposePumpedWidgetTree(tester);
     });
@@ -167,16 +182,13 @@ void main() {
         );
         await tester.pump();
 
-        await tester.tap(find.byKey(const Key('ai-provider-field')));
+        await tester.tap(findProviderDropdown());
         await tester.pumpAndSettle();
         await tester.tap(find.text('copilot').last);
         await tester.pumpAndSettle();
 
         expect(find.text('copilot'), findsOneWidget);
-        expect(
-          find.byKey(const Key('ai-acp-client-preset-field')),
-          findsNothing,
-        );
+        expect(findAcpClientDropdown(), findsNothing);
         await disposePumpedWidgetTree(tester);
       },
     );
@@ -205,18 +217,15 @@ void main() {
         );
         await tester.pumpAndSettle();
 
-        await tester.tap(find.byKey(const Key('ai-provider-field')));
+        await tester.tap(findProviderDropdown());
         await tester.pumpAndSettle();
         await tester.tap(find.text('acp-client').last);
         await tester.pumpAndSettle();
 
-        expect(
-          find.byKey(const Key('ai-acp-client-preset-field')),
-          findsOneWidget,
-        );
+        expect(findAcpClientDropdown(), findsOneWidget);
         expect(find.textContaining('Command: '), findsOneWidget);
 
-        await tester.tap(find.byKey(const Key('ai-acp-client-preset-field')));
+        await tester.tap(findAcpClientDropdown());
         await tester.pumpAndSettle();
         await tester.tap(find.text('Custom command').last);
         await tester.pumpAndSettle();
