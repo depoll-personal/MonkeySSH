@@ -233,12 +233,14 @@ void main() {
             connectionId: 5,
             provider: AiCliProvider.gemini,
             remoteWorkingDirectory: '/workspace',
+            structuredOutput: true,
           ),
         );
         await service.cancel();
         final cancelled = await cancelledEventFuture;
 
         expect(cancelled.connectionId, 5);
+        expect(cancelled.structuredOutput, isTrue);
         expect(process.terminated, isTrue);
         expect(process.closed, isTrue);
         expect(service.hasActiveRun, isFalse);

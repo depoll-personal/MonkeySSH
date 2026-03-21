@@ -369,6 +369,7 @@ class AcpClient {
             rawUpdate: update,
           ),
         );
+        return;
       case 'agent_thought_chunk':
         _emitEvent(
           AcpEvent(
@@ -378,6 +379,7 @@ class AcpClient {
             rawUpdate: update,
           ),
         );
+        return;
       case 'tool_call':
         _emitEvent(
           AcpEvent(
@@ -388,6 +390,7 @@ class AcpClient {
             rawUpdate: update,
           ),
         );
+        return;
       case 'tool_call_update':
         _emitEvent(
           AcpEvent(
@@ -398,6 +401,7 @@ class AcpClient {
             rawUpdate: update,
           ),
         );
+        return;
       case 'plan':
         _emitEvent(
           AcpEvent(
@@ -407,6 +411,7 @@ class AcpClient {
             rawUpdate: update,
           ),
         );
+        return;
       case 'current_mode_update':
         final modeId = _extractModeId(update);
         if (modeId != null && modeId.isNotEmpty) {
@@ -426,6 +431,7 @@ class AcpClient {
             rawUpdate: update,
           ),
         );
+        return;
       case 'current_model_update':
         final modelId = _extractModelId(update);
         if (modelId != null && modelId.isNotEmpty) {
@@ -445,6 +451,7 @@ class AcpClient {
             rawUpdate: update,
           ),
         );
+        return;
       case 'available_commands_update':
         final commands = _extractAvailableCommands(update);
         _availableCommands
@@ -458,6 +465,7 @@ class AcpClient {
             rawUpdate: update,
           ),
         );
+        return;
       case 'session_info_update':
         _emitEvent(
           AcpEvent(
@@ -467,6 +475,7 @@ class AcpClient {
             rawUpdate: update,
           ),
         );
+        return;
       default:
         _emitEvent(
           AcpEvent(
@@ -476,6 +485,7 @@ class AcpClient {
             rawUpdate: update,
           ),
         );
+        return;
     }
   }
 

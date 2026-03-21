@@ -88,9 +88,9 @@ void main() {
     );
 
     await _tapNavigationDestination(tester, 'nav-ai-chat');
-    await _pumpUntilVisible(tester, find.byKey(const Key('ai-host-field')));
+    await _pumpUntilVisible(tester, _findHostDropdown());
 
-    await tester.tap(find.byKey(const Key('ai-host-field')));
+    await tester.tap(_findHostDropdown());
     await tester.pumpAndSettle();
     await tester.tap(find.textContaining(hostLabel).last);
     await tester.pumpAndSettle();
@@ -99,7 +99,7 @@ void main() {
       find.byKey(const Key('ai-working-directory-field')),
       _liveUxWorkspacePath,
     );
-    await tester.tap(find.byKey(const Key('ai-provider-field')));
+    await tester.tap(_findProviderDropdown());
     await tester.pumpAndSettle();
     await tester.tap(
       find.byKey(Key('ai-provider-option-${_liveUxProvider.name}')).last,
@@ -161,8 +161,9 @@ void main() {
       recentSessionTile,
       timeout: const Duration(seconds: 20),
     );
-    await tester.tap(recentSessionTile.first);
-    await tester.pump();
+    await _scrollUntilVisible(tester, recentSessionTile.first);
+    await tester.tap(recentSessionTile.first, warnIfMissed: false);
+    await tester.pumpAndSettle();
     await _pumpUntilVisible(
       tester,
       find.byKey(const Key('ai-chat-input')),
@@ -175,6 +176,16 @@ void main() {
     );
   });
 }
+
+Finder _findProviderDropdown() => find.byWidgetPredicate(
+  (widget) => widget is DropdownButtonFormField<AiCliProvider>,
+  description: 'AI provider dropdown',
+);
+
+Finder _findHostDropdown() => find.byWidgetPredicate(
+  (widget) => widget is DropdownButtonFormField<int>,
+  description: 'Host dropdown',
+);
 
 const _liveUxPort = int.fromEnvironment('FLUTTY_LIVE_UX_PORT');
 const _liveUxUsername = String.fromEnvironment('FLUTTY_LIVE_UX_USERNAME');

@@ -125,6 +125,7 @@ void main() {
           provider: AiCliProvider.copilot,
           executableOverride: _copilotExecutable,
           remoteWorkingDirectory: workspacePath,
+          structuredOutput: true,
           extraArguments: launchArgumentsBuilder.buildHeadlessPromptArguments(
             provider: AiCliProvider.copilot,
             preferences: AiCliSessionPreferences(

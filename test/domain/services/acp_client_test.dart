@@ -281,55 +281,58 @@ void main() {
       expect(collectedEvents[2].text, 'Hello world');
     });
 
-    test('cancelActivePrompt sends cancel notification with request id', () async {
-      final initFuture = client.initialize();
-      await Future<void>.delayed(Duration.zero);
-      process.emitStdout(
-        '${jsonEncode(<String, dynamic>{
-          'jsonrpc': '2.0',
-          'id': 1,
-          'result': <String, dynamic>{'protocolVersion': 1},
-        })}\n',
-      );
-      await initFuture;
+    test(
+      'cancelActivePrompt sends cancel notification for the active session',
+      () async {
+        final initFuture = client.initialize();
+        await Future<void>.delayed(Duration.zero);
+        process.emitStdout(
+          '${jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': 1,
+            'result': <String, dynamic>{'protocolVersion': 1},
+          })}\n',
+        );
+        await initFuture;
 
-      final sessionFuture = client.createSession(cwd: '/test');
-      await Future<void>.delayed(Duration.zero);
-      process.emitStdout(
-        '${jsonEncode(<String, dynamic>{
-          'jsonrpc': '2.0',
-          'id': 2,
-          'result': <String, dynamic>{'sessionId': 'sess-1', 'models': <String, dynamic>{}, 'modes': <String, dynamic>{}},
-        })}\n',
-      );
-      await sessionFuture;
+        final sessionFuture = client.createSession(cwd: '/test');
+        await Future<void>.delayed(Duration.zero);
+        process.emitStdout(
+          '${jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': 2,
+            'result': <String, dynamic>{'sessionId': 'sess-1', 'models': <String, dynamic>{}, 'modes': <String, dynamic>{}},
+          })}\n',
+        );
+        await sessionFuture;
 
-      final promptFuture = client.sendPrompt(
-        sessionId: 'sess-1',
-        text: 'hello',
-      );
-      await Future<void>.delayed(Duration.zero);
-      final didCancel = client.cancelActivePrompt('sess-1');
-      expect(didCancel, isTrue);
+        final promptFuture = client.sendPrompt(
+          sessionId: 'sess-1',
+          text: 'hello',
+        );
+        await Future<void>.delayed(Duration.zero);
+        final didCancel = client.cancelActivePrompt('sess-1');
+        expect(didCancel, isTrue);
 
-      expect(process.stdinWrites, hasLength(4));
-      final cancelMessage =
-          jsonDecode(process.stdinWrites.last) as Map<String, dynamic>;
-      expect(cancelMessage['method'], 'session/cancel');
-      expect(
-        (cancelMessage['params'] as Map<String, dynamic>)['sessionId'],
-        'sess-1',
-      );
+        expect(process.stdinWrites, hasLength(4));
+        final cancelMessage =
+            jsonDecode(process.stdinWrites.last) as Map<String, dynamic>;
+        expect(cancelMessage['method'], 'session/cancel');
+        expect(
+          (cancelMessage['params'] as Map<String, dynamic>)['sessionId'],
+          'sess-1',
+        );
 
-      process.emitStdout(
-        '${jsonEncode(<String, dynamic>{
-          'jsonrpc': '2.0',
-          'id': 3,
-          'error': <String, dynamic>{'code': -32800, 'message': 'Request cancelled'},
-        })}\n',
-      );
-      expect(promptFuture, throwsA(isA<AcpClientException>()));
-    });
+        process.emitStdout(
+          '${jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': 3,
+            'error': <String, dynamic>{'code': -32800, 'message': 'Request cancelled'},
+          })}\n',
+        );
+        expect(promptFuture, throwsA(isA<AcpClientException>()));
+      },
+    );
 
     test('parses ACP mode/model/commands session updates', () async {
       final initFuture = client.initialize();

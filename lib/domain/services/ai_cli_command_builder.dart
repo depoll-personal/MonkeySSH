@@ -59,16 +59,16 @@ class AiCliCommandBuilder {
     final encodedRunCommandAssignment =
         'MONKEYSSH_RUN_B64=${shellEscape(encodedRunCommand)}';
     const decodeRunCommand =
-        r'MONKEYSSH_RUN="$(printf %s "$MONKEYSSH_RUN_B64" | base64 --decode 2>/dev/null || printf %s "$MONKEYSSH_RUN_B64" | base64 -d 2>/dev/null)"';
+        r'if command -v base64 >/dev/null 2>&1; then MONKEYSSH_RUN="$(printf %s "$MONKEYSSH_RUN_B64" | base64 --decode 2>/dev/null || printf %s "$MONKEYSSH_RUN_B64" | base64 -d 2>/dev/null)"; else MONKEYSSH_RUN=""; fi';
     const loginShellCommand =
-        r'if [ -n "$SHELL" ] && command -v "$SHELL" >/dev/null 2>&1; then "$SHELL" -ilc "$MONKEYSSH_RUN"; rc=$?; if [ $rc -ne 127 ]; then exit $rc; fi; fi';
+        r'if [ -n "$MONKEYSSH_RUN" ] && [ -n "$SHELL" ] && command -v "$SHELL" >/dev/null 2>&1; then "$SHELL" -ilc "$MONKEYSSH_RUN"; rc=$?; if [ $rc -ne 127 ]; then exit $rc; fi; fi';
     final loginShellSegments = <String>[
       encodedRunCommandAssignment,
       decodeRunCommand,
       'export MONKEYSSH_RUN',
       loginShellCommand,
-      r'if command -v zsh >/dev/null 2>&1; then zsh -ilc "$MONKEYSSH_RUN"; rc=$?; if [ $rc -ne 127 ]; then exit $rc; fi; fi',
-      r'if command -v bash >/dev/null 2>&1; then bash -ilc "$MONKEYSSH_RUN"; rc=$?; if [ $rc -ne 127 ]; then exit $rc; fi; fi',
+      r'if [ -n "$MONKEYSSH_RUN" ] && command -v zsh >/dev/null 2>&1; then zsh -ilc "$MONKEYSSH_RUN"; rc=$?; if [ $rc -ne 127 ]; then exit $rc; fi; fi',
+      r'if [ -n "$MONKEYSSH_RUN" ] && command -v bash >/dev/null 2>&1; then bash -ilc "$MONKEYSSH_RUN"; rc=$?; if [ $rc -ne 127 ]; then exit $rc; fi; fi',
     ];
     final fallbackSegments = <String>[
       r'PATH="$PATH:$HOME/.local/bin:$HOME/bin:$HOME/homebrew/bin:$HOME/.homebrew/bin:/usr/local/bin:/usr/local/sbin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin"',

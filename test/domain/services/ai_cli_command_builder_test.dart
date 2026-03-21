@@ -154,6 +154,8 @@ void main() {
       );
 
       expect(command, contains('-ilc'));
+      expect(command, contains('command -v base64 >/dev/null 2>&1'));
+      expect(command, contains(r'[ -n "$MONKEYSSH_RUN" ] && [ -n "$SHELL" ]'));
       expect(command, contains(r'. "$HOME/.bash_profile"'));
       expect(command, contains(r'. "$HOME/.zshrc"'));
     });

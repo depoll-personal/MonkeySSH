@@ -452,6 +452,7 @@ class AiRuntimeService {
         aiSessionId: completion.request.aiSessionId,
         connectionId: completion.request.connectionId,
         provider: completion.request.provider,
+        structuredOutput: completion.request.structuredOutput,
       ),
     );
   }

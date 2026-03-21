@@ -2027,6 +2027,8 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         connectionId: connectionId,
         provider: context.provider,
         remoteWorkingDirectory: context.remoteWorkingDirectory,
+        structuredOutput:
+            context.provider.capabilities.supportsStructuredOutput,
         extraArguments: _headlessPromptArguments(
           provider: context.provider,
           prompt: prompt,
