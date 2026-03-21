@@ -428,9 +428,9 @@ void main() {
           id: 9,
           sessionId: 12,
           role: 'tool',
-          message: 'Viewing /Users/depoll/Code',
+          message: 'Viewing /workspace/project',
           metadata:
-              r'{"toolKind":"view","toolStatus":"completed","input":"{\"path\":\"/Users/depoll/Code\"}"}',
+              r'{"toolKind":"view","toolStatus":"completed","input":"{\"path\":\"/workspace/project\"}"}',
           createdAt: DateTime(2024),
         ),
       ];
@@ -956,6 +956,55 @@ void main() {
 
       expect(find.text('/model'), findsOneWidget);
       expect(tester.takeException(), isNull);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('headless prompt sessions still suggest slash commands', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final workspaceId = await db
+          .into(db.aiWorkspaces)
+          .insert(
+            AiWorkspacesCompanion.insert(name: 'Workspace', path: '/workspace'),
+          );
+      final sessionId = await db
+          .into(db.aiSessions)
+          .insert(
+            AiSessionsCompanion.insert(
+              workspaceId: workspaceId,
+              title: 'Prompt-only Gemini',
+            ),
+          );
+      await db
+          .into(db.aiTimelineEntries)
+          .insert(
+            AiTimelineEntriesCompanion.insert(
+              sessionId: sessionId,
+              role: 'status',
+              message: 'Saved metadata',
+              metadata: const Value(
+                '{"provider":"gemini","transport":"headlessPrompt","workingDirectory":"/workspace"}',
+              ),
+            ),
+          );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [databaseProvider.overrideWithValue(db)],
+          child: MaterialApp(home: AiChatSessionScreen(sessionId: sessionId)),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('ai-chat-input')));
+      await tester.enterText(find.byKey(const Key('ai-chat-input')), '/');
+      await tester.pumpAndSettle();
+
+      expect(find.text('/help'), findsOneWidget);
 
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pumpAndSettle();

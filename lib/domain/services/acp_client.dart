@@ -30,6 +30,7 @@ class AcpClient {
   final StreamController<AcpEvent> _eventsController =
       StreamController<AcpEvent>.broadcast();
   String _stdoutBuffer = '';
+  static const _maxStdoutBufferChars = 262144;
   static const _maxCapturedStderrChars = 16384;
   String _stderrBuffer = '';
   bool _disposed = false;
@@ -254,7 +255,15 @@ class AcpClient {
     };
     final completer = Completer<Map<String, dynamic>>();
     _pendingRequests[id] = completer;
-    _process.write('${jsonEncode(message)}\n');
+    try {
+      _writeMessage(message);
+    } on Object catch (error, stackTrace) {
+      _pendingRequests.remove(id);
+      completer.completeError(
+        AcpClientException('Failed to write ACP request: $error'),
+        stackTrace,
+      );
+    }
     return _AcpPendingRequest(id: id, future: completer.future);
   }
 
@@ -265,11 +274,15 @@ class AcpClient {
       'method': method,
       ...?(params == null ? null : <String, dynamic>{'params': params}),
     };
-    _process.write('${jsonEncode(message)}\n');
+    _writeMessage(message);
   }
 
   void _onStdoutChunk(String chunk) {
     _stdoutBuffer += chunk;
+    if (_stdoutBuffer.length > _maxStdoutBufferChars) {
+      _handleStdoutOverflow();
+      return;
+    }
     _drainBuffer();
   }
 
@@ -311,6 +324,28 @@ class AcpClient {
       _handleNotification(message);
       return;
     }
+  }
+
+  void _handleStdoutOverflow() {
+    _streamClosed = true;
+    const error = AcpClientException(
+      'ACP stdout buffer exceeded $_maxStdoutBufferChars characters without a newline.',
+    );
+    for (final completer in _pendingRequests.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(error);
+      }
+    }
+    _pendingRequests.clear();
+    _activePromptRequestIdsBySession.clear();
+    _emitEvent(
+      AcpEvent(sessionId: '', type: AcpEventType.unknown, text: error.message),
+    );
+    unawaited(dispose());
+  }
+
+  void _writeMessage(Map<String, dynamic> message) {
+    _process.write('${jsonEncode(message)}\n');
   }
 
   void _handleResponse(Map<String, dynamic> message) {
@@ -629,7 +664,24 @@ class AcpClient {
       final Map<String, dynamic> value =>
         value['availableCommands'] is List<dynamic>
             ? value['availableCommands'] as List<dynamic>
-            : const <dynamic>[],
+            : value['commands'] is List<dynamic>
+            ? value['commands'] as List<dynamic>
+            : value.entries
+                  .map<dynamic>(
+                    (entry) => switch (entry.value) {
+                      final Map<String, dynamic> inner => <String, dynamic>{
+                        'id': entry.key,
+                        ...inner,
+                      },
+                      final String description => <String, dynamic>{
+                        'id': entry.key,
+                        'title': entry.key,
+                        'description': description,
+                      },
+                      _ => <String, dynamic>{'id': entry.key},
+                    },
+                  )
+                  .toList(growable: false),
       _ => const <dynamic>[],
     };
     if (commands.isEmpty) {

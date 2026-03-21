@@ -15,6 +15,7 @@ class _FakeAiRuntimeProcess implements AiRuntimeProcess {
       StreamController<String>.broadcast();
   final Completer<void> _doneCompleter = Completer<void>();
   final List<String> stdinWrites = <String>[];
+  bool throwOnWrite = false;
 
   @override
   Stream<String> get stdout => _stdoutController.stream;
@@ -30,6 +31,9 @@ class _FakeAiRuntimeProcess implements AiRuntimeProcess {
 
   @override
   void write(String input) {
+    if (throwOnWrite) {
+      throw StateError('stdin unavailable');
+    }
     stdinWrites.add(input);
   }
 
@@ -429,6 +433,52 @@ void main() {
       );
     });
 
+    test('parses map-shaped ACP command catalogs', () async {
+      final initFuture = client.initialize();
+      await Future<void>.delayed(Duration.zero);
+      process.emitStdout(
+        '${jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 1,
+          'result': <String, dynamic>{'protocolVersion': 1},
+        })}\n',
+      );
+      await initFuture;
+
+      final sessionFuture = client.createSession(cwd: '/test');
+      await Future<void>.delayed(Duration.zero);
+      process.emitStdout(
+        '${jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'id': 2,
+          'result': <String, dynamic>{'sessionId': 'sess-1', 'models': <String, dynamic>{}, 'modes': <String, dynamic>{}},
+        })}\n',
+      );
+      await sessionFuture;
+
+      process.emitStdout(
+        '${jsonEncode(<String, dynamic>{
+          'jsonrpc': '2.0',
+          'method': 'session/update',
+          'params': <String, dynamic>{
+            'sessionId': 'sess-1',
+            'update': <String, dynamic>{
+              'sessionUpdate': 'available_commands_update',
+              'commands': <String, dynamic>{
+                'clear': <String, dynamic>{'title': 'Clear'},
+                'resume': 'Resume a saved session',
+              },
+            },
+          },
+        })}\n',
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(client.availableCommands, hasLength(2));
+      expect(client.availableCommands.first.id, 'clear');
+      expect(client.availableCommands.last.id, 'resume');
+    });
+
     test('handles JSON-RPC errors gracefully', () async {
       final initFuture = client.initialize();
       await Future<void>.delayed(Duration.zero);
@@ -460,6 +510,42 @@ void main() {
       process.emitStdout('${fullLine.substring(10)}\n');
       final result = await initFuture;
       expect(result['protocolVersion'], 1);
+    });
+
+    test('surfaces request write failures', () async {
+      process.throwOnWrite = true;
+
+      expect(
+        client.initialize(),
+        throwsA(
+          isA<AcpClientException>().having(
+            (error) => error.message,
+            'message',
+            contains('Failed to write ACP request'),
+          ),
+        ),
+      );
+    });
+
+    test('fails fast when stdout buffer grows without delimiters', () async {
+      final events = <AcpEvent>[];
+      final eventSub = client.events.listen(events.add);
+      final initFuture = client.initialize();
+      await Future<void>.delayed(Duration.zero);
+
+      process.emitStdout(List<String>.filled(262145, 'x').join());
+
+      await expectLater(initFuture, throwsA(isA<AcpClientException>()));
+      await Future<void>.delayed(Duration.zero);
+      expect(
+        events.any(
+          (event) =>
+              event.type == AcpEventType.unknown &&
+              event.text.contains('stdout buffer exceeded'),
+        ),
+        isTrue,
+      );
+      await eventSub.cancel();
     });
 
     test('dispose completes pending requests with error', () async {

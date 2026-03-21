@@ -229,17 +229,36 @@ void main() {
   );
 }
 
-const _copilotExecutable = '/Users/depoll/homebrew/bin/copilot';
+final String? _copilotExecutable = _resolveCopilotExecutable();
 
 String? _realCopilotTestSkipReason() {
   if (!Platform.isMacOS) {
     return 'Requires macOS-local sshd and Copilot CLI.';
   }
-  if (!File(_copilotExecutable).existsSync()) {
-    return 'Copilot CLI is not installed at $_copilotExecutable.';
+  if (_copilotExecutable == null) {
+    return 'Copilot CLI is not installed on PATH. Set FLUTTY_COPILOT_EXECUTABLE to override.';
   }
   if (Platform.environment['FLUTTY_RUN_REAL_AI_CLI_TESTS'] != '1') {
     return 'Set FLUTTY_RUN_REAL_AI_CLI_TESTS=1 to run real SSH/Copilot tests.';
+  }
+  return null;
+}
+
+String? _resolveCopilotExecutable() {
+  final override = Platform.environment['FLUTTY_COPILOT_EXECUTABLE']?.trim();
+  if (override != null && override.isNotEmpty) {
+    return override;
+  }
+  final whichResult = Process.runSync('which', const <String>['copilot']);
+  if (whichResult.exitCode == 0) {
+    final resolved = (whichResult.stdout as String).trim();
+    if (resolved.isNotEmpty) {
+      return resolved;
+    }
+  }
+  const fallback = '/Users/depoll/homebrew/bin/copilot';
+  if (File(fallback).existsSync()) {
+    return fallback;
   }
   return null;
 }

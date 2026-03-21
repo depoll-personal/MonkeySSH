@@ -23,6 +23,11 @@ class AiRepository {
     _db.aiWorkspaces,
   )..where((w) => w.id.equals(id))).getSingleOrNull();
 
+  /// Get an AI workspace by exact path.
+  Future<AiWorkspace?> getWorkspaceByPath(String path) => (_db.select(
+    _db.aiWorkspaces,
+  )..where((w) => w.path.equals(path))).getSingleOrNull();
+
   /// Insert a new AI workspace.
   Future<int> insertWorkspace(AiWorkspacesCompanion workspace) =>
       _db.into(_db.aiWorkspaces).insert(workspace);

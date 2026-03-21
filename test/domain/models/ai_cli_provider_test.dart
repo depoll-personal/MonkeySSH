@@ -113,6 +113,17 @@ void main() {
       },
     );
 
+    test('provider slash commands remain available across transports', () {
+      expect(
+        AiCliProvider.copilot.capabilities.composerSlashCommands,
+        containsAll(const <String>['/help', '/login', '/model']),
+      );
+      expect(
+        AiCliProvider.gemini.capabilities.composerSlashCommands,
+        containsAll(const <String>['/help', '/auth', '/model']),
+      );
+    });
+
     test('interactive transports requiring TTY are flagged conservatively', () {
       expect(AiCliProvider.claude.capabilities.requiresPty, isTrue);
       expect(AiCliProvider.codex.capabilities.requiresPty, isTrue);

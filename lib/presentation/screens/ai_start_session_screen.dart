@@ -50,8 +50,12 @@ class AiStartSessionScreen extends ConsumerStatefulWidget {
 class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
   static const _customAcpClientId = '__custom__';
   static const _acpAdapterVersion = 'v0.3.3';
+  static const _remoteShellPathPrefix =
+      r'/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:'
+      r'$HOME/homebrew/bin:$HOME/.homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin';
   static const _acpAdapterInstallCommand =
-      r'export INSTALL_DIR="$HOME/.local/bin"; '
+      'export PATH="$_remoteShellPathPrefix:\$PATH"; '
+      r'INSTALL_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"; '
       r'mkdir -p "$INSTALL_DIR"; '
       'if ! command -v curl >/dev/null 2>&1; then '
       'echo "curl is required to install acp-adapter." >&2; '
@@ -79,7 +83,8 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
       'x86_64-linux) printf %s 0ae60e30db2daad2a803c6b38c8d2514a6744b62c1cb1ac4561ba80b33ae6fb7 ;; '
       'aarch64-linux) printf %s 20d235dd70d3e98bcab1a06f51bef3c25c95293cd91d3fcce1ac643810aa02da ;; '
       '*) exit 1 ;; esac)"; '
-      'TMP_DIR="\$(mktemp -d)"; trap \'rm -rf "\$TMP_DIR"\' EXIT; '
+      r'TMP_DIR="$(mktemp -d 2>/dev/null || mktemp -d -t acp-adapter)"; '
+      "trap 'rm -rf \"\$TMP_DIR\"' EXIT; "
       r'ARCHIVE="$TMP_DIR/$FILENAME"; '
       r'curl -fsSL "$URL" -o "$ARCHIVE"; '
       r'ACTUAL_SHA="$(if command -v sha256sum >/dev/null 2>&1; then '
@@ -89,28 +94,39 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
       'echo "Checksum verification failed for acp-adapter." >&2; '
       'exit 1; '
       'fi; '
+      r'if ! tar -tzf "$ARCHIVE" >/dev/null 2>&1; then '
+      'echo "Downloaded acp-adapter archive is invalid." >&2; '
+      'exit 1; '
+      'fi; '
       r'tar -xzf "$ARCHIVE" -C "$TMP_DIR"; '
-      r'BINARY_PATH="$TMP_DIR/acp-adapter-'
-      '$_acpAdapterVersion'
-      r'-${ARCH}-${OS}/acp-adapter"; '
-      r'if [ ! -f "$BINARY_PATH" ]; then '
+      r'BINARY_PATH="$(find "$TMP_DIR" -type f -name acp-adapter | head -n 1)"; '
+      r'if [ -z "$BINARY_PATH" ] || [ ! -f "$BINARY_PATH" ]; then '
       'echo "acp-adapter binary not found in extracted archive." >&2; '
+      r'find "$TMP_DIR" -maxdepth 2 -mindepth 1 -print >&2; '
       'exit 1; '
       'fi; '
       r'chmod +x "$BINARY_PATH"; '
-      r'mv "$BINARY_PATH" "$INSTALL_DIR/acp-adapter"';
+      r'mv "$BINARY_PATH" "$INSTALL_DIR/acp-adapter"; '
+      r'"$INSTALL_DIR/acp-adapter" --version >/dev/null 2>&1 || { '
+      'echo "Installed acp-adapter failed to start." >&2; '
+      'exit 1; '
+      '}; '
+      r'printf %s "$INSTALL_DIR/acp-adapter"';
   static const _acpAdapterProbeCommand =
-      'if command -v acp-adapter >/dev/null 2>&1 '
-      r'|| [ -x "$HOME/.local/bin/acp-adapter" ] '
-      r'|| [ -x "$HOME/bin/acp-adapter" ] '
-      r'|| [ -x "$HOME/homebrew/bin/acp-adapter" ] '
-      r'|| [ -x "$HOME/.homebrew/bin/acp-adapter" ] '
-      '|| [ -x "/usr/local/bin/acp-adapter" ] '
-      '|| [ -x "/opt/homebrew/bin/acp-adapter" ]; then '
-      'printf installed; '
-      'else '
-      'printf missing; '
-      'fi';
+      'export PATH="$_remoteShellPathPrefix:\$PATH"; '
+      r'for candidate in "$(command -v acp-adapter 2>/dev/null)" '
+      r'"${XDG_BIN_HOME:-$HOME/.local/bin}/acp-adapter" '
+      r'"$HOME/bin/acp-adapter" '
+      r'"$HOME/homebrew/bin/acp-adapter" '
+      r'"$HOME/.homebrew/bin/acp-adapter" '
+      '"/usr/local/bin/acp-adapter" '
+      '"/opt/homebrew/bin/acp-adapter"; do '
+      r'if [ -n "$candidate" ] && [ -x "$candidate" ]; then '
+      r'printf %s "$candidate"; '
+      'exit 0; '
+      'fi; '
+      'done; '
+      'exit 1';
 
   late final TextEditingController _workingDirectoryController;
   late final TextEditingController _acpClientCommandController;
@@ -567,6 +583,14 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
   }
 
   Future<void> _startSession(AsyncValue<List<Host>> hostsAsync) async {
+    if (hostsAsync.isLoading) {
+      _showSnackBar('Hosts are still loading. Please wait a moment.');
+      return;
+    }
+    if (hostsAsync.hasError) {
+      _showSnackBar('Unable to load hosts: ${hostsAsync.error}');
+      return;
+    }
     final hosts = hostsAsync.asData?.value ?? const <Host>[];
     if (hosts.isEmpty) {
       _showSnackBar('Add a host before starting an AI session.');
@@ -730,11 +754,11 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
     required Host host,
     required String workingDirectory,
   }) async {
-    final existingWorkspaces = await repository.getAllWorkspaces();
-    for (final workspace in existingWorkspaces) {
-      if (workspace.path == workingDirectory) {
-        return workspace.id;
-      }
+    final existingWorkspace = await repository.getWorkspaceByPath(
+      workingDirectory,
+    );
+    if (existingWorkspace != null) {
+      return existingWorkspace.id;
     }
 
     return repository.insertWorkspace(
@@ -837,7 +861,7 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
         connectionId: connectionId,
         command: _acpAdapterProbeCommand,
       );
-      return result.exitCode == 0 && result.stdout.trim() == 'installed';
+      return result.exitCode == 0 && result.stdout.trim().isNotEmpty;
     } on Exception catch (error) {
       _showSnackBar('Unable to check acp-adapter on the remote host: $error');
       return false;
@@ -858,15 +882,7 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
         command: _acpAdapterInstallCommand,
       );
       if (result.exitCode != 0) {
-        final summary = [
-          result.stderr.trim(),
-          result.stdout.trim(),
-        ].where((value) => value.isNotEmpty).join('\n').trim();
-        _showSnackBar(
-          summary.isEmpty
-              ? 'Unable to install acp-adapter on the remote host.'
-              : 'ACP adapter install failed: $summary',
-        );
+        _showSnackBar(_summarizeRemoteCommandFailure(result));
         return false;
       }
       return _isAcpAdapterInstalled(
@@ -877,6 +893,21 @@ class _AiStartSessionScreenState extends ConsumerState<AiStartSessionScreen> {
       _showSnackBar('ACP adapter install failed: $error');
       return false;
     }
+  }
+
+  String _summarizeRemoteCommandFailure(_RemoteCommandResult result) {
+    final combined = [
+      result.stderr.trim(),
+      result.stdout.trim(),
+    ].where((value) => value.isNotEmpty).join('\n').trim();
+    if (combined.isEmpty) {
+      return 'Unable to install acp-adapter on the remote host.';
+    }
+    const maxLength = 400;
+    final clipped = combined.length > maxLength
+        ? '${combined.substring(0, maxLength)}…'
+        : combined;
+    return 'ACP adapter install failed (exit ${result.exitCode ?? 'unknown'}): $clipped';
   }
 
   Future<_RemoteCommandResult> _runRemoteCommand({

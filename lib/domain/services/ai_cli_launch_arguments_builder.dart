@@ -86,7 +86,7 @@ class AiCliLaunchArgumentsBuilder {
         flag: '--resume',
         value: preferences.providerSessionId,
       ),
-      '--prompt',
+      '-p',
       prompt,
       '--output-format',
       'stream-json',

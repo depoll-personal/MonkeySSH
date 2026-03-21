@@ -91,7 +91,7 @@ void main() {
           containsAllInOrder(const <String>[
             '--resume',
             'latest',
-            '--prompt',
+            '-p',
             'Summarize the repo',
             '--output-format',
             'stream-json',

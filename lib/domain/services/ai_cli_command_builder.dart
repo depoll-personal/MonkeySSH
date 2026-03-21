@@ -46,7 +46,7 @@ class AiCliCommandBuilder {
       executableOverride: executableOverride,
       arguments: commandArguments,
     );
-    final cdDirectory = _buildCdDirectory(trimmedRemoteWorkingDirectory);
+    final cdDirectory = buildShellCdDirectory(trimmedRemoteWorkingDirectory);
     // Suppress PTY echo for adapter-mode processes so the user's stdin input
     // isn't echoed back on stdout as spurious assistant messages.
     final echoSuppression = !acpMode && provider.capabilities.requiresPty
@@ -84,18 +84,6 @@ class AiCliCommandBuilder {
     // Use POSIX `sh -c` instead of hard-requiring bash so this works on hosts
     // where bash is unavailable.
     return 'sh -c ${shellEscape(launchSegments.join('; '))}';
-  }
-
-  /// Builds a shell-safe cd target that preserves tilde expansion.
-  String _buildCdDirectory(String directory) {
-    if (directory == '~') {
-      return '~';
-    }
-    if (directory.startsWith('~/')) {
-      final rest = directory.substring(2);
-      return rest.isEmpty ? '~' : '~/${shellEscape(rest)}';
-    }
-    return shellEscape(directory);
   }
 
   List<String> _structuredOutputArgumentsFor(AiCliProvider provider) {

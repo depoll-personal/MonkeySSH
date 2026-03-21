@@ -9,3 +9,23 @@ String shellEscape(String value) {
   final escapedValue = value.replaceAll('\'', '\'\\\'\'');
   return '\'$escapedValue\'';
 }
+
+/// Builds a shell-safe `cd` target while preserving bare-home tilde expansion.
+String buildShellCdDirectory(String value) {
+  final trimmed = value.trim();
+  if (trimmed.isEmpty) {
+    throw ArgumentError.value(
+      value,
+      'value',
+      'Remote working directory cannot be empty.',
+    );
+  }
+  if (trimmed == '~') {
+    return '~';
+  }
+  if (trimmed.startsWith('~/')) {
+    final rest = trimmed.substring(2);
+    return rest.isEmpty ? '~' : '~/${shellEscape(rest)}';
+  }
+  return shellEscape(trimmed);
+}

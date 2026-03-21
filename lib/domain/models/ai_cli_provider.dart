@@ -171,7 +171,7 @@ const _copilotCapabilities = AiCliProviderCapabilities(
   ],
   supportsStructuredOutput: true,
   structuredOutputArguments: <String>['--output-format', 'json'],
-  composerSlashCommands: <String>['/help', '/model'],
+  composerSlashCommands: <String>['/help', '/login', '/model'],
   acpLaunchArguments: <String>['--acp', '--allow-all-tools'],
 );
 const _geminiCapabilities = AiCliProviderCapabilities(
@@ -181,7 +181,7 @@ const _geminiCapabilities = AiCliProviderCapabilities(
   ],
   supportsStructuredOutput: true,
   structuredOutputArguments: <String>['--output-format', 'stream-json'],
-  composerSlashCommands: <String>['/help', '/model'],
+  composerSlashCommands: <String>['/help', '/auth', '/model'],
   acpLaunchArguments: <String>['--acp'],
 );
 const _acpCapabilities = AiCliProviderCapabilities(

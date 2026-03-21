@@ -14,6 +14,7 @@ import '../../domain/models/ai_cli_provider.dart';
 import '../../domain/services/acp_client.dart';
 import '../../domain/services/ai_cli_launch_arguments_builder.dart';
 import '../../domain/services/ai_cli_session_preferences.dart';
+import '../../domain/services/ai_cli_slash_command_discovery.dart';
 import '../../domain/services/ai_runtime_event_parser_pipeline.dart';
 import '../../domain/services/ai_runtime_service.dart';
 import '../../domain/services/ai_session_metadata.dart';
@@ -97,6 +98,8 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
   String? _savedSystemPrompt;
   String? _savedAppendSystemPrompt;
   List<String> _availableSlashCommands = const <String>[];
+  Future<void>? _slashCommandDiscoveryInFlight;
+  String? _slashCommandDiscoveryKey;
 
   /// Buffers for aggregating streaming ACP chunks into single timeline entries.
   final StringBuffer _acpMessageBuffer = StringBuffer();
@@ -219,7 +222,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
         actions: [
           IconButton(
             key: const Key('ai-session-preferences-button'),
-            icon: const Icon(Icons.tune_outlined),
+            icon: const Icon(Icons.settings_outlined),
             tooltip: 'Session preferences',
             onPressed: _showSessionPreferencesSheet,
           ),
@@ -231,13 +234,13 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
             ),
           if (isAcp && acpSession.availableCommands.isNotEmpty)
             IconButton(
-              icon: const Icon(Icons.flash_on_outlined),
+              icon: const Icon(Icons.terminal_outlined),
               tooltip: 'ACP commands',
               onPressed: _showAcpCommandsSheet,
             ),
           if (isAcp && acpSession.availableModes.length > 1)
             PopupMenuButton<String>(
-              icon: const Icon(Icons.tune, size: 20),
+              icon: const Icon(Icons.alt_route_outlined, size: 20),
               tooltip: 'Select mode',
               onSelected: (modeId) => unawaited(_selectAcpMode(modeId)),
               itemBuilder: (context) => acpSession.availableModes
@@ -270,7 +273,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
             ),
           if (isAcp && acpSession.availableModels.length > 1)
             PopupMenuButton<String>(
-              icon: const Icon(Icons.model_training, size: 20),
+              icon: const Icon(Icons.psychology_alt_outlined, size: 20),
               tooltip: 'Select model',
               onSelected: (modelId) => unawaited(_selectAcpModel(modelId)),
               itemBuilder: (context) => acpSession.availableModels
@@ -771,6 +774,10 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       _composerAutocompleteEngine = AiComposerAutocompleteEngine(
         slashCommands: _availableSlashCommands,
       );
+      final nextContext = _sessionContext;
+      if (nextContext != null) {
+        unawaited(_discoverSlashCommands(context: nextContext, force: true));
+      }
     }
 
     final context = _sessionContext;
@@ -1190,7 +1197,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     }
 
     final remoteDir = context.remoteWorkingDirectory;
-    final cdDirectory = _buildRemoteCdDirectory(remoteDir);
+    final cdDirectory = buildShellCdDirectory(remoteDir);
     final process = await session.execute(
       'cd $cdDirectory && '
       'find . -maxdepth 4 -type f 2>/dev/null | sed "s#^./##" | head -n 250',
@@ -1262,6 +1269,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           slashCommands: _availableSlashCommands,
         );
       });
+      unawaited(_discoverSlashCommands(context: context));
       final shouldAutoStart =
           context.transport == AiCliTransport.acp ||
           context.provider.capabilities.autoStartRuntime;
@@ -1355,6 +1363,90 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       LinkedHashSet<String>.from(
         provider.capabilities.composerSlashCommands,
       ).toList(growable: false);
+
+  Future<void> _discoverSlashCommands({
+    required _AiSessionRuntimeContext context,
+    bool force = false,
+  }) async {
+    final connectionId = context.connectionId;
+    if (connectionId == null) {
+      return;
+    }
+    final discovery = ref.read(aiCliSlashCommandDiscoveryProvider);
+    final command = discovery.buildDiscoveryCommand(
+      provider: context.provider,
+      remoteWorkingDirectory: context.remoteWorkingDirectory,
+      executableOverride: context.executableOverride,
+    );
+    if (command == null) {
+      return;
+    }
+
+    final key =
+        '${context.provider.name}|${context.executableOverride ?? ''}|'
+        '${context.remoteWorkingDirectory}|$connectionId';
+    if (!force && _slashCommandDiscoveryKey == key) {
+      return;
+    }
+    if (!force && _slashCommandDiscoveryInFlight != null) {
+      return _slashCommandDiscoveryInFlight;
+    }
+
+    final future = () async {
+      final session = ref
+          .read(activeSessionsProvider.notifier)
+          .getSession(connectionId);
+      if (session == null) {
+        return;
+      }
+      final process = await session.execute(command);
+      final stdoutFuture = process.stdout
+          .cast<List<int>>()
+          .transform(utf8.decoder)
+          .join();
+      final stderrFuture = process.stderr
+          .cast<List<int>>()
+          .transform(utf8.decoder)
+          .join();
+      await process.done;
+      final discoveredCommands = discovery.extractSlashCommands(
+        '${await stdoutFuture}\n${await stderrFuture}',
+      );
+      if (discoveredCommands.isEmpty) {
+        return;
+      }
+      final merged = LinkedHashSet<String>.from(_availableSlashCommands)
+        ..addAll(discoveredCommands);
+      final nextCommands = merged.toList(growable: false);
+      if (_listsEqual(_availableSlashCommands, nextCommands)) {
+        return;
+      }
+      if (mounted) {
+        setState(() {
+          _availableSlashCommands = nextCommands;
+          _composerAutocompleteEngine = AiComposerAutocompleteEngine(
+            slashCommands: _availableSlashCommands,
+          );
+        });
+      } else {
+        _availableSlashCommands = nextCommands;
+        _composerAutocompleteEngine = AiComposerAutocompleteEngine(
+          slashCommands: _availableSlashCommands,
+        );
+      }
+      await _refreshComposerSuggestions();
+    }();
+
+    _slashCommandDiscoveryKey = key;
+    _slashCommandDiscoveryInFlight = future;
+    try {
+      await future;
+    } finally {
+      if (identical(_slashCommandDiscoveryInFlight, future)) {
+        _slashCommandDiscoveryInFlight = null;
+      }
+    }
+  }
 
   bool _listsEqual(List<String> a, List<String> b) {
     if (identical(a, b)) {
@@ -1524,6 +1616,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           '${context.provider.executable}; switched to '
           '${_transportStatusLabel(fallbackTransport)}.',
     );
+    unawaited(_discoverSlashCommands(context: nextContext, force: true));
   }
 
   Future<void> _startRuntimeIfNeeded({bool force = false}) async {
@@ -1748,7 +1841,8 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           }
         }
       }
-      if (session.availableCommands.isNotEmpty) {
+      if (context.transport == AiCliTransport.acp &&
+          session.availableCommands.isNotEmpty) {
         final slashCommands = session.availableCommands
             .map((command) {
               final id = command.id.trim();
@@ -1859,7 +1953,7 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       );
     }
     final remoteDir = context.remoteWorkingDirectory.trim();
-    final cdDirectory = _buildRemoteCdDirectory(remoteDir);
+    final cdDirectory = buildShellCdDirectory(remoteDir);
     final process = await session.execute(
       'cd $cdDirectory >/dev/null 2>&1 && pwd -P',
     );
@@ -1891,18 +1985,6 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     return null;
   }
 
-  String _buildRemoteCdDirectory(String remoteWorkingDirectory) {
-    final trimmed = remoteWorkingDirectory.trim();
-    if (trimmed == '~') {
-      return '~';
-    }
-    if (trimmed.startsWith('~/')) {
-      final rest = trimmed.substring(2);
-      return rest.isEmpty ? '~' : '~/${shellEscape(rest)}';
-    }
-    return shellEscape(trimmed);
-  }
-
   bool get _canAttemptPromptSend {
     final context = _sessionContext;
     if (_sending || context == null) {
@@ -1932,7 +2014,6 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       );
       return;
     }
-
     _promptController.clear();
     setState(() {
       _sending = true;
@@ -2246,18 +2327,23 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
           });
         }
         if (commands.isNotEmpty) {
-          final merged = LinkedHashSet<String>.from(
-            _baseSlashCommands(_sessionContext?.provider ?? AiCliProvider.acp),
-          )..addAll(commands);
-          final nextCommands = merged.toList(growable: false);
-          if (!_listsEqual(_availableSlashCommands, nextCommands)) {
-            setState(() {
-              _availableSlashCommands = nextCommands;
-              _composerAutocompleteEngine = AiComposerAutocompleteEngine(
-                slashCommands: _availableSlashCommands,
-              );
-            });
-            unawaited(_refreshComposerSuggestions());
+          if ((_sessionContext?.transport ?? AiCliTransport.acp) ==
+              AiCliTransport.acp) {
+            final merged = LinkedHashSet<String>.from(
+              _baseSlashCommands(
+                _sessionContext?.provider ?? AiCliProvider.acp,
+              ),
+            )..addAll(commands);
+            final nextCommands = merged.toList(growable: false);
+            if (!_listsEqual(_availableSlashCommands, nextCommands)) {
+              setState(() {
+                _availableSlashCommands = nextCommands;
+                _composerAutocompleteEngine = AiComposerAutocompleteEngine(
+                  slashCommands: _availableSlashCommands,
+                );
+              });
+              unawaited(_refreshComposerSuggestions());
+            }
           }
         }
         unawaited(
@@ -2417,7 +2503,9 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
             ? raw['availableCommands'] as List<dynamic>
             : raw['commands'] is List<dynamic>
             ? raw['commands'] as List<dynamic>
-            : const <dynamic>[],
+            : raw['commands'] is Map<String, dynamic>
+            ? _mapAcpCommandEntries(raw['commands'] as Map<String, dynamic>)
+            : _mapAcpCommandEntries(raw),
       _ => const <dynamic>[],
     };
     if (list.isEmpty) {
@@ -2449,6 +2537,23 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
     }
     return commands;
   }
+
+  List<dynamic> _mapAcpCommandEntries(Map<String, dynamic> raw) => raw.entries
+      .map<dynamic>(
+        (entry) => switch (entry.value) {
+          final Map<String, dynamic> inner => <String, dynamic>{
+            'id': entry.key,
+            ...inner,
+          },
+          final String description => <String, dynamic>{
+            'id': entry.key,
+            'title': entry.key,
+            'description': description,
+          },
+          _ => <String, dynamic>{'id': entry.key},
+        },
+      )
+      .toList(growable: false);
 
   /// Appends a streaming chunk to [buffer] and creates or updates
   /// the corresponding timeline entry.
@@ -2722,16 +2827,22 @@ class _AiChatSessionScreenState extends ConsumerState<AiChatSessionScreen> {
       _savedAcpModeId = nextModeId;
     }
     if (nextSlashCommands.isNotEmpty) {
-      final merged = LinkedHashSet<String>.from(
-        _baseSlashCommands(_sessionContext?.provider ?? timelineEvent.provider),
-      )..addAll(nextSlashCommands);
-      final nextCommands = merged.toList(growable: false);
-      if (!_listsEqual(_availableSlashCommands, nextCommands)) {
-        _availableSlashCommands = nextCommands;
-        _composerAutocompleteEngine = AiComposerAutocompleteEngine(
-          slashCommands: _availableSlashCommands,
-        );
-        unawaited(_refreshComposerSuggestions());
+      if ((_sessionContext?.transport ??
+              timelineEvent.provider.capabilities.defaultTransport) ==
+          AiCliTransport.acp) {
+        final merged = LinkedHashSet<String>.from(
+          _baseSlashCommands(
+            _sessionContext?.provider ?? timelineEvent.provider,
+          ),
+        )..addAll(nextSlashCommands);
+        final nextCommands = merged.toList(growable: false);
+        if (!_listsEqual(_availableSlashCommands, nextCommands)) {
+          _availableSlashCommands = nextCommands;
+          _composerAutocompleteEngine = AiComposerAutocompleteEngine(
+            slashCommands: _availableSlashCommands,
+          );
+          unawaited(_refreshComposerSuggestions());
+        }
       }
     }
     final sanitizedMessage = _TimelineMarkdownBody.sanitizeText(
@@ -3235,12 +3346,13 @@ class _TimelineMarkdownBody extends StatelessWidget {
     if (hasTerminalFormattingArtifacts) {
       return SelectableText(sanitizedData, style: fallbackTextStyle);
     }
+    // Runtime transcripts are intentionally non-interactive; model output
+    // should not open external links from the chat timeline.
     return MarkdownBody(
       data: sanitizedData,
       styleSheet: styleSheet,
       sizedImageBuilder: (config) =>
           Text(config.alt ?? '[image]', style: fallbackTextStyle),
-      onTapLink: (text, href, title) {},
     );
   }
 }
