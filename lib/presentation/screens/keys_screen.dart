@@ -43,6 +43,7 @@ class KeysScreen extends ConsumerWidget {
         data: (keys) => _buildKeysList(context, ref, keys),
       ),
       floatingActionButton: FloatingActionButton.extended(
+        key: const Key('keys-add-fab'),
         onPressed: () => context.push('/keys/add'),
         icon: const Icon(Icons.add),
         label: const Text('Add Key'),

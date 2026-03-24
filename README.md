@@ -22,6 +22,7 @@ A cross-platform SSH client built with Flutter, inspired by [Termius](https://te
 - 📂 **Organization** - Groups, folders, tags, favorites, search
 - 🚇 **Port Forwarding** - Local & remote tunnels
 - 📝 **Snippets** - Save and execute common commands
+- 🤖 **AI Chat over SSH** - Launch remote AI CLI sessions with transcript history
 - 🔒 **Security** - Biometric/PIN lock, encrypted local storage
 - 🎨 **Themes** - Dark/light mode, customizable colors
 
@@ -78,6 +79,23 @@ flutter build windows
 # Linux
 flutter build linux
 ```
+
+### AI Chat over SSH (Experimental)
+
+1. Open **AI Chat** from the home navigation.
+2. Select a saved host, remote working directory, and AI CLI provider.
+3. For **ACP** provider, choose a known client preset or select **Custom command** and enter your own remote client command (for example, `my-acp-client --stdio`).
+4. Start a session to launch the provider over the active SSH connection.
+5. Resume recent sessions from history; reconnect runtime when marked **Detached**.
+6. Run multiple AI sessions concurrently; each session keeps its own runtime stream.
+7. Timeline output is formatted for markdown responses, thinking traces, tool/subagent calls, and user prompts.
+
+Supported providers: `claude`, `codex`, `opencode`, `copilot`, `gemini`, and **ACP** (custom command for ACP-compatible clients).
+
+Key caveats:
+- The selected CLI executable must be installed and authenticated on the **remote host**.
+- If the SSH/runtime process disconnects, prompts are saved to transcript only until reconnect.
+- Structured event parsing is enabled only for providers that support JSON output.
 
 ## Development
 

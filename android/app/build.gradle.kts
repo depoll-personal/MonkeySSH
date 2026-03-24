@@ -29,6 +29,7 @@ android {
 
     packaging {
         jniLibs {
+            // Keep JNI libs packaged as raw files so sqlite3 can load them.
             useLegacyPackaging = true
         }
     }
@@ -82,5 +83,6 @@ flutter {
 }
 
 dependencies {
+    // Drift's FFI layer needs the native sqlite library bundled on Android.
     implementation("eu.simonbinder:sqlite3-native-library:3.51.1")
 }

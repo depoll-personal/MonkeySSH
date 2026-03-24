@@ -23,6 +23,7 @@ import '../../domain/services/transfer_intent_service.dart';
 import '../providers/entity_list_providers.dart';
 import '../widgets/connection_attempt_dialog.dart';
 import '../widgets/connection_preview_snippet.dart';
+import 'ai_start_session_screen.dart';
 import 'transfer_screen.dart';
 
 /// The main home screen - Termius-style sidebar layout.
@@ -243,24 +244,34 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       height: 65,
       destinations: const [
         NavigationDestination(
+          key: Key('nav-hosts'),
           icon: Icon(Icons.dns_outlined),
           selectedIcon: Icon(Icons.dns_rounded),
           label: 'Hosts',
         ),
         NavigationDestination(
+          key: Key('nav-connections'),
           icon: Icon(Icons.link_outlined),
           selectedIcon: Icon(Icons.link),
           label: 'Connections',
         ),
         NavigationDestination(
+          key: Key('nav-keys'),
           icon: Icon(Icons.key_outlined),
           selectedIcon: Icon(Icons.key_rounded),
           label: 'Keys',
         ),
         NavigationDestination(
+          key: Key('nav-snippets'),
           icon: Icon(Icons.code_outlined),
           selectedIcon: Icon(Icons.code_rounded),
           label: 'Snippets',
+        ),
+        NavigationDestination(
+          key: Key('nav-ai-chat'),
+          icon: Icon(Icons.smart_toy_outlined),
+          selectedIcon: Icon(Icons.smart_toy_rounded),
+          label: 'AI Chat',
         ),
       ],
     ),
@@ -337,6 +348,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                     selected: _selectedIndex == 3,
                     onTap: () => setState(() => _selectedIndex = 3),
                   ),
+                  _NavItem(
+                    icon: Icons.smart_toy_outlined,
+                    label: 'AI Chat',
+                    selected: _selectedIndex == 4,
+                    onTap: () => setState(() => _selectedIndex = 4),
+                  ),
 
                   const Spacer(),
 
@@ -377,6 +394,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         return const _KeysPanel();
       case 3:
         return const _SnippetsPanel();
+      case 4:
+        return const AiStartSessionScreen(embedInScaffold: false);
       default:
         return const _HostsPanel();
     }
@@ -472,6 +491,7 @@ class _HostsPanel extends ConsumerWidget {
               ),
               const Spacer(),
               _ActionButton(
+                key: const Key('home-hosts-add-button'),
                 icon: Icons.add,
                 label: 'New Host',
                 onTap: () => context.push('/hosts/add'),
@@ -1259,6 +1279,7 @@ class _ActionButton extends StatelessWidget {
     required this.label,
     required this.onTap,
     this.primary = false,
+    super.key,
   });
 
   final IconData icon;
@@ -1351,6 +1372,7 @@ class _KeysPanel extends ConsumerWidget {
               ),
               const Spacer(),
               _ActionButton(
+                key: const Key('home-keys-add-button'),
                 icon: Icons.add,
                 label: 'Add Key',
                 onTap: () => context.push('/keys/add'),

@@ -293,6 +293,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                         });
                       }
                       return DropdownButtonFormField<int?>(
+                        key: const Key('host-ssh-key-field'),
                         // ignore: deprecated_member_use
                         value: validKeyId,
                         decoration: const InputDecoration(
@@ -557,6 +558,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
 
                   // Save button
                   FilledButton.icon(
+                    key: const Key('host-save-button'),
                     onPressed: _saveHost,
                     icon: const Icon(Icons.save),
                     label: Text(isEditing ? 'Save Changes' : 'Add Host'),
