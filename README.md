@@ -42,7 +42,7 @@ A cross-platform SSH client built with Flutter, inspired by [Termius](https://te
 
 - [Flutter](https://flutter.dev/docs/get-started/install) 3.x or later
 - For iOS/macOS: Xcode 15+
-- For Android: Android Studio with SDK 21+
+- For Android: Android Studio with SDK 26+
 - For Windows: Visual Studio 2022 with C++ workload
 - For Linux: CMake, GTK3, pkg-config
 
@@ -68,6 +68,7 @@ MonkeySSH can optionally use an on-device model inside the terminal screen to su
 - Enable the assistant
 - Leave `Prefer built-in system model` enabled to use:
   - Apple `FoundationModels` on supported Apple Intelligence devices
+  - Android AI Core / Gemini Nano on supported Android devices
 - Optionally configure a fallback local model file
   - Use `.task` on iOS/Android
   - Use `.litertlm` on macOS/Windows/Linux
@@ -75,7 +76,9 @@ MonkeySSH can optionally use an on-device model inside the terminal screen to su
 
 The assistant runs locally and only inserts commands after an explicit review step. If the built-in system model is unavailable on a device, MonkeySSH falls back to the configured local model file.
 
-Android still uses the fallback local model path today. Google's current built-in prompt SDK requires a higher Android `minSdk` than MonkeySSH currently targets, so the app reports that limitation instead of silently raising platform support.
+This branch now targets Android API 26+ and iOS 16+ so the native Apple/Android runtime integrations can build cleanly. Native AI availability still depends on device support and OS capabilities.
+
+The iOS device build works with these settings. `flutter build ios --simulator` is still blocked upstream because the `flutter_gemma` fallback runtime pulls in `TensorFlowLiteSelectTfOps`, whose xcframework currently ships only device slices.
 
 ### Building
 
@@ -86,6 +89,7 @@ flutter build appbundle
 
 # iOS
 flutter build ios
+flutter build ios --debug --no-codesign
 
 # macOS
 flutter build macos

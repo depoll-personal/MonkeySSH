@@ -84,7 +84,7 @@ android {
 
     defaultConfig {
         applicationId = "xyz.depollsoft.monkeyssh"
-        minSdk = flutter.minSdkVersion
+        minSdk = maxOf(flutter.minSdkVersion, 26)
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
@@ -118,5 +118,7 @@ flutter {
 }
 
 dependencies {
+    implementation("com.google.mlkit:genai-prompt:1.0.0-beta1")
     implementation("eu.simonbinder:sqlite3-native-library:3.51.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 }
