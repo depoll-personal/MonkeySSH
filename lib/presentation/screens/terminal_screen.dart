@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:xterm/xterm.dart' hide TerminalThemes;
@@ -24,6 +25,7 @@ import '../../domain/services/terminal_hyperlink_tracker.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../widgets/keyboard_toolbar.dart';
 import '../widgets/monkey_terminal_view.dart';
+import '../widgets/terminal_ai_assistant_sheet.dart';
 import '../widgets/terminal_pinch_zoom_gesture_handler.dart';
 import '../widgets/terminal_text_input_handler.dart';
 import '../widgets/terminal_theme_picker.dart';
@@ -1262,6 +1264,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           PopupMenuButton<String>(
             onSelected: _handleMenuAction,
             itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: 'ai_assistant',
+                child: Text('AI Assistant'),
+              ),
               const PopupMenuItem(value: 'snippets', child: Text('Snippets')),
               const PopupMenuDivider(),
               if (!isMobile)
@@ -1298,6 +1304,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               key: _toolbarKey,
               terminal: _terminal,
               onKeyPressed: _followLiveOutput,
+              onAssistantPressed: _showTerminalAiAssistant,
               terminalFocusNode: _terminalFocusNode,
             ),
         ],
@@ -1684,6 +1691,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   Future<void> _handleMenuAction(String action) async {
     switch (action) {
+      case 'ai_assistant':
+        await _showTerminalAiAssistant();
+        break;
       case 'snippets':
         await _showSnippetPicker();
         break;
@@ -1708,6 +1718,56 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         await _disconnect();
         break;
     }
+  }
+
+  Future<void> _showTerminalAiAssistant() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (context) => TerminalAiAssistantSheet(
+        hostLabel: _host?.label ?? 'Terminal',
+        currentTerminalLine: _buildWrappedTerminalCommandSnapshot()?.text,
+        workingDirectoryPath: _workingDirectoryPath,
+        onInsertSuggestedCommand: (command) =>
+            _insertAiGeneratedText(command, isCompletion: false),
+        onInsertCompletion: (suffix) =>
+            _insertAiGeneratedText(suffix, isCompletion: true),
+        onOpenSettings: () {
+          this.context.push('/settings');
+        },
+      ),
+    );
+    if (!mounted) {
+      return;
+    }
+    _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+  }
+
+  Future<void> _insertAiGeneratedText(
+    String insertedText, {
+    required bool isCompletion,
+  }) async {
+    if (insertedText.isEmpty) {
+      return;
+    }
+
+    final shouldInsert = await _confirmTerminalInsertionIfNeeded(
+      insertedText: insertedText,
+      buildReview: assessAiGeneratedCommandInsertion,
+      title: isCompletion ? 'Review AI completion' : 'Review AI command',
+      messageBuilder: (_) => isCompletion
+          ? 'Review the AI-generated completion before inserting it.'
+          : 'Review the AI-generated command before inserting it.',
+      confirmLabel: isCompletion ? 'Insert completion' : 'Insert command',
+    );
+    if (!shouldInsert) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      return;
+    }
+
+    _followLiveOutput();
+    _terminal.paste(insertedText);
   }
 
   void _toggleNativeSelectionMode() {

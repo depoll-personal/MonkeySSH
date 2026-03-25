@@ -54,6 +54,15 @@ abstract final class SettingKeys {
 
   /// Auto-lock timeout in minutes.
   static const autoLockTimeout = 'auto_lock_timeout';
+
+  /// Enable the experimental on-device terminal AI assistant.
+  static const localTerminalAiEnabled = 'local_terminal_ai_enabled';
+
+  /// Selected on-device model file path for the terminal AI assistant.
+  static const localTerminalAiModelPath = 'local_terminal_ai_model_path';
+
+  /// Selected model family for the terminal AI assistant.
+  static const localTerminalAiModelType = 'local_terminal_ai_model_type';
 }
 
 /// Service for managing app settings.

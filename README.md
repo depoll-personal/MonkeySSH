@@ -22,6 +22,7 @@ A cross-platform SSH client built with Flutter, inspired by [Termius](https://te
 - 📂 **Organization** - Groups, folders, tags, favorites, search
 - 🚇 **Port Forwarding** - Local & remote tunnels
 - 📝 **Snippets** - Save and execute common commands
+- ✨ **On-Device AI Assist** - Generate terminal commands and completions locally with your own model
 - 🔒 **Security** - Biometric/PIN lock, encrypted local storage
 - 🎨 **Themes** - Dark/light mode, customizable colors
 
@@ -58,6 +59,19 @@ flutter pub get
 # Run the app
 flutter run
 ```
+
+### Experimental on-device AI setup
+
+MonkeySSH can optionally use a local model inside the terminal screen to suggest commands and complete the current line.
+
+- Open `Settings` → `On-device AI`
+- Enable the assistant
+- Choose a compatible local model file
+  - Use `.task` on iOS/Android
+  - Use `.litertlm` on macOS/Windows/Linux
+- Pick the matching model family (for example `Gemma IT`, `FunctionGemma`, `Qwen`, or `DeepSeek`)
+
+The assistant runs locally and only inserts commands after an explicit review step.
 
 ### Building
 

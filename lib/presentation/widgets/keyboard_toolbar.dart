@@ -24,6 +24,7 @@ class KeyboardToolbar extends StatefulWidget {
   const KeyboardToolbar({
     required this.terminal,
     this.onKeyPressed,
+    this.onAssistantPressed,
     this.terminalFocusNode,
     super.key,
   });
@@ -33,6 +34,9 @@ class KeyboardToolbar extends StatefulWidget {
 
   /// Optional callback when any key is pressed.
   final VoidCallback? onKeyPressed;
+
+  /// Optional callback for the AI assistant button.
+  final VoidCallback? onAssistantPressed;
 
   /// Optional focus node for the terminal. When provided, the toolbar
   /// re-requests focus after interactions so the soft keyboard stays visible.
@@ -93,6 +97,13 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
 
   Widget _buildModifierRow() => _KeyRow(
     children: [
+      if (widget.onAssistantPressed != null)
+        _ToolbarButton(
+          icon: Icons.auto_awesome_outlined,
+          label: '',
+          onTap: widget.onAssistantPressed!,
+          tooltip: 'AI assistant',
+        ),
       _ToolbarButton(
         label: 'Esc',
         onTap: _sendEscape,

@@ -1,9 +1,13 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:path/path.dart' as path;
 
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/auth_service.dart';
+import '../../domain/services/local_terminal_ai_settings_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../providers/entity_list_providers.dart';
@@ -24,6 +28,7 @@ class SettingsScreen extends ConsumerWidget {
         _AppearanceSection(),
         _SecuritySection(),
         _TerminalSection(),
+        _OnDeviceAiSection(),
         _MigrationSection(),
         _AboutSection(),
       ],
@@ -657,6 +662,129 @@ class _TerminalSection extends ConsumerWidget {
                   (style) => RadioListTile<String>(
                     title: Text(_cursorStyleLabel(style)),
                     value: style,
+                  ),
+                )
+                .toList(),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _OnDeviceAiSection extends ConsumerWidget {
+  const _OnDeviceAiSection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final settings = ref.watch(localTerminalAiSettingsProvider);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _SectionHeader(title: 'On-device AI'),
+        SwitchListTile(
+          secondary: const Icon(Icons.auto_awesome_outlined),
+          title: const Text('Terminal AI assistant'),
+          subtitle: Text(
+            settings.enabled
+                ? 'Generate local command suggestions and completions'
+                : 'Disabled',
+          ),
+          value: settings.enabled,
+          onChanged: (value) {
+            ref
+                .read(localTerminalAiSettingsProvider.notifier)
+                .setEnabled(enabled: value);
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.psychology_alt_outlined),
+          title: const Text('Model family'),
+          subtitle: Text(localTerminalAiModelTypeLabel(settings.modelType)),
+          onTap: () => _showModelTypeDialog(context, ref, settings.modelType),
+        ),
+        ListTile(
+          leading: const Icon(Icons.memory_outlined),
+          title: const Text('Model file'),
+          subtitle: Text(
+            settings.modelPath == null
+                ? 'Select a `.task` or `.litertlm` model file'
+                : path.basename(settings.modelPath!),
+          ),
+          onTap: () => _pickModelFile(context, ref),
+          trailing: settings.modelPath == null
+              ? null
+              : IconButton(
+                  onPressed: () {
+                    ref
+                        .read(localTerminalAiSettingsProvider.notifier)
+                        .setModelPath(null);
+                  },
+                  icon: const Icon(Icons.clear),
+                  tooltip: 'Clear model file',
+                ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+          child: Text(
+            settings.modelPath == null
+                ? 'Use `.task` on iOS/Android and `.litertlm` on macOS, Windows, or Linux. Commands are never run automatically.'
+                : settings.modelPath!,
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _pickModelFile(BuildContext context, WidgetRef ref) async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['task', 'litertlm'],
+    );
+    final selectedPath = result?.files.single.path;
+    if (selectedPath == null || selectedPath.trim().isEmpty) {
+      return;
+    }
+
+    await ref
+        .read(localTerminalAiSettingsProvider.notifier)
+        .setModelPath(selectedPath);
+    if (!context.mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Selected ${path.basename(selectedPath)}')),
+    );
+  }
+
+  void _showModelTypeDialog(
+    BuildContext context,
+    WidgetRef ref,
+    ModelType current,
+  ) {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Model family'),
+        content: RadioGroup<ModelType>(
+          groupValue: current,
+          onChanged: (value) {
+            if (value != null) {
+              ref
+                  .read(localTerminalAiSettingsProvider.notifier)
+                  .setModelType(value);
+              Navigator.pop(context);
+            }
+          },
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: supportedLocalTerminalAiModelTypes
+                .map(
+                  (modelType) => RadioListTile<ModelType>(
+                    title: Text(localTerminalAiModelTypeLabel(modelType)),
+                    value: modelType,
                   ),
                 )
                 .toList(),
