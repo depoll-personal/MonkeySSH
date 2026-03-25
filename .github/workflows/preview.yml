@@ -54,22 +54,8 @@ jobs:
       build-ios: false
       build-android: true
 
-  build-ios:
-    name: Build iOS Preview
-    needs: compute-version
-    if: github.event.pull_request.head.repo.full_name == github.repository
-    uses: ./.github/workflows/build-deploy.yml
-    with:
-      build-name: ${{ needs.compute-version.outputs.build-name }}
-      build-number: ${{ needs.compute-version.outputs.build-number }}
-      flavor: private
-      deploy-ios-to: none
-      deploy-android-to: none
-      build-ios: true
-      build-android: false
-
-  comment-android:
-    name: PR Comment (Android)
+  comment-preview:
+    name: PR Comment
     runs-on: ubuntu-latest
     needs: [compute-version, build-android]
     if: always() && github.event.pull_request.head.repo.full_name == github.repository
@@ -108,9 +94,6 @@ jobs:
             const androidJob = jobs.find((job) =>
               job.name.startsWith('Build Android Preview / Build & Deploy Android'),
             );
-            const iosJob = jobs.find((job) =>
-              job.name.startsWith('Build iOS Preview / Build & Deploy iOS'),
-            );
             const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
               owner,
               repo,
@@ -129,7 +112,7 @@ jobs:
               }
             }
             core.setOutput('android-status', statusFor(androidJob));
-            core.setOutput('ios-status', statusFor(iosJob));
+            core.setOutput('ios-status', '🖐️ Manual deploy');
             core.setOutput('android-link', androidLink);
 
       - name: Comment on PR
@@ -150,96 +133,7 @@ jobs:
             ### Install
             | Platform | Link |
             |----------|------|
-            | 🍎 **iOS** | Available after a PR preview deploy |
-            | 🤖 **Android (APK)** | ${{ steps.preview-status.outputs.android-link }} |
-
-            ### Promote
-            Comment `/deploy` on this PR to deploy this preview build to TestFlight and the Play Store internal track. You can still run **Deploy PR Preview** manually from the Actions tab.
-
-            > Build triggered by ${{ github.event.pull_request.head.sha }}
-
-  comment-ios:
-    name: PR Comment (iOS)
-    runs-on: ubuntu-latest
-    needs: [compute-version, build-ios]
-    if: always() && github.event.pull_request.head.repo.full_name == github.repository
-    permissions:
-      actions: read
-      pull-requests: write
-    steps:
-      - name: Resolve preview status
-        id: preview-status
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
-        with:
-          script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const runId = context.runId;
-            const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${runId}`;
-            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
-              owner,
-              repo,
-              run_id: runId,
-              per_page: 100,
-            });
-            const statusFor = (job) => {
-              if (!job || job.status !== 'completed') return '⏳ Building';
-              switch (job.conclusion) {
-                case 'success':
-                  return '✅ Deployed';
-                case 'skipped':
-                  return '⏭️ Skipped';
-                case 'cancelled':
-                  return '⛔ Cancelled';
-                default:
-                  return '❌ Failed';
-              }
-            };
-            const androidJob = jobs.find((job) =>
-              job.name.startsWith('Build Android Preview / Build & Deploy Android'),
-            );
-            const iosJob = jobs.find((job) =>
-              job.name.startsWith('Build iOS Preview / Build & Deploy iOS'),
-            );
-            const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
-              owner,
-              repo,
-              run_id: runId,
-              per_page: 100,
-            });
-            const apkArtifact = artifacts.find((artifact) =>
-              artifact.name.startsWith('android-apk-private-'),
-            );
-            let androidLink = `[View workflow run](${runUrl})`;
-            if (androidJob && androidJob.status === 'completed') {
-              if (androidJob.conclusion === 'success' && apkArtifact) {
-                androidLink = `[Download APK](https://github.com/${owner}/${repo}/actions/runs/${runId}/artifacts/${apkArtifact.id})`;
-              } else if (androidJob.conclusion === 'skipped') {
-                androidLink = 'N/A (build skipped for fork PR)';
-              }
-            }
-            core.setOutput('android-status', statusFor(androidJob));
-            core.setOutput('ios-status', statusFor(iosJob));
-            core.setOutput('android-link', androidLink);
-
-      - name: Comment on PR
-        uses: marocchino/sticky-pull-request-comment@70d2764d1a7d5d9560b100cbea0077fc8f633987 # v3
-        with:
-          header: preview-build
-          message: |
-            ## 📱 Preview Build
-
-            | | Details |
-            |---|---|
-            | **Version** | `${{ needs.compute-version.outputs.build-name }}` (PR #${{ github.event.pull_request.number }}) |
-            | **Build** | `${{ needs.compute-version.outputs.build-number }}` |
-            | **Android Status** | ${{ steps.preview-status.outputs.android-status }} |
-            | **iOS Status** | ${{ steps.preview-status.outputs.ios-status }} |
-
-            ### Install
-            | Platform | Link |
-            |----------|------|
-            | 🍎 **iOS** | Available after a PR preview deploy |
+            | 🍎 **iOS** | Run **Deploy PR Preview** manually when you want a deployable iOS preview |
             | 🤖 **Android (APK)** | ${{ steps.preview-status.outputs.android-link }} |
 
             ### Promote
