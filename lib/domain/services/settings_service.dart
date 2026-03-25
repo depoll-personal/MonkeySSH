@@ -63,6 +63,10 @@ abstract final class SettingKeys {
 
   /// Selected model family for the terminal AI assistant.
   static const localTerminalAiModelType = 'local_terminal_ai_model_type';
+
+  /// Prefer a built-in native on-device model when the platform exposes one.
+  static const localTerminalAiPreferNativeRuntime =
+      'local_terminal_ai_prefer_native_runtime';
 }
 
 /// Service for managing app settings.

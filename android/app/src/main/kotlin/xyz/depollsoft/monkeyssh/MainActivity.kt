@@ -20,6 +20,7 @@ class MainActivity : FlutterActivity() {
     private val transferChannel = "xyz.depollsoft.monkeyssh/transfer"
     private val maxTransferPayloadBytes = 10 * 1024 * 1024
     private var transferMethodChannel: MethodChannel? = null
+    private var localTerminalAiBridge: LocalTerminalAiBridge? = null
     private var pendingTransferPayload: String? = null
     private var hasRequestedNotificationPermission = false
 
@@ -76,6 +77,10 @@ class MainActivity : FlutterActivity() {
             }
         }
         notifyIncomingTransferPayload()
+
+        localTerminalAiBridge = LocalTerminalAiBridge(
+            flutterEngine.dartExecutor.binaryMessenger,
+        ).also { it.start() }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -87,6 +92,8 @@ class MainActivity : FlutterActivity() {
     override fun onDestroy() {
         transferMethodChannel?.setMethodCallHandler(null)
         transferMethodChannel = null
+        localTerminalAiBridge?.dispose()
+        localTerminalAiBridge = null
         super.onDestroy()
     }
 

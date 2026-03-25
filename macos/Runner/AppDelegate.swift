@@ -1,3 +1,6 @@
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
 import Cocoa
 import FlutterMacOS
 
@@ -6,15 +9,18 @@ class AppDelegate: FlutterAppDelegate {
   private var pendingTransferPayload: String?
   private let transferChannelName = "xyz.depollsoft.monkeyssh/transfer"
   private let appleDatabaseChannelName = "xyz.depollsoft.monkeyssh/apple_file_protection"
+  private let localTerminalAiChannelName = "xyz.depollsoft.monkeyssh/local_terminal_ai"
   private let maxTransferPayloadBytes = 10 * 1024 * 1024
   private var transferChannel: FlutterMethodChannel?
   private var appleDatabaseChannel: FlutterMethodChannel?
+  private var localTerminalAiChannel: FlutterMethodChannel?
 
   override func applicationDidFinishLaunching(_ notification: Notification) {
     super.applicationDidFinishLaunching(notification)
     if let controller = mainFlutterWindow?.contentViewController as? FlutterViewController {
       setupTransferChannel(with: controller)
       setupAppleDatabaseChannel(with: controller)
+      setupLocalTerminalAiChannel(with: controller)
     }
   }
 
@@ -82,6 +88,28 @@ class AppDelegate: FlutterAppDelegate {
     }
   }
 
+  private func setupLocalTerminalAiChannel(with controller: FlutterViewController) {
+    let channel = FlutterMethodChannel(
+      name: localTerminalAiChannelName,
+      binaryMessenger: controller.engine.binaryMessenger
+    )
+    localTerminalAiChannel = channel
+    channel.setMethodCallHandler { [weak self] call, result in
+      guard let self = self else {
+        result(nil)
+        return
+      }
+      switch call.method {
+      case "getRuntimeInfo":
+        result(self.localTerminalAiRuntimeInfo())
+      case "generateText":
+        self.handleLocalTerminalAiGenerate(call, result: result)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+  }
+
   private func readTransferPayload(from url: URL) throws -> String {
     let fileSize = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize
     if let fileSize, fileSize > maxTransferPayloadBytes {
@@ -103,6 +131,180 @@ class AppDelegate: FlutterAppDelegate {
     }
     transferChannel?.invokeMethod("onIncomingTransferPayload", arguments: payload)
   }
+
+  private func handleLocalTerminalAiGenerate(
+    _ call: FlutterMethodCall,
+    result: @escaping FlutterResult
+  ) {
+    guard
+      let arguments = call.arguments as? [String: Any],
+      let prompt = arguments["prompt"] as? String,
+      let maxTokens = arguments["maxTokens"] as? Int,
+      !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      maxTokens > 0
+    else {
+      result(
+        FlutterError(
+          code: "invalid_args",
+          message: "Missing Apple Foundation Models prompt arguments",
+          details: nil
+        )
+      )
+      return
+    }
+
+    Task {
+#if canImport(FoundationModels)
+      guard #available(macOS 26.0, *) else {
+        result(
+          FlutterError(
+            code: "unsupported_platform",
+            message: "Apple Foundation Models requires macOS 26 or newer",
+            details: nil
+          )
+        )
+        return
+      }
+#else
+      result(
+        FlutterError(
+          code: "unsupported_platform",
+          message: "Apple Foundation Models is unavailable in this build",
+          details: nil
+        )
+      )
+      return
+#endif
+      do {
+        let response = try await self.generateWithAppleFoundationModels(
+          prompt: prompt,
+          maxTokens: maxTokens
+        )
+        result(response)
+      } catch {
+        result(
+          FlutterError(
+            code: "generation_error",
+            message: "Apple Foundation Models generation failed",
+            details: error.localizedDescription
+          )
+        )
+      }
+    }
+  }
+
+  private func localTerminalAiRuntimeInfo() -> [String: Any] {
+#if canImport(FoundationModels)
+    if #available(macOS 26.0, *) {
+      let model = SystemLanguageModel.default
+      switch model.availability {
+      case .available:
+        return makeLocalTerminalAiRuntimeInfo(
+          supportedPlatform: true,
+          available: true,
+          statusMessage: "Apple Intelligence is ready on this device.",
+          modelName: "Apple Intelligence"
+        )
+      case .unavailable(.deviceNotEligible):
+        return makeLocalTerminalAiRuntimeInfo(
+          supportedPlatform: false,
+          available: false,
+          statusMessage:
+            "This Mac does not support Apple Intelligence on-device models."
+        )
+      case .unavailable(.appleIntelligenceNotEnabled):
+        return makeLocalTerminalAiRuntimeInfo(
+          supportedPlatform: true,
+          available: false,
+          statusMessage: "Turn on Apple Intelligence in System Settings to use the built-in model."
+        )
+      case .unavailable(.modelNotReady):
+        return makeLocalTerminalAiRuntimeInfo(
+          supportedPlatform: true,
+          available: false,
+          statusMessage:
+            "Apple Intelligence is still downloading or preparing its on-device model."
+        )
+      case .unavailable(let other):
+        return makeLocalTerminalAiRuntimeInfo(
+          supportedPlatform: true,
+          available: false,
+          statusMessage: "Apple Foundation Models unavailable: \(String(describing: other))."
+        )
+      }
+    }
+#endif
+    return makeLocalTerminalAiRuntimeInfo(
+      supportedPlatform: false,
+      available: false,
+      statusMessage: "Apple Foundation Models requires macOS 26 or newer."
+    )
+  }
+
+  private func makeLocalTerminalAiRuntimeInfo(
+    supportedPlatform: Bool,
+    available: Bool,
+    statusMessage: String,
+    modelName: String? = nil
+  ) -> [String: Any] {
+    var info: [String: Any] = [
+      "provider": "appleFoundationModels",
+      "supportedPlatform": supportedPlatform,
+      "available": available,
+      "statusMessage": statusMessage,
+    ]
+    if let modelName, !modelName.isEmpty {
+      info["modelName"] = modelName
+    }
+    return info
+  }
+
+#if canImport(FoundationModels)
+  @available(macOS 26.0, *)
+  private func generateWithAppleFoundationModels(
+    prompt: String,
+    maxTokens: Int
+  ) async throws -> String {
+    let model = SystemLanguageModel.default
+    guard model.isAvailable else {
+      throw NSError(
+        domain: "LocalTerminalAi",
+        code: 1,
+        userInfo: [
+          NSLocalizedDescriptionKey:
+            localTerminalAiRuntimeInfo()["statusMessage"] as? String ??
+            "Apple Intelligence is not ready on this device."
+        ]
+      )
+    }
+
+    let session = LanguageModelSession(
+      instructions: """
+      Respond with plain text only.
+      Do not add markdown fences or surrounding quotes.
+      """
+    )
+    let response = try await session.respond(
+      to: prompt,
+      options: GenerationOptions(
+        temperature: 0.2,
+        maximumResponseTokens: maxTokens
+      )
+    )
+    let text = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty else {
+      throw NSError(
+        domain: "LocalTerminalAi",
+        code: 2,
+        userInfo: [
+          NSLocalizedDescriptionKey:
+            "Apple Foundation Models returned an empty response."
+        ]
+      )
+    }
+    return text
+  }
+#endif
 
   private func handleAppleDatabaseMethodCall(
     _ call: FlutterMethodCall,

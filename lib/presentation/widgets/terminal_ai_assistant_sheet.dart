@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../domain/services/local_terminal_ai_platform_service.dart';
 import '../../domain/services/local_terminal_ai_service.dart';
 import '../../domain/services/local_terminal_ai_settings_service.dart';
 
@@ -60,8 +61,10 @@ class _TerminalAiAssistantSheetState
   @override
   Widget build(BuildContext context) {
     final settings = ref.watch(localTerminalAiSettingsProvider);
+    final runtimeInfo = ref.watch(localTerminalAiRuntimeInfoProvider);
     final theme = Theme.of(context);
     final currentLine = widget.currentTerminalLine?.trimRight();
+    final canGenerate = _canUseAssistant(settings, runtimeInfo);
 
     return SafeArea(
       top: false,
@@ -99,6 +102,7 @@ class _TerminalAiAssistantSheetState
               const SizedBox(height: 16),
               _AssistantStatusCard(
                 settings: settings,
+                runtimeInfo: runtimeInfo,
                 onOpenSettings: () {
                   Navigator.pop(context);
                   widget.onOpenSettings();
@@ -122,7 +126,7 @@ class _TerminalAiAssistantSheetState
               ),
               const SizedBox(height: 12),
               FilledButton.icon(
-                onPressed: settings.isReady && !_isGeneratingSuggestions
+                onPressed: canGenerate && !_isGeneratingSuggestions
                     ? _generateSuggestions
                     : null,
                 icon: _isGeneratingSuggestions
@@ -170,7 +174,7 @@ class _TerminalAiAssistantSheetState
                 _CodePreview(text: currentLine),
                 const SizedBox(height: 12),
                 FilledButton.icon(
-                  onPressed: settings.isReady && !_isGeneratingCompletion
+                  onPressed: canGenerate && !_isGeneratingCompletion
                       ? _generateCompletion
                       : null,
                   icon: _isGeneratingCompletion
@@ -311,32 +315,69 @@ class _TerminalAiAssistantSheetState
   }
 }
 
+bool _canUseAssistant(
+  LocalTerminalAiSettings settings,
+  AsyncValue<LocalTerminalAiRuntimeInfo> runtimeInfo,
+) {
+  if (!settings.enabled) {
+    return false;
+  }
+  final nativeReady = runtimeInfo.asData?.value.canUseNativeRuntime ?? false;
+  if (settings.preferNativeRuntime && nativeReady) {
+    return true;
+  }
+  return settings.hasConfiguredFallbackModel;
+}
+
 class _AssistantStatusCard extends StatelessWidget {
   const _AssistantStatusCard({
     required this.settings,
+    required this.runtimeInfo,
     required this.onOpenSettings,
   });
 
   final LocalTerminalAiSettings settings;
+  final AsyncValue<LocalTerminalAiRuntimeInfo> runtimeInfo;
   final VoidCallback onOpenSettings;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isConfigured = settings.isReady;
-    final subtitle = switch ((
-      settings.enabled,
-      settings.hasModelPath,
-      settings.hasSupportedModelFileType,
-    )) {
-      (false, _, _) => 'Enable the assistant in Settings to start using it.',
-      (true, false, _) =>
-        'Choose a local `.task` or `.litertlm` model in Settings.',
-      (true, true, false) =>
-        'Unsupported model file selected. Use `.task` on mobile or `.litertlm` on desktop.',
-      _ =>
-        'Using ${localTerminalAiModelTypeLabel(settings.modelType)} with ${settings.modelFileName}.',
-    };
+    final isConfigured = _canUseAssistant(settings, runtimeInfo);
+    final subtitle = runtimeInfo.when(
+      data: (info) {
+        if (!settings.enabled) {
+          return 'Enable the assistant in Settings to start using it.';
+        }
+        if (settings.preferNativeRuntime && info.canUseNativeRuntime) {
+          return info.modelName == null
+              ? 'Using ${info.providerLabel} on this device.'
+              : 'Using ${info.providerLabel} (${info.modelName}) on this device.';
+        }
+        if (settings.hasConfiguredFallbackModel) {
+          return 'Using ${localTerminalAiModelTypeLabel(settings.modelType)} with ${settings.modelFileName} as the local fallback model.';
+        }
+        if (settings.preferNativeRuntime) {
+          return '${info.statusMessage} Add a local `.task` or `.litertlm` model to use the fallback runtime.';
+        }
+        return 'Choose a local `.task` or `.litertlm` model in Settings.';
+      },
+      loading: () {
+        if (!settings.enabled) {
+          return 'Enable the assistant in Settings to start using it.';
+        }
+        if (settings.hasConfiguredFallbackModel) {
+          return 'Checking the built-in runtime. ${localTerminalAiModelTypeLabel(settings.modelType)} is configured as fallback.';
+        }
+        return 'Checking whether this device exposes a built-in on-device model...';
+      },
+      error: (error, _) {
+        if (settings.hasConfiguredFallbackModel) {
+          return 'Native runtime check failed. ${localTerminalAiModelTypeLabel(settings.modelType)} remains available as fallback.';
+        }
+        return error.toString();
+      },
+    );
 
     return Card(
       color: isConfigured

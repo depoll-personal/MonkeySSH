@@ -7,6 +7,7 @@ import 'package:path/path.dart' as path;
 
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/auth_service.dart';
+import '../../domain/services/local_terminal_ai_platform_service.dart';
 import '../../domain/services/local_terminal_ai_settings_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
@@ -678,6 +679,19 @@ class _OnDeviceAiSection extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final settings = ref.watch(localTerminalAiSettingsProvider);
+    final runtimeInfo = ref.watch(localTerminalAiRuntimeInfoProvider);
+    final nativeStatusText = runtimeInfo.when(
+      data: (info) {
+        if (info.canUseNativeRuntime) {
+          return info.modelName == null
+              ? '${info.providerLabel} is ready on this device.'
+              : '${info.providerLabel} is ready (${info.modelName}).';
+        }
+        return info.statusMessage;
+      },
+      loading: () => 'Checking for a built-in local model on this device...',
+      error: (error, _) => error.toString(),
+    );
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -698,18 +712,33 @@ class _OnDeviceAiSection extends ConsumerWidget {
                 .setEnabled(enabled: value);
           },
         ),
+        SwitchListTile(
+          secondary: const Icon(Icons.auto_fix_high_outlined),
+          title: const Text('Prefer built-in system model'),
+          subtitle: Text(
+            settings.preferNativeRuntime
+                ? nativeStatusText
+                : 'Use the configured fallback model file even when this device offers a built-in model.',
+          ),
+          value: settings.preferNativeRuntime,
+          onChanged: (value) {
+            ref
+                .read(localTerminalAiSettingsProvider.notifier)
+                .setPreferNativeRuntime(preferNativeRuntime: value);
+          },
+        ),
         ListTile(
           leading: const Icon(Icons.psychology_alt_outlined),
-          title: const Text('Model family'),
+          title: const Text('Fallback model family'),
           subtitle: Text(localTerminalAiModelTypeLabel(settings.modelType)),
           onTap: () => _showModelTypeDialog(context, ref, settings.modelType),
         ),
         ListTile(
           leading: const Icon(Icons.memory_outlined),
-          title: const Text('Model file'),
+          title: const Text('Fallback model file'),
           subtitle: Text(
             settings.modelPath == null
-                ? 'Select a `.task` or `.litertlm` model file'
+                ? 'Optional unless native runtime is unavailable or disabled'
                 : path.basename(settings.modelPath!),
           ),
           onTap: () => _pickModelFile(context, ref),
@@ -729,7 +758,7 @@ class _OnDeviceAiSection extends ConsumerWidget {
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
           child: Text(
             settings.modelPath == null
-                ? 'Use `.task` on iOS/Android and `.litertlm` on macOS, Windows, or Linux. Commands are never run automatically.'
+                ? 'MonkeySSH prefers a built-in system model where the current platform supports it. Keep a `.task` or `.litertlm` file as a fallback for unsupported devices and desktop builds. Commands are never run automatically.'
                 : settings.modelPath!,
             style: Theme.of(context).textTheme.bodySmall,
           ),

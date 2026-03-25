@@ -1,6 +1,7 @@
 import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'local_terminal_ai_platform_service.dart';
 import 'local_terminal_ai_settings_service.dart';
 
 /// A single command suggestion produced by the on-device AI assistant.
@@ -47,12 +48,24 @@ class LocalTerminalAiConfigurationException implements Exception {
 
 /// Provider for the on-device terminal AI assistant service.
 final localTerminalAiServiceProvider = Provider<LocalTerminalAiService>(
-  (ref) => LocalTerminalAiService(),
+  (ref) => LocalTerminalAiService(
+    platformRuntime: ref.watch(localTerminalAiPlatformServiceProvider),
+  ),
 );
 
 /// Service wrapping the local model runtime used for terminal assistance.
 class LocalTerminalAiService {
-  String? _activeSignature;
+  /// Creates a new [LocalTerminalAiService].
+  LocalTerminalAiService({
+    required this.platformRuntime,
+    LocalTerminalAiFallbackRuntime? fallbackRuntime,
+  }) : _fallbackRuntime =
+           fallbackRuntime ?? FlutterGemmaLocalTerminalAiFallbackRuntime();
+
+  /// Native platform runtime bridge used when the OS exposes a built-in model.
+  final LocalTerminalAiPlatformService platformRuntime;
+
+  final LocalTerminalAiFallbackRuntime _fallbackRuntime;
 
   /// Generates shell command suggestions for a user-described task.
   Future<List<LocalTerminalAiSuggestion>> suggestCommands({
@@ -127,49 +140,36 @@ class LocalTerminalAiService {
     required String prompt,
     required int maxTokens,
   }) async {
-    final fileType = settings.inferredFileType;
-    final modelPath = settings.modelPath;
     if (!settings.enabled) {
       throw const LocalTerminalAiConfigurationException(
         'Enable the on-device terminal assistant in Settings first.',
       );
     }
-    if (modelPath == null || modelPath.trim().isEmpty) {
-      throw const LocalTerminalAiConfigurationException(
-        'Select a local `.task` or `.litertlm` model file in Settings.',
-      );
+
+    final runtimeInfo = await platformRuntime.getRuntimeInfo();
+    if (settings.preferNativeRuntime && runtimeInfo.canUseNativeRuntime) {
+      return platformRuntime.generateText(prompt: prompt, maxTokens: maxTokens);
     }
-    if (fileType == null) {
-      throw const LocalTerminalAiConfigurationException(
-        'Unsupported model file. Use a `.task` file on mobile or `.litertlm` on desktop.',
+
+    if (settings.hasConfiguredFallbackModel) {
+      return _fallbackRuntime.generateText(
+        settings: settings,
+        prompt: prompt,
+        maxTokens: maxTokens,
       );
     }
 
-    final signature = settings.signature;
-    if (_activeSignature != signature || !FlutterGemma.hasActiveModel()) {
-      await FlutterGemma.installModel(
-        modelType: settings.modelType,
-        fileType: fileType,
-      ).fromFile(modelPath).install();
-      _activeSignature = signature;
+    if (settings.preferNativeRuntime) {
+      throw LocalTerminalAiConfigurationException(
+        '${runtimeInfo.statusMessage} Select a local `.task` or `.litertlm` '
+        'model file in Settings to use the fallback runtime.',
+      );
     }
 
-    final model = await FlutterGemma.getActiveModel(maxTokens: maxTokens);
-    try {
-      final session = await model.createSession(
-        temperature: 0.2,
-        topK: 30,
-        topP: 0.9,
-      );
-      try {
-        await session.addQueryChunk(Message.text(text: prompt, isUser: true));
-        return (await session.getResponse()).trimRight();
-      } finally {
-        await session.close();
-      }
-    } finally {
-      await model.close();
-    }
+    throw const LocalTerminalAiConfigurationException(
+      'Select a local `.task` or `.litertlm` model file in Settings '
+      'before using the fallback runtime.',
+    );
   }
 
   String _buildSuggestionPrompt({
@@ -288,5 +288,67 @@ class LocalTerminalAiService {
       return firstLine.substring(currentTerminalLine.length);
     }
     return firstLine;
+  }
+}
+
+/// Runtime interface for a fallback app-bundled or user-provided local model.
+abstract class LocalTerminalAiFallbackRuntime {
+  /// Runs the prompt through the configured fallback runtime.
+  Future<String> generateText({
+    required LocalTerminalAiSettings settings,
+    required String prompt,
+    required int maxTokens,
+  });
+}
+
+/// `flutter_gemma`-backed fallback runtime used off the native system path.
+class FlutterGemmaLocalTerminalAiFallbackRuntime
+    implements LocalTerminalAiFallbackRuntime {
+  String? _activeSignature;
+
+  @override
+  Future<String> generateText({
+    required LocalTerminalAiSettings settings,
+    required String prompt,
+    required int maxTokens,
+  }) async {
+    final fileType = settings.inferredFileType;
+    final modelPath = settings.modelPath;
+    if (modelPath == null || modelPath.trim().isEmpty) {
+      throw const LocalTerminalAiConfigurationException(
+        'Select a local `.task` or `.litertlm` model file in Settings.',
+      );
+    }
+    if (fileType == null) {
+      throw const LocalTerminalAiConfigurationException(
+        'Unsupported model file. Use a `.task` file on mobile or `.litertlm` on desktop.',
+      );
+    }
+
+    final signature = settings.signature;
+    if (_activeSignature != signature || !FlutterGemma.hasActiveModel()) {
+      await FlutterGemma.installModel(
+        modelType: settings.modelType,
+        fileType: fileType,
+      ).fromFile(modelPath).install();
+      _activeSignature = signature;
+    }
+
+    final model = await FlutterGemma.getActiveModel(maxTokens: maxTokens);
+    try {
+      final session = await model.createSession(
+        temperature: 0.2,
+        topK: 30,
+        topP: 0.9,
+      );
+      try {
+        await session.addQueryChunk(Message.text(text: prompt, isUser: true));
+        return (await session.getResponse()).trimRight();
+      } finally {
+        await session.close();
+      }
+    } finally {
+      await model.close();
+    }
   }
 }

@@ -319,15 +319,25 @@ void main() {
       final initialKeyBuilds = keyBuilds;
       final initialGroupBuilds = groupBuilds;
 
+      final importTile = find.widgetWithText(
+        ListTile,
+        'Import migration package',
+      );
       await tester.scrollUntilVisible(
-        find.text('Import migration package'),
+        importTile,
         300,
         scrollable: find.byType(Scrollable).first,
       );
-      await tester.tap(find.text('Import migration package'));
+      await tester.ensureVisible(importTile);
+      tester.widget<ListTile>(importTile).onTap?.call();
       await tester.pumpAndSettle();
 
-      await tester.enterText(find.byType(TextField).last, '1234');
+      final passphraseField = find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.byType(TextField),
+      );
+      expect(passphraseField, findsOneWidget);
+      await tester.enterText(passphraseField, '1234');
       await tester.tap(find.text('Continue'));
       await tester.pumpAndSettle();
 

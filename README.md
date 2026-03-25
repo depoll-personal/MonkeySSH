@@ -22,7 +22,7 @@ A cross-platform SSH client built with Flutter, inspired by [Termius](https://te
 - 📂 **Organization** - Groups, folders, tags, favorites, search
 - 🚇 **Port Forwarding** - Local & remote tunnels
 - 📝 **Snippets** - Save and execute common commands
-- ✨ **On-Device AI Assist** - Generate terminal commands and completions locally with your own model
+- ✨ **On-Device AI Assist** - Prefer built-in Apple/Android on-device models when available, with local model-file fallback
 - 🔒 **Security** - Biometric/PIN lock, encrypted local storage
 - 🎨 **Themes** - Dark/light mode, customizable colors
 
@@ -62,16 +62,20 @@ flutter run
 
 ### Experimental on-device AI setup
 
-MonkeySSH can optionally use a local model inside the terminal screen to suggest commands and complete the current line.
+MonkeySSH can optionally use an on-device model inside the terminal screen to suggest commands and complete the current line.
 
 - Open `Settings` → `On-device AI`
 - Enable the assistant
-- Choose a compatible local model file
+- Leave `Prefer built-in system model` enabled to use:
+  - Apple `FoundationModels` on supported Apple Intelligence devices
+- Optionally configure a fallback local model file
   - Use `.task` on iOS/Android
   - Use `.litertlm` on macOS/Windows/Linux
-- Pick the matching model family (for example `Gemma IT`, `FunctionGemma`, `Qwen`, or `DeepSeek`)
+- Pick the matching fallback model family (for example `Gemma IT`, `FunctionGemma`, `Qwen`, or `DeepSeek`)
 
-The assistant runs locally and only inserts commands after an explicit review step.
+The assistant runs locally and only inserts commands after an explicit review step. If the built-in system model is unavailable on a device, MonkeySSH falls back to the configured local model file.
+
+Android still uses the fallback local model path today. Google's current built-in prompt SDK requires a higher Android `minSdk` than MonkeySSH currently targets, so the app reports that limitation instead of silently raising platform support.
 
 ### Building
 

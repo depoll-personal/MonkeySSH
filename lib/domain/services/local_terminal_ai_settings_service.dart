@@ -31,6 +31,7 @@ class LocalTerminalAiSettings {
   const LocalTerminalAiSettings({
     required this.enabled,
     required this.modelType,
+    required this.preferNativeRuntime,
     this.modelPath,
   });
 
@@ -39,6 +40,9 @@ class LocalTerminalAiSettings {
 
   /// The selected model family.
   final ModelType modelType;
+
+  /// Whether the app should prefer a built-in native runtime when available.
+  final bool preferNativeRuntime;
 
   /// The selected local model file path.
   final String? modelPath;
@@ -50,7 +54,11 @@ class LocalTerminalAiSettings {
   bool get hasSupportedModelFileType => inferredFileType != null;
 
   /// Whether the assistant can be used immediately.
-  bool get isReady => enabled && hasModelPath && hasSupportedModelFileType;
+  bool get isReady => enabled && hasConfiguredFallbackModel;
+
+  /// Whether a fallback model file is fully configured.
+  bool get hasConfiguredFallbackModel =>
+      hasModelPath && hasSupportedModelFileType;
 
   /// The selected model file name, if any.
   String? get modelFileName =>
@@ -71,17 +79,20 @@ class LocalTerminalAiSettings {
 
   /// Stable signature describing the active assistant configuration.
   String get signature =>
-      '${modelType.name}:${modelPath ?? ''}:${inferredFileType?.name ?? ''}';
+      '${modelType.name}:${preferNativeRuntime ? 'native' : 'fallback'}:'
+      '${modelPath ?? ''}:${inferredFileType?.name ?? ''}';
 
   /// Returns a copy of this settings object with replacements applied.
   LocalTerminalAiSettings copyWith({
     bool? enabled,
     ModelType? modelType,
+    bool? preferNativeRuntime,
     String? modelPath,
     bool clearModelPath = false,
   }) => LocalTerminalAiSettings(
     enabled: enabled ?? this.enabled,
     modelType: modelType ?? this.modelType,
+    preferNativeRuntime: preferNativeRuntime ?? this.preferNativeRuntime,
     modelPath: clearModelPath ? null : modelPath ?? this.modelPath,
   );
 }
@@ -106,6 +117,7 @@ class LocalTerminalAiSettingsNotifier
     return const LocalTerminalAiSettings(
       enabled: false,
       modelType: ModelType.gemmaIt,
+      preferNativeRuntime: true,
     );
   }
 
@@ -117,6 +129,10 @@ class LocalTerminalAiSettingsNotifier
     final storedModelType = await _settings.getString(
       SettingKeys.localTerminalAiModelType,
     );
+    final preferNativeRuntime = await _settings.getBool(
+      SettingKeys.localTerminalAiPreferNativeRuntime,
+      defaultValue: true,
+    );
     if (_disposed) {
       return;
     }
@@ -124,6 +140,7 @@ class LocalTerminalAiSettingsNotifier
     state = LocalTerminalAiSettings(
       enabled: enabled,
       modelType: _parseModelType(storedModelType),
+      preferNativeRuntime: preferNativeRuntime,
       modelPath: modelPath,
     );
   }
@@ -157,6 +174,17 @@ class LocalTerminalAiSettingsNotifier
       modelType.name,
     );
     state = state.copyWith(modelType: modelType);
+  }
+
+  /// Updates whether the assistant should prefer a built-in native runtime.
+  Future<void> setPreferNativeRuntime({
+    required bool preferNativeRuntime,
+  }) async {
+    await _settings.setBool(
+      SettingKeys.localTerminalAiPreferNativeRuntime,
+      value: preferNativeRuntime,
+    );
+    state = state.copyWith(preferNativeRuntime: preferNativeRuntime);
   }
 
   ModelType _parseModelType(String? value) => switch (value) {
