@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
 
+import '../../app/theme.dart';
 import '../../domain/services/ssh_service.dart';
 
 /// Tab bar for managing multiple terminal sessions.
@@ -37,45 +38,60 @@ class TerminalTabBar extends ConsumerWidget {
       return const SizedBox.shrink();
     }
 
-    return Container(
-      height: 40,
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerLow,
-        border: Border(bottom: BorderSide(color: colorScheme.outlineVariant)),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: ListView.builder(
-              scrollDirection: Axis.horizontal,
-              itemCount: sessionStates.length,
-              itemBuilder: (context, index) {
-                final hostId = sessionStates.keys.elementAt(index);
-                final connectionState = sessionStates[hostId]!;
-                final session = sshService.getSession(hostId);
-                final isActive = hostId == activeHostId;
-                final isConnected =
-                    connectionState == SshConnectionState.connected;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+      child: FluttyGlassSurface(
+        borderRadius: BorderRadius.circular(26),
+        blurSigma: 18,
+        padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+        child: Row(
+          children: [
+            Expanded(
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: sessionStates.length,
+                separatorBuilder: (_, _) => const SizedBox(width: 8),
+                itemBuilder: (context, index) {
+                  final hostId = sessionStates.keys.elementAt(index);
+                  final connectionState = sessionStates[hostId]!;
+                  final session = sshService.getSession(hostId);
+                  final isActive = hostId == activeHostId;
+                  final isConnected =
+                      connectionState == SshConnectionState.connected;
 
-                return _TerminalTab(
-                  label: session?.config.hostname ?? 'Host $hostId',
-                  isActive: isActive,
-                  isConnected: isConnected,
-                  onTap: () => onTabSelected(hostId),
-                  onClose: () => onTabClosed(hostId),
-                );
-              },
+                  return _TerminalTab(
+                    label: session?.config.hostname ?? 'Host $hostId',
+                    isActive: isActive,
+                    isConnected: isConnected,
+                    onTap: () => onTabSelected(hostId),
+                    onClose: () => onTabClosed(hostId),
+                  );
+                },
+              ),
             ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.add, size: 20),
-            onPressed: onNewTab,
-            tooltip: 'New connection',
-            padding: const EdgeInsets.all(8),
-            constraints: const BoxConstraints(),
-          ),
-          const SizedBox(width: 8),
-        ],
+            const SizedBox(width: 10),
+            DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: FluttyTheme.accentGradient,
+                borderRadius: BorderRadius.circular(18),
+                boxShadow: FluttyTheme.glowShadow(colorScheme.primary),
+              ),
+              child: IconButton(
+                icon: const Icon(Icons.add_rounded, size: 18),
+                onPressed: onNewTab,
+                tooltip: 'New connection',
+                visualDensity: VisualDensity.compact,
+                style: IconButton.styleFrom(
+                  foregroundColor: colorScheme.onPrimary,
+                  padding: const EdgeInsets.all(10),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -98,61 +114,101 @@ class _TerminalTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final activeBackground = isActive
+        ? LinearGradient(
+            colors: [
+              colorScheme.primary.withAlpha(72),
+              colorScheme.secondary.withAlpha(44),
+            ],
+          )
+        : LinearGradient(
+            colors: [
+              Colors.white.withAlpha(
+                theme.brightness == Brightness.dark ? 6 : 96,
+              ),
+              Colors.white.withAlpha(
+                theme.brightness == Brightness.dark ? 2 : 64,
+              ),
+            ],
+          );
 
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        constraints: const BoxConstraints(minWidth: 100, maxWidth: 200),
-        padding: const EdgeInsets.symmetric(horizontal: 12),
-        decoration: BoxDecoration(
-          color: isActive ? colorScheme.surface : Colors.transparent,
-          border: Border(
-            bottom: BorderSide(
-              color: isActive ? colorScheme.primary : Colors.transparent,
-              width: 2,
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(20),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOutCubic,
+          constraints: const BoxConstraints(minWidth: 120, maxWidth: 220),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            gradient: activeBackground,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: isActive
+                  ? colorScheme.primary.withAlpha(110)
+                  : colorScheme.outlineVariant.withAlpha(160),
             ),
           ),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 8,
-              height: 8,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: isConnected ? colorScheme.primary : colorScheme.tertiary,
-              ),
-            ),
-            const SizedBox(width: 8),
-            Flexible(
-              child: Text(
-                label,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: isActive ? FontWeight.w500 : FontWeight.normal,
-                  color: isActive
-                      ? colorScheme.onSurface
-                      : colorScheme.onSurfaceVariant,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 220),
+                width: 10,
+                height: 10,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: isConnected
+                      ? colorScheme.primary
+                      : colorScheme.tertiary.withAlpha(220),
+                  boxShadow: isConnected
+                      ? [
+                          BoxShadow(
+                            color: colorScheme.primary.withAlpha(120),
+                            blurRadius: 10,
+                            spreadRadius: 1,
+                          ),
+                        ]
+                      : null,
                 ),
               ),
-            ),
-            const SizedBox(width: 4),
-            InkWell(
-              onTap: onClose,
-              borderRadius: BorderRadius.circular(12),
-              child: Padding(
-                padding: const EdgeInsets.all(4),
-                child: Icon(
-                  Icons.close,
-                  size: 14,
-                  color: colorScheme.onSurfaceVariant,
+              const SizedBox(width: 10),
+              Flexible(
+                child: Text(
+                  label,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.labelLarge?.copyWith(
+                    fontWeight: isActive ? FontWeight.w700 : FontWeight.w600,
+                    color: isActive
+                        ? colorScheme.onSurface
+                        : colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ),
-            ),
-          ],
+              const SizedBox(width: 6),
+              Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: onClose,
+                  borderRadius: BorderRadius.circular(12),
+                  child: Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: Icon(
+                      Icons.close_rounded,
+                      size: 14,
+                      color: isActive
+                          ? colorScheme.onSurface
+                          : colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

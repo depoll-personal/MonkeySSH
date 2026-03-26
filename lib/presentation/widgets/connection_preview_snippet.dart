@@ -152,6 +152,7 @@ class ConnectionPreviewSnippet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
     final previewText = preview?.trim();
     final resolvedWindowTitle = windowTitle?.trim();
     final resolvedIconName = iconName?.trim();
@@ -162,23 +163,17 @@ class ConnectionPreviewSnippet extends StatelessWidget {
       shellStatus,
       lastExitCode: lastExitCode,
     );
-    final colorScheme = theme.colorScheme;
     final previewTheme = terminalTheme;
-    final previewBackgroundBase = previewTheme == null
-        ? colorScheme.surfaceContainerHighest
-        : Color.alphaBlend(
-            previewTheme.background.withAlpha(previewTheme.isDark ? 230 : 170),
-            colorScheme.surfaceContainerHighest,
-          );
-    final previewTextColor =
-        previewTheme?.foreground.withAlpha(230) ?? colorScheme.onSurfaceVariant;
-    final borderColor = Color.alphaBlend(
-      (previewTheme?.cursor ?? colorScheme.primary).withAlpha(18),
-      colorScheme.outlineVariant,
+    final previewBackground = _previewSurfaceTint(
+      colorScheme: colorScheme,
+      previewTheme: previewTheme,
+      brightness: theme.brightness,
     );
-    final shadowColor = Color.alphaBlend(
-      (previewTheme?.cursor ?? theme.shadowColor).withAlpha(12),
-      theme.shadowColor.withAlpha(16),
+    final previewTextColor =
+        previewTheme?.foreground.withAlpha(235) ?? colorScheme.onSurfaceVariant;
+    final previewBorderColor = Color.alphaBlend(
+      (previewTheme?.cursor ?? colorScheme.primary).withAlpha(38),
+      colorScheme.outlineVariant.withAlpha(210),
     );
 
     return Column(
@@ -187,7 +182,7 @@ class ConnectionPreviewSnippet extends StatelessWidget {
       children: [
         if (showEndpoint) Text(endpoint, style: endpointStyle),
         if (resolvedIconName != null && resolvedIconName.isNotEmpty) ...[
-          if (showEndpoint) const SizedBox(height: 2),
+          if (showEndpoint) const SizedBox(height: 3),
           Text(
             resolvedIconName,
             maxLines: 1,
@@ -199,14 +194,14 @@ class ConnectionPreviewSnippet extends StatelessWidget {
         ],
         if (resolvedWindowTitle != null && resolvedWindowTitle.isNotEmpty) ...[
           if (showEndpoint || (resolvedIconName?.isNotEmpty ?? false))
-            const SizedBox(height: 2),
+            const SizedBox(height: 3),
           Text(
             resolvedWindowTitle,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: theme.textTheme.labelSmall?.copyWith(
               color: previewTextColor,
-              fontWeight: FontWeight.w600,
+              fontWeight: FontWeight.w700,
             ),
           ),
         ],
@@ -215,7 +210,7 @@ class ConnectionPreviewSnippet extends StatelessWidget {
           if (showEndpoint ||
               (resolvedIconName?.isNotEmpty ?? false) ||
               (resolvedWindowTitle?.isNotEmpty ?? false))
-            const SizedBox(height: 2),
+            const SizedBox(height: 3),
           Text(
             [
               if ((workingDirectoryLabel ?? '').isNotEmpty)
@@ -235,32 +230,58 @@ class ConnectionPreviewSnippet extends StatelessWidget {
               (resolvedWindowTitle?.isNotEmpty ?? false) ||
               (workingDirectoryLabel?.isNotEmpty ?? false) ||
               (shellStatusLabel?.isNotEmpty ?? false))
-            const SizedBox(height: 4),
-          Container(
-            width: double.infinity,
-            constraints: const BoxConstraints(minHeight: 52),
-            padding: const EdgeInsets.fromLTRB(14, 10, 12, 10),
-            decoration: BoxDecoration(
-              color: previewBackgroundBase,
-              border: Border.all(color: borderColor),
-              borderRadius: BorderRadius.circular(12),
-              boxShadow: [
-                BoxShadow(
-                  color: shadowColor,
-                  blurRadius: 6,
-                  offset: const Offset(0, 1),
+            const SizedBox(height: 8),
+          FluttyGlassSurface(
+            borderRadius: BorderRadius.circular(18),
+            blurSigma: 14,
+            tintColor: previewBackground,
+            borderColor: previewBorderColor,
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    for (final color in [
+                      colorScheme.error.withAlpha(210),
+                      colorScheme.tertiary.withAlpha(220),
+                      (previewTheme?.cursor ?? colorScheme.primary).withAlpha(
+                        220,
+                      ),
+                    ]) ...[
+                      Container(
+                        width: 7,
+                        height: 7,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: color,
+                        ),
+                      ),
+                      const SizedBox(width: 5),
+                    ],
+                    const Spacer(),
+                    Text(
+                      'LIVE PREVIEW',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: previewTextColor.withAlpha(180),
+                        letterSpacing: 1.1,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  previewText,
+                  maxLines: previewMaxLines,
+                  overflow: TextOverflow.ellipsis,
+                  style: FluttyTheme.monoStyle.copyWith(
+                    fontSize: 9.5,
+                    color: previewTextColor,
+                    height: 1.32,
+                  ),
                 ),
               ],
-            ),
-            child: Text(
-              previewText,
-              maxLines: previewMaxLines,
-              overflow: TextOverflow.ellipsis,
-              style: FluttyTheme.monoStyle.copyWith(
-                fontSize: 9,
-                color: previewTextColor,
-                height: 1.25,
-              ),
             ),
           ),
         ],
@@ -293,9 +314,9 @@ class ConnectionPreviewStack extends StatelessWidget {
   /// Creates a [ConnectionPreviewStack].
   const ConnectionPreviewStack({
     required this.entries,
-    this.cardHeight = 74,
-    this.verticalOffset = 14,
-    this.horizontalOffset = 10,
+    this.cardHeight = 84,
+    this.verticalOffset = 16,
+    this.horizontalOffset = 12,
     super.key,
   });
 
@@ -342,7 +363,7 @@ class ConnectionPreviewStack extends StatelessWidget {
                     height: cardHeight,
                     opacity: index == entries.length - 1
                         ? 1
-                        : 0.9 - ((entries.length - index - 2) * 0.05),
+                        : 0.92 - ((entries.length - index - 2) * 0.06),
                   ),
                 ),
             ],
@@ -369,68 +390,93 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final previewTheme = entry.terminalTheme;
-    final backgroundColor = previewTheme == null
-        ? colorScheme.surfaceContainerHighest
-        : Color.alphaBlend(
-            previewTheme.background.withAlpha(previewTheme.isDark ? 230 : 170),
-            colorScheme.surfaceContainerHighest,
-          );
-    final borderColor = Color.alphaBlend(
-      (previewTheme?.cursor ?? colorScheme.primary).withAlpha(28),
-      colorScheme.outlineVariant,
+    final backgroundColor = _previewSurfaceTint(
+      colorScheme: colorScheme,
+      previewTheme: previewTheme,
+      brightness: theme.brightness,
     );
-    final shadowColor = Color.alphaBlend(
-      (previewTheme?.cursor ?? theme.shadowColor).withAlpha(14),
-      theme.shadowColor.withAlpha(20),
+    final borderColor = Color.alphaBlend(
+      (previewTheme?.cursor ?? colorScheme.primary).withAlpha(42),
+      colorScheme.outlineVariant.withAlpha(210),
     );
     final textColor =
-        previewTheme?.foreground.withAlpha(230) ?? colorScheme.onSurfaceVariant;
+        previewTheme?.foreground.withAlpha(232) ?? colorScheme.onSurfaceVariant;
 
     return Opacity(
-      opacity: opacity.clamp(0.7, 1).toDouble(),
-      child: Container(
-        height: height,
-        padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
-        decoration: BoxDecoration(
-          color: backgroundColor,
-          border: Border.all(color: borderColor),
-          borderRadius: BorderRadius.circular(12),
-          boxShadow: [
-            BoxShadow(
-              color: shadowColor,
-              blurRadius: 8,
-              offset: const Offset(0, 2),
-            ),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              entry.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.labelSmall?.copyWith(
-                color: textColor,
-                fontWeight: FontWeight.w700,
+      opacity: opacity.clamp(0.72, 1).toDouble(),
+      child: FluttyGlassSurface(
+        borderRadius: BorderRadius.circular(18),
+        blurSigma: 16,
+        tintColor: backgroundColor,
+        borderColor: borderColor,
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+        child: SizedBox(
+          height: height - 20,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: (previewTheme?.cursor ?? colorScheme.primary)
+                          .withAlpha(220),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      entry.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.labelMedium?.copyWith(
+                        color: textColor,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ],
               ),
-            ),
-            const SizedBox(height: 4),
-            Expanded(
-              child: Text(
-                entry.body,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: FluttyTheme.monoStyle.copyWith(
-                  fontSize: 9,
-                  color: textColor,
-                  height: 1.25,
+              const SizedBox(height: 8),
+              Expanded(
+                child: Text(
+                  entry.body,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: FluttyTheme.monoStyle.copyWith(
+                    fontSize: 9,
+                    color: textColor,
+                    height: 1.28,
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
+}
+
+Color _previewSurfaceTint({
+  required ColorScheme colorScheme,
+  required TerminalThemeData? previewTheme,
+  required Brightness brightness,
+}) {
+  final isDark = brightness == Brightness.dark;
+  if (previewTheme == null) {
+    return isDark
+        ? colorScheme.surfaceContainerHigh.withAlpha(182)
+        : Colors.white.withAlpha(204);
+  }
+
+  return Color.alphaBlend(
+    previewTheme.background.withAlpha(previewTheme.isDark ? 136 : 72),
+    isDark
+        ? colorScheme.surfaceContainerHigh.withAlpha(176)
+        : Colors.white.withAlpha(210),
+  );
 }

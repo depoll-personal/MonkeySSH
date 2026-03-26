@@ -26,6 +26,10 @@ class FluttyApp extends ConsumerWidget {
         theme: FluttyTheme.light,
         darkTheme: FluttyTheme.dark,
         themeMode: themeMode,
+        themeAnimationCurve: Curves.easeOutCubic,
+        themeAnimationDuration: const Duration(milliseconds: 350),
+        builder: (context, child) =>
+            FluttyAmbientBackground(child: child ?? const SizedBox.shrink()),
         routerConfig: router,
       ),
     );

@@ -213,160 +213,121 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   }
 
   Widget _buildMobileLayout() => Scaffold(
-    appBar: AppBar(
-      title: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(6),
-            child: Image.asset(
-              'assets/icons/monkeyssh_icon.png',
-              width: 28,
-              height: 28,
-            ),
-          ),
-          const SizedBox(width: 8),
-          const Text('MonkeySSH'),
-        ],
+    backgroundColor: Colors.transparent,
+    extendBody: true,
+    body: SafeArea(
+      bottom: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+        child: Column(
+          children: [
+            _ShellHeader(onSettingsTap: () => context.push('/settings')),
+            const SizedBox(height: 12),
+            Expanded(child: _ShellPanel(child: _buildContent())),
+          ],
+        ),
       ),
-      actions: [
-        IconButton(
-          icon: const Icon(Icons.settings_outlined),
-          onPressed: () => context.push('/settings'),
-        ),
-      ],
     ),
-    body: _buildContent(),
-    bottomNavigationBar: NavigationBar(
-      selectedIndex: _selectedIndex,
-      onDestinationSelected: (index) => setState(() => _selectedIndex = index),
-      labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-      height: 65,
-      destinations: const [
-        NavigationDestination(
-          icon: Icon(Icons.dns_outlined),
-          selectedIcon: Icon(Icons.dns_rounded),
-          label: 'Hosts',
+    bottomNavigationBar: SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+        child: FluttyGlassSurface(
+          borderRadius: BorderRadius.circular(28),
+          blurSigma: 18,
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+          child: NavigationBar(
+            selectedIndex: _selectedIndex,
+            onDestinationSelected: (index) =>
+                setState(() => _selectedIndex = index),
+            labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+            destinations: const [
+              NavigationDestination(
+                icon: Icon(Icons.dns_outlined),
+                selectedIcon: Icon(Icons.dns_rounded),
+                label: 'Hosts',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.link_outlined),
+                selectedIcon: Icon(Icons.link),
+                label: 'Connections',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.key_outlined),
+                selectedIcon: Icon(Icons.key_rounded),
+                label: 'Keys',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.code_outlined),
+                selectedIcon: Icon(Icons.code_rounded),
+                label: 'Snippets',
+              ),
+            ],
+          ),
         ),
-        NavigationDestination(
-          icon: Icon(Icons.link_outlined),
-          selectedIcon: Icon(Icons.link),
-          label: 'Connections',
-        ),
-        NavigationDestination(
-          icon: Icon(Icons.key_outlined),
-          selectedIcon: Icon(Icons.key_rounded),
-          label: 'Keys',
-        ),
-        NavigationDestination(
-          icon: Icon(Icons.code_outlined),
-          selectedIcon: Icon(Icons.code_rounded),
-          label: 'Snippets',
-        ),
-      ],
+      ),
     ),
   );
 
-  Widget _buildDesktopLayout() {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    final isDark = theme.brightness == Brightness.dark;
-
-    return Scaffold(
-      body: Row(
-        children: [
-          // Sidebar navigation
-          Container(
-            width: 220,
-            decoration: BoxDecoration(
-              color: isDark ? const Color(0xFF0F0F14) : Colors.grey.shade50,
-              border: Border(
-                right: BorderSide(color: colorScheme.outline.withAlpha(60)),
-              ),
-            ),
-            child: SafeArea(
-              bottom: false,
-              child: Column(
-                children: [
-                  // App header
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                    child: Row(
-                      children: [
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(6),
-                          child: Image.asset(
-                            'assets/icons/monkeyssh_icon.png',
-                            width: 28,
-                            height: 28,
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Text(
-                          'MonkeySSH',
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ],
+  Widget _buildDesktopLayout() => Scaffold(
+    backgroundColor: Colors.transparent,
+    body: SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 248,
+              child: FluttyGlassSurface(
+                borderRadius: BorderRadius.circular(34),
+                blurSigma: 20,
+                padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
+                child: Column(
+                  children: [
+                    const _ShellHeader(showSettingsAction: false),
+                    const SizedBox(height: 14),
+                    _NavItem(
+                      icon: Icons.dns_rounded,
+                      label: 'Hosts',
+                      selected: _selectedIndex == 0,
+                      onTap: () => setState(() => _selectedIndex = 0),
                     ),
-                  ),
-                  const SizedBox(height: 8),
-
-                  // Navigation items
-                  _NavItem(
-                    icon: Icons.dns_rounded,
-                    label: 'Hosts',
-                    selected: _selectedIndex == 0,
-                    onTap: () => setState(() => _selectedIndex = 0),
-                  ),
-                  _NavItem(
-                    icon: Icons.link,
-                    label: 'Connections',
-                    selected: _selectedIndex == 1,
-                    onTap: () => setState(() => _selectedIndex = 1),
-                  ),
-                  _NavItem(
-                    icon: Icons.key_rounded,
-                    label: 'Keys',
-                    selected: _selectedIndex == 2,
-                    onTap: () => setState(() => _selectedIndex = 2),
-                  ),
-                  _NavItem(
-                    icon: Icons.code_rounded,
-                    label: 'Snippets',
-                    selected: _selectedIndex == 3,
-                    onTap: () => setState(() => _selectedIndex = 3),
-                  ),
-
-                  const Spacer(),
-
-                  // Settings at bottom
-                  _NavItem(
-                    icon: Icons.settings_outlined,
-                    label: 'Settings',
-                    selected: false,
-                    onTap: () => context.push('/settings'),
-                  ),
-                  const SizedBox(height: 12),
-                ],
+                    _NavItem(
+                      icon: Icons.link,
+                      label: 'Connections',
+                      selected: _selectedIndex == 1,
+                      onTap: () => setState(() => _selectedIndex = 1),
+                    ),
+                    _NavItem(
+                      icon: Icons.key_rounded,
+                      label: 'Keys',
+                      selected: _selectedIndex == 2,
+                      onTap: () => setState(() => _selectedIndex = 2),
+                    ),
+                    _NavItem(
+                      icon: Icons.code_rounded,
+                      label: 'Snippets',
+                      selected: _selectedIndex == 3,
+                      onTap: () => setState(() => _selectedIndex = 3),
+                    ),
+                    const Spacer(),
+                    _NavItem(
+                      icon: Icons.settings_outlined,
+                      label: 'Settings',
+                      selected: false,
+                      onTap: () => context.push('/settings'),
+                    ),
+                  ],
+                ),
               ),
             ),
-          ),
-
-          // Main content
-          Expanded(
-            child: SafeArea(
-              left: false,
-              right: false,
-              bottom: false,
-              child: _buildContent(),
-            ),
-          ),
-        ],
+            const SizedBox(width: 16),
+            Expanded(child: _ShellPanel(child: _buildContent())),
+          ],
+        ),
       ),
-    );
-  }
+    ),
+  );
 
   Widget _buildContent() {
     switch (_selectedIndex) {
@@ -382,6 +343,244 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         return const _HostsPanel();
     }
   }
+}
+
+class _ShellHeader extends StatelessWidget {
+  const _ShellHeader({this.onSettingsTap, this.showSettingsAction = true});
+
+  final VoidCallback? onSettingsTap;
+  final bool showSettingsAction;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    return FluttyGlassSurface(
+      borderRadius: BorderRadius.circular(28),
+      blurSigma: 18,
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+      child: Row(
+        children: [
+          DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: FluttyTheme.accentGradient,
+              borderRadius: BorderRadius.circular(18),
+              boxShadow: FluttyTheme.glowShadow(colorScheme.primary),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(2),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(16),
+                child: Image.asset(
+                  'assets/icons/monkeyssh_icon.png',
+                  width: 42,
+                  height: 42,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'MonkeySSH',
+                  style: theme.textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Liquid terminal workspace',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (showSettingsAction)
+            IconButton(
+              icon: const Icon(Icons.settings_outlined),
+              tooltip: 'Settings',
+              onPressed: onSettingsTap,
+              style: IconButton.styleFrom(
+                foregroundColor: colorScheme.onSurface,
+                backgroundColor: colorScheme.surfaceContainerHigh.withAlpha(
+                  110,
+                ),
+                padding: const EdgeInsets.all(12),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ShellPanel extends StatelessWidget {
+  const _ShellPanel({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => FluttyGlassSurface(
+    borderRadius: BorderRadius.circular(34),
+    blurSigma: 20,
+    padding: EdgeInsets.zero,
+    child: child,
+  );
+}
+
+class _PanelShell extends StatelessWidget {
+  const _PanelShell({required this.title, required this.child, this.trailing});
+
+  final String title;
+  final Widget child;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final headerChildren = <Widget>[
+      Container(
+        width: 11,
+        height: 11,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: RadialGradient(
+            colors: [colorScheme.primary, colorScheme.secondary.withAlpha(200)],
+          ),
+          boxShadow: [
+            BoxShadow(color: colorScheme.primary.withAlpha(80), blurRadius: 12),
+          ],
+        ),
+      ),
+      const SizedBox(width: 12),
+      Text(
+        title,
+        style: theme.textTheme.titleLarge?.copyWith(
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+      const Spacer(),
+    ];
+    if (trailing != null) {
+      headerChildren.add(trailing!);
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(22, 20, 18, 16),
+          child: Row(children: headerChildren),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 18),
+          child: Divider(color: colorScheme.outlineVariant.withAlpha(180)),
+        ),
+        Expanded(child: child),
+      ],
+    );
+  }
+}
+
+class _EmptyPanelState extends StatelessWidget {
+  const _EmptyPanelState({
+    required this.icon,
+    required this.title,
+    required this.message,
+    this.action,
+  });
+
+  final IconData icon;
+  final String title;
+  final String message;
+  final Widget? action;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: FluttyGlassSurface(
+          borderRadius: BorderRadius.circular(28),
+          blurSigma: 16,
+          padding: const EdgeInsets.fromLTRB(28, 28, 28, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 64,
+                height: 64,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      colorScheme.primary.withAlpha(86),
+                      colorScheme.secondary.withAlpha(56),
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(22),
+                ),
+                child: Icon(icon, size: 30, color: colorScheme.onSurface),
+              ),
+              const SizedBox(height: 18),
+              Text(
+                title,
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                message,
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+              if (action != null) ...[const SizedBox(height: 18), action!],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _InteractiveGlassTile extends StatelessWidget {
+  const _InteractiveGlassTile({required this.child, this.onTap});
+
+  final Widget child;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+    child: FluttyGlassSurface(
+      borderRadius: BorderRadius.circular(24),
+      blurSigma: 14,
+      padding: EdgeInsets.zero,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(24),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+            child: child,
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
 class _NavItem extends StatelessWidget {
@@ -401,37 +600,70 @@ class _NavItem extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final isDark = theme.brightness == Brightness.dark;
 
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
+      padding: const EdgeInsets.symmetric(vertical: 3),
       child: Material(
-        color: selected
-            ? colorScheme.primary.withAlpha(isDark ? 25 : 20)
-            : Colors.transparent,
-        borderRadius: BorderRadius.circular(6),
+        color: Colors.transparent,
         child: InkWell(
           onTap: onTap,
-          borderRadius: BorderRadius.circular(6),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          borderRadius: BorderRadius.circular(20),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOutCubic,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: selected
+                    ? [
+                        colorScheme.primary.withAlpha(74),
+                        colorScheme.secondary.withAlpha(44),
+                      ]
+                    : [
+                        Colors.white.withAlpha(
+                          theme.brightness == Brightness.dark ? 4 : 92,
+                        ),
+                        Colors.white.withAlpha(
+                          theme.brightness == Brightness.dark ? 1 : 48,
+                        ),
+                      ],
+              ),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: selected
+                    ? colorScheme.primary.withAlpha(100)
+                    : colorScheme.outlineVariant.withAlpha(140),
+              ),
+            ),
             child: Row(
               children: [
-                Icon(
-                  icon,
-                  size: 18,
-                  color: selected
-                      ? colorScheme.primary
-                      : colorScheme.onSurface.withAlpha(150),
-                ),
-                const SizedBox(width: 10),
-                Text(
-                  label,
-                  style: theme.textTheme.bodyMedium?.copyWith(
+                Container(
+                  width: 34,
+                  height: 34,
+                  decoration: BoxDecoration(
                     color: selected
-                        ? colorScheme.primary
-                        : colorScheme.onSurface.withAlpha(200),
-                    fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                        ? colorScheme.onSurface.withAlpha(24)
+                        : colorScheme.surfaceContainerHigh.withAlpha(120),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Icon(
+                    icon,
+                    size: 18,
+                    color: selected
+                        ? colorScheme.onSurface
+                        : colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    label,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: selected
+                          ? colorScheme.onSurface
+                          : colorScheme.onSurfaceVariant,
+                      fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
+                    ),
                   ),
                 ),
               ],
@@ -448,99 +680,44 @@ class _HostsPanel extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
     final hostsAsync = ref.watch(allHostsProvider);
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // Header bar
-        Container(
-          padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(color: colorScheme.outline.withAlpha(60)),
-            ),
-          ),
-          child: Row(
-            children: [
-              Text(
-                'Hosts',
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const Spacer(),
-              _ActionButton(
-                icon: Icons.add,
-                label: 'New Host',
-                onTap: () => context.push('/hosts/add'),
-                primary: true,
-              ),
-            ],
-          ),
-        ),
-
-        // Hosts list
-        Expanded(
-          child: hostsAsync.when(
-            loading: () =>
-                const Center(child: CircularProgressIndicator(strokeWidth: 2)),
-            error: (e, _) => Center(child: Text('Error: $e')),
-            data: (hosts) => hosts.isEmpty
-                ? _buildEmptyState(context)
-                : _buildHostsList(context, ref, hosts),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildEmptyState(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.dns_outlined,
-            size: 40,
-            color: colorScheme.onSurface.withAlpha(60),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'No hosts yet',
-            style: theme.textTheme.bodyLarge?.copyWith(
-              color: colorScheme.onSurface.withAlpha(150),
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Add a host to get started',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: colorScheme.onSurface.withAlpha(100),
-            ),
-          ),
-          const SizedBox(height: 16),
-          FilledButton.icon(
-            onPressed: () => context.push('/hosts/add'),
-            icon: const Icon(Icons.add, size: 18),
-            label: const Text('Add Host'),
-          ),
-        ],
+    return _PanelShell(
+      title: 'Hosts',
+      trailing: _ActionButton(
+        icon: Icons.add,
+        label: 'New Host',
+        onTap: () => context.push('/hosts/add'),
+        primary: true,
+      ),
+      child: hostsAsync.when(
+        loading: () =>
+            const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+        error: (e, _) => Center(child: Text('Error: $e')),
+        data: (hosts) => hosts.isEmpty
+            ? _buildEmptyState(context)
+            : _buildHostsList(context, ref, hosts),
       ),
     );
   }
+
+  Widget _buildEmptyState(BuildContext context) => _EmptyPanelState(
+    icon: Icons.dns_outlined,
+    title: 'No hosts yet',
+    message: 'Add a host to get started.',
+    action: FilledButton.icon(
+      onPressed: () => context.push('/hosts/add'),
+      icon: const Icon(Icons.add, size: 18),
+      label: const Text('Add Host'),
+    ),
+  );
 
   Widget _buildHostsList(
     BuildContext context,
     WidgetRef ref,
     List<Host> hosts,
   ) => ListView.builder(
-    padding: const EdgeInsets.symmetric(vertical: 4),
+    padding: const EdgeInsets.fromLTRB(0, 10, 0, 22),
     itemCount: hosts.length,
     itemBuilder: (context, index) {
       final host = hosts[index];
@@ -608,136 +785,146 @@ class _HostRow extends ConsumerWidget {
         })
         .toList(growable: false);
 
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: () => unawaited(_openHostConnection(context, ref)),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(color: colorScheme.outline.withAlpha(30)),
-            ),
-          ),
-          child: Column(
+    return _InteractiveGlassTile(
+      onTap: () => unawaited(_openHostConnection(context, ref)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Status indicator
-                  SizedBox(
-                    height: 28,
-                    child: Center(
-                      child: Container(
-                        width: 8,
-                        height: 8,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: isConnected
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      (isConnected
                               ? colorScheme.primary
                               : isConnectionStarting
-                              ? Colors.orange
-                              : colorScheme.onSurface.withAlpha(40),
-                          boxShadow: isConnected && isDark
-                              ? [
-                                  BoxShadow(
-                                    color: colorScheme.primary.withAlpha(100),
-                                    blurRadius: 6,
-                                  ),
-                                ]
-                              : null,
-                        ),
-                      ),
+                              ? colorScheme.tertiary
+                              : colorScheme.secondary)
+                          .withAlpha(92),
+                      colorScheme.surfaceContainerHigh.withAlpha(110),
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Center(
+                  child: Container(
+                    width: 10,
+                    height: 10,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: isConnected
+                          ? colorScheme.primary
+                          : isConnectionStarting
+                          ? colorScheme.tertiary
+                          : colorScheme.onSurface.withAlpha(70),
+                      boxShadow: isConnected && isDark
+                          ? [
+                              BoxShadow(
+                                color: colorScheme.primary.withAlpha(120),
+                                blurRadius: 12,
+                                spreadRadius: 1,
+                              ),
+                            ]
+                          : null,
                     ),
                   ),
-                  const SizedBox(width: 12),
-
-                  // Host info
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
                       children: [
-                        Row(
-                          children: [
-                            Text(
-                              host.label,
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                fontWeight: FontWeight.w500,
-                              ),
+                        Expanded(
+                          child: Text(
+                            host.label,
+                            style: theme.textTheme.titleSmall?.copyWith(
+                              fontWeight: FontWeight.w700,
                             ),
-                            if (connectionCount > 0) ...[
-                              const SizedBox(width: 8),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 6,
-                                  vertical: 1,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: colorScheme.primary.withAlpha(20),
-                                  borderRadius: BorderRadius.circular(10),
-                                ),
-                                child: Text(
-                                  '$connectionCount',
-                                  style: theme.textTheme.labelSmall?.copyWith(
-                                    color: colorScheme.primary,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ),
-                            ],
-                            if (host.isFavorite) ...[
-                              const SizedBox(width: 6),
-                              Icon(
-                                Icons.star_rounded,
-                                size: 14,
-                                color: Colors.amber.shade600,
-                              ),
-                            ],
-                          ],
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          '${host.username}@${host.hostname}',
-                          style: FluttyTheme.monoStyle.copyWith(
-                            fontSize: 11,
-                            color: colorScheme.onSurface.withAlpha(100),
                           ),
                         ),
-                        if (connectionAttempt?.isInProgress ?? false) ...[
-                          const SizedBox(height: 4),
-                          Text(
-                            connectionAttempt!.latestMessage,
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: colorScheme.primary,
-                              fontWeight: FontWeight.w500,
+                        if (connectionCount > 0) ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 3,
                             ),
+                            decoration: BoxDecoration(
+                              color: colorScheme.primary.withAlpha(22),
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                            child: Text(
+                              '$connectionCount live',
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                color: colorScheme.primary,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ],
+                        if (host.isFavorite) ...[
+                          const SizedBox(width: 6),
+                          Icon(
+                            Icons.star_rounded,
+                            size: 16,
+                            color: Colors.amber.shade500,
                           ),
                         ],
                       ],
                     ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${host.username}@${host.hostname}',
+                      style: FluttyTheme.monoStyle.copyWith(
+                        fontSize: 11,
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    if (connectionAttempt?.isInProgress ?? false) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        connectionAttempt!.latestMessage,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: colorScheme.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(width: 10),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: colorScheme.surfaceContainerHigh.withAlpha(110),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: Text(
+                      ':${host.port}',
+                      style: FluttyTheme.monoStyle.copyWith(
+                        fontSize: 10,
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
                   ),
+                  const SizedBox(height: 10),
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 6,
-                          vertical: 2,
-                        ),
-                        decoration: BoxDecoration(
-                          color: colorScheme.outline.withAlpha(40),
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Text(
-                          ':${host.port}',
-                          style: FluttyTheme.monoStyle.copyWith(
-                            fontSize: 10,
-                            color: colorScheme.onSurface.withAlpha(120),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
                       _SmallIconButton(
                         icon: Icons.add,
                         onTap: () =>
@@ -748,23 +935,23 @@ class _HostRow extends ConsumerWidget {
                         onTap: () => context.push('/hosts/edit/${host.id}'),
                       ),
                       _SmallIconButton(
-                        icon: Icons.more_vert,
+                        icon: Icons.more_horiz_rounded,
                         onTap: () => _showMenu(context, ref),
                       ),
                     ],
                   ),
                 ],
               ),
-              if (previewEntries.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Padding(
-                  padding: const EdgeInsets.only(left: 20),
-                  child: ConnectionPreviewStack(entries: previewEntries),
-                ),
-              ],
             ],
           ),
-        ),
+          if (previewEntries.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            Padding(
+              padding: const EdgeInsets.only(left: 56),
+              child: ConnectionPreviewStack(entries: previewEntries),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -1088,7 +1275,6 @@ class _ConnectionsPanel extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
     final hostsAsync = ref.watch(allHostsProvider);
     final connectionStates = ref.watch(activeSessionsProvider);
     final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
@@ -1100,72 +1286,96 @@ class _ConnectionsPanel extends ConsumerWidget {
     final hosts = hostsAsync.asData?.value ?? <Host>[];
     final hostLookup = {for (final host in hosts) host.id: host};
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(color: colorScheme.outline.withAlpha(60)),
-            ),
-          ),
-          child: Text(
-            'Connections',
-            style: theme.textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ),
-        Expanded(
-          child: connections.isEmpty
-              ? _buildEmptyState(context)
-              : ListView.builder(
-                  padding: const EdgeInsets.symmetric(vertical: 4),
-                  itemCount: connections.length,
-                  itemBuilder: (context, index) {
-                    final connection = connections[index];
-                    final host = hostLookup[connection.hostId];
-                    final state =
-                        connectionStates[connection.connectionId] ??
-                        connection.state;
-                    final endpoint =
-                        '${connection.config.username}@'
-                        '${connection.config.hostname}:${connection.config.port}';
-                    final preview = connection.preview;
-                    final previewTheme = resolveConnectionPreviewTheme(
-                      brightness: theme.brightness,
-                      themeSettings: terminalThemeSettings,
-                      availableThemes: terminalThemes,
-                      lightThemeId:
-                          connection.terminalThemeLightId ??
-                          host?.terminalThemeLightId,
-                      darkThemeId:
-                          connection.terminalThemeDarkId ??
-                          host?.terminalThemeDarkId,
-                    );
+    return _PanelShell(
+      title: 'Connections',
+      child: connections.isEmpty
+          ? _buildEmptyState(context)
+          : ListView.builder(
+              padding: const EdgeInsets.fromLTRB(0, 10, 0, 22),
+              itemCount: connections.length,
+              itemBuilder: (context, index) {
+                final connection = connections[index];
+                final host = hostLookup[connection.hostId];
+                final state =
+                    connectionStates[connection.connectionId] ??
+                    connection.state;
+                final endpoint =
+                    '${connection.config.username}@'
+                    '${connection.config.hostname}:${connection.config.port}';
+                final preview = connection.preview;
+                final previewTheme = resolveConnectionPreviewTheme(
+                  brightness: theme.brightness,
+                  themeSettings: terminalThemeSettings,
+                  availableThemes: terminalThemes,
+                  lightThemeId:
+                      connection.terminalThemeLightId ??
+                      host?.terminalThemeLightId,
+                  darkThemeId:
+                      connection.terminalThemeDarkId ??
+                      host?.terminalThemeDarkId,
+                );
 
-                    return ListTile(
-                      leading: Icon(
-                        Icons.terminal,
-                        color: state == SshConnectionState.connected
-                            ? colorScheme.primary
-                            : colorScheme.onSurfaceVariant,
+                return _InteractiveGlassTile(
+                  onTap: () => unawaited(
+                    context.push(
+                      '/terminal/${connection.hostId}'
+                      '?connectionId=${connection.connectionId}',
+                    ),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [
+                              (state == SshConnectionState.connected
+                                      ? Theme.of(context).colorScheme.primary
+                                      : Theme.of(context).colorScheme.secondary)
+                                  .withAlpha(90),
+                              Theme.of(
+                                context,
+                              ).colorScheme.surfaceContainerHigh.withAlpha(100),
+                            ],
+                          ),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: Icon(
+                          Icons.terminal,
+                          color: state == SshConnectionState.connected
+                              ? Theme.of(context).colorScheme.primary
+                              : Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
                       ),
-                      title: Text(host?.label ?? 'Host ${connection.hostId}'),
-                      subtitle: _ConnectionPreviewText(
-                        endpoint:
-                            '$endpoint  •  Connection #${connection.connectionId}',
-                        preview: preview,
-                        windowTitle: connection.windowTitle,
-                        iconName: connection.iconName,
-                        workingDirectory: connection.workingDirectory,
-                        shellStatus: connection.shellStatus,
-                        lastExitCode: connection.lastExitCode,
-                        terminalTheme: previewTheme,
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              host?.label ?? 'Host ${connection.hostId}',
+                              style: Theme.of(context).textTheme.titleSmall
+                                  ?.copyWith(fontWeight: FontWeight.w700),
+                            ),
+                            const SizedBox(height: 6),
+                            _ConnectionPreviewText(
+                              endpoint:
+                                  '$endpoint  •  Connection #${connection.connectionId}',
+                              preview: preview,
+                              windowTitle: connection.windowTitle,
+                              iconName: connection.iconName,
+                              workingDirectory: connection.workingDirectory,
+                              shellStatus: connection.shellStatus,
+                              lastExitCode: connection.lastExitCode,
+                              terminalTheme: previewTheme,
+                            ),
+                          ],
+                        ),
                       ),
-                      isThreeLine: preview?.trim().isNotEmpty ?? false,
-                      trailing: IconButton(
+                      const SizedBox(width: 10),
+                      IconButton(
                         icon: const Icon(Icons.close),
                         tooltip: 'Disconnect',
                         onPressed: () async {
@@ -1174,50 +1384,19 @@ class _ConnectionsPanel extends ConsumerWidget {
                               .disconnect(connection.connectionId);
                         },
                       ),
-                      onTap: () => unawaited(
-                        context.push(
-                          '/terminal/${connection.hostId}'
-                          '?connectionId=${connection.connectionId}',
-                        ),
-                      ),
-                    );
-                  },
-                ),
-        ),
-      ],
+                    ],
+                  ),
+                );
+              },
+            ),
     );
   }
 
-  Widget _buildEmptyState(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.link_off,
-            size: 40,
-            color: colorScheme.onSurface.withAlpha(60),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'No active connections',
-            style: theme.textTheme.bodyLarge?.copyWith(
-              color: colorScheme.onSurface.withAlpha(150),
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Open a host to create one',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: colorScheme.onSurface.withAlpha(100),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget _buildEmptyState(BuildContext context) => const _EmptyPanelState(
+    icon: Icons.link_off,
+    title: 'No active connections',
+    message: 'Open a host to create one.',
+  );
 }
 
 class _ConnectionPreviewText extends StatelessWidget {
@@ -1269,28 +1448,39 @@ class _ActionButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
 
     if (primary) {
-      return FilledButton.icon(
-        onPressed: onTap,
-        icon: Icon(icon, size: 16),
-        label: Text(label),
-        style: FilledButton.styleFrom(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          textStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+      return DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: FluttyTheme.accentGradient,
+          borderRadius: BorderRadius.circular(18),
+          boxShadow: FluttyTheme.glowShadow(colorScheme.primary),
+        ),
+        child: FilledButton.icon(
+          onPressed: onTap,
+          icon: Icon(icon, size: 16),
+          label: Text(label),
+          style: FilledButton.styleFrom(
+            backgroundColor: Colors.transparent,
+            shadowColor: Colors.transparent,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            textStyle: theme.textTheme.labelMedium?.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
+          ),
         ),
       );
     }
 
     return TextButton.icon(
       onPressed: onTap,
-      icon: Icon(icon, size: 16, color: colorScheme.onSurface.withAlpha(150)),
+      icon: Icon(icon, size: 16, color: colorScheme.onSurfaceVariant),
       label: Text(
         label,
-        style: TextStyle(
-          fontSize: 13,
-          color: colorScheme.onSurface.withAlpha(150),
+        style: theme.textTheme.labelMedium?.copyWith(
+          color: colorScheme.onSurfaceVariant,
         ),
       ),
     );
@@ -1307,15 +1497,23 @@ class _SmallIconButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(4),
-      child: Padding(
-        padding: const EdgeInsets.all(6),
-        child: Icon(
-          icon,
-          size: 16,
-          color: colorScheme.onSurface.withAlpha(100),
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: Ink(
+          decoration: BoxDecoration(
+            color: colorScheme.surfaceContainerHigh.withAlpha(110),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: colorScheme.outlineVariant.withAlpha(120),
+            ),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(8),
+            child: Icon(icon, size: 16, color: colorScheme.onSurfaceVariant),
+          ),
         ),
       ),
     );
@@ -1327,99 +1525,44 @@ class _KeysPanel extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
     final keysAsync = ref.watch(allKeysProvider);
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // Header bar
-        Container(
-          padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(color: colorScheme.outline.withAlpha(60)),
-            ),
-          ),
-          child: Row(
-            children: [
-              Text(
-                'SSH Keys',
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const Spacer(),
-              _ActionButton(
-                icon: Icons.add,
-                label: 'Add Key',
-                onTap: () => context.push('/keys/add'),
-                primary: true,
-              ),
-            ],
-          ),
-        ),
-
-        // Keys list
-        Expanded(
-          child: keysAsync.when(
-            loading: () =>
-                const Center(child: CircularProgressIndicator(strokeWidth: 2)),
-            error: (e, _) => Center(child: Text('Error: $e')),
-            data: (keys) => keys.isEmpty
-                ? _buildEmptyState(context)
-                : _buildKeysList(context, ref, keys),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildEmptyState(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.key_outlined,
-            size: 40,
-            color: colorScheme.onSurface.withAlpha(60),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'No SSH keys yet',
-            style: theme.textTheme.bodyLarge?.copyWith(
-              color: colorScheme.onSurface.withAlpha(150),
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Generate or import a key',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: colorScheme.onSurface.withAlpha(100),
-            ),
-          ),
-          const SizedBox(height: 16),
-          FilledButton.icon(
-            onPressed: () => context.push('/keys/add'),
-            icon: const Icon(Icons.add, size: 18),
-            label: const Text('Add Key'),
-          ),
-        ],
+    return _PanelShell(
+      title: 'SSH Keys',
+      trailing: _ActionButton(
+        icon: Icons.add,
+        label: 'Add Key',
+        onTap: () => context.push('/keys/add'),
+        primary: true,
+      ),
+      child: keysAsync.when(
+        loading: () =>
+            const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+        error: (e, _) => Center(child: Text('Error: $e')),
+        data: (keys) => keys.isEmpty
+            ? _buildEmptyState(context)
+            : _buildKeysList(context, ref, keys),
       ),
     );
   }
+
+  Widget _buildEmptyState(BuildContext context) => _EmptyPanelState(
+    icon: Icons.key_outlined,
+    title: 'No SSH keys yet',
+    message: 'Generate or import a key.',
+    action: FilledButton.icon(
+      onPressed: () => context.push('/keys/add'),
+      icon: const Icon(Icons.add, size: 18),
+      label: const Text('Add Key'),
+    ),
+  );
 
   Widget _buildKeysList(
     BuildContext context,
     WidgetRef ref,
     List<SshKey> keys,
   ) => ListView.builder(
-    padding: const EdgeInsets.symmetric(vertical: 4),
+    padding: const EdgeInsets.fromLTRB(0, 10, 0, 22),
     itemCount: keys.length,
     itemBuilder: (context, index) {
       final key = keys[index];
@@ -1437,60 +1580,54 @@ class _KeyRow extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final isDark = theme.brightness == Brightness.dark;
 
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: () => _showKeyDetails(context),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(color: colorScheme.outline.withAlpha(30)),
+    return _InteractiveGlassTile(
+      onTap: () => _showKeyDetails(context),
+      child: Row(
+        children: [
+          Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  const Color(0xFF00C9FF).withAlpha(92),
+                  colorScheme.surfaceContainerHigh.withAlpha(110),
+                ],
+              ),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Icon(
+              _getKeyIcon(),
+              size: 18,
+              color: const Color(0xFF00C9FF),
             ),
           ),
-          child: Row(
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  sshKey.name,
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  sshKey.keyType.toUpperCase(),
+                  style: FluttyTheme.monoStyle.copyWith(
+                    fontSize: 10.5,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              // Key icon
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF00C9FF).withAlpha(isDark ? 25 : 15),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Icon(
-                  _getKeyIcon(),
-                  size: 16,
-                  color: const Color(0xFF00C9FF),
-                ),
-              ),
-              const SizedBox(width: 12),
-
-              // Key info
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      sshKey.name,
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      sshKey.keyType.toUpperCase(),
-                      style: FluttyTheme.monoStyle.copyWith(
-                        fontSize: 10,
-                        color: colorScheme.onSurface.withAlpha(100),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              // Transfer and key actions
               _SmallIconButton(
                 icon: Icons.save_alt,
                 onTap: () => unawaited(_exportEncryptedFile(context, ref)),
@@ -1505,7 +1642,7 @@ class _KeyRow extends ConsumerWidget {
               ),
             ],
           ),
-        ),
+        ],
       ),
     );
   }
@@ -1675,99 +1812,45 @@ class _SnippetsPanel extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
     final snippetsAsync = ref.watch(_allSnippetsStreamProvider);
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // Header bar
-        Container(
-          padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(color: colorScheme.outline.withAlpha(60)),
-            ),
-          ),
-          child: Row(
-            children: [
-              Text(
-                'Snippets',
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const Spacer(),
-              _ActionButton(
-                icon: Icons.add,
-                label: 'Add Snippet',
-                onTap: () => _showAddEditSnippetDialog(context, ref, null),
-                primary: true,
-              ),
-            ],
-          ),
-        ),
-
-        // Snippets list
-        Expanded(
-          child: snippetsAsync.when(
-            loading: () =>
-                const Center(child: CircularProgressIndicator(strokeWidth: 2)),
-            error: (e, _) => Center(child: Text('Error: $e')),
-            data: (snippets) => snippets.isEmpty
-                ? _buildEmptyState(context, ref)
-                : _buildSnippetsList(context, ref, snippets),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildEmptyState(BuildContext context, WidgetRef ref) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.code_outlined,
-            size: 40,
-            color: colorScheme.onSurface.withAlpha(60),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'No snippets yet',
-            style: theme.textTheme.bodyLarge?.copyWith(
-              color: colorScheme.onSurface.withAlpha(150),
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Save commands you use often',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: colorScheme.onSurface.withAlpha(100),
-            ),
-          ),
-          const SizedBox(height: 16),
-          FilledButton.icon(
-            onPressed: () => _showAddEditSnippetDialog(context, ref, null),
-            icon: const Icon(Icons.add, size: 18),
-            label: const Text('Add Snippet'),
-          ),
-        ],
+    return _PanelShell(
+      title: 'Snippets',
+      trailing: _ActionButton(
+        icon: Icons.add,
+        label: 'Add Snippet',
+        onTap: () => _showAddEditSnippetDialog(context, ref, null),
+        primary: true,
+      ),
+      child: snippetsAsync.when(
+        loading: () =>
+            const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+        error: (e, _) => Center(child: Text('Error: $e')),
+        data: (snippets) => snippets.isEmpty
+            ? _buildEmptyState(context, ref)
+            : _buildSnippetsList(context, ref, snippets),
       ),
     );
   }
+
+  Widget _buildEmptyState(BuildContext context, WidgetRef ref) =>
+      _EmptyPanelState(
+        icon: Icons.code_outlined,
+        title: 'No snippets yet',
+        message: 'Save commands you use often.',
+        action: FilledButton.icon(
+          onPressed: () => _showAddEditSnippetDialog(context, ref, null),
+          icon: const Icon(Icons.add, size: 18),
+          label: const Text('Add Snippet'),
+        ),
+      );
 
   Widget _buildSnippetsList(
     BuildContext context,
     WidgetRef ref,
     List<Snippet> snippets,
   ) => ListView.builder(
-    padding: const EdgeInsets.symmetric(vertical: 4),
+    padding: const EdgeInsets.fromLTRB(0, 10, 0, 22),
     itemCount: snippets.length,
     itemBuilder: (context, index) {
       final snippet = snippets[index];
@@ -1952,58 +2035,52 @@ class _SnippetRow extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final isDark = theme.brightness == Brightness.dark;
 
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: () => _copySnippet(context, ref),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(color: colorScheme.outline.withAlpha(30)),
+    return _InteractiveGlassTile(
+      onTap: () => _copySnippet(context, ref),
+      child: Row(
+        children: [
+          Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  colorScheme.primary.withAlpha(92),
+                  colorScheme.surfaceContainerHigh.withAlpha(110),
+                ],
+              ),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Icon(Icons.code, size: 18, color: colorScheme.primary),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  snippet.name,
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  snippet.command.replaceAll('\n', ' '),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: FluttyTheme.monoStyle.copyWith(
+                    fontSize: 10.5,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
             ),
           ),
-          child: Row(
+          Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              // Snippet icon
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: colorScheme.primary.withAlpha(isDark ? 25 : 15),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Icon(Icons.code, size: 16, color: colorScheme.primary),
-              ),
-              const SizedBox(width: 12),
-
-              // Snippet info
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      snippet.name,
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      snippet.command.replaceAll('\n', ' '),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: FluttyTheme.monoStyle.copyWith(
-                        fontSize: 10,
-                        color: colorScheme.onSurface.withAlpha(100),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              // Actions
               _SmallIconButton(
                 icon: Icons.copy,
                 onTap: () => _copySnippet(context, ref),
@@ -2022,7 +2099,7 @@ class _SnippetRow extends ConsumerWidget {
               ),
             ],
           ),
-        ),
+        ],
       ),
     );
   }
