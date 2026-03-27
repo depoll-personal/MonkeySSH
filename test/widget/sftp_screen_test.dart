@@ -84,5 +84,83 @@ void main() {
         expect(horizontalScrollController.offset, greaterThan(0));
       },
     );
+
+    testWidgets(
+      'keeps long nowrap text visible when opened after a bottom sheet closes',
+      (tester) async {
+        final longLine = List<String>.filled(80, '0123456789').join();
+        final controller = TextEditingController(text: longLine)
+          ..selection = TextSelection.collapsed(offset: longLine.length);
+        final horizontalScrollController = ScrollController();
+
+        addTearDown(() async {
+          await tester.binding.setSurfaceSize(null);
+          horizontalScrollController.dispose();
+          controller.dispose();
+        });
+
+        await tester.binding.setSurfaceSize(const Size(420, 720));
+        await tester.pumpWidget(
+          MaterialApp(
+            home: _BottomSheetEditorLauncher(
+              controller: controller,
+              horizontalScrollController: horizontalScrollController,
+            ),
+          ),
+        );
+
+        await tester.tap(find.text('Open editor'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Edit'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Edit notes.txt'), findsOneWidget);
+        expect(horizontalScrollController.offset, greaterThan(0));
+      },
+    );
   });
+}
+
+class _BottomSheetEditorLauncher extends StatelessWidget {
+  const _BottomSheetEditorLauncher({
+    required this.controller,
+    required this.horizontalScrollController,
+  });
+
+  final TextEditingController controller;
+  final ScrollController horizontalScrollController;
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    body: Center(
+      child: ElevatedButton(
+        onPressed: () {
+          showModalBottomSheet<void>(
+            context: context,
+            builder: (sheetContext) => SafeArea(
+              child: ListTile(
+                title: const Text('Edit'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  Navigator.of(context).push<void>(
+                    MaterialPageRoute(
+                      fullscreenDialog: true,
+                      builder: (context) =>
+                          buildRemoteTextEditorScreenForTesting(
+                            fileName: 'notes.txt',
+                            controller: controller,
+                            horizontalScrollController:
+                                horizontalScrollController,
+                          ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          );
+        },
+        child: const Text('Open editor'),
+      ),
+    ),
+  );
 }

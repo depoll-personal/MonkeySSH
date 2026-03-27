@@ -17,6 +17,7 @@ import '../../domain/services/ssh_service.dart';
 const _maxEditableBytes = 1024 * 1024;
 const _maxPreviewBytes = 10 * 1024 * 1024;
 const _unwrappedEditorTrailingSlack = 24.0;
+const _remoteEditorSelectionSyncRetryCount = 8;
 const _remoteEditorTextStyle = TextStyle(fontFamily: 'monospace');
 const _remoteTextEditorNowrapViewportKey = ValueKey<String>(
   'remoteTextEditorNowrapViewport',
@@ -577,9 +578,13 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
               ListTile(
                 leading: const Icon(Icons.edit_outlined),
                 title: const Text('Edit'),
-                onTap: () {
+                onTap: () async {
                   Navigator.pop(context);
-                  unawaited(_editTextFile(file));
+                  await WidgetsBinding.instance.endOfFrame;
+                  if (!mounted) {
+                    return;
+                  }
+                  await _editTextFile(file);
                 },
               ),
             if (!file.attr.isDirectory)
@@ -1153,6 +1158,7 @@ class _RemoteTextEditorScreen extends StatefulWidget {
 
 class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
   bool _wrapLines = false;
+  final FocusNode _focusNode = FocusNode();
   late ScrollController _horizontalScrollController;
   late bool _ownsHorizontalScrollController;
   bool _selectionVisibilityUpdateScheduled = false;
@@ -1165,7 +1171,14 @@ class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
         widget.horizontalScrollController ?? ScrollController();
     _ownsHorizontalScrollController = widget.horizontalScrollController == null;
     widget.controller.addListener(_handleControllerChanged);
-    _scheduleSelectionVisibilityUpdate();
+    _focusNode.addListener(_handleFocusChanged);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      _focusNode.requestFocus();
+      _scheduleSelectionVisibilityUpdate();
+    });
   }
 
   @override
@@ -1192,6 +1205,9 @@ class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
   @override
   void dispose() {
     widget.controller.removeListener(_handleControllerChanged);
+    _focusNode
+      ..removeListener(_handleFocusChanged)
+      ..dispose();
     if (_ownsHorizontalScrollController) {
       _horizontalScrollController.dispose();
     }
@@ -1209,6 +1225,12 @@ class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
     _scheduleSelectionVisibilityUpdate();
   }
 
+  void _handleFocusChanged() {
+    if (_focusNode.hasFocus) {
+      _scheduleSelectionVisibilityUpdate();
+    }
+  }
+
   double _measureUnwrappedContentWidth(BuildContext context, TextStyle style) =>
       measureUnwrappedEditorContentWidth(
         lines: widget.controller.text.split('\n'),
@@ -1217,17 +1239,23 @@ class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
         textScaler: MediaQuery.textScalerOf(context),
       );
 
-  void _scheduleSelectionVisibilityUpdate() {
+  void _scheduleSelectionVisibilityUpdate({int retryCount = 0}) {
     if (_wrapLines ||
         !mounted ||
-        _selectionVisibilityUpdateScheduled ||
+        (_selectionVisibilityUpdateScheduled && retryCount == 0) ||
         _editorViewportWidth <= 0) {
       return;
     }
     _selectionVisibilityUpdateScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _selectionVisibilityUpdateScheduled = false;
-      if (!mounted || _wrapLines || !_horizontalScrollController.hasClients) {
+      if (!mounted || _wrapLines) {
+        return;
+      }
+      if (!_horizontalScrollController.hasClients) {
+        if (retryCount < _remoteEditorSelectionSyncRetryCount) {
+          _scheduleSelectionVisibilityUpdate(retryCount: retryCount + 1);
+        }
         return;
       }
       _ensureSelectionVisible();
@@ -1267,6 +1295,7 @@ class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
     final theme = Theme.of(context);
     final editor = TextField(
       controller: widget.controller,
+      focusNode: _focusNode,
       autofocus: true,
       expands: true,
       maxLines: null,
