@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -117,6 +118,9 @@ String currentLinePrefixAtTextOffset(String text, int textOffset) {
       : textOffset > text.length
       ? text.length
       : textOffset;
+  if (clampedOffset == 0) {
+    return '';
+  }
   final lineStart = text.lastIndexOf('\n', clampedOffset - 1);
   final prefixStart = lineStart == -1 ? 0 : lineStart + 1;
   return text.substring(prefixStart, clampedOffset);
@@ -1290,6 +1294,22 @@ class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
     _scheduleSelectionVisibilityUpdate();
   }
 
+  void _handlePointerSignal(PointerSignalEvent event) {
+    if (event is PointerScrollEvent &&
+        !_wrapLines &&
+        _horizontalScrollController.hasClients) {
+      final maxScroll = _horizontalScrollController.position.maxScrollExtent;
+      final newOffset =
+          (_horizontalScrollController.offset + event.scrollDelta.dx).clamp(
+            0.0,
+            maxScroll,
+          );
+      if ((newOffset - _horizontalScrollController.offset).abs() > 0.5) {
+        _horizontalScrollController.jumpTo(newOffset);
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -1362,24 +1382,36 @@ class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
                       ? measuredContentWidth
                       : viewportWidth;
 
-                  return SizedBox(
-                    key: _remoteTextEditorNowrapViewportKey,
-                    width: viewportWidth,
-                    height: constraints.maxHeight,
-                    child: ClipRect(
-                      child: Scrollbar(
-                        controller: _horizontalScrollController,
-                        thumbVisibility: true,
-                        notificationPredicate: (notification) =>
-                            notification.metrics.axis == Axis.horizontal,
-                        child: SingleChildScrollView(
+                  // NeverScrollableScrollPhysics prevents the
+                  // SingleChildScrollView from registering its own
+                  // HorizontalDragGestureRecognizer, which would conflict
+                  // with the TextField's TapAndHorizontalDragGestureRecognizer
+                  // on mobile platforms.  Horizontal scrolling is instead
+                  // driven programmatically via _ensureSelectionVisible
+                  // (caret-following), scrollbar-thumb drag, and the
+                  // Listener that forwards PointerScrollEvent (trackpad /
+                  // mouse wheel).
+                  return Listener(
+                    onPointerSignal: _handlePointerSignal,
+                    child: SizedBox(
+                      key: _remoteTextEditorNowrapViewportKey,
+                      width: viewportWidth,
+                      height: constraints.maxHeight,
+                      child: ClipRect(
+                        child: Scrollbar(
                           controller: _horizontalScrollController,
-                          scrollDirection: Axis.horizontal,
-                          physics: const ClampingScrollPhysics(),
-                          child: SizedBox(
-                            width: contentWidth,
-                            height: constraints.maxHeight,
-                            child: editor,
+                          thumbVisibility: true,
+                          notificationPredicate: (notification) =>
+                              notification.metrics.axis == Axis.horizontal,
+                          child: SingleChildScrollView(
+                            controller: _horizontalScrollController,
+                            scrollDirection: Axis.horizontal,
+                            physics: const NeverScrollableScrollPhysics(),
+                            child: SizedBox(
+                              width: contentWidth,
+                              height: constraints.maxHeight,
+                              child: editor,
+                            ),
                           ),
                         ),
                       ),

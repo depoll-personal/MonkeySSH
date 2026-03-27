@@ -7,6 +7,14 @@ void main() {
     test('returns the current line prefix for a multiline selection', () {
       expect(currentLinePrefixAtTextOffset('alpha\nbeta\ngamma', 10), 'beta');
     });
+
+    test('returns empty string at offset zero', () {
+      expect(currentLinePrefixAtTextOffset('hello', 0), '');
+    });
+
+    test('returns empty string for negative offset', () {
+      expect(currentLinePrefixAtTextOffset('hello', -1), '');
+    });
   });
 
   group('resolveUnwrappedEditorSelectionScrollOffset', () {
@@ -40,6 +48,22 @@ void main() {
           measureLineWidth: (line, _) => (line.length * 10).toDouble(),
         ),
         15,
+      );
+    });
+
+    test('returns currentOffset when selection offset is zero', () {
+      expect(
+        resolveUnwrappedEditorSelectionScrollOffset(
+          text: '0123456789',
+          selection: const TextSelection.collapsed(offset: 0),
+          style: const TextStyle(),
+          textDirection: TextDirection.ltr,
+          textScaler: TextScaler.noScaling,
+          viewportWidth: 40,
+          trailingSlack: 5,
+          measureLineWidth: (line, _) => (line.length * 10).toDouble(),
+        ),
+        0,
       );
     });
   });
@@ -85,6 +109,41 @@ void main() {
       },
     );
 
+    testWidgets('caret-following works when selection starts at offset zero', (
+      tester,
+    ) async {
+      final longLine = List<String>.filled(80, '0123456789').join();
+      final controller = TextEditingController(text: longLine)
+        ..selection = const TextSelection.collapsed(offset: 0);
+      final horizontalScrollController = ScrollController();
+
+      addTearDown(() async {
+        await tester.binding.setSurfaceSize(null);
+        horizontalScrollController.dispose();
+        controller.dispose();
+      });
+
+      await tester.binding.setSurfaceSize(const Size(420, 720));
+      await tester.pumpWidget(
+        MaterialApp(
+          home: buildRemoteTextEditorScreenForTesting(
+            fileName: 'notes.txt',
+            controller: controller,
+            horizontalScrollController: horizontalScrollController,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Offset 0 — no horizontal scroll needed yet.
+      expect(horizontalScrollController.offset, 0);
+
+      // Move cursor to end; caret-following should scroll.
+      controller.selection = TextSelection.collapsed(offset: longLine.length);
+      await tester.pumpAndSettle();
+      expect(horizontalScrollController.offset, greaterThan(0));
+    });
+
     testWidgets(
       'keeps long nowrap text visible when opened after a bottom sheet closes',
       (tester) async {
@@ -116,6 +175,39 @@ void main() {
 
         expect(find.text('Edit notes.txt'), findsOneWidget);
         expect(horizontalScrollController.offset, greaterThan(0));
+      },
+    );
+
+    testWidgets(
+      'opens without error when controller has no explicit selection',
+      (tester) async {
+        // Real app flow: TextEditingController(text: content) without setting
+        // selection — default is TextSelection.collapsed(offset: -1).
+        final controller = TextEditingController(
+          text: List<String>.filled(80, '0123456789').join(),
+        );
+        final horizontalScrollController = ScrollController();
+
+        addTearDown(() async {
+          await tester.binding.setSurfaceSize(null);
+          horizontalScrollController.dispose();
+          controller.dispose();
+        });
+
+        await tester.binding.setSurfaceSize(const Size(420, 720));
+        await tester.pumpWidget(
+          MaterialApp(
+            home: buildRemoteTextEditorScreenForTesting(
+              fileName: 'notes.txt',
+              controller: controller,
+              horizontalScrollController: horizontalScrollController,
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // Should render without errors.
+        expect(find.text('Edit notes.txt'), findsOneWidget);
       },
     );
   });
