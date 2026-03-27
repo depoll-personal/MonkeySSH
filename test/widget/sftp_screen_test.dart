@@ -210,6 +210,37 @@ void main() {
         expect(find.text('Edit notes.txt'), findsOneWidget);
       },
     );
+
+    testWidgets(
+      'keeps invalid initial selection anchored at the left edge on open',
+      (tester) async {
+        final controller = TextEditingController(
+          text: List<String>.filled(80, '0123456789').join(),
+        );
+        final horizontalScrollController = ScrollController();
+
+        addTearDown(() async {
+          await tester.binding.setSurfaceSize(null);
+          horizontalScrollController.dispose();
+          controller.dispose();
+        });
+
+        await tester.binding.setSurfaceSize(const Size(420, 720));
+        await tester.pumpWidget(
+          MaterialApp(
+            home: buildRemoteTextEditorScreenForTesting(
+              fileName: 'notes.txt',
+              controller: controller,
+              horizontalScrollController: horizontalScrollController,
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(controller.selection, const TextSelection.collapsed(offset: 0));
+        expect(horizontalScrollController.offset, 0);
+      },
+    );
   });
 }
 

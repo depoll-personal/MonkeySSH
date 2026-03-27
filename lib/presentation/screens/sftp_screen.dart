@@ -1171,6 +1171,9 @@ class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
   @override
   void initState() {
     super.initState();
+    if (!widget.controller.selection.isValid) {
+      widget.controller.selection = const TextSelection.collapsed(offset: 0);
+    }
     _horizontalScrollController =
         widget.horizontalScrollController ?? ScrollController();
     _ownsHorizontalScrollController = widget.horizontalScrollController == null;
@@ -1355,6 +1358,9 @@ class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
         child: SizedBox.expand(
           child: DecoratedBox(
             decoration: ShapeDecoration(
+              color:
+                  theme.inputDecorationTheme.fillColor ??
+                  theme.colorScheme.surface,
               shape: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(4),
                 borderSide: BorderSide(color: theme.colorScheme.outline),
