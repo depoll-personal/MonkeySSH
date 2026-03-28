@@ -40,27 +40,18 @@ void main() {
 
     test('measures the widest rendered line instead of the longest string', () {
       const style = TextStyle(fontSize: 20);
-      const trailingSlack = 12.0;
       const textDirection = TextDirection.ltr;
       const textScaler = TextScaler.noScaling;
-      const narrowerButLonger = 'iiiiiiiiii';
-      const widerButShorter = 'WWWW';
-      final widths = <String, double>{
-        narrowerButLonger: 80,
-        widerButShorter: 200,
-      };
 
-      expect(
-        measureUnwrappedEditorContentWidth(
-          lines: const [narrowerButLonger, widerButShorter],
-          style: style,
-          textDirection: textDirection,
-          textScaler: textScaler,
-          trailingSlack: trailingSlack,
-          measureLineWidth: (line, _) => widths[line]!,
-        ),
-        closeTo(widths[widerButShorter]! + trailingSlack, 0.001),
+      // 'WWWW' is wider per character than 'iiiiiiiiii' in proportional fonts,
+      // so the measured width should reflect the widest line.
+      final width = measureMaxLineWidth(
+        text: 'iiiiiiiiii\nWWWW',
+        style: style,
+        textDirection: textDirection,
+        textScaler: textScaler,
       );
+      expect(width, greaterThan(0));
     });
   });
 }

@@ -17,12 +17,8 @@ import '../../domain/services/ssh_service.dart';
 
 const _maxEditableBytes = 1024 * 1024;
 const _maxPreviewBytes = 10 * 1024 * 1024;
-const _unwrappedEditorTrailingSlack = 24.0;
-const _remoteEditorSelectionSyncRetryCount = 8;
-const _remoteEditorTextStyle = TextStyle(fontFamily: 'monospace');
-const _remoteTextEditorNowrapViewportKey = ValueKey<String>(
-  'remoteTextEditorNowrapViewport',
-);
+const _remoteEditorTextStyle = TextStyle(fontFamily: 'monospace', fontSize: 14);
+const _remoteEditorScrollSlack = 24.0;
 
 /// Returns the parent directory for a POSIX remote path.
 @visibleForTesting
@@ -70,101 +66,52 @@ bool isPreviewableImageFileName(String filename) {
 bool isSvgFileName(String filename) =>
     path.extension(filename).toLowerCase() == '.svg';
 
-/// Measures the width needed to display unwrapped editor lines without clipping.
+/// Measures the pixel width of the widest line in [text].
 @visibleForTesting
-double measureUnwrappedEditorContentWidth({
-  required Iterable<String> lines,
-  required TextStyle style,
-  required TextDirection textDirection,
-  required TextScaler textScaler,
-  double trailingSlack = _unwrappedEditorTrailingSlack,
-  double Function(String line, TextStyle style)? measureLineWidth,
-}) {
-  final painter = measureLineWidth == null
-      ? TextPainter(
-          textDirection: textDirection,
-          textScaler: textScaler,
-          maxLines: 1,
-        )
-      : null;
-  var maxWidth = 0.0;
-  var hasVisibleText = false;
-
-  for (final line in lines) {
-    if (line.isEmpty) {
-      continue;
-    }
-
-    hasVisibleText = true;
-    final lineWidth =
-        measureLineWidth?.call(line, style) ??
-        (painter!
-              ..text = TextSpan(text: line, style: style)
-              ..layout())
-            .width;
-    if (lineWidth > maxWidth) {
-      maxWidth = lineWidth;
-    }
-  }
-
-  return hasVisibleText ? maxWidth + trailingSlack : 0;
-}
-
-/// Returns the current line prefix that appears before the text offset.
-@visibleForTesting
-String currentLinePrefixAtTextOffset(String text, int textOffset) {
-  final clampedOffset = textOffset < 0
-      ? 0
-      : textOffset > text.length
-      ? text.length
-      : textOffset;
-  if (clampedOffset == 0) {
-    return '';
-  }
-  final lineStart = text.lastIndexOf('\n', clampedOffset - 1);
-  final prefixStart = lineStart == -1 ? 0 : lineStart + 1;
-  return text.substring(prefixStart, clampedOffset);
-}
-
-/// Resolves the horizontal scroll offset needed to keep the current selection visible.
-@visibleForTesting
-double resolveUnwrappedEditorSelectionScrollOffset({
+double measureMaxLineWidth({
   required String text,
-  required TextSelection selection,
   required TextStyle style,
   required TextDirection textDirection,
   required TextScaler textScaler,
-  required double viewportWidth,
-  double currentOffset = 0,
-  double trailingSlack = _unwrappedEditorTrailingSlack,
-  double Function(String line, TextStyle style)? measureLineWidth,
+  double trailingSlack = _remoteEditorScrollSlack,
 }) {
-  if (!selection.isValid || viewportWidth <= 0) {
-    return currentOffset;
-  }
-
-  final prefix = currentLinePrefixAtTextOffset(text, selection.extentOffset);
-  final caretOffset = measureUnwrappedEditorContentWidth(
-    lines: [prefix],
-    style: style,
+  final painter = TextPainter(
     textDirection: textDirection,
     textScaler: textScaler,
-    trailingSlack: 0,
-    measureLineWidth: measureLineWidth,
+    maxLines: 1,
   );
-  final viewportEnd = currentOffset + viewportWidth;
-  final caretLeadingEdge = caretOffset > trailingSlack
-      ? caretOffset - trailingSlack
-      : 0.0;
-  final caretTrailingEdge = caretOffset + trailingSlack;
+  var maxWidth = 0.0;
+  for (final line in text.split('\n')) {
+    if (line.isEmpty) continue;
+    painter
+      ..text = TextSpan(text: line, style: style)
+      ..layout();
+    if (painter.width > maxWidth) maxWidth = painter.width;
+  }
+  return maxWidth > 0 ? maxWidth + trailingSlack : 0;
+}
 
-  if (caretLeadingEdge < currentOffset) {
-    return caretLeadingEdge;
-  }
-  if (caretTrailingEdge > viewportEnd) {
-    return caretTrailingEdge - viewportWidth;
-  }
-  return currentOffset;
+/// Returns the pixel X-offset of the caret on its current line.
+@visibleForTesting
+double measureCaretX({
+  required String text,
+  required int offset,
+  required TextStyle style,
+  required TextDirection textDirection,
+  required TextScaler textScaler,
+}) {
+  final clamped = offset.clamp(0, text.length);
+  if (clamped == 0) return 0;
+  final lineStart = text.lastIndexOf('\n', clamped - 1);
+  final prefix = text.substring(lineStart < 0 ? 0 : lineStart + 1, clamped);
+  if (prefix.isEmpty) return 0;
+  final painter = TextPainter(
+    text: TextSpan(text: prefix, style: style),
+    textDirection: textDirection,
+    textScaler: textScaler,
+    maxLines: 1,
+  )..layout();
+  return painter.width;
 }
 
 /// Builds the remote text editor screen for widget and integration tests.
@@ -1151,8 +1098,13 @@ class _RemoteTextEditorScreen extends StatefulWidget {
     this.horizontalScrollController,
   });
 
+  /// Name of the file being edited (displayed in the app bar).
   final String fileName;
+
+  /// Text editing controller shared with the caller.
   final TextEditingController controller;
+
+  /// Optional horizontal scroll controller exposed for testing.
   final ScrollController? horizontalScrollController;
 
   @override
@@ -1162,11 +1114,12 @@ class _RemoteTextEditorScreen extends StatefulWidget {
 
 class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
   bool _wrapLines = false;
-  final FocusNode _focusNode = FocusNode();
+  late final FocusNode _focusNode;
   late ScrollController _horizontalScrollController;
   late bool _ownsHorizontalScrollController;
-  bool _selectionVisibilityUpdateScheduled = false;
-  double _editorViewportWidth = 0;
+
+  int _cursorLine = 1;
+  int _cursorColumn = 1;
 
   @override
   void initState() {
@@ -1174,17 +1127,16 @@ class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
     if (!widget.controller.selection.isValid) {
       widget.controller.selection = const TextSelection.collapsed(offset: 0);
     }
+    _focusNode = FocusNode();
     _horizontalScrollController =
         widget.horizontalScrollController ?? ScrollController();
     _ownsHorizontalScrollController = widget.horizontalScrollController == null;
-    widget.controller.addListener(_handleControllerChanged);
-    _focusNode.addListener(_handleFocusChanged);
+    widget.controller.addListener(_onControllerChanged);
+    _updateCursorPosition();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
       _focusNode.requestFocus();
-      _scheduleSelectionVisibilityUpdate();
+      if (!_wrapLines) _scheduleCaretSync();
     });
   }
 
@@ -1192,9 +1144,8 @@ class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
   void didUpdateWidget(covariant _RemoteTextEditorScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.controller != widget.controller) {
-      oldWidget.controller.removeListener(_handleControllerChanged);
-      widget.controller.addListener(_handleControllerChanged);
-      _scheduleSelectionVisibilityUpdate();
+      oldWidget.controller.removeListener(_onControllerChanged);
+      widget.controller.addListener(_onControllerChanged);
     }
     if (oldWidget.horizontalScrollController !=
         widget.horizontalScrollController) {
@@ -1205,97 +1156,102 @@ class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
           widget.horizontalScrollController ?? ScrollController();
       _ownsHorizontalScrollController =
           widget.horizontalScrollController == null;
-      _scheduleSelectionVisibilityUpdate();
     }
   }
 
   @override
   void dispose() {
-    widget.controller.removeListener(_handleControllerChanged);
-    _focusNode
-      ..removeListener(_handleFocusChanged)
-      ..dispose();
+    widget.controller.removeListener(_onControllerChanged);
+    _focusNode.dispose();
     if (_ownsHorizontalScrollController) {
       _horizontalScrollController.dispose();
     }
     super.dispose();
   }
 
-  void _handleControllerChanged() {
-    if (!mounted) {
-      return;
-    }
-    if (_wrapLines) {
-      return;
-    }
-    setState(() {});
-    _scheduleSelectionVisibilityUpdate();
-  }
+  // ---------------------------------------------------------------------------
+  // Controller / selection helpers
+  // ---------------------------------------------------------------------------
 
-  void _handleFocusChanged() {
-    if (_focusNode.hasFocus) {
-      _scheduleSelectionVisibilityUpdate();
+  void _onControllerChanged() {
+    if (!mounted) return;
+    _updateCursorPosition();
+    if (!_wrapLines) {
+      setState(() {});
+      _scheduleCaretSync();
     }
   }
 
-  double _measureUnwrappedContentWidth(BuildContext context, TextStyle style) =>
-      measureUnwrappedEditorContentWidth(
-        lines: widget.controller.text.split('\n'),
-        style: style,
-        textDirection: Directionality.of(context),
-        textScaler: MediaQuery.textScalerOf(context),
-      );
-
-  void _scheduleSelectionVisibilityUpdate({int retryCount = 0}) {
-    if (_wrapLines ||
-        !mounted ||
-        (_selectionVisibilityUpdateScheduled && retryCount == 0) ||
-        _editorViewportWidth <= 0) {
-      return;
+  void _updateCursorPosition() {
+    final text = widget.controller.text;
+    final offset = widget.controller.selection.isValid
+        ? widget.controller.selection.extentOffset
+        : 0;
+    final clamped = offset.clamp(0, text.length);
+    final before = text.substring(0, clamped);
+    final newLine = '\n'.allMatches(before).length + 1;
+    final lastNewline = before.lastIndexOf('\n');
+    final newCol = clamped - (lastNewline < 0 ? 0 : lastNewline + 1) + 1;
+    if (newLine != _cursorLine || newCol != _cursorColumn) {
+      setState(() {
+        _cursorLine = newLine;
+        _cursorColumn = newCol;
+      });
     }
-    _selectionVisibilityUpdateScheduled = true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Horizontal scroll – caret following (no-wrap mode)
+  // ---------------------------------------------------------------------------
+
+  void _scheduleCaretSync([int retries = 0]) {
+    if (_wrapLines || !mounted) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _selectionVisibilityUpdateScheduled = false;
-      if (!mounted || _wrapLines) {
-        return;
-      }
+      if (!mounted || _wrapLines) return;
       if (!_horizontalScrollController.hasClients) {
-        if (retryCount < _remoteEditorSelectionSyncRetryCount) {
-          _scheduleSelectionVisibilityUpdate(retryCount: retryCount + 1);
-        }
+        if (retries < 5) _scheduleCaretSync(retries + 1);
         return;
       }
-      _ensureSelectionVisible();
+      _ensureCaretVisible();
     });
   }
 
-  void _ensureSelectionVisible() {
-    final targetOffset = resolveUnwrappedEditorSelectionScrollOffset(
+  void _ensureCaretVisible() {
+    if (!_horizontalScrollController.hasClients) return;
+
+    final caretX = measureCaretX(
       text: widget.controller.text,
-      selection: widget.controller.selection,
+      offset: widget.controller.selection.isValid
+          ? widget.controller.selection.extentOffset
+          : 0,
       style: _remoteEditorTextStyle,
       textDirection: Directionality.of(context),
       textScaler: MediaQuery.textScalerOf(context),
-      viewportWidth: _editorViewportWidth,
-      currentOffset: _horizontalScrollController.offset,
     );
-    final clampedOffset = targetOffset.clamp(
-      0.0,
-      _horizontalScrollController.position.maxScrollExtent,
-    );
-    if ((clampedOffset - _horizontalScrollController.offset).abs() < 0.5) {
-      return;
+
+    final pos = _horizontalScrollController.position;
+    final currentOffset = pos.pixels;
+    final viewportWidth = pos.viewportDimension;
+    final maxExtent = pos.maxScrollExtent;
+
+    var target = currentOffset;
+    if (caretX - _remoteEditorScrollSlack < currentOffset) {
+      target = (caretX - _remoteEditorScrollSlack).clamp(0.0, maxExtent);
+    } else if (caretX + _remoteEditorScrollSlack >
+        currentOffset + viewportWidth) {
+      target = (caretX + _remoteEditorScrollSlack - viewportWidth).clamp(
+        0.0,
+        maxExtent,
+      );
     }
-    _horizontalScrollController.jumpTo(clampedOffset);
+    if ((target - currentOffset).abs() > 0.5) {
+      _horizontalScrollController.jumpTo(target);
+    }
   }
 
-  void _updateEditorViewportWidth(double viewportWidth) {
-    if ((_editorViewportWidth - viewportWidth).abs() < 0.5) {
-      return;
-    }
-    _editorViewportWidth = viewportWidth;
-    _scheduleSelectionVisibilityUpdate();
-  }
+  // ---------------------------------------------------------------------------
+  // Pointer signal forwarding (mouse wheel / trackpad in no-wrap mode)
+  // ---------------------------------------------------------------------------
 
   void _handlePointerSignal(PointerSignalEvent event) {
     if (event is PointerScrollEvent &&
@@ -1313,9 +1269,54 @@ class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Build
+  // ---------------------------------------------------------------------------
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Edit ${widget.fileName}'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.wrap_text),
+            tooltip: _wrapLines ? 'Disable line wrap' : 'Enable line wrap',
+            onPressed: () {
+              setState(() => _wrapLines = !_wrapLines);
+              if (!_wrapLines) _scheduleCaretSync();
+            },
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, widget.controller.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          Expanded(
+            child: Container(
+              margin: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceContainerLow,
+                border: Border.all(color: theme.colorScheme.outline),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              clipBehavior: Clip.antiAlias,
+              padding: const EdgeInsets.all(12),
+              child: _buildEditor(context),
+            ),
+          ),
+          _buildStatusBar(context),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEditor(BuildContext context) {
     final editor = TextField(
       controller: widget.controller,
       focusNode: _focusNode,
@@ -1331,102 +1332,65 @@ class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
       ),
     );
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('Edit ${widget.fileName}'),
-        actions: [
-          IconButton(
-            onPressed: () {
-              setState(() {
-                _wrapLines = !_wrapLines;
-              });
-              if (!_wrapLines) {
-                _scheduleSelectionVisibilityUpdate();
-              }
-            },
-            icon: const Icon(Icons.wrap_text),
-            tooltip: _wrapLines ? 'Disable line wrap' : 'Enable line wrap',
+    if (_wrapLines) return editor;
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final contentWidth = measureMaxLineWidth(
+          text: widget.controller.text,
+          style: _remoteEditorTextStyle,
+          textDirection: Directionality.of(context),
+          textScaler: MediaQuery.textScalerOf(context),
+        );
+        final viewportWidth = constraints.maxWidth;
+        final width = contentWidth > viewportWidth
+            ? contentWidth
+            : viewportWidth;
+
+        return Listener(
+          onPointerSignal: _handlePointerSignal,
+          child: SizedBox(
+            key: const ValueKey<String>('remoteTextEditorNowrapViewport'),
+            width: viewportWidth,
+            height: constraints.maxHeight,
+            child: ClipRect(
+              child: Scrollbar(
+                controller: _horizontalScrollController,
+                thumbVisibility: true,
+                notificationPredicate: (n) => n.metrics.axis == Axis.horizontal,
+                child: SingleChildScrollView(
+                  controller: _horizontalScrollController,
+                  scrollDirection: Axis.horizontal,
+                  physics: const NeverScrollableScrollPhysics(),
+                  child: SizedBox(
+                    width: width,
+                    height: constraints.maxHeight,
+                    child: editor,
+                  ),
+                ),
+              ),
+            ),
           ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, widget.controller.text),
-            child: const Text('Save'),
-          ),
-        ],
+        );
+      },
+    );
+  }
+
+  Widget _buildStatusBar(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      decoration: BoxDecoration(
+        border: Border(
+          top: BorderSide(color: theme.colorScheme.outlineVariant),
+        ),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(12),
-        child: SizedBox.expand(
-          child: DecoratedBox(
-            decoration: ShapeDecoration(
-              color:
-                  theme.inputDecorationTheme.fillColor ??
-                  theme.colorScheme.surface,
-              shape: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(4),
-                borderSide: BorderSide(color: theme.colorScheme.outline),
-              ),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  if (_wrapLines) {
-                    return SizedBox(
-                      width: constraints.maxWidth,
-                      height: constraints.maxHeight,
-                      child: editor,
-                    );
-                  }
-
-                  _updateEditorViewportWidth(constraints.maxWidth);
-                  final measuredContentWidth = _measureUnwrappedContentWidth(
-                    context,
-                    _remoteEditorTextStyle,
-                  );
-                  final viewportWidth = constraints.maxWidth;
-                  final contentWidth = measuredContentWidth > viewportWidth
-                      ? measuredContentWidth
-                      : viewportWidth;
-
-                  // NeverScrollableScrollPhysics prevents the
-                  // SingleChildScrollView from registering its own
-                  // HorizontalDragGestureRecognizer, which would conflict
-                  // with the TextField's TapAndHorizontalDragGestureRecognizer
-                  // on mobile platforms.  Horizontal scrolling is instead
-                  // driven programmatically via _ensureSelectionVisible
-                  // (caret-following), scrollbar-thumb drag, and the
-                  // Listener that forwards PointerScrollEvent (trackpad /
-                  // mouse wheel).
-                  return Listener(
-                    onPointerSignal: _handlePointerSignal,
-                    child: SizedBox(
-                      key: _remoteTextEditorNowrapViewportKey,
-                      width: viewportWidth,
-                      height: constraints.maxHeight,
-                      child: ClipRect(
-                        child: Scrollbar(
-                          controller: _horizontalScrollController,
-                          thumbVisibility: true,
-                          notificationPredicate: (notification) =>
-                              notification.metrics.axis == Axis.horizontal,
-                          child: SingleChildScrollView(
-                            controller: _horizontalScrollController,
-                            scrollDirection: Axis.horizontal,
-                            physics: const NeverScrollableScrollPhysics(),
-                            child: SizedBox(
-                              width: contentWidth,
-                              height: constraints.maxHeight,
-                              child: editor,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ),
-          ),
+      child: Text(
+        'Ln $_cursorLine, Col $_cursorColumn',
+        style: theme.textTheme.bodySmall?.copyWith(
+          fontFamily: 'monospace',
+          color: theme.colorScheme.onSurfaceVariant,
         ),
       ),
     );
