@@ -23,6 +23,7 @@ import '../../domain/services/transfer_intent_service.dart';
 import '../providers/entity_list_providers.dart';
 import '../widgets/connection_attempt_dialog.dart';
 import '../widgets/connection_preview_snippet.dart';
+import '../widgets/ipad_landscape_layout.dart';
 import 'transfer_screen.dart';
 
 /// The main home screen - Termius-style sidebar layout.
@@ -1082,11 +1083,18 @@ class _ConnectionSelectionTile extends StatelessWidget {
   }
 }
 
-class _ConnectionsPanel extends ConsumerWidget {
+class _ConnectionsPanel extends ConsumerStatefulWidget {
   const _ConnectionsPanel();
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_ConnectionsPanel> createState() => _ConnectionsPanelState();
+}
+
+class _ConnectionsPanelState extends ConsumerState<_ConnectionsPanel> {
+  int? _selectedConnectionId;
+
+  @override
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final hostsAsync = ref.watch(allHostsProvider);
@@ -1099,6 +1107,29 @@ class _ConnectionsPanel extends ConsumerWidget {
     final connections = sessionsNotifier.getActiveConnections();
     final hosts = hostsAsync.asData?.value ?? <Host>[];
     final hostLookup = {for (final host in hosts) host.id: host};
+    final useMasterDetail = shouldUseIpadLandscapeMasterDetail(
+      platform: theme.platform,
+      orientation: MediaQuery.of(context).orientation,
+      screenSize: MediaQuery.of(context).size,
+    );
+    final selectedConnectionId =
+        connections.any(
+          (connection) => connection.connectionId == _selectedConnectionId,
+        )
+        ? _selectedConnectionId
+        : connections.isEmpty
+        ? null
+        : connections.first.connectionId;
+    ActiveConnection? selectedConnection;
+    if (selectedConnectionId != null) {
+      for (final connection in connections) {
+        if (connection.connectionId == selectedConnectionId) {
+          selectedConnection = connection;
+          break;
+        }
+      }
+    }
+    final detailConnection = selectedConnection;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1120,73 +1151,165 @@ class _ConnectionsPanel extends ConsumerWidget {
         Expanded(
           child: connections.isEmpty
               ? _buildEmptyState(context)
-              : ListView.builder(
-                  padding: const EdgeInsets.symmetric(vertical: 4),
-                  itemCount: connections.length,
-                  itemBuilder: (context, index) {
-                    final connection = connections[index];
-                    final host = hostLookup[connection.hostId];
-                    final state =
-                        connectionStates[connection.connectionId] ??
-                        connection.state;
-                    final endpoint =
-                        '${connection.config.username}@'
-                        '${connection.config.hostname}:${connection.config.port}';
-                    final preview = connection.preview;
-                    final previewTheme = resolveConnectionPreviewTheme(
-                      brightness: theme.brightness,
-                      themeSettings: terminalThemeSettings,
-                      availableThemes: terminalThemes,
-                      lightThemeId:
-                          connection.terminalThemeLightId ??
-                          host?.terminalThemeLightId,
-                      darkThemeId:
-                          connection.terminalThemeDarkId ??
-                          host?.terminalThemeDarkId,
-                    );
-
-                    return ListTile(
-                      leading: Icon(
-                        Icons.terminal,
-                        color: state == SshConnectionState.connected
-                            ? colorScheme.primary
-                            : colorScheme.onSurfaceVariant,
+              : useMasterDetail
+              ? Row(
+                  children: [
+                    SizedBox(
+                      width: 360,
+                      child: _buildConnectionsList(
+                        context,
+                        connections,
+                        hostLookup,
+                        connectionStates,
+                        terminalThemeSettings,
+                        terminalThemes,
+                        selectedConnectionId: selectedConnectionId,
+                        useMasterDetail: true,
                       ),
-                      title: Text(host?.label ?? 'Host ${connection.hostId}'),
-                      subtitle: _ConnectionPreviewText(
-                        endpoint:
-                            '$endpoint  •  Connection #${connection.connectionId}',
-                        preview: preview,
-                        windowTitle: connection.windowTitle,
-                        iconName: connection.iconName,
-                        workingDirectory: connection.workingDirectory,
-                        shellStatus: connection.shellStatus,
-                        lastExitCode: connection.lastExitCode,
-                        terminalTheme: previewTheme,
+                    ),
+                    VerticalDivider(
+                      width: 1,
+                      color: colorScheme.outline.withAlpha(50),
+                    ),
+                    Expanded(
+                      child: _ConnectionDetailPane(
+                        connection: detailConnection,
+                        host: detailConnection == null
+                            ? null
+                            : hostLookup[detailConnection.hostId],
+                        state: detailConnection == null
+                            ? null
+                            : connectionStates[detailConnection.connectionId] ??
+                                  detailConnection.state,
+                        previewTheme: detailConnection == null
+                            ? null
+                            : resolveConnectionPreviewTheme(
+                                brightness: theme.brightness,
+                                themeSettings: terminalThemeSettings,
+                                availableThemes: terminalThemes,
+                                lightThemeId:
+                                    detailConnection.terminalThemeLightId ??
+                                    hostLookup[detailConnection.hostId]
+                                        ?.terminalThemeLightId,
+                                darkThemeId:
+                                    detailConnection.terminalThemeDarkId ??
+                                    hostLookup[detailConnection.hostId]
+                                        ?.terminalThemeDarkId,
+                              ),
+                        onOpenTerminal: detailConnection == null
+                            ? null
+                            : () => unawaited(
+                                context.push(
+                                  '/terminal/${detailConnection.hostId}'
+                                  '?connectionId=${detailConnection.connectionId}',
+                                ),
+                              ),
+                        onOpenFiles: detailConnection == null
+                            ? null
+                            : () => unawaited(
+                                context.push(
+                                  '/sftp/${detailConnection.hostId}'
+                                  '?connectionId=${detailConnection.connectionId}',
+                                ),
+                              ),
+                        onDisconnect: detailConnection == null
+                            ? null
+                            : () => ref
+                                  .read(activeSessionsProvider.notifier)
+                                  .disconnect(detailConnection.connectionId),
                       ),
-                      isThreeLine: preview?.trim().isNotEmpty ?? false,
-                      trailing: IconButton(
-                        icon: const Icon(Icons.close),
-                        tooltip: 'Disconnect',
-                        onPressed: () async {
-                          await ref
-                              .read(activeSessionsProvider.notifier)
-                              .disconnect(connection.connectionId);
-                        },
-                      ),
-                      onTap: () => unawaited(
-                        context.push(
-                          '/terminal/${connection.hostId}'
-                          '?connectionId=${connection.connectionId}',
-                        ),
-                      ),
-                    );
-                  },
+                    ),
+                  ],
+                )
+              : _buildConnectionsList(
+                  context,
+                  connections,
+                  hostLookup,
+                  connectionStates,
+                  terminalThemeSettings,
+                  terminalThemes,
+                  selectedConnectionId: selectedConnectionId,
+                  useMasterDetail: false,
                 ),
         ),
       ],
     );
   }
+
+  Widget _buildConnectionsList(
+    BuildContext context,
+    List<ActiveConnection> connections,
+    Map<int, Host> hostLookup,
+    Map<int, SshConnectionState> connectionStates,
+    TerminalThemeSettings terminalThemeSettings,
+    List<TerminalThemeData> terminalThemes, {
+    required int? selectedConnectionId,
+    required bool useMasterDetail,
+  }) => ListView.builder(
+    padding: const EdgeInsets.symmetric(vertical: 4),
+    itemCount: connections.length,
+    itemBuilder: (context, index) {
+      final connection = connections[index];
+      final host = hostLookup[connection.hostId];
+      final state =
+          connectionStates[connection.connectionId] ?? connection.state;
+      final endpoint =
+          '${connection.config.username}@'
+          '${connection.config.hostname}:${connection.config.port}';
+      final preview = connection.preview;
+      final previewTheme = resolveConnectionPreviewTheme(
+        brightness: Theme.of(context).brightness,
+        themeSettings: terminalThemeSettings,
+        availableThemes: terminalThemes,
+        lightThemeId:
+            connection.terminalThemeLightId ?? host?.terminalThemeLightId,
+        darkThemeId:
+            connection.terminalThemeDarkId ?? host?.terminalThemeDarkId,
+      );
+
+      return ListTile(
+        selected:
+            useMasterDetail && connection.connectionId == selectedConnectionId,
+        leading: Icon(
+          Icons.terminal,
+          color: state == SshConnectionState.connected
+              ? Theme.of(context).colorScheme.primary
+              : Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
+        title: Text(host?.label ?? 'Host ${connection.hostId}'),
+        subtitle: _ConnectionPreviewText(
+          endpoint: '$endpoint  •  Connection #${connection.connectionId}',
+          preview: preview,
+          windowTitle: connection.windowTitle,
+          iconName: connection.iconName,
+          workingDirectory: connection.workingDirectory,
+          shellStatus: connection.shellStatus,
+          lastExitCode: connection.lastExitCode,
+          terminalTheme: previewTheme,
+        ),
+        isThreeLine: preview?.trim().isNotEmpty ?? false,
+        trailing: IconButton(
+          icon: const Icon(Icons.close),
+          tooltip: 'Disconnect',
+          onPressed: () async {
+            await ref
+                .read(activeSessionsProvider.notifier)
+                .disconnect(connection.connectionId);
+          },
+        ),
+        onTap: useMasterDetail
+            ? () => setState(
+                () => _selectedConnectionId = connection.connectionId,
+              )
+            : () => unawaited(
+                context.push(
+                  '/terminal/${connection.hostId}'
+                  '?connectionId=${connection.connectionId}',
+                ),
+              ),
+      );
+    },
+  );
 
   Widget _buildEmptyState(BuildContext context) {
     final theme = Theme.of(context);
@@ -1212,6 +1335,146 @@ class _ConnectionsPanel extends ConsumerWidget {
             'Open a host to create one',
             style: theme.textTheme.bodySmall?.copyWith(
               color: colorScheme.onSurface.withAlpha(100),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ConnectionDetailPane extends StatelessWidget {
+  const _ConnectionDetailPane({
+    required this.connection,
+    required this.host,
+    required this.state,
+    required this.previewTheme,
+    required this.onOpenTerminal,
+    required this.onOpenFiles,
+    required this.onDisconnect,
+  });
+
+  final ActiveConnection? connection;
+  final Host? host;
+  final SshConnectionState? state;
+  final TerminalThemeData? previewTheme;
+  final VoidCallback? onOpenTerminal;
+  final VoidCallback? onOpenFiles;
+  final Future<void> Function()? onDisconnect;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    if (connection == null) {
+      return Center(
+        child: Text(
+          'Select a connection to open it or browse its files.',
+          style: theme.textTheme.bodyLarge?.copyWith(
+            color: colorScheme.onSurfaceVariant,
+          ),
+          textAlign: TextAlign.center,
+        ),
+      );
+    }
+
+    final endpoint =
+        '${connection!.config.username}@'
+        '${connection!.config.hostname}:${connection!.config.port}';
+
+    return Padding(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            host?.label ?? 'Host ${connection!.hostId}',
+            style: theme.textTheme.headlineSmall?.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            '$endpoint  •  Connection #${connection!.connectionId}',
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              FilledButton.icon(
+                onPressed: onOpenTerminal,
+                icon: const Icon(Icons.open_in_new),
+                label: const Text('Open terminal'),
+              ),
+              OutlinedButton.icon(
+                onPressed: onOpenFiles,
+                icon: const Icon(Icons.folder_open),
+                label: const Text('Browse files'),
+              ),
+              OutlinedButton.icon(
+                onPressed: onDisconnect == null
+                    ? null
+                    : () => unawaited(onDisconnect!.call()),
+                icon: const Icon(Icons.link_off),
+                label: const Text('Disconnect'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: colorScheme.surfaceContainerLow,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: colorScheme.outlineVariant),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Status',
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(switch (state) {
+                  SshConnectionState.connected => 'Connected',
+                  SshConnectionState.connecting => 'Connecting',
+                  SshConnectionState.authenticating => 'Authenticating',
+                  SshConnectionState.disconnected => 'Disconnected',
+                  SshConnectionState.reconnecting => 'Reconnecting',
+                  SshConnectionState.error => 'Error',
+                  null => 'Unknown',
+                }, style: theme.textTheme.bodyMedium),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
+          Expanded(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: ColoredBox(
+                color: colorScheme.surfaceContainerLowest,
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: ConnectionPreviewSnippet(
+                    endpoint: endpoint,
+                    preview: connection!.preview,
+                    windowTitle: connection!.windowTitle,
+                    iconName: connection!.iconName,
+                    workingDirectory: connection!.workingDirectory,
+                    shellStatus: connection!.shellStatus,
+                    lastExitCode: connection!.lastExitCode,
+                    terminalTheme: previewTheme,
+                  ),
+                ),
+              ),
             ),
           ),
         ],

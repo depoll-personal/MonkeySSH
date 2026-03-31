@@ -202,6 +202,8 @@ Widget buildRemoteTextEditorScreenForTesting({
   required TextEditingController controller,
   ScrollController? horizontalScrollController,
   TerminalThemeData? terminalTheme,
+  Future<void> Function(String text)? onSaveRequested,
+  VoidCallback? onCloseRequested,
   String fontFamily = 'monospace',
   double initialFontSize = 14,
 }) => RemoteTextEditorScreen(
@@ -209,6 +211,8 @@ Widget buildRemoteTextEditorScreenForTesting({
   controller: controller,
   horizontalScrollController: horizontalScrollController,
   terminalTheme: terminalTheme,
+  onSaveRequested: onSaveRequested,
+  onCloseRequested: onCloseRequested,
   fontFamily: fontFamily,
   initialFontSize: initialFontSize,
 );
@@ -223,6 +227,8 @@ class RemoteTextEditorScreen extends StatefulWidget {
     required this.initialFontSize,
     this.horizontalScrollController,
     this.terminalTheme,
+    this.onSaveRequested,
+    this.onCloseRequested,
     super.key,
   });
 
@@ -243,6 +249,12 @@ class RemoteTextEditorScreen extends StatefulWidget {
 
   /// Optional terminal theme to adapt the editor surface to the connection.
   final TerminalThemeData? terminalTheme;
+
+  /// Called instead of popping the route when the user saves.
+  final Future<void> Function(String text)? onSaveRequested;
+
+  /// Called instead of popping the route when the user closes the editor.
+  final VoidCallback? onCloseRequested;
 
   @override
   State<RemoteTextEditorScreen> createState() => _RemoteTextEditorScreenState();
@@ -585,6 +597,14 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
       child: Scaffold(
         backgroundColor: colors.background,
         appBar: AppBar(
+          automaticallyImplyLeading: widget.onCloseRequested == null,
+          leading: widget.onCloseRequested == null
+              ? null
+              : IconButton(
+                  onPressed: widget.onCloseRequested,
+                  icon: const Icon(Icons.close),
+                  tooltip: 'Close editor',
+                ),
           title: Text('Edit ${widget.fileName}'),
           actions: [
             if (_showDesktopZoomButtons(theme.platform))
@@ -616,7 +636,17 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
                 tooltip: 'Zoom in',
               ),
             TextButton(
-              onPressed: () => Navigator.pop(context, widget.controller.text),
+              onPressed: () async {
+                final onSaveRequested = widget.onSaveRequested;
+                if (onSaveRequested != null) {
+                  await onSaveRequested(widget.controller.text);
+                  return;
+                }
+                if (!mounted) {
+                  return;
+                }
+                Navigator.pop(context, widget.controller.text);
+              },
               child: const Text('Save'),
             ),
           ],

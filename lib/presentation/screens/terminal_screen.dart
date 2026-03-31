@@ -2332,9 +2332,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           forceShowSystemKeyboard ||
           (showSystemKeyboard && ref.read(tapToShowKeyboardNotifierProvider));
       if (shouldShowKeyboard && _isMobilePlatform) {
-        unawaited(
-          SystemChannels.textInput.invokeMethod<void>('TextInput.show'),
-        );
+        _terminalTextInputController.requestKeyboard();
       }
     });
   }

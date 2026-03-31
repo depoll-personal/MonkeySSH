@@ -238,5 +238,41 @@ void main() {
       expect(find.byTooltip('Zoom out'), findsNothing);
       expect(find.byTooltip('Zoom in'), findsNothing);
     });
+
+    testWidgets('uses close and save callbacks in embedded mode', (
+      tester,
+    ) async {
+      final controller = TextEditingController(text: 'alpha');
+      var closeCount = 0;
+      String? savedText;
+
+      addTearDown(controller.dispose);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: buildRemoteTextEditorScreenForTesting(
+            fileName: 'notes.txt',
+            controller: controller,
+            onCloseRequested: () => closeCount++,
+            onSaveRequested: (text) async {
+              savedText = text;
+            },
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      controller.text = 'beta';
+      await tester.pump();
+
+      await tester.tap(find.byTooltip('Close editor'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Save'));
+      await tester.pumpAndSettle();
+
+      expect(closeCount, 1);
+      expect(savedText, 'beta');
+    });
   });
 }

@@ -12,12 +12,14 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:path/path.dart' as path;
 
 import '../../data/repositories/host_repository.dart';
+import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/remote_file_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../widgets/connection_preview_snippet.dart';
+import '../widgets/ipad_landscape_layout.dart';
 import '../widgets/syntax_highlight_controller.dart';
 import '../widgets/syntax_highlight_language.dart';
 import '../widgets/syntax_highlight_theme.dart';
@@ -141,6 +143,47 @@ SftpFileTapIntent resolveSftpFileTapIntent({
   return SftpFileTapIntent.edit;
 }
 
+abstract class _SftpDetailPaneContent {
+  const _SftpDetailPaneContent();
+
+  void dispose() {}
+}
+
+class _SftpImageDetailPaneContent extends _SftpDetailPaneContent {
+  const _SftpImageDetailPaneContent({
+    required this.fileName,
+    required this.bytes,
+    required this.isSvg,
+  });
+
+  final String fileName;
+  final Uint8List bytes;
+  final bool isSvg;
+}
+
+class _SftpEditorDetailPaneContent extends _SftpDetailPaneContent {
+  _SftpEditorDetailPaneContent({
+    required this.fileName,
+    required this.remotePath,
+    required this.controller,
+    required this.terminalTheme,
+    required this.fontFamily,
+    required this.initialFontSize,
+  });
+
+  final String fileName;
+  final String remotePath;
+  final TextEditingController controller;
+  final TerminalThemeData? terminalTheme;
+  final String fontFamily;
+  final double initialFontSize;
+
+  @override
+  void dispose() {
+    controller.dispose();
+  }
+}
+
 /// SFTP file browser screen.
 class SftpScreen extends ConsumerStatefulWidget {
   /// Creates a new [SftpScreen].
@@ -183,6 +226,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   String? _highlightedFileName;
   String? _homeDirectoryPath;
   String? _fallbackDirectoryPath;
+  _SftpDetailPaneContent? _detailPaneContent;
 
   @override
   void initState() {
@@ -213,6 +257,8 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   void dispose() {
     _breadcrumbScrollController.dispose();
     _fileListScrollController.dispose();
+    _detailPaneContent?.dispose();
+    _detailPaneContent = null;
     _sftp?.close();
     _sftp = null;
     super.dispose();
@@ -640,6 +686,28 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     return trimmedPath;
   }
 
+  bool _usesMasterDetailLayout(BuildContext context) =>
+      shouldUseIpadLandscapeMasterDetail(
+        platform: Theme.of(context).platform,
+        orientation: MediaQuery.of(context).orientation,
+        screenSize: MediaQuery.of(context).size,
+      );
+
+  void _setDetailPaneContent(_SftpDetailPaneContent? nextContent) {
+    final previousContent = _detailPaneContent;
+    _detailPaneContent = nextContent;
+    if (!identical(previousContent, nextContent)) {
+      previousContent?.dispose();
+    }
+  }
+
+  void _clearDetailPane() {
+    if (_detailPaneContent == null || !mounted) {
+      return;
+    }
+    setState(() => _setDetailPaneContent(null));
+  }
+
   @override
   Widget build(BuildContext context) => PopScope(
     canPop: _pathHistory.length <= 1,
@@ -664,18 +732,65 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           ),
         ],
       ),
-      body: Column(
-        children: [
-          _buildBreadcrumbs(),
-          Expanded(child: _buildFileList()),
-        ],
-      ),
+      body: _usesMasterDetailLayout(context)
+          ? Row(
+              children: [
+                Expanded(
+                  flex: 5,
+                  child: Column(
+                    children: [
+                      _buildBreadcrumbs(),
+                      Expanded(child: _buildFileList()),
+                    ],
+                  ),
+                ),
+                VerticalDivider(
+                  width: 1,
+                  color: Theme.of(context).colorScheme.outlineVariant,
+                ),
+                Expanded(flex: 6, child: _buildDetailPane()),
+              ],
+            )
+          : Column(
+              children: [
+                _buildBreadcrumbs(),
+                Expanded(child: _buildFileList()),
+              ],
+            ),
       floatingActionButton: FloatingActionButton(
         onPressed: _showUploadDialog,
         child: const Icon(Icons.upload_file),
       ),
     ),
   );
+
+  Widget _buildDetailPane() {
+    final detailPaneContent = _detailPaneContent;
+    if (detailPaneContent == null) {
+      return _SftpDetailPlaceholder(hostLabel: _hostLabel);
+    }
+    if (detailPaneContent is _SftpImageDetailPaneContent) {
+      return _SftpImageDetailPane(
+        fileName: detailPaneContent.fileName,
+        bytes: detailPaneContent.bytes,
+        isSvg: detailPaneContent.isSvg,
+        onClose: _clearDetailPane,
+      );
+    }
+    if (detailPaneContent is _SftpEditorDetailPaneContent) {
+      return RemoteTextEditorScreen(
+        fileName: detailPaneContent.fileName,
+        controller: detailPaneContent.controller,
+        terminalTheme: detailPaneContent.terminalTheme,
+        fontFamily: detailPaneContent.fontFamily,
+        initialFontSize: detailPaneContent.initialFontSize,
+        onSaveRequested: (updatedText) =>
+            _saveDetailEditorText(detailPaneContent, updatedText),
+        onCloseRequested: _clearDetailPane,
+      );
+    }
+    return const SizedBox.shrink();
+  }
 
   Widget _buildBreadcrumbs() {
     final parts = _currentPath.split('/').where((p) => p.isNotEmpty).toList();
@@ -828,11 +943,15 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   }
 
   void _handleFileTap(SftpName file) {
+    final useMasterDetailLayout = _usesMasterDetailLayout(context);
     switch (resolveSftpFileTapIntent(
       isDirectory: file.attr.isDirectory,
       filename: file.filename,
     )) {
       case SftpFileTapIntent.navigate:
+        if (useMasterDetailLayout) {
+          setState(() => _setDetailPaneContent(null));
+        }
         unawaited(_navigateTo(_joinRemotePath(_currentPath, file.filename)));
       case SftpFileTapIntent.preview:
         unawaited(_previewImageFile(file));
@@ -1223,6 +1342,19 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         return;
       }
 
+      if (_usesMasterDetailLayout(context)) {
+        setState(
+          () => _setDetailPaneContent(
+            _SftpImageDetailPaneContent(
+              fileName: file.filename,
+              bytes: bytes,
+              isSvg: isSvgFileName(file.filename),
+            ),
+          ),
+        );
+        return;
+      }
+
       await Navigator.of(context).push<void>(
         MaterialPageRoute(
           fullscreenDialog: true,
@@ -1344,6 +1476,21 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         controller.dispose();
         return;
       }
+      if (_usesMasterDetailLayout(context)) {
+        setState(
+          () => _setDetailPaneContent(
+            _SftpEditorDetailPaneContent(
+              fileName: file.filename,
+              remotePath: remotePath,
+              controller: controller,
+              terminalTheme: editorTheme,
+              fontFamily: fontFamily,
+              initialFontSize: initialFontSize,
+            ),
+          ),
+        );
+        return;
+      }
       final updated = await navigator.push<String>(
         MaterialPageRoute(
           fullscreenDialog: true,
@@ -1386,6 +1533,35 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         ).showSnackBar(SnackBar(content: Text('Edit failed: $e')));
       }
     }
+  }
+
+  Future<void> _saveDetailEditorText(
+    _SftpEditorDetailPaneContent detailPaneContent,
+    String updatedText,
+  ) async {
+    if (_sftp == null) {
+      return;
+    }
+
+    final saveFile = await _sftp!.open(
+      detailPaneContent.remotePath,
+      mode:
+          SftpFileOpenMode.write |
+          SftpFileOpenMode.create |
+          SftpFileOpenMode.truncate,
+    );
+    try {
+      await saveFile.writeBytes(Uint8List.fromList(utf8.encode(updatedText)));
+    } finally {
+      await saveFile.close();
+    }
+    await _loadDirectory(_currentPath);
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Saved "${detailPaneContent.fileName}"')),
+    );
   }
 
   String _joinRemotePath(String directory, String name) =>
@@ -1503,6 +1679,94 @@ class _InfoRow extends StatelessWidget {
       ],
     ),
   );
+}
+
+class _SftpDetailPlaceholder extends StatelessWidget {
+  const _SftpDetailPlaceholder({this.hostLabel});
+
+  final String? hostLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.folder_open, size: 72, color: theme.colorScheme.outline),
+            const SizedBox(height: 16),
+            Text(
+              hostLabel == null
+                  ? 'Select a file to preview or edit it here.'
+                  : 'Select a file from ${hostLabel!} to preview or edit it here.',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.titleMedium,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Directories stay on the left while images and editors open in this detail pane.',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SftpImageDetailPane extends StatelessWidget {
+  const _SftpImageDetailPane({
+    required this.fileName,
+    required this.bytes,
+    required this.isSvg,
+    required this.onClose,
+  });
+
+  final String fileName;
+  final Uint8List bytes;
+  final bool isSvg;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final image = isSvg
+        ? SvgPicture.memory(bytes)
+        : Image.memory(bytes, fit: BoxFit.contain);
+    return Column(
+      children: [
+        Material(
+          color: theme.colorScheme.surfaceContainerLow,
+          child: ListTile(
+            leading: const Icon(Icons.image_outlined),
+            title: Text(fileName),
+            trailing: IconButton(
+              onPressed: onClose,
+              icon: const Icon(Icons.close),
+              tooltip: 'Close preview',
+            ),
+          ),
+        ),
+        Expanded(
+          child: ColoredBox(
+            color: Colors.black,
+            child: Center(
+              child: InteractiveViewer(
+                minScale: 0.5,
+                maxScale: 6,
+                child: Padding(padding: const EdgeInsets.all(24), child: image),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 }
 
 class _RemoteImageViewerScreen extends StatelessWidget {
