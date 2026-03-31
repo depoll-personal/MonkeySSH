@@ -24,7 +24,10 @@ import '../providers/entity_list_providers.dart';
 import '../widgets/connection_attempt_dialog.dart';
 import '../widgets/connection_preview_snippet.dart';
 import '../widgets/ipad_landscape_layout.dart';
+import 'terminal_screen.dart';
 import 'transfer_screen.dart';
+
+typedef _TerminalDetailTarget = ({int hostId, int connectionId});
 
 /// The main home screen - Termius-style sidebar layout.
 class HomeScreen extends ConsumerStatefulWidget {
@@ -206,13 +209,77 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   @override
   Widget build(BuildContext context) {
-    final screenWidth = MediaQuery.of(context).size.width;
+    final mediaQuery = MediaQuery.of(context);
+    final screenWidth = mediaQuery.size.width;
     final isWide = screenWidth >= _mobileBreakpoint;
+    final useIpadLandscapeLayout = shouldUseIpadLandscapeMasterDetail(
+      platform: Theme.of(context).platform,
+      orientation: mediaQuery.orientation,
+      screenSize: mediaQuery.size,
+    );
 
+    if (useIpadLandscapeLayout) {
+      return _buildIpadLandscapeLayout();
+    }
     return isWide ? _buildDesktopLayout() : _buildMobileLayout();
   }
 
   Widget _buildMobileLayout() => Scaffold(
+    appBar: AppBar(
+      title: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: Image.asset(
+              'assets/icons/monkeyssh_icon.png',
+              width: 28,
+              height: 28,
+            ),
+          ),
+          const SizedBox(width: 8),
+          const Text('MonkeySSH'),
+        ],
+      ),
+      actions: [
+        IconButton(
+          icon: const Icon(Icons.settings_outlined),
+          onPressed: () => context.push('/settings'),
+        ),
+      ],
+    ),
+    body: _buildContent(),
+    bottomNavigationBar: NavigationBar(
+      selectedIndex: _selectedIndex,
+      onDestinationSelected: (index) => setState(() => _selectedIndex = index),
+      labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+      height: 65,
+      destinations: const [
+        NavigationDestination(
+          icon: Icon(Icons.dns_outlined),
+          selectedIcon: Icon(Icons.dns_rounded),
+          label: 'Hosts',
+        ),
+        NavigationDestination(
+          icon: Icon(Icons.link_outlined),
+          selectedIcon: Icon(Icons.link),
+          label: 'Connections',
+        ),
+        NavigationDestination(
+          icon: Icon(Icons.key_outlined),
+          selectedIcon: Icon(Icons.key_rounded),
+          label: 'Keys',
+        ),
+        NavigationDestination(
+          icon: Icon(Icons.code_outlined),
+          selectedIcon: Icon(Icons.code_rounded),
+          label: 'Snippets',
+        ),
+      ],
+    ),
+  );
+
+  Widget _buildIpadLandscapeLayout() => Scaffold(
     appBar: AppBar(
       title: Row(
         mainAxisSize: MainAxisSize.min,
@@ -443,14 +510,26 @@ class _NavItem extends StatelessWidget {
   }
 }
 
-class _HostsPanel extends ConsumerWidget {
+class _HostsPanel extends ConsumerStatefulWidget {
   const _HostsPanel();
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_HostsPanel> createState() => _HostsPanelState();
+}
+
+class _HostsPanelState extends ConsumerState<_HostsPanel> {
+  _TerminalDetailTarget? _selectedTerminalTarget;
+
+  @override
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final hostsAsync = ref.watch(allHostsProvider);
+    final useMasterDetail = shouldUseIpadLandscapeMasterDetail(
+      platform: theme.platform,
+      orientation: MediaQuery.of(context).orientation,
+      screenSize: MediaQuery.of(context).size,
+    );
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -490,7 +569,34 @@ class _HostsPanel extends ConsumerWidget {
             error: (e, _) => Center(child: Text('Error: $e')),
             data: (hosts) => hosts.isEmpty
                 ? _buildEmptyState(context)
-                : _buildHostsList(context, ref, hosts),
+                : useMasterDetail
+                ? Row(
+                    children: [
+                      SizedBox(
+                        width: 380,
+                        child: _buildHostsList(
+                          context,
+                          ref,
+                          hosts,
+                          useMasterDetail: true,
+                        ),
+                      ),
+                      VerticalDivider(
+                        width: 1,
+                        color: colorScheme.outline.withAlpha(50),
+                      ),
+                      Expanded(
+                        child: _EmbeddedTerminalDetailPane(
+                          target: _selectedTerminalTarget,
+                          emptyTitle:
+                              'Connect to a host to open the live terminal here.',
+                          emptySubtitle:
+                              'Use the host row or add-connection button to launch a session in the detail pane.',
+                        ),
+                      ),
+                    ],
+                  )
+                : _buildHostsList(context, ref, hosts, useMasterDetail: false),
           ),
         ),
       ],
@@ -538,21 +644,35 @@ class _HostsPanel extends ConsumerWidget {
   Widget _buildHostsList(
     BuildContext context,
     WidgetRef ref,
-    List<Host> hosts,
-  ) => ListView.builder(
+    List<Host> hosts, {
+    required bool useMasterDetail,
+  }) => ListView.builder(
     padding: const EdgeInsets.symmetric(vertical: 4),
     itemCount: hosts.length,
     itemBuilder: (context, index) {
       final host = hosts[index];
-      return _HostRow(host: host);
+      return _HostRow(
+        host: host,
+        isSelected:
+            useMasterDetail && _selectedTerminalTarget?.hostId == host.id,
+        onShowTerminalDetail: useMasterDetail
+            ? (target) => setState(() => _selectedTerminalTarget = target)
+            : null,
+      );
     },
   );
 }
 
 class _HostRow extends ConsumerWidget {
-  const _HostRow({required this.host});
+  const _HostRow({
+    required this.host,
+    this.isSelected = false,
+    this.onShowTerminalDetail,
+  });
 
   final Host host;
+  final bool isSelected;
+  final void Function(_TerminalDetailTarget target)? onShowTerminalDetail;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -609,7 +729,9 @@ class _HostRow extends ConsumerWidget {
         .toList(growable: false);
 
     return Material(
-      color: Colors.transparent,
+      color: isSelected
+          ? colorScheme.primaryContainer.withAlpha(80)
+          : Colors.transparent,
       child: InkWell(
         onTap: () => unawaited(_openHostConnection(context, ref)),
         child: Container(
@@ -862,6 +984,11 @@ class _HostRow extends ConsumerWidget {
 
     final selectedId = int.tryParse(selection.replaceFirst('connection:', ''));
     if (selectedId != null) {
+      final onShowTerminalDetail = this.onShowTerminalDetail;
+      if (onShowTerminalDetail != null) {
+        onShowTerminalDetail((hostId: host.id, connectionId: selectedId));
+        return;
+      }
       unawaited(context.push('/terminal/${host.id}?connectionId=$selectedId'));
     }
   }
@@ -874,6 +1001,15 @@ class _HostRow extends ConsumerWidget {
     }
 
     if (!result.success || result.connectionId == null) {
+      return;
+    }
+
+    final onShowTerminalDetail = this.onShowTerminalDetail;
+    if (onShowTerminalDetail != null) {
+      onShowTerminalDetail((
+        hostId: host.id,
+        connectionId: result.connectionId!,
+      ));
       return;
     }
 
@@ -1172,51 +1308,17 @@ class _ConnectionsPanelState extends ConsumerState<_ConnectionsPanel> {
                       color: colorScheme.outline.withAlpha(50),
                     ),
                     Expanded(
-                      child: _ConnectionDetailPane(
-                        connection: detailConnection,
-                        host: detailConnection == null
+                      child: _EmbeddedTerminalDetailPane(
+                        target: detailConnection == null
                             ? null
-                            : hostLookup[detailConnection.hostId],
-                        state: detailConnection == null
-                            ? null
-                            : connectionStates[detailConnection.connectionId] ??
-                                  detailConnection.state,
-                        previewTheme: detailConnection == null
-                            ? null
-                            : resolveConnectionPreviewTheme(
-                                brightness: theme.brightness,
-                                themeSettings: terminalThemeSettings,
-                                availableThemes: terminalThemes,
-                                lightThemeId:
-                                    detailConnection.terminalThemeLightId ??
-                                    hostLookup[detailConnection.hostId]
-                                        ?.terminalThemeLightId,
-                                darkThemeId:
-                                    detailConnection.terminalThemeDarkId ??
-                                    hostLookup[detailConnection.hostId]
-                                        ?.terminalThemeDarkId,
+                            : (
+                                hostId: detailConnection.hostId,
+                                connectionId: detailConnection.connectionId,
                               ),
-                        onOpenTerminal: detailConnection == null
-                            ? null
-                            : () => unawaited(
-                                context.push(
-                                  '/terminal/${detailConnection.hostId}'
-                                  '?connectionId=${detailConnection.connectionId}',
-                                ),
-                              ),
-                        onOpenFiles: detailConnection == null
-                            ? null
-                            : () => unawaited(
-                                context.push(
-                                  '/sftp/${detailConnection.hostId}'
-                                  '?connectionId=${detailConnection.connectionId}',
-                                ),
-                              ),
-                        onDisconnect: detailConnection == null
-                            ? null
-                            : () => ref
-                                  .read(activeSessionsProvider.notifier)
-                                  .disconnect(detailConnection.connectionId),
+                        emptyTitle:
+                            'Select a connection to open the live terminal here.',
+                        emptySubtitle:
+                            'The active session stays on the right while you browse connections on the left.',
                       ),
                     ),
                   ],
@@ -1343,142 +1445,54 @@ class _ConnectionsPanelState extends ConsumerState<_ConnectionsPanel> {
   }
 }
 
-class _ConnectionDetailPane extends StatelessWidget {
-  const _ConnectionDetailPane({
-    required this.connection,
-    required this.host,
-    required this.state,
-    required this.previewTheme,
-    required this.onOpenTerminal,
-    required this.onOpenFiles,
-    required this.onDisconnect,
+class _EmbeddedTerminalDetailPane extends StatelessWidget {
+  const _EmbeddedTerminalDetailPane({
+    required this.target,
+    required this.emptyTitle,
+    required this.emptySubtitle,
   });
 
-  final ActiveConnection? connection;
-  final Host? host;
-  final SshConnectionState? state;
-  final TerminalThemeData? previewTheme;
-  final VoidCallback? onOpenTerminal;
-  final VoidCallback? onOpenFiles;
-  final Future<void> Function()? onDisconnect;
+  final _TerminalDetailTarget? target;
+  final String emptyTitle;
+  final String emptySubtitle;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    if (connection == null) {
+    final target = this.target;
+    if (target == null) {
       return Center(
-        child: Text(
-          'Select a connection to open it or browse its files.',
-          style: theme.textTheme.bodyLarge?.copyWith(
-            color: colorScheme.onSurfaceVariant,
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.terminal, size: 72, color: colorScheme.outline),
+              const SizedBox(height: 16),
+              Text(
+                emptyTitle,
+                style: theme.textTheme.titleMedium,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                emptySubtitle,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ],
           ),
-          textAlign: TextAlign.center,
         ),
       );
     }
 
-    final endpoint =
-        '${connection!.config.username}@'
-        '${connection!.config.hostname}:${connection!.config.port}';
-
-    return Padding(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            host?.label ?? 'Host ${connection!.hostId}',
-            style: theme.textTheme.headlineSmall?.copyWith(
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            '$endpoint  •  Connection #${connection!.connectionId}',
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: colorScheme.onSurfaceVariant,
-            ),
-          ),
-          const SizedBox(height: 16),
-          Wrap(
-            spacing: 12,
-            runSpacing: 12,
-            children: [
-              FilledButton.icon(
-                onPressed: onOpenTerminal,
-                icon: const Icon(Icons.open_in_new),
-                label: const Text('Open terminal'),
-              ),
-              OutlinedButton.icon(
-                onPressed: onOpenFiles,
-                icon: const Icon(Icons.folder_open),
-                label: const Text('Browse files'),
-              ),
-              OutlinedButton.icon(
-                onPressed: onDisconnect == null
-                    ? null
-                    : () => unawaited(onDisconnect!.call()),
-                icon: const Icon(Icons.link_off),
-                label: const Text('Disconnect'),
-              ),
-            ],
-          ),
-          const SizedBox(height: 20),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: colorScheme.surfaceContainerLow,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: colorScheme.outlineVariant),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Status',
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(switch (state) {
-                  SshConnectionState.connected => 'Connected',
-                  SshConnectionState.connecting => 'Connecting',
-                  SshConnectionState.authenticating => 'Authenticating',
-                  SshConnectionState.disconnected => 'Disconnected',
-                  SshConnectionState.reconnecting => 'Reconnecting',
-                  SshConnectionState.error => 'Error',
-                  null => 'Unknown',
-                }, style: theme.textTheme.bodyMedium),
-              ],
-            ),
-          ),
-          const SizedBox(height: 20),
-          Expanded(
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(16),
-              child: ColoredBox(
-                color: colorScheme.surfaceContainerLowest,
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: ConnectionPreviewSnippet(
-                    endpoint: endpoint,
-                    preview: connection!.preview,
-                    windowTitle: connection!.windowTitle,
-                    iconName: connection!.iconName,
-                    workingDirectory: connection!.workingDirectory,
-                    shellStatus: connection!.shellStatus,
-                    lastExitCode: connection!.lastExitCode,
-                    terminalTheme: previewTheme,
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
+    return TerminalScreen(
+      key: ValueKey<String>('detail-terminal-${target.connectionId}'),
+      hostId: target.hostId,
+      connectionId: target.connectionId,
     );
   }
 }
