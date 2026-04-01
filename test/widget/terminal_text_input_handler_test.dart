@@ -3917,7 +3917,7 @@ void main() {
     );
 
     testWidgets(
-      'tracks a hardware-key backspace so a later IME replacement stays correct',
+      'blocks hardware-key backspace when IME is active so suggestion replacement stays correct',
       (tester) async {
         final terminalOutput = <String>[];
         final terminal = Terminal(onOutput: terminalOutput.add);
@@ -3948,12 +3948,16 @@ void main() {
         expect(_terminalTextFromEvents(terminalOutput), 'this ');
 
         // Simulate Android: hardware key event backspace arrives before the IME
-        // composing update, removing the trailing space.
+        // composing update. With the fix, this key event is BLOCKED (not sent
+        // to terminal) because the IME connection is active.
         await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
         await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
         await tester.pump();
 
-        // The IME then sends the word back in composing mode (ignored).
+        // Terminal output should still be "this " — backspace was blocked.
+        expect(_terminalTextFromEvents(terminalOutput), 'this ');
+
+        // The IME sends the word in composing mode (ignored as composing).
         tester.testTextInput.updateEditingValue(
           const TextEditingValue(
             text: '\u200B\u200Bthis',
@@ -3963,7 +3967,7 @@ void main() {
         );
         await tester.pump();
 
-        // Another hardware-key backspace removes the 's'.
+        // Another hardware-key backspace — also blocked.
         await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
         await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
         await tester.pump();
@@ -3979,6 +3983,8 @@ void main() {
         await tester.pump();
 
         // User taps "thistle" from suggestion bar → IME commits "thistle ".
+        // Since _lastSentText is still "this " (never desynced), the delta
+        // correctly replaces "this " with "thistle ".
         tester.testTextInput.updateEditingValue(
           _editingValue('thistle ', selectionOffset: 'thistle '.length),
         );
@@ -3992,7 +3998,7 @@ void main() {
     );
 
     testWidgets(
-      'tracks a hardware-key backspace at a mid-word cursor position',
+      'blocks hardware-key backspace when IME is active at mid-word cursor',
       (tester) async {
         final terminalOutput = <String>[];
         final terminal = Terminal(onOutput: terminalOutput.add);
@@ -4029,10 +4035,14 @@ void main() {
 
         terminalOutput.clear();
 
-        // Hardware-key backspace at cursor offset 3 removes the first 'l'.
+        // Hardware-key backspace — blocked by the IME guard, not sent to
+        // terminal.
         await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
         await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
         await tester.pump();
+
+        // No terminal output from the blocked backspace.
+        expect(terminalOutput, isEmpty);
 
         // IME sends committed update reflecting the deletion.
         tester.testTextInput.updateEditingValue(

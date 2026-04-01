@@ -329,17 +329,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
           maxOffset,
         );
         return;
-      case TerminalKey.backspace:
-        if (_lastSentCursorOffset > 0 && _lastSentText.isNotEmpty) {
-          final graphemes = _lastSentText.characters.toList(growable: true);
-          final deleteIndex = _lastSentCursorOffset - 1;
-          if (deleteIndex < graphemes.length) {
-            graphemes.removeAt(deleteIndex);
-            _lastSentText = graphemes.join();
-            _lastSentCursorOffset = deleteIndex;
-          }
-        }
-        return;
       case TerminalKey.arrowUp:
       case TerminalKey.arrowDown:
         if (_lastSentText.isNotEmpty || _lastSentCursorOffset != 0) {
@@ -373,6 +362,18 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     final key = keyToTerminalKey(event.logicalKey);
     if (key == null) {
       return KeyEventResult.ignored;
+    }
+
+    // When an IME connection is active, let the IME handle text-modifying keys
+    // (backspace/delete) via updateEditingValue so _lastSentText stays in sync.
+    // Without this guard, both the key event AND the IME update can each send a
+    // backspace to the terminal, causing a desync that jumbles later
+    // replacements (e.g. suggestion-bar taps producing "thitle" instead of
+    // "thistle").
+    if (hasInputConnection &&
+        !hasShortcutModifier &&
+        (key == TerminalKey.backspace || key == TerminalKey.delete)) {
+      return KeyEventResult.skipRemainingHandlers;
     }
 
     final handled = widget.terminal.keyInput(
