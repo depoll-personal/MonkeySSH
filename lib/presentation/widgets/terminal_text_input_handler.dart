@@ -173,7 +173,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   bool _lastProcessedUserSelectionWasValid = false;
   bool _lastProcessedSelectionWasCollapsed = true;
   bool _trimLeadingSwipeSpaceAfterBufferClear = false;
-  bool _keyEventProcessedDeletion = false;
   String _lastSentText = '';
   int _lastSentCursorOffset = 0;
   String? _pendingPerformedEnterText;
@@ -330,28 +329,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
           maxOffset,
         );
         return;
-      case TerminalKey.backspace:
-        _keyEventProcessedDeletion = true;
-        if (_lastSentCursorOffset > 0 && _lastSentText.isNotEmpty) {
-          final graphemes = _lastSentText.characters.toList(growable: true);
-          final deleteIndex = _lastSentCursorOffset - 1;
-          if (deleteIndex < graphemes.length) {
-            graphemes.removeAt(deleteIndex);
-            _lastSentText = graphemes.join();
-            _lastSentCursorOffset = deleteIndex;
-          }
-        }
-        return;
-      case TerminalKey.delete:
-        _keyEventProcessedDeletion = true;
-        if (_lastSentText.isNotEmpty) {
-          final graphemes = _lastSentText.characters.toList(growable: true);
-          if (_lastSentCursorOffset < graphemes.length) {
-            graphemes.removeAt(_lastSentCursorOffset);
-            _lastSentText = graphemes.join();
-          }
-        }
-        return;
       case TerminalKey.arrowUp:
       case TerminalKey.arrowDown:
         if (_lastSentText.isNotEmpty || _lastSentCursorOffset != 0) {
@@ -385,6 +362,20 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     final key = keyToTerminalKey(event.logicalKey);
     if (key == null) {
       return KeyEventResult.ignored;
+    }
+
+    // When an IME connection is active, block text-modifying key events
+    // (backspace/delete). On Android, the soft keyboard can dispatch a key
+    // event AND an IME updateEditingValue for the same keystroke. Letting
+    // both through double-processes the deletion, desyncing _lastSentText
+    // from the terminal and jumbling later IME replacements. The IME path
+    // (marker-damage or committed delta) handles backspace/delete reliably
+    // on its own, so we only let these keys through when there is no IME
+    // connection (e.g. hardware-only keyboard with no soft keyboard shown).
+    if (hasInputConnection &&
+        !hasShortcutModifier &&
+        (key == TerminalKey.backspace || key == TerminalKey.delete)) {
+      return KeyEventResult.skipRemainingHandlers;
     }
 
     final handled = widget.terminal.keyInput(
@@ -479,7 +470,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       if (show) _connection!.show();
       _invalidatePendingEditingUpdates();
       _sawImeComposition = false;
-      _keyEventProcessedDeletion = false;
       _lastProcessedUserSelectionWasValid = false;
       _lastProcessedSelectionWasCollapsed = true;
       _trimLeadingSwipeSpaceAfterBufferClear = false;
@@ -499,7 +489,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
     _invalidatePendingEditingUpdates();
     _sawImeComposition = false;
-    _keyEventProcessedDeletion = false;
     _lastProcessedUserSelectionWasValid = false;
     _lastProcessedSelectionWasCollapsed = true;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
@@ -1105,22 +1094,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         return;
       }
 
-      // Clear the key-event backspace flag now that a committed update has
-      // arrived. The marker-damage path below checks this flag before clearing
-      // it; for all other committed paths the flag is stale and safe to reset.
-      final keyEventAlreadyProcessedBackspace = _keyEventProcessedDeletion;
-      _keyEventProcessedDeletion = false;
-
       if (_editingPrefixLength(value.text) < _initEditingState.text.length) {
-        if (keyEventAlreadyProcessedBackspace) {
-          // A key event already sent the backspace to the terminal and updated
-          // _lastSentText. The marker damage is from the same keystroke that
-          // the key event already handled — skip the duplicate terminal input
-          // but still reset the editing state so the marker is restored.
-          _sawImeComposition = false;
-          _resetCommittedInputState();
-          return;
-        }
         final deletedCount = _textLengthInGraphemes(_lastSentText);
         final clearedBufferedInput = deletedCount > 0;
         _notifyUserInput();
@@ -1261,7 +1235,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _connection = null;
     _invalidatePendingEditingUpdates();
     _sawImeComposition = false;
-    _keyEventProcessedDeletion = false;
     _lastSentText = '';
     _lastSentCursorOffset = 0;
     _pendingPerformedEnterText = null;

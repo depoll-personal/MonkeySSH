@@ -3917,7 +3917,7 @@ void main() {
     );
 
     testWidgets(
-      'tracks hardware-key backspace so a later IME suggestion replacement stays correct',
+      'blocks key-event backspace when IME is active so suggestion replacement stays correct',
       (tester) async {
         final terminalOutput = <String>[];
         final terminal = Terminal(onOutput: terminalOutput.add);
@@ -3947,16 +3947,16 @@ void main() {
 
         expect(_terminalTextFromEvents(terminalOutput), 'this ');
 
-        // Simulate Android: hardware key event backspace arrives before the IME
-        // composing update (composing is still collapsed from the committed
-        // state). The key event sends \x7f to the terminal AND tracking
-        // updates _lastSentText from "this " to "this".
+        // Simulate Android: hardware key event backspace arrives before the
+        // IME composing update. With the blocking guard, the key event is
+        // swallowed (not sent to the terminal) because the IME connection
+        // is active.
         await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
         await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
         await tester.pump();
 
-        // Terminal now shows "this" (space was deleted).
-        expect(_terminalTextFromEvents(terminalOutput), 'this');
+        // Terminal still shows "this " — key-event backspace was blocked.
+        expect(_terminalTextFromEvents(terminalOutput), 'this ');
 
         // The IME sends the word in composing mode (ignored as composing).
         tester.testTextInput.updateEditingValue(
@@ -3968,14 +3968,11 @@ void main() {
         );
         await tester.pump();
 
-        // Another hardware-key backspace during composing — blocked by the
-        // existing composing guard (all key events are blocked while composing
-        // is active). Terminal still shows "this".
+        // Another hardware-key backspace during composing — also blocked
+        // (by the existing composing guard).
         await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
         await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
         await tester.pump();
-
-        expect(_terminalTextFromEvents(terminalOutput), 'this');
 
         // IME sends composing "thi" (ignored).
         tester.testTextInput.updateEditingValue(
@@ -3988,8 +3985,8 @@ void main() {
         await tester.pump();
 
         // User taps "thistle" from suggestion bar → IME commits "thistle ".
-        // Since tracking kept _lastSentText = "this", the delta correctly
-        // computes: delete 0, append "tle " → terminal shows "thistle ".
+        // Since _lastSentText was never desynced (key events were blocked),
+        // the delta correctly replaces "this " with "thistle ".
         tester.testTextInput.updateEditingValue(
           _editingValue('thistle ', selectionOffset: 'thistle '.length),
         );
@@ -4003,7 +4000,7 @@ void main() {
     );
 
     testWidgets(
-      'tracks hardware-key backspace at a mid-word cursor without double-processing the IME update',
+      'blocks key-event backspace when IME is active so committed update handles deletion alone',
       (tester) async {
         final terminalOutput = <String>[];
         final terminal = Terminal(onOutput: terminalOutput.add);
@@ -4040,15 +4037,16 @@ void main() {
 
         terminalOutput.clear();
 
-        // Hardware-key backspace at cursor offset 3 removes the first 'l'.
-        // Tracking: _lastSentText "hello" → "helo", cursor 3 → 2.
+        // Hardware-key backspace — blocked by the IME guard.
         await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
         await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
         await tester.pump();
 
-        // IME sends committed update "helo" with cursor at 2.
-        // Since tracking already set _lastSentText = "helo", this is a
-        // same-text no-op — no duplicate backspace sent to terminal.
+        // No terminal output from the blocked backspace.
+        expect(terminalOutput, isEmpty);
+
+        // IME sends committed update "helo" with cursor at 2 — this is the
+        // sole handler for the deletion.
         tester.testTextInput.updateEditingValue(
           _editingValue('helo', selectionOffset: 'he'.length),
         );
