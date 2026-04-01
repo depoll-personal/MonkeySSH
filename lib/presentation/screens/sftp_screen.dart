@@ -696,8 +696,10 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   void _setDetailPaneContent(_SftpDetailPaneContent? nextContent) {
     final previousContent = _detailPaneContent;
     _detailPaneContent = nextContent;
-    if (!identical(previousContent, nextContent)) {
-      previousContent?.dispose();
+    if (!identical(previousContent, nextContent) && previousContent != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        previousContent.dispose();
+      });
     }
   }
 
@@ -706,6 +708,11 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return;
     }
     setState(() => _setDetailPaneContent(null));
+  }
+
+  void _highlightCurrentFile(String fileName) {
+    _highlightedDirectoryPath = _currentPath;
+    _highlightedFileName = fileName;
   }
 
   @override
@@ -1343,15 +1350,16 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       }
 
       if (_usesMasterDetailLayout(context)) {
-        setState(
-          () => _setDetailPaneContent(
+        setState(() {
+          _highlightCurrentFile(file.filename);
+          _setDetailPaneContent(
             _SftpImageDetailPaneContent(
               fileName: file.filename,
               bytes: bytes,
               isSvg: isSvgFileName(file.filename),
             ),
-          ),
-        );
+          );
+        });
         return;
       }
 
@@ -1477,8 +1485,9 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         return;
       }
       if (_usesMasterDetailLayout(context)) {
-        setState(
-          () => _setDetailPaneContent(
+        setState(() {
+          _highlightCurrentFile(file.filename);
+          _setDetailPaneContent(
             _SftpEditorDetailPaneContent(
               fileName: file.filename,
               remotePath: remotePath,
@@ -1487,8 +1496,8 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
               fontFamily: fontFamily,
               initialFontSize: initialFontSize,
             ),
-          ),
-        );
+          );
+        });
         return;
       }
       final updated = await navigator.push<String>(
@@ -1543,25 +1552,40 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return;
     }
 
-    final saveFile = await _sftp!.open(
-      detailPaneContent.remotePath,
-      mode:
-          SftpFileOpenMode.write |
-          SftpFileOpenMode.create |
-          SftpFileOpenMode.truncate,
-    );
+    SftpFile? saveFile;
     try {
+      saveFile = await _sftp!.open(
+        detailPaneContent.remotePath,
+        mode:
+            SftpFileOpenMode.write |
+            SftpFileOpenMode.create |
+            SftpFileOpenMode.truncate,
+      );
       await saveFile.writeBytes(Uint8List.fromList(utf8.encode(updatedText)));
+      await _loadDirectory(_currentPath);
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Saved "${detailPaneContent.fileName}"')),
+      );
+    } on Exception catch (error, stackTrace) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to save "${detailPaneContent.fileName}".'),
+          ),
+        );
+      }
+      if (kDebugMode) {
+        debugPrint(
+          'Error saving remote file "${detailPaneContent.remotePath}": $error',
+        );
+        debugPrintStack(stackTrace: stackTrace);
+      }
     } finally {
-      await saveFile.close();
+      await saveFile?.close();
     }
-    await _loadDirectory(_currentPath);
-    if (!mounted) {
-      return;
-    }
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Saved "${detailPaneContent.fileName}"')),
-    );
   }
 
   String _joinRemotePath(String directory, String name) =>

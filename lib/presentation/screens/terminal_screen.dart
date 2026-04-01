@@ -965,13 +965,21 @@ bool didTerminalScrollPolicyChange({
 /// Terminal screen for SSH sessions.
 class TerminalScreen extends ConsumerStatefulWidget {
   /// Creates a new [TerminalScreen].
-  const TerminalScreen({required this.hostId, this.connectionId, super.key});
+  const TerminalScreen({
+    required this.hostId,
+    this.connectionId,
+    this.onDisconnectRequested,
+    super.key,
+  });
 
   /// The host ID to connect to.
   final int hostId;
 
   /// Optional existing connection ID to reuse.
   final int? connectionId;
+
+  /// Called after a manual disconnect instead of popping the current route.
+  final VoidCallback? onDisconnectRequested;
 
   @override
   ConsumerState<TerminalScreen> createState() => _TerminalScreenState();
@@ -1946,7 +1954,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       await _sessionsNotifier?.disconnect(connectionId);
     }
     if (mounted) {
-      Navigator.of(context).pop();
+      final onDisconnectRequested = widget.onDisconnectRequested;
+      if (onDisconnectRequested != null) {
+        onDisconnectRequested();
+      } else {
+        Navigator.of(context).pop();
+      }
     }
   }
 

@@ -303,7 +303,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         ),
       ],
     ),
-    body: _buildContent(),
+    body: _buildContent(preserveState: true),
     bottomNavigationBar: NavigationBar(
       selectedIndex: _selectedIndex,
       onDestinationSelected: (index) => setState(() => _selectedIndex = index),
@@ -435,7 +435,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     );
   }
 
-  Widget _buildContent() {
+  Widget _buildContent({bool preserveState = false}) {
+    if (preserveState) {
+      return IndexedStack(
+        index: _selectedIndex,
+        children: const [
+          _HostsPanel(),
+          _ConnectionsPanel(),
+          _KeysPanel(),
+          _SnippetsPanel(),
+        ],
+      );
+    }
+
     switch (_selectedIndex) {
       case 0:
         return const _HostsPanel();
@@ -588,6 +600,8 @@ class _HostsPanelState extends ConsumerState<_HostsPanel> {
                       Expanded(
                         child: _EmbeddedTerminalDetailPane(
                           target: _selectedTerminalTarget,
+                          onDisconnectRequested: () =>
+                              setState(() => _selectedTerminalTarget = null),
                           emptyTitle:
                               'Connect to a host to open the live terminal here.',
                           emptySubtitle:
@@ -901,6 +915,14 @@ class _HostRow extends ConsumerWidget {
     }
 
     if (connectionIds.length == 1) {
+      final onShowTerminalDetail = this.onShowTerminalDetail;
+      if (onShowTerminalDetail != null) {
+        onShowTerminalDetail((
+          hostId: host.id,
+          connectionId: connectionIds.first,
+        ));
+        return;
+      }
       if (context.mounted) {
         unawaited(
           context.push(
@@ -1315,6 +1337,10 @@ class _ConnectionsPanelState extends ConsumerState<_ConnectionsPanel> {
                                 hostId: detailConnection.hostId,
                                 connectionId: detailConnection.connectionId,
                               ),
+                        onDisconnectRequested: detailConnection == null
+                            ? null
+                            : () =>
+                                  setState(() => _selectedConnectionId = null),
                         emptyTitle:
                             'Select a connection to open the live terminal here.',
                         emptySubtitle:
@@ -1450,11 +1476,13 @@ class _EmbeddedTerminalDetailPane extends StatelessWidget {
     required this.target,
     required this.emptyTitle,
     required this.emptySubtitle,
+    this.onDisconnectRequested,
   });
 
   final _TerminalDetailTarget? target;
   final String emptyTitle;
   final String emptySubtitle;
+  final VoidCallback? onDisconnectRequested;
 
   @override
   Widget build(BuildContext context) {
@@ -1493,6 +1521,7 @@ class _EmbeddedTerminalDetailPane extends StatelessWidget {
       key: ValueKey<String>('detail-terminal-${target.connectionId}'),
       hostId: target.hostId,
       connectionId: target.connectionId,
+      onDisconnectRequested: onDisconnectRequested,
     );
   }
 }
