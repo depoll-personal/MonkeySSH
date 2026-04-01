@@ -173,7 +173,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   bool _lastProcessedUserSelectionWasValid = false;
   bool _lastProcessedSelectionWasCollapsed = true;
   bool _trimLeadingSwipeSpaceAfterBufferClear = false;
-  bool _keyEventProcessedBackspace = false;
+  bool _keyEventProcessedDeletion = false;
   String _lastSentText = '';
   int _lastSentCursorOffset = 0;
   String? _pendingPerformedEnterText;
@@ -331,6 +331,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         );
         return;
       case TerminalKey.backspace:
+        _keyEventProcessedDeletion = true;
         if (_lastSentCursorOffset > 0 && _lastSentText.isNotEmpty) {
           final graphemes = _lastSentText.characters.toList(growable: true);
           final deleteIndex = _lastSentCursorOffset - 1;
@@ -338,17 +339,16 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
             graphemes.removeAt(deleteIndex);
             _lastSentText = graphemes.join();
             _lastSentCursorOffset = deleteIndex;
-            _keyEventProcessedBackspace = true;
           }
         }
         return;
       case TerminalKey.delete:
+        _keyEventProcessedDeletion = true;
         if (_lastSentText.isNotEmpty) {
           final graphemes = _lastSentText.characters.toList(growable: true);
           if (_lastSentCursorOffset < graphemes.length) {
             graphemes.removeAt(_lastSentCursorOffset);
             _lastSentText = graphemes.join();
-            _keyEventProcessedBackspace = true;
           }
         }
         return;
@@ -479,6 +479,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       if (show) _connection!.show();
       _invalidatePendingEditingUpdates();
       _sawImeComposition = false;
+      _keyEventProcessedDeletion = false;
       _lastProcessedUserSelectionWasValid = false;
       _lastProcessedSelectionWasCollapsed = true;
       _trimLeadingSwipeSpaceAfterBufferClear = false;
@@ -498,6 +499,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
     _invalidatePendingEditingUpdates();
     _sawImeComposition = false;
+    _keyEventProcessedDeletion = false;
     _lastProcessedUserSelectionWasValid = false;
     _lastProcessedSelectionWasCollapsed = true;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
@@ -1106,8 +1108,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       // Clear the key-event backspace flag now that a committed update has
       // arrived. The marker-damage path below checks this flag before clearing
       // it; for all other committed paths the flag is stale and safe to reset.
-      final keyEventAlreadyProcessedBackspace = _keyEventProcessedBackspace;
-      _keyEventProcessedBackspace = false;
+      final keyEventAlreadyProcessedBackspace = _keyEventProcessedDeletion;
+      _keyEventProcessedDeletion = false;
 
       if (_editingPrefixLength(value.text) < _initEditingState.text.length) {
         if (keyEventAlreadyProcessedBackspace) {
@@ -1259,7 +1261,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _connection = null;
     _invalidatePendingEditingUpdates();
     _sawImeComposition = false;
-    _keyEventProcessedBackspace = false;
+    _keyEventProcessedDeletion = false;
     _lastSentText = '';
     _lastSentCursorOffset = 0;
     _pendingPerformedEnterText = null;
