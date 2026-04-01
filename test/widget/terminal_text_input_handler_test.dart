@@ -4071,6 +4071,52 @@ void main() {
       },
     );
 
+    testWidgets(
+      'allows hardware-key backspace when soft keyboard is not shown (tapToShowKeyboard: false)',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                tapToShowKeyboard: false,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        // IME connection is attached but keyboard is not shown. Type via
+        // hardware keyboard simulation (commit through IME first to
+        // populate _lastSentText).
+        tester.testTextInput.updateEditingValue(
+          _editingValue('hello', selectionOffset: 'hello'.length),
+        );
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), 'hello');
+
+        // Hardware-key backspace should NOT be blocked because the soft
+        // keyboard is not shown — there's no IME to handle the deletion.
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), 'hell');
+
+        focusNode.dispose();
+      },
+    );
+
     testWidgets('keeps ctrl combos working while IME composition is active', (
       tester,
     ) async {

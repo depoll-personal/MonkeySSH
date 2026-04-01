@@ -169,6 +169,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   bool _touchSequenceHadMultiplePointers = false;
   bool _skipNextTouchKeyboardRequest = false;
   bool _sawImeComposition = false;
+  bool _softKeyboardShown = false;
   bool _isProcessingEditingValue = false;
   bool _lastProcessedUserSelectionWasValid = false;
   bool _lastProcessedSelectionWasCollapsed = true;
@@ -364,15 +365,19 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       return KeyEventResult.ignored;
     }
 
-    // When an IME connection is active, block text-modifying key events
+    // When the soft keyboard is shown, block text-modifying key events
     // (backspace/delete). On Android, the soft keyboard can dispatch a key
     // event AND an IME updateEditingValue for the same keystroke. Letting
     // both through double-processes the deletion, desyncing _lastSentText
     // from the terminal and jumbling later IME replacements. The IME path
     // (marker-damage or committed delta) handles backspace/delete reliably
-    // on its own, so we only let these keys through when there is no IME
-    // connection (e.g. hardware-only keyboard with no soft keyboard shown).
-    if (hasInputConnection &&
+    // on its own.
+    //
+    // Gate on _softKeyboardShown rather than hasInputConnection because
+    // the connection can be attached without showing the keyboard (e.g.
+    // tapToShowKeyboard: false), and in that case hardware-key deletions
+    // must still reach the terminal.
+    if (_softKeyboardShown &&
         !hasShortcutModifier &&
         (key == TerminalKey.backspace || key == TerminalKey.delete)) {
       return KeyEventResult.skipRemainingHandlers;
@@ -450,7 +455,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (!_shouldCreateInputConnection) return;
 
     if (hasInputConnection) {
-      if (show) _connection!.show();
+      if (show) {
+        _connection!.show();
+        _softKeyboardShown = true;
+      }
     } else {
       final config = TextInputConfiguration(
         // Keep these explicit because terminal IME behavior is central here.
@@ -467,6 +475,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       );
 
       _connection = TextInput.attach(this, config);
+      _softKeyboardShown = show;
       if (show) _connection!.show();
       _invalidatePendingEditingUpdates();
       _sawImeComposition = false;
@@ -486,6 +495,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (_connection != null && _connection!.attached) {
       _connection!.close();
       _connection = null;
+      _softKeyboardShown = false;
     }
     _invalidatePendingEditingUpdates();
     _sawImeComposition = false;
@@ -1233,6 +1243,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   @override
   void connectionClosed() {
     _connection = null;
+    _softKeyboardShown = false;
     _invalidatePendingEditingUpdates();
     _sawImeComposition = false;
     _lastSentText = '';
