@@ -3917,7 +3917,7 @@ void main() {
     );
 
     testWidgets(
-      'blocks hardware-key backspace when IME is active so suggestion replacement stays correct',
+      'tracks hardware-key backspace so a later IME suggestion replacement stays correct',
       (tester) async {
         final terminalOutput = <String>[];
         final terminal = Terminal(onOutput: terminalOutput.add);
@@ -3948,14 +3948,15 @@ void main() {
         expect(_terminalTextFromEvents(terminalOutput), 'this ');
 
         // Simulate Android: hardware key event backspace arrives before the IME
-        // composing update. With the fix, this key event is BLOCKED (not sent
-        // to terminal) because the IME connection is active.
+        // composing update (composing is still collapsed from the committed
+        // state). The key event sends \x7f to the terminal AND tracking
+        // updates _lastSentText from "this " to "this".
         await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
         await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
         await tester.pump();
 
-        // Terminal output should still be "this " — backspace was blocked.
-        expect(_terminalTextFromEvents(terminalOutput), 'this ');
+        // Terminal now shows "this" (space was deleted).
+        expect(_terminalTextFromEvents(terminalOutput), 'this');
 
         // The IME sends the word in composing mode (ignored as composing).
         tester.testTextInput.updateEditingValue(
@@ -3967,10 +3968,14 @@ void main() {
         );
         await tester.pump();
 
-        // Another hardware-key backspace — also blocked.
+        // Another hardware-key backspace during composing — blocked by the
+        // existing composing guard (all key events are blocked while composing
+        // is active). Terminal still shows "this".
         await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
         await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
         await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), 'this');
 
         // IME sends composing "thi" (ignored).
         tester.testTextInput.updateEditingValue(
@@ -3983,8 +3988,8 @@ void main() {
         await tester.pump();
 
         // User taps "thistle" from suggestion bar → IME commits "thistle ".
-        // Since _lastSentText is still "this " (never desynced), the delta
-        // correctly replaces "this " with "thistle ".
+        // Since tracking kept _lastSentText = "this", the delta correctly
+        // computes: delete 0, append "tle " → terminal shows "thistle ".
         tester.testTextInput.updateEditingValue(
           _editingValue('thistle ', selectionOffset: 'thistle '.length),
         );
@@ -3998,7 +4003,7 @@ void main() {
     );
 
     testWidgets(
-      'blocks hardware-key backspace when IME is active at mid-word cursor',
+      'tracks hardware-key backspace at a mid-word cursor without double-processing the IME update',
       (tester) async {
         final terminalOutput = <String>[];
         final terminal = Terminal(onOutput: terminalOutput.add);
@@ -4035,16 +4040,15 @@ void main() {
 
         terminalOutput.clear();
 
-        // Hardware-key backspace — blocked by the IME guard, not sent to
-        // terminal.
+        // Hardware-key backspace at cursor offset 3 removes the first 'l'.
+        // Tracking: _lastSentText "hello" → "helo", cursor 3 → 2.
         await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
         await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
         await tester.pump();
 
-        // No terminal output from the blocked backspace.
-        expect(terminalOutput, isEmpty);
-
-        // IME sends committed update reflecting the deletion.
+        // IME sends committed update "helo" with cursor at 2.
+        // Since tracking already set _lastSentText = "helo", this is a
+        // same-text no-op — no duplicate backspace sent to terminal.
         tester.testTextInput.updateEditingValue(
           _editingValue('helo', selectionOffset: 'he'.length),
         );
