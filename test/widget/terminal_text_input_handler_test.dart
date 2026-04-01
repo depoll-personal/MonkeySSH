@@ -3916,6 +3916,149 @@ void main() {
       },
     );
 
+    testWidgets(
+      'tracks a hardware-key backspace so a later IME replacement stays correct',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        // Commit "this ".
+        tester.testTextInput.updateEditingValue(
+          _editingValue('this ', selectionOffset: 'this '.length),
+        );
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), 'this ');
+
+        // Simulate Android: hardware key event backspace arrives before the IME
+        // composing update, removing the trailing space.
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
+        await tester.pump();
+
+        // The IME then sends the word back in composing mode (ignored).
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bthis',
+            selection: TextSelection.collapsed(offset: 6),
+            composing: TextRange(start: 2, end: 6),
+          ),
+        );
+        await tester.pump();
+
+        // Another hardware-key backspace removes the 's'.
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
+        await tester.pump();
+
+        // IME sends composing "thi" (ignored).
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bthi',
+            selection: TextSelection.collapsed(offset: 5),
+            composing: TextRange(start: 2, end: 5),
+          ),
+        );
+        await tester.pump();
+
+        // User taps "thistle" from suggestion bar → IME commits "thistle ".
+        tester.testTextInput.updateEditingValue(
+          _editingValue('thistle ', selectionOffset: 'thistle '.length),
+        );
+        await tester.pump();
+
+        // Must produce "thistle ", not "thitle " or any other jumbled result.
+        expect(_terminalTextFromEvents(terminalOutput), 'thistle ');
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'tracks a hardware-key backspace at a mid-word cursor position',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        // Commit "hello".
+        tester.testTextInput.updateEditingValue(
+          _editingValue('hello', selectionOffset: 'hello'.length),
+        );
+        await tester.pump();
+
+        // Move cursor to position 3 (between 'l' and 'l').
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.arrowLeft);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.arrowLeft);
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.arrowLeft);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.arrowLeft);
+        await tester.pump();
+
+        terminalOutput.clear();
+
+        // Hardware-key backspace at cursor offset 3 removes the first 'l'.
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
+        await tester.pump();
+
+        // IME sends committed update reflecting the deletion.
+        tester.testTextInput.updateEditingValue(
+          _editingValue('helo', selectionOffset: 'he'.length),
+        );
+        await tester.pump();
+
+        // Now type 'X' at cursor position 2.
+        tester.testTextInput.updateEditingValue(
+          _editingValue('heXlo', selectionOffset: 'heX'.length),
+        );
+        await tester.pump();
+
+        expect(
+          _terminalStateFromEvents(
+            terminalOutput,
+            initialText: 'hello',
+            initialCursorOffset: 'hel'.length,
+          ),
+          (text: 'heXlo', cursorOffset: 'heX'.length),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
     testWidgets('keeps ctrl combos working while IME composition is active', (
       tester,
     ) async {

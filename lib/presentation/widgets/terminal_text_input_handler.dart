@@ -329,6 +329,17 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
           maxOffset,
         );
         return;
+      case TerminalKey.backspace:
+        if (_lastSentCursorOffset > 0 && _lastSentText.isNotEmpty) {
+          final graphemes = _lastSentText.characters.toList(growable: true);
+          final deleteIndex = _lastSentCursorOffset - 1;
+          if (deleteIndex < graphemes.length) {
+            graphemes.removeAt(deleteIndex);
+            _lastSentText = graphemes.join();
+            _lastSentCursorOffset = deleteIndex;
+          }
+        }
+        return;
       case TerminalKey.arrowUp:
       case TerminalKey.arrowDown:
         if (_lastSentText.isNotEmpty || _lastSentCursorOffset != 0) {
