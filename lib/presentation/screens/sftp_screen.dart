@@ -169,7 +169,7 @@ class _SftpEditorDetailPaneContent extends _SftpDetailPaneContent {
     required this.terminalTheme,
     required this.fontFamily,
     required this.initialFontSize,
-  });
+  }) : savedText = controller.text;
 
   final String fileName;
   final String remotePath;
@@ -177,6 +177,9 @@ class _SftpEditorDetailPaneContent extends _SftpDetailPaneContent {
   final TerminalThemeData? terminalTheme;
   final String fontFamily;
   final double initialFontSize;
+  String savedText;
+
+  bool get hasUnsavedChanges => controller.text != savedText;
 
   @override
   void dispose() {
@@ -687,11 +690,20 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   }
 
   bool _usesMasterDetailLayout(BuildContext context) =>
-      shouldUseIpadLandscapeMasterDetail(
-        platform: Theme.of(context).platform,
+      shouldUseLargeScreenMasterDetail(
         orientation: MediaQuery.of(context).orientation,
         screenSize: MediaQuery.of(context).size,
       );
+
+  _SftpEditorDetailPaneContent? get _detailEditorPaneContent {
+    final detailPaneContent = _detailPaneContent;
+    return detailPaneContent is _SftpEditorDetailPaneContent
+        ? detailPaneContent
+        : null;
+  }
+
+  bool get _hasUnsavedDetailEditorChanges =>
+      _detailEditorPaneContent?.hasUnsavedChanges ?? false;
 
   void _setDetailPaneContent(_SftpDetailPaneContent? nextContent) {
     final previousContent = _detailPaneContent;
@@ -703,8 +715,38 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     }
   }
 
-  void _clearDetailPane() {
+  Future<bool> _confirmDiscardDetailPaneChanges() async {
+    final editorContent = _detailEditorPaneContent;
+    if (editorContent == null || !editorContent.hasUnsavedChanges || !mounted) {
+      return true;
+    }
+    final shouldDiscard = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Discard changes?'),
+        content: Text(
+          'You have unsaved changes in "${editorContent.fileName}". Discard them?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Keep editing'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Discard'),
+          ),
+        ],
+      ),
+    );
+    return shouldDiscard ?? false;
+  }
+
+  Future<void> _clearDetailPane() async {
     if (_detailPaneContent == null || !mounted) {
+      return;
+    }
+    if (!await _confirmDiscardDetailPaneChanges() || !mounted) {
       return;
     }
     setState(() => _setDetailPaneContent(null));
@@ -717,10 +759,17 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
   @override
   Widget build(BuildContext context) => PopScope(
-    canPop: _pathHistory.length <= 1,
-    onPopInvokedWithResult: (didPop, _) {
+    canPop: _pathHistory.length <= 1 && !_hasUnsavedDetailEditorChanges,
+    onPopInvokedWithResult: (didPop, _) async {
       if (!didPop && _pathHistory.length > 1) {
         unawaited(_goBack());
+        return;
+      }
+      if (!didPop && _hasUnsavedDetailEditorChanges) {
+        final navigator = Navigator.of(context);
+        if (await _confirmDiscardDetailPaneChanges() && mounted) {
+          navigator.pop();
+        }
       }
     },
     child: Scaffold(
@@ -781,7 +830,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         fileName: detailPaneContent.fileName,
         bytes: detailPaneContent.bytes,
         isSvg: detailPaneContent.isSvg,
-        onClose: _clearDetailPane,
+        onClose: () => unawaited(_clearDetailPane()),
       );
     }
     if (detailPaneContent is _SftpEditorDetailPaneContent) {
@@ -949,7 +998,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     );
   }
 
-  void _handleFileTap(SftpName file) {
+  Future<void> _handleFileTap(SftpName file) async {
     final useMasterDetailLayout = _usesMasterDetailLayout(context);
     switch (resolveSftpFileTapIntent(
       isDirectory: file.attr.isDirectory,
@@ -957,13 +1006,16 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     )) {
       case SftpFileTapIntent.navigate:
         if (useMasterDetailLayout) {
+          if (!await _confirmDiscardDetailPaneChanges()) {
+            return;
+          }
           setState(() => _setDetailPaneContent(null));
         }
-        unawaited(_navigateTo(_joinRemotePath(_currentPath, file.filename)));
+        await _navigateTo(_joinRemotePath(_currentPath, file.filename));
       case SftpFileTapIntent.preview:
-        unawaited(_previewImageFile(file));
+        await _previewImageFile(file);
       case SftpFileTapIntent.edit:
-        unawaited(_editTextFile(file));
+        await _editTextFile(file);
     }
   }
 
@@ -1350,6 +1402,9 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       }
 
       if (_usesMasterDetailLayout(context)) {
+        if (!await _confirmDiscardDetailPaneChanges() || !mounted) {
+          return;
+        }
         setState(() {
           _highlightCurrentFile(file.filename);
           _setDetailPaneContent(
@@ -1485,6 +1540,14 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         return;
       }
       if (_usesMasterDetailLayout(context)) {
+        if (!await _confirmDiscardDetailPaneChanges()) {
+          controller.dispose();
+          return;
+        }
+        if (!mounted) {
+          controller.dispose();
+          return;
+        }
         setState(() {
           _highlightCurrentFile(file.filename);
           _setDetailPaneContent(
@@ -1563,6 +1626,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       );
       await saveFile.writeBytes(Uint8List.fromList(utf8.encode(updatedText)));
       await _loadDirectory(_currentPath);
+      detailPaneContent.savedText = updatedText;
       if (!mounted) {
         return;
       }

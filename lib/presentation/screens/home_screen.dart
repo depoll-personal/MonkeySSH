@@ -537,8 +537,7 @@ class _HostsPanelState extends ConsumerState<_HostsPanel> {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final hostsAsync = ref.watch(allHostsProvider);
-    final useMasterDetail = shouldUseIpadLandscapeMasterDetail(
-      platform: theme.platform,
+    final useMasterDetail = shouldUseLargeScreenMasterDetail(
       orientation: MediaQuery.of(context).orientation,
       screenSize: MediaQuery.of(context).size,
     );
@@ -584,8 +583,8 @@ class _HostsPanelState extends ConsumerState<_HostsPanel> {
                 : useMasterDetail
                 ? Row(
                     children: [
-                      SizedBox(
-                        width: 380,
+                      Expanded(
+                        flex: 5,
                         child: _buildHostsList(
                           context,
                           ref,
@@ -598,6 +597,7 @@ class _HostsPanelState extends ConsumerState<_HostsPanel> {
                         color: colorScheme.outline.withAlpha(50),
                       ),
                       Expanded(
+                        flex: 7,
                         child: _EmbeddedTerminalDetailPane(
                           target: _selectedTerminalTarget,
                           onDisconnectRequested: () =>
@@ -1265,8 +1265,7 @@ class _ConnectionsPanelState extends ConsumerState<_ConnectionsPanel> {
     final connections = sessionsNotifier.getActiveConnections();
     final hosts = hostsAsync.asData?.value ?? <Host>[];
     final hostLookup = {for (final host in hosts) host.id: host};
-    final useMasterDetail = shouldUseIpadLandscapeMasterDetail(
-      platform: theme.platform,
+    final useMasterDetail = shouldUseLargeScreenMasterDetail(
       orientation: MediaQuery.of(context).orientation,
       screenSize: MediaQuery.of(context).size,
     );
@@ -1312,8 +1311,8 @@ class _ConnectionsPanelState extends ConsumerState<_ConnectionsPanel> {
               : useMasterDetail
               ? Row(
                   children: [
-                    SizedBox(
-                      width: 360,
+                    Expanded(
+                      flex: 4,
                       child: _buildConnectionsList(
                         context,
                         connections,
@@ -1330,6 +1329,7 @@ class _ConnectionsPanelState extends ConsumerState<_ConnectionsPanel> {
                       color: colorScheme.outline.withAlpha(50),
                     ),
                     Expanded(
+                      flex: 7,
                       child: _EmbeddedTerminalDetailPane(
                         target: detailConnection == null
                             ? null
@@ -1522,6 +1522,7 @@ class _EmbeddedTerminalDetailPane extends StatelessWidget {
       hostId: target.hostId,
       connectionId: target.connectionId,
       onDisconnectRequested: onDisconnectRequested,
+      showAppBar: false,
     );
   }
 }

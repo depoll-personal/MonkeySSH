@@ -969,6 +969,7 @@ class TerminalScreen extends ConsumerStatefulWidget {
     required this.hostId,
     this.connectionId,
     this.onDisconnectRequested,
+    this.showAppBar = true,
     super.key,
   });
 
@@ -980,6 +981,9 @@ class TerminalScreen extends ConsumerStatefulWidget {
 
   /// Called after a manual disconnect instead of popping the current route.
   final VoidCallback? onDisconnectRequested;
+
+  /// Whether the terminal should render its full app bar chrome.
+  final bool showAppBar;
 
   @override
   ConsumerState<TerminalScreen> createState() => _TerminalScreenState();
@@ -2164,137 +2168,35 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     final titleSubtitle = titleSubtitleSegments.join(' • ');
     final statusChips = _buildTerminalStatusChips(theme);
+    final appBarActions = _buildTerminalAppBarActions(
+      isMobile: isMobile,
+      systemKeyboardVisible: systemKeyboardVisible,
+      connectionState: connectionState,
+      statusChips: statusChips,
+    );
 
     return Scaffold(
-      appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(_host?.label ?? 'Terminal'),
-            if (titleSubtitle.isNotEmpty)
-              Text(
-                titleSubtitle,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.labelSmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-          ],
-        ),
-        bottom: !_showsTerminalMetadata || statusChips.isEmpty
-            ? null
-            : PreferredSize(
-                preferredSize: const Size.fromHeight(40),
-                child: Container(
-                  alignment: Alignment.centerLeft,
-                  width: double.infinity,
-                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: statusChips
-                          .map(
-                            (chip) => Padding(
-                              padding: const EdgeInsets.only(right: 8),
-                              child: chip,
-                            ),
-                          )
-                          .toList(growable: false),
+      appBar: widget.showAppBar
+          ? AppBar(
+              title: _buildTerminalTitle(theme, titleSubtitle),
+              bottom: !_showsTerminalMetadata || statusChips.isEmpty
+                  ? null
+                  : PreferredSize(
+                      preferredSize: const Size.fromHeight(40),
+                      child: _buildTerminalStatusChipRow(statusChips),
                     ),
-                  ),
-                ),
-              ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.folder_outlined),
-            onPressed:
-                _connectionId == null ||
-                    connectionState != SshConnectionState.connected
-                ? null
-                : _openConnectionFileBrowser,
-            tooltip: 'Browse files',
-          ),
-          if (isMobile)
-            IconButton(
-              icon: Icon(
-                systemKeyboardVisible
-                    ? Icons.keyboard_hide
-                    : Icons.keyboard_alt_outlined,
-              ),
-              onPressed: () => _toggleSystemKeyboard(systemKeyboardVisible),
-              tooltip: systemKeyboardVisible
-                  ? 'Hide system keyboard'
-                  : 'Show system keyboard',
-            ),
-          IconButton(
-            icon: Icon(
-              _showKeyboard ? Icons.space_bar : Icons.keyboard_outlined,
-            ),
-            onPressed: () => setState(() => _showKeyboard = !_showKeyboard),
-            tooltip: _showKeyboard ? 'Hide toolbar' : 'Show toolbar',
-          ),
-          PopupMenuButton<String>(
-            onSelected: _handleMenuAction,
-            itemBuilder: (context) => [
-              const PopupMenuItem(value: 'snippets', child: Text('Snippets')),
-              const PopupMenuItem(
-                value: 'change_theme',
-                child: Text('Change Theme'),
-              ),
-              if (statusChips.isNotEmpty)
-                PopupMenuItem(
-                  value: 'toggle_terminal_info',
-                  child: Text(
-                    _showsTerminalMetadata
-                        ? 'Hide Terminal Info'
-                        : 'Show Terminal Info',
-                  ),
-                ),
-              if (isMobile)
-                CheckedPopupMenuItem(
-                  value: 'toggle_tap_keyboard',
-                  checked: ref.read(tapToShowKeyboardNotifierProvider),
-                  child: const Text('Tap to Show Keyboard'),
-                ),
-              const PopupMenuDivider(),
-              if (!isMobile)
-                PopupMenuItem(
-                  value: 'native_select',
-                  child: Text(
-                    _isNativeSelectionMode
-                        ? 'Exit Native Selection'
-                        : 'Native Selection',
-                  ),
-                ),
-              if (_workingDirectoryPath != null)
-                const PopupMenuItem(
-                  value: 'copy_working_directory',
-                  child: Text('Copy Current Directory'),
-                ),
-              const PopupMenuItem(value: 'copy', child: Text('Copy')),
-              const PopupMenuItem(value: 'paste', child: Text('Paste')),
-              const PopupMenuItem(
-                value: 'paste_image',
-                child: Text('Paste Image'),
-              ),
-              const PopupMenuItem(
-                value: 'paste_file',
-                child: Text('Paste File'),
-              ),
-              const PopupMenuItem(value: 'clear', child: Text('Clear')),
-              const PopupMenuDivider(),
-              const PopupMenuItem(
-                value: 'disconnect',
-                child: Text('Disconnect'),
-              ),
-            ],
-          ),
-        ],
-      ),
+              actions: appBarActions,
+            )
+          : null,
       body: Column(
         children: [
+          if (!widget.showAppBar)
+            _EmbeddedTerminalHeader(
+              title: _host?.label ?? 'Terminal',
+              subtitle: titleSubtitle,
+              actions: appBarActions,
+              statusChips: _showsTerminalMetadata ? statusChips : const [],
+            ),
           Expanded(child: _buildTerminalView(terminalTheme, isMobile)),
           if (_showKeyboard &&
               !showsDisconnectedOverlay &&
@@ -2309,6 +2211,120 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ),
     );
   }
+
+  Widget _buildTerminalTitle(ThemeData theme, String titleSubtitle) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Text(_host?.label ?? 'Terminal'),
+      if (titleSubtitle.isNotEmpty)
+        Text(
+          titleSubtitle,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.labelSmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+    ],
+  );
+
+  Widget _buildTerminalStatusChipRow(List<Widget> statusChips) => Container(
+    alignment: Alignment.centerLeft,
+    width: double.infinity,
+    padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+    child: SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: statusChips
+            .map(
+              (chip) => Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: chip,
+              ),
+            )
+            .toList(growable: false),
+      ),
+    ),
+  );
+
+  List<Widget> _buildTerminalAppBarActions({
+    required bool isMobile,
+    required bool systemKeyboardVisible,
+    required SshConnectionState connectionState,
+    required List<Widget> statusChips,
+  }) => [
+    IconButton(
+      icon: const Icon(Icons.folder_outlined),
+      onPressed:
+          _connectionId == null ||
+              connectionState != SshConnectionState.connected
+          ? null
+          : _openConnectionFileBrowser,
+      tooltip: 'Browse files',
+    ),
+    if (isMobile)
+      IconButton(
+        icon: Icon(
+          systemKeyboardVisible
+              ? Icons.keyboard_hide
+              : Icons.keyboard_alt_outlined,
+        ),
+        onPressed: () => _toggleSystemKeyboard(systemKeyboardVisible),
+        tooltip: systemKeyboardVisible
+            ? 'Hide system keyboard'
+            : 'Show system keyboard',
+      ),
+    IconButton(
+      icon: Icon(_showKeyboard ? Icons.space_bar : Icons.keyboard_outlined),
+      onPressed: () => setState(() => _showKeyboard = !_showKeyboard),
+      tooltip: _showKeyboard ? 'Hide toolbar' : 'Show toolbar',
+    ),
+    PopupMenuButton<String>(
+      onSelected: _handleMenuAction,
+      itemBuilder: (context) => [
+        const PopupMenuItem(value: 'snippets', child: Text('Snippets')),
+        const PopupMenuItem(value: 'change_theme', child: Text('Change Theme')),
+        if (statusChips.isNotEmpty)
+          PopupMenuItem(
+            value: 'toggle_terminal_info',
+            child: Text(
+              _showsTerminalMetadata
+                  ? 'Hide Terminal Info'
+                  : 'Show Terminal Info',
+            ),
+          ),
+        if (isMobile)
+          CheckedPopupMenuItem(
+            value: 'toggle_tap_keyboard',
+            checked: ref.read(tapToShowKeyboardNotifierProvider),
+            child: const Text('Tap to Show Keyboard'),
+          ),
+        const PopupMenuDivider(),
+        if (!isMobile)
+          PopupMenuItem(
+            value: 'native_select',
+            child: Text(
+              _isNativeSelectionMode
+                  ? 'Exit Native Selection'
+                  : 'Native Selection',
+            ),
+          ),
+        if (_workingDirectoryPath != null)
+          const PopupMenuItem(
+            value: 'copy_working_directory',
+            child: Text('Copy Current Directory'),
+          ),
+        const PopupMenuItem(value: 'copy', child: Text('Copy')),
+        const PopupMenuItem(value: 'paste', child: Text('Paste')),
+        const PopupMenuItem(value: 'paste_image', child: Text('Paste Image')),
+        const PopupMenuItem(value: 'paste_file', child: Text('Paste File')),
+        const PopupMenuItem(value: 'clear', child: Text('Clear')),
+        const PopupMenuDivider(),
+        const PopupMenuItem(value: 'disconnect', child: Text('Disconnect')),
+      ],
+    ),
+  ];
 
   /// Toggles the system keyboard visibility on mobile platforms.
   void _toggleSystemKeyboard(bool isVisible) {
@@ -5082,6 +5098,86 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               style: const TextStyle(fontFamily: 'monospace'),
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmbeddedTerminalHeader extends StatelessWidget {
+  const _EmbeddedTerminalHeader({
+    required this.title,
+    required this.subtitle,
+    required this.actions,
+    required this.statusChips,
+  });
+
+  final String title;
+  final String subtitle;
+  final List<Widget> actions;
+  final List<Widget> statusChips;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    return Material(
+      color: colorScheme.surfaceContainerLow,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.titleSmall,
+                      ),
+                      if (subtitle.isNotEmpty)
+                        Text(
+                          subtitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                ...actions,
+              ],
+            ),
+          ),
+          if (statusChips.isNotEmpty)
+            Container(
+              alignment: Alignment.centerLeft,
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: statusChips
+                      .map(
+                        (chip) => Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: chip,
+                        ),
+                      )
+                      .toList(growable: false),
+                ),
+              ),
+            ),
+          Divider(height: 1, color: colorScheme.outlineVariant),
         ],
       ),
     );

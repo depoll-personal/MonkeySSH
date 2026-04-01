@@ -253,7 +253,9 @@ void main() {
           home: buildRemoteTextEditorScreenForTesting(
             fileName: 'notes.txt',
             controller: controller,
-            onCloseRequested: () => closeCount++,
+            onCloseRequested: () async {
+              closeCount++;
+            },
             onSaveRequested: (text) async {
               savedText = text;
             },
@@ -268,11 +270,51 @@ void main() {
       await tester.tap(find.byTooltip('Close editor'));
       await tester.pumpAndSettle();
 
+      expect(find.text('Discard changes?'), findsOneWidget);
+
+      await tester.tap(find.text('Keep editing'));
+      await tester.pumpAndSettle();
+
+      expect(closeCount, 0);
+
+      await tester.tap(find.byTooltip('Close editor'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Discard'));
+      await tester.pumpAndSettle();
+
       await tester.tap(find.text('Save'));
       await tester.pumpAndSettle();
 
       expect(closeCount, 1);
       expect(savedText, 'beta');
+    });
+
+    testWidgets('closes immediately when there are no unsaved changes', (
+      tester,
+    ) async {
+      final controller = TextEditingController(text: 'alpha');
+      var closeCount = 0;
+
+      addTearDown(controller.dispose);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: buildRemoteTextEditorScreenForTesting(
+            fileName: 'notes.txt',
+            controller: controller,
+            onCloseRequested: () async {
+              closeCount++;
+            },
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('Close editor'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Discard changes?'), findsNothing);
+      expect(closeCount, 1);
     });
   });
 }
