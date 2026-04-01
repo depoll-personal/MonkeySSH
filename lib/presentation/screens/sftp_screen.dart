@@ -1518,7 +1518,7 @@ class _RemoteImageViewerScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    backgroundColor: Colors.black,
+    backgroundColor: Theme.of(context).scaffoldBackgroundColor,
     appBar: AppBar(title: Text(fileName)),
     body: InteractiveViewer(
       maxScale: 8,
@@ -1528,7 +1528,7 @@ class _RemoteImageViewerScreen extends StatelessWidget {
           padding: const EdgeInsets.all(16),
           child: isSvg
               ? Container(
-                  color: Colors.white,
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
                   padding: const EdgeInsets.all(16),
                   child: SvgPicture.memory(bytes),
                 )
@@ -1537,9 +1537,9 @@ class _RemoteImageViewerScreen extends StatelessWidget {
                   fit: BoxFit.contain,
                   errorBuilder: (context, error, stackTrace) => Text(
                     'Could not render image preview',
-                    style: Theme.of(
-                      context,
-                    ).textTheme.bodyMedium?.copyWith(color: Colors.white),
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurface,
+                    ),
                   ),
                 ),
         ),

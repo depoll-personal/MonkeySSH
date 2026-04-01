@@ -278,7 +278,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           Container(
             width: 220,
             decoration: BoxDecoration(
-              color: isDark ? const Color(0xFF0F0F14) : Colors.grey.shade50,
+              color: isDark
+                  ? colorScheme.surface
+                  : theme.scaffoldBackgroundColor,
               border: Border(
                 right: BorderSide(color: colorScheme.outline.withAlpha(60)),
               ),
@@ -636,7 +638,7 @@ class _HostRow extends ConsumerWidget {
                           color: isConnected
                               ? colorScheme.primary
                               : isConnectionStarting
-                              ? Colors.orange
+                              ? colorScheme.tertiary
                               : colorScheme.onSurface.withAlpha(40),
                           boxShadow: isConnected && isDark
                               ? [
@@ -690,7 +692,7 @@ class _HostRow extends ConsumerWidget {
                               Icon(
                                 Icons.star_rounded,
                                 size: 14,
-                                color: Colors.amber.shade600,
+                                color: colorScheme.tertiary,
                               ),
                             ],
                           ],
@@ -1456,13 +1458,13 @@ class _KeyRow extends ConsumerWidget {
               Container(
                 padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF00C9FF).withAlpha(isDark ? 25 : 15),
+                  color: colorScheme.primary.withAlpha(isDark ? 25 : 15),
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Icon(
                   _getKeyIcon(),
                   size: 16,
-                  color: const Color(0xFF00C9FF),
+                  color: colorScheme.primary,
                 ),
               ),
               const SizedBox(width: 12),
@@ -1859,7 +1861,7 @@ class _SnippetsPanel extends ConsumerWidget {
                     alignLabelWithHint: true,
                   ),
                   maxLines: 4,
-                  style: const TextStyle(fontFamily: 'monospace', fontSize: 14),
+                  style: FluttyTheme.monoStyle.copyWith(fontSize: 14),
                   validator: (value) {
                     if (value == null || value.isEmpty) {
                       return 'Please enter a command';
