@@ -1529,6 +1529,127 @@ void main() {
     );
 
     testWidgets(
+      'preserves spaces and letters when replacing a word after backspacing from its separator',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('teh ', selectionOffset: 'teh '.length),
+        );
+        await tester.pump();
+
+        terminalOutput.clear();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('te', selectionOffset: 'te'.length),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text:
+                '$_deleteDetectionMarker'
+                'the ',
+            selection: TextSelection(baseOffset: 2, extentOffset: 5),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('the ', selectionOffset: 'the '.length),
+        );
+        await tester.pump();
+
+        expect(
+          _terminalStateFromEvents(
+            terminalOutput,
+            initialText: 'teh ',
+            initialCursorOffset: 'teh '.length,
+          ),
+          (text: 'the ', cursorOffset: 'the '.length),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'trims a leading suggestion space when replacing a word after backspacing from its separator',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('teh ', selectionOffset: 'teh '.length),
+        );
+        await tester.pump();
+
+        terminalOutput.clear();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('te', selectionOffset: 'te'.length),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text:
+                '$_deleteDetectionMarker'
+                ' the ',
+            selection: TextSelection.collapsed(offset: 7),
+          ),
+        );
+        await tester.pump();
+
+        expect(
+          _terminalStateFromEvents(
+            terminalOutput,
+            initialText: 'teh ',
+            initialCursorOffset: 'teh '.length,
+          ),
+          (text: 'the ', cursorOffset: 'the '.length),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
       'keeps the cursor aligned when a replacement selection includes a trailing space before backspace',
       (tester) async {
         final terminalOutput = <String>[];
