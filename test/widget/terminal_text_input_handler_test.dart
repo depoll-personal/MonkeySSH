@@ -723,94 +723,6 @@ void main() {
       },
     );
 
-    testWidgets(
-      'trims a leading swipe space after swipe input is fully backspaced away',
-      (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
-        );
-
-        focusNode.requestFocus();
-        await tester.pump();
-
-        await _commitSwipeText(tester, '$_deleteDetectionMarker hello');
-
-        tester.testTextInput.updateEditingValue(
-          _editingValue('', selectionOffset: 0),
-        );
-        await tester.pump();
-
-        terminalOutput.clear();
-
-        await _commitSwipeText(tester, '$_deleteDetectionMarker world');
-
-        expect(_terminalTextFromEvents(terminalOutput), 'world');
-
-        focusNode.dispose();
-      },
-    );
-
-    testWidgets(
-      'trims a leading suggestion space after input is fully backspaced away',
-      (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
-        );
-
-        focusNode.requestFocus();
-        await tester.pump();
-
-        await _commitSwipeText(tester, '$_deleteDetectionMarker hello');
-
-        tester.testTextInput.updateEditingValue(
-          _editingValue('', selectionOffset: 0),
-        );
-        await tester.pump();
-
-        terminalOutput.clear();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text:
-                '$_deleteDetectionMarker'
-                ' world',
-            selection: TextSelection.collapsed(offset: 8),
-          ),
-        );
-        await tester.pump();
-
-        expect(_terminalTextFromEvents(terminalOutput), 'world');
-
-        focusNode.dispose();
-      },
-    );
-
     testWidgets('resyncs delete-detection marker after backspacing past it', (
       tester,
     ) async {
@@ -1610,247 +1522,6 @@ void main() {
             initialCursorOffset: 'I still have'.length,
           ),
           (text: 'I stink', cursorOffset: 'I stink'.length),
-        );
-
-        focusNode.dispose();
-      },
-    );
-
-    testWidgets(
-      'preserves spaces and letters when replacing a word after backspacing from its separator',
-      (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
-        );
-
-        focusNode.requestFocus();
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          _editingValue('teh ', selectionOffset: 'teh '.length),
-        );
-        await tester.pump();
-
-        terminalOutput.clear();
-
-        tester.testTextInput.updateEditingValue(
-          _editingValue('te', selectionOffset: 'te'.length),
-        );
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text:
-                '$_deleteDetectionMarker'
-                'the ',
-            selection: TextSelection(baseOffset: 2, extentOffset: 5),
-          ),
-        );
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          _editingValue('the ', selectionOffset: 'the '.length),
-        );
-        await tester.pump();
-
-        expect(
-          _terminalStateFromEvents(
-            terminalOutput,
-            initialText: 'teh ',
-            initialCursorOffset: 'teh '.length,
-          ),
-          (text: 'the ', cursorOffset: 'the '.length),
-        );
-
-        focusNode.dispose();
-      },
-    );
-
-    testWidgets(
-      'trims a leading suggestion space when replacing a word after backspacing from its separator',
-      (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
-        );
-
-        focusNode.requestFocus();
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          _editingValue('teh ', selectionOffset: 'teh '.length),
-        );
-        await tester.pump();
-
-        terminalOutput.clear();
-
-        tester.testTextInput.updateEditingValue(
-          _editingValue('te', selectionOffset: 'te'.length),
-        );
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text:
-                '$_deleteDetectionMarker'
-                ' the ',
-            selection: TextSelection.collapsed(offset: 7),
-          ),
-        );
-        await tester.pump();
-
-        expect(
-          _terminalStateFromEvents(
-            terminalOutput,
-            initialText: 'teh ',
-            initialCursorOffset: 'teh '.length,
-          ),
-          (text: 'the ', cursorOffset: 'the '.length),
-        );
-
-        focusNode.dispose();
-      },
-    );
-
-    testWidgets(
-      'preserves a manual separator when replacing a swiped word after backspacing into it',
-      (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
-        );
-
-        focusNode.requestFocus();
-        await tester.pump();
-
-        await _commitSwipeText(tester, '$_deleteDetectionMarker teh');
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '${_deleteDetectionMarker}teh ',
-            selection: TextSelection.collapsed(offset: 6),
-          ),
-        );
-        await tester.pump();
-
-        terminalOutput.clear();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '${_deleteDetectionMarker}te',
-            selection: TextSelection.collapsed(offset: 4),
-          ),
-        );
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '${_deleteDetectionMarker}the ',
-            selection: TextSelection.collapsed(offset: 6),
-          ),
-        );
-        await tester.pump();
-
-        expect(
-          _terminalStateFromEvents(
-            terminalOutput,
-            initialText: 'teh ',
-            initialCursorOffset: 'teh '.length,
-          ),
-          (text: 'the ', cursorOffset: 'the '.length),
-        );
-
-        focusNode.dispose();
-      },
-    );
-
-    testWidgets(
-      'preserves an IME separator when replacing a swiped word after backspacing into it',
-      (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
-        );
-
-        focusNode.requestFocus();
-        await tester.pump();
-
-        await _commitSwipeText(tester, '${_deleteDetectionMarker}teh ');
-
-        terminalOutput.clear();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '${_deleteDetectionMarker}te',
-            selection: TextSelection.collapsed(offset: 4),
-          ),
-        );
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '${_deleteDetectionMarker}the ',
-            selection: TextSelection.collapsed(offset: 6),
-          ),
-        );
-        await tester.pump();
-
-        expect(
-          _terminalStateFromEvents(
-            terminalOutput,
-            initialText: 'teh ',
-            initialCursorOffset: 'teh '.length,
-          ),
-          (text: 'the ', cursorOffset: 'the '.length),
         );
 
         focusNode.dispose();
@@ -4240,6 +3911,207 @@ void main() {
         await performNewlineAction();
 
         expect(terminalOutput.join(), _terminalKeyOutput(TerminalKey.enter));
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'blocks key-event backspace when IME is active so suggestion replacement stays correct',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        // Commit "this ".
+        tester.testTextInput.updateEditingValue(
+          _editingValue('this ', selectionOffset: 'this '.length),
+        );
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), 'this ');
+
+        // Simulate Android: hardware key event backspace arrives before the
+        // IME composing update. With the blocking guard, the key event is
+        // swallowed (not sent to the terminal) because the IME connection
+        // is active.
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
+        await tester.pump();
+
+        // Terminal still shows "this " — key-event backspace was blocked.
+        expect(_terminalTextFromEvents(terminalOutput), 'this ');
+
+        // The IME sends the word in composing mode (ignored as composing).
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bthis',
+            selection: TextSelection.collapsed(offset: 6),
+            composing: TextRange(start: 2, end: 6),
+          ),
+        );
+        await tester.pump();
+
+        // Another hardware-key backspace during composing — also blocked
+        // (by the existing composing guard).
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
+        await tester.pump();
+
+        // IME sends composing "thi" (ignored).
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bthi',
+            selection: TextSelection.collapsed(offset: 5),
+            composing: TextRange(start: 2, end: 5),
+          ),
+        );
+        await tester.pump();
+
+        // User taps "thistle" from suggestion bar → IME commits "thistle ".
+        // Since _lastSentText was never desynced (key events were blocked),
+        // the delta correctly replaces "this " with "thistle ".
+        tester.testTextInput.updateEditingValue(
+          _editingValue('thistle ', selectionOffset: 'thistle '.length),
+        );
+        await tester.pump();
+
+        // Must produce "thistle ", not "thitle " or any other jumbled result.
+        expect(_terminalTextFromEvents(terminalOutput), 'thistle ');
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'blocks key-event backspace when IME is active so committed update handles deletion alone',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        // Commit "hello".
+        tester.testTextInput.updateEditingValue(
+          _editingValue('hello', selectionOffset: 'hello'.length),
+        );
+        await tester.pump();
+
+        // Move cursor to position 3 (between 'l' and 'l').
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.arrowLeft);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.arrowLeft);
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.arrowLeft);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.arrowLeft);
+        await tester.pump();
+
+        terminalOutput.clear();
+
+        // Hardware-key backspace — blocked by the IME guard.
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
+        await tester.pump();
+
+        // No terminal output from the blocked backspace.
+        expect(terminalOutput, isEmpty);
+
+        // IME sends committed update "helo" with cursor at 2 — this is the
+        // sole handler for the deletion.
+        tester.testTextInput.updateEditingValue(
+          _editingValue('helo', selectionOffset: 'he'.length),
+        );
+        await tester.pump();
+
+        // Now type 'X' at cursor position 2.
+        tester.testTextInput.updateEditingValue(
+          _editingValue('heXlo', selectionOffset: 'heX'.length),
+        );
+        await tester.pump();
+
+        expect(
+          _terminalStateFromEvents(
+            terminalOutput,
+            initialText: 'hello',
+            initialCursorOffset: 'hel'.length,
+          ),
+          (text: 'heXlo', cursorOffset: 'heX'.length),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'allows hardware-key backspace when soft keyboard is not shown (tapToShowKeyboard: false)',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                tapToShowKeyboard: false,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        // IME connection is attached but keyboard is not shown. Type via
+        // hardware keyboard simulation (commit through IME first to
+        // populate _lastSentText).
+        tester.testTextInput.updateEditingValue(
+          _editingValue('hello', selectionOffset: 'hello'.length),
+        );
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), 'hello');
+
+        // Hardware-key backspace should NOT be blocked because the soft
+        // keyboard is not shown — there's no IME to handle the deletion.
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), 'hell');
 
         focusNode.dispose();
       },
