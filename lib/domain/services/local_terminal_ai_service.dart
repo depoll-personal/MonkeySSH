@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -161,13 +163,14 @@ class LocalTerminalAiService {
 
     if (settings.preferNativeRuntime) {
       throw LocalTerminalAiConfigurationException(
-        '${runtimeInfo.statusMessage} Select a local `.task` or `.litertlm` '
-        'model file in Settings to use the fallback runtime.',
+        '${runtimeInfo.statusMessage} Select a local '
+        '${localTerminalAiSupportedModelFileLabel()} in Settings to use the '
+        'fallback runtime.',
       );
     }
 
-    throw const LocalTerminalAiConfigurationException(
-      'Select a local `.task` or `.litertlm` model file in Settings '
+    throw LocalTerminalAiConfigurationException(
+      'Select a local ${localTerminalAiSupportedModelFileLabel()} in Settings '
       'before using the fallback runtime.',
     );
   }
@@ -305,23 +308,27 @@ abstract class LocalTerminalAiFallbackRuntime {
 class FlutterGemmaLocalTerminalAiFallbackRuntime
     implements LocalTerminalAiFallbackRuntime {
   String? _activeSignature;
+  Future<void>? _initializationFuture;
+  Future<void> _inferenceChain = Future<void>.value();
 
   @override
   Future<String> generateText({
     required LocalTerminalAiSettings settings,
     required String prompt,
     required int maxTokens,
-  }) async {
+  }) => _serializeInference(() async {
+    await _ensureInitialized();
+
     final fileType = settings.inferredFileType;
     final modelPath = settings.modelPath;
     if (modelPath == null || modelPath.trim().isEmpty) {
-      throw const LocalTerminalAiConfigurationException(
-        'Select a local `.task` or `.litertlm` model file in Settings.',
+      throw LocalTerminalAiConfigurationException(
+        'Select a local ${localTerminalAiSupportedModelFileLabel()} in Settings.',
       );
     }
     if (fileType == null) {
-      throw const LocalTerminalAiConfigurationException(
-        'Unsupported model file. Use a `.task` file on mobile or `.litertlm` on desktop.',
+      throw LocalTerminalAiConfigurationException(
+        'Unsupported model file for this platform. Use a ${localTerminalAiSupportedModelFileLabel()}.',
       );
     }
 
@@ -350,5 +357,21 @@ class FlutterGemmaLocalTerminalAiFallbackRuntime
     } finally {
       await model.close();
     }
+  });
+
+  Future<void> _ensureInitialized() =>
+      _initializationFuture ??= FlutterGemma.initialize();
+
+  Future<T> _serializeInference<T>(Future<T> Function() operation) {
+    final completer = Completer<T>();
+    final next = _inferenceChain.catchError((Object _) {}).then((_) async {
+      try {
+        completer.complete(await operation());
+      } catch (error, stackTrace) {
+        completer.completeError(error, stackTrace);
+      }
+    });
+    _inferenceChain = next;
+    return completer.future;
   }
 }

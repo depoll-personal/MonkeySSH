@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as path;
@@ -16,7 +19,7 @@ const supportedLocalTerminalAiModelTypes = <ModelType>[
 /// Human-readable label for a [ModelType] used by the terminal AI assistant.
 String localTerminalAiModelTypeLabel(ModelType modelType) =>
     switch (modelType) {
-      ModelType.gemmaIt => 'Gemma IT',
+      ModelType.gemmaIt => 'Gemma',
       ModelType.functionGemma => 'FunctionGemma',
       ModelType.qwen => 'Qwen',
       ModelType.deepSeek => 'DeepSeek',
@@ -24,6 +27,40 @@ String localTerminalAiModelTypeLabel(ModelType modelType) =>
       ModelType.llama => 'Llama',
       ModelType.hammer => 'Hammer',
     };
+
+/// Returns the supported fallback model file label for the current platform.
+String localTerminalAiSupportedModelFileLabel() {
+  if (kIsWeb) {
+    return '`.task` or `.litertlm` file';
+  }
+
+  return switch (defaultTargetPlatform) {
+    TargetPlatform.iOS => '`.task` file',
+    TargetPlatform.android => '`.task` or `.litertlm` file',
+    TargetPlatform.macOS ||
+    TargetPlatform.windows ||
+    TargetPlatform.linux => '`.litertlm` file',
+    TargetPlatform.fuchsia => 'compatible model file',
+  };
+}
+
+/// Returns setup guidance for fallback model files on the current platform.
+String localTerminalAiSupportedModelFileHelpText() {
+  if (kIsWeb) {
+    return 'Use a web-compatible `.task` or `.litertlm` file. Commands are never run automatically.';
+  }
+
+  return switch (defaultTargetPlatform) {
+    TargetPlatform.iOS =>
+      'Use `.task` on iOS. Commands are never run automatically.',
+    TargetPlatform.android =>
+      'Use `.task` or `.litertlm` on Android. Commands are never run automatically.',
+    TargetPlatform.macOS || TargetPlatform.windows || TargetPlatform.linux =>
+      'Use `.litertlm` on macOS, Windows, or Linux. Commands are never run automatically.',
+    TargetPlatform.fuchsia =>
+      'Use a compatible local model file for this platform. Commands are never run automatically.',
+  };
+}
 
 /// Persisted settings for the experimental on-device terminal AI assistant.
 class LocalTerminalAiSettings {
@@ -53,7 +90,7 @@ class LocalTerminalAiSettings {
   /// Whether the configured model file extension is supported.
   bool get hasSupportedModelFileType => inferredFileType != null;
 
-  /// Whether the assistant can be used immediately.
+  /// Whether the fallback assistant model can be used immediately.
   bool get isReady => enabled && hasConfiguredFallbackModel;
 
   /// Whether a fallback model file is fully configured.
@@ -72,7 +109,8 @@ class LocalTerminalAiSettings {
     }
 
     return switch (path.extension(currentPath).toLowerCase()) {
-      '.task' || '.litertlm' => ModelFileType.task,
+      '.task' when _supportsTaskFallbackModels() => ModelFileType.task,
+      '.litertlm' when _supportsLiteRtLmFallbackModels() => ModelFileType.task,
       _ => null,
     };
   }
@@ -112,8 +150,9 @@ class LocalTerminalAiSettingsNotifier
   @override
   LocalTerminalAiSettings build() {
     _settings = ref.watch(settingsServiceProvider);
+    _disposed = false;
     ref.onDispose(() => _disposed = true);
-    Future<void>.microtask(_init);
+    unawaited(Future<void>.microtask(_init));
     return const LocalTerminalAiSettings(
       enabled: false,
       modelType: ModelType.gemmaIt,
@@ -195,5 +234,33 @@ class LocalTerminalAiSettingsNotifier
     'llama' => ModelType.llama,
     'hammer' => ModelType.hammer,
     _ => ModelType.gemmaIt,
+  };
+}
+
+bool _supportsTaskFallbackModels() {
+  if (kIsWeb) {
+    return true;
+  }
+
+  return switch (defaultTargetPlatform) {
+    TargetPlatform.iOS || TargetPlatform.android => true,
+    TargetPlatform.macOS ||
+    TargetPlatform.windows ||
+    TargetPlatform.linux ||
+    TargetPlatform.fuchsia => false,
+  };
+}
+
+bool _supportsLiteRtLmFallbackModels() {
+  if (kIsWeb) {
+    return true;
+  }
+
+  return switch (defaultTargetPlatform) {
+    TargetPlatform.android ||
+    TargetPlatform.macOS ||
+    TargetPlatform.windows ||
+    TargetPlatform.linux => true,
+    TargetPlatform.iOS || TargetPlatform.fuchsia => false,
   };
 }

@@ -144,7 +144,7 @@ void main() {
             isA<LocalTerminalAiConfigurationException>().having(
               (error) => error.message,
               'message',
-              contains('Select a local `.task` or `.litertlm` model file'),
+              contains('Select a local `.task` or `.litertlm` file'),
             ),
           ),
         );

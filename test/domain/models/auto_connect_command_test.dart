@@ -128,6 +128,25 @@ void main() {
       );
     });
 
+    test(
+      'marks AI-generated commands for review and preserves shell risk signals',
+      () {
+        final review = assessAiGeneratedCommandInsertion(
+          'cat secrets.txt | tee backup.txt',
+        );
+
+        expect(review.requiresReview, isTrue);
+        expect(
+          review.reasons,
+          contains(TerminalCommandReviewReason.aiGenerated),
+        );
+        expect(
+          review.reasons,
+          contains(TerminalCommandReviewReason.shellChaining),
+        );
+      },
+    );
+
     test('flags standalone ampersands as shell chaining', () {
       final snippetReview = assessSnippetCommandInsertion(
         'echo ready & echo done',

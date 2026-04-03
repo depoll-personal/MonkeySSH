@@ -6,6 +6,14 @@ import 'package:monkeyssh/presentation/widgets/keyboard_toolbar.dart';
 import 'package:xterm/xterm.dart';
 
 void main() {
+  test('resolveTerminalTabInput returns plain tab by default', () {
+    expect(resolveTerminalTabInput(shiftActive: false), '\t');
+  });
+
+  test('resolveTerminalTabInput returns reverse-tab when shift is active', () {
+    expect(resolveTerminalTabInput(shiftActive: true), '\x1b[Z');
+  });
+
   group('KeyboardToolbar', () {
     late Terminal terminal;
 
@@ -57,6 +65,39 @@ void main() {
       await tester.tap(ctrlFinder);
       await tester.pumpAndSettle();
     });
+
+    testWidgets(
+      'controller preserves Ctrl state across toolbar rebuilds for system keyboard input',
+      (tester) async {
+        final controller = KeyboardToolbarController();
+        addTearDown(controller.dispose);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: KeyboardToolbar(terminal: terminal, controller: controller),
+            ),
+          ),
+        );
+
+        await tester.tap(find.text('Ctrl'));
+        await tester.pump();
+
+        expect(controller.isCtrlActive, isTrue);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: KeyboardToolbar(terminal: terminal, controller: controller),
+            ),
+          ),
+        );
+        await tester.pump();
+
+        expect(controller.applySystemKeyboardModifiers('b'), '\u0002');
+        expect(controller.isCtrlActive, isFalse);
+      },
+    );
 
     testWidgets('calls onKeyPressed callback', (tester) async {
       var callCount = 0;
@@ -116,6 +157,23 @@ void main() {
       expect(callCount, 1);
       // keyInput(TerminalKey.enter) produces '\r'
       expect(output, contains('\r'));
+    });
+
+    testWidgets('assistant button exposes an accessibility label', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: KeyboardToolbar(
+              terminal: terminal,
+              onAssistantPressed: () {},
+            ),
+          ),
+        ),
+      );
+
+      expect(find.bySemanticsLabel('AI assistant'), findsOneWidget);
     });
 
     testWidgets('Tab ignores the system keyboard shift state', (tester) async {

@@ -23,6 +23,7 @@ class MonkeyTerminalGestureHandler extends StatefulWidget {
     this.onTapUp,
     this.onSingleTapUp,
     this.onTapDown,
+    this.onDoubleTapDown,
     this.onSecondaryTapDown,
     this.onSecondaryTapUp,
     this.onTertiaryTapDown,
@@ -46,6 +47,8 @@ class MonkeyTerminalGestureHandler extends StatefulWidget {
   final GestureTapUpCallback? onSingleTapUp;
 
   final GestureTapDownCallback? onTapDown;
+
+  final GestureTapDownCallback? onDoubleTapDown;
 
   final GestureTapDownCallback? onSecondaryTapDown;
 
@@ -95,6 +98,7 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
       onSingleTapUp: onSingleTapUp,
       onTapDown: onTapDown,
       onTapCancel: _clearPendingLinkTap,
+      shouldBypassDoubleTap: () => _pendingLinkTap != null,
       onSecondaryTapDown: onSecondaryTapDown,
       onSecondaryTapUp: onSecondaryTapUp,
       onTertiaryTapDown: onTertiaryTapDown,
@@ -214,6 +218,11 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
 
   void onDoubleTapDown(TapDownDetails details) {
     _pendingLinkTap = null;
+    final onDoubleTapDown = widget.onDoubleTapDown;
+    if (onDoubleTapDown != null) {
+      onDoubleTapDown(details);
+      return;
+    }
     renderTerminal.selectWord(details.localPosition);
   }
 

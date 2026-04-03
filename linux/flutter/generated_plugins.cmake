@@ -5,6 +5,7 @@
 list(APPEND FLUTTER_PLUGIN_LIST
   flutter_gemma
   flutter_secure_storage_linux
+  pasteboard
   url_launcher_linux
 )
 

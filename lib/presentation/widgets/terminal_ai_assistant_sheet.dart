@@ -357,10 +357,13 @@ class _AssistantStatusCard extends StatelessWidget {
         if (settings.hasConfiguredFallbackModel) {
           return 'Using ${localTerminalAiModelTypeLabel(settings.modelType)} with ${settings.modelFileName} as the local fallback model.';
         }
-        if (settings.preferNativeRuntime) {
-          return '${info.statusMessage} Add a local `.task` or `.litertlm` model to use the fallback runtime.';
+        if (settings.modelPath != null) {
+          return '${settings.modelFileName} is not supported on this platform. Add a local ${localTerminalAiSupportedModelFileLabel()} to use the fallback runtime.';
         }
-        return 'Choose a local `.task` or `.litertlm` model in Settings.';
+        if (settings.preferNativeRuntime) {
+          return '${info.statusMessage} Add a local ${localTerminalAiSupportedModelFileLabel()} to use the fallback runtime.';
+        }
+        return 'Choose a local ${localTerminalAiSupportedModelFileLabel()} in Settings.';
       },
       loading: () {
         if (!settings.enabled) {
@@ -369,11 +372,17 @@ class _AssistantStatusCard extends StatelessWidget {
         if (settings.hasConfiguredFallbackModel) {
           return 'Checking the built-in runtime. ${localTerminalAiModelTypeLabel(settings.modelType)} is configured as fallback.';
         }
+        if (settings.modelPath != null) {
+          return '${settings.modelFileName} is selected, but this platform needs a local ${localTerminalAiSupportedModelFileLabel()}.';
+        }
         return 'Checking whether this device exposes a built-in on-device model...';
       },
       error: (error, _) {
         if (settings.hasConfiguredFallbackModel) {
           return 'Native runtime check failed. ${localTerminalAiModelTypeLabel(settings.modelType)} remains available as fallback.';
+        }
+        if (settings.modelPath != null) {
+          return '${settings.modelFileName} is not supported on this platform. Add a local ${localTerminalAiSupportedModelFileLabel()} to use the fallback runtime.';
         }
         return error.toString();
       },

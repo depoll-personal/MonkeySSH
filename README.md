@@ -70,9 +70,10 @@ MonkeySSH can optionally use an on-device model inside the terminal screen to su
   - Apple `FoundationModels` on supported Apple Intelligence devices
   - Android AI Core / Gemini Nano on supported Android devices
 - Optionally configure a fallback local model file
-  - Use `.task` on iOS/Android
+  - Use `.task` on iOS
+  - Use `.task` or `.litertlm` on Android
   - Use `.litertlm` on macOS/Windows/Linux
-- Pick the matching fallback model family (for example `Gemma IT`, `FunctionGemma`, `Qwen`, or `DeepSeek`)
+- Pick the matching fallback model family (for example `Gemma` for Gemma 3 or Gemma 4, `FunctionGemma`, `Qwen`, or `DeepSeek`)
 
 The assistant runs locally and only inserts commands after an explicit review step. If the built-in system model is unavailable on a device, MonkeySSH falls back to the configured local model file.
 
