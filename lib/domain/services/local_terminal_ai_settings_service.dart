@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'local_terminal_ai_managed_model_service.dart';
+import 'local_terminal_ai_platform_service.dart';
 import 'settings_service.dart';
 
 /// Persisted settings for the experimental on-device terminal AI assistant.
@@ -49,17 +50,43 @@ class LocalTerminalAiSettingsNotifier
     }
 
     state = LocalTerminalAiSettings(enabled: enabled);
-    unawaited(
-      ref.read(localTerminalAiManagedModelProvider.notifier).sync(state),
-    );
+    unawaited(_syncRuntimeTargets());
   }
 
   /// Enables or disables the assistant.
   Future<void> setEnabled({required bool enabled}) async {
     await _settings.setBool(SettingKeys.localTerminalAiEnabled, value: enabled);
     state = state.copyWith(enabled: enabled);
+    unawaited(_syncRuntimeTargets());
+  }
+
+  Future<void> _syncRuntimeTargets() async {
+    final platformRuntime = ref.read(localTerminalAiPlatformServiceProvider);
+    final runtimeInfo = await platformRuntime.getRuntimeInfo();
+    if (_disposed) {
+      return;
+    }
     unawaited(
-      ref.read(localTerminalAiManagedModelProvider.notifier).sync(state),
+      ref
+          .read(localTerminalAiManagedModelProvider.notifier)
+          .sync(state, runtimeInfo: runtimeInfo),
     );
+    if (state.enabled && runtimeInfo.supportedPlatform) {
+      unawaited(_prepareNativeRuntime(platformRuntime));
+    }
+  }
+
+  Future<void> _prepareNativeRuntime(
+    LocalTerminalAiPlatformService platformRuntime,
+  ) async {
+    try {
+      await platformRuntime.prepareRuntime();
+    } on LocalTerminalAiPlatformException {
+      // The refreshed runtime status provider surfaces the latest native state.
+    } finally {
+      if (!_disposed) {
+        ref.invalidate(localTerminalAiRuntimeInfoProvider);
+      }
+    }
   }
 }

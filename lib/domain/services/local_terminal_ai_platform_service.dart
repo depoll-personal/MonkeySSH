@@ -99,6 +99,9 @@ class LocalTerminalAiRuntimeInfo {
   /// Whether the native runtime can be used for inference immediately.
   bool get canUseNativeRuntime => supportedPlatform && available;
 
+  /// Whether the native runtime should be tried before managed fallback.
+  bool get shouldAttemptNativeRuntime => supportedPlatform;
+
   /// Human-readable provider label.
   String get providerLabel => localTerminalAiPlatformProviderLabel(provider);
 }
@@ -146,6 +149,23 @@ class LocalTerminalAiPlatformService {
     } on MissingPluginException {
       return const LocalTerminalAiRuntimeInfo.unsupported(
         statusMessage: 'Native runtime bridge is not available in this build.',
+      );
+    }
+  }
+
+  /// Starts preparing the native on-device runtime when the platform supports it.
+  Future<void> prepareRuntime() async {
+    if (!_supportsPlatform) {
+      return;
+    }
+
+    try {
+      await _channel.invokeMethod<void>('prepareRuntime');
+    } on PlatformException catch (error) {
+      throw LocalTerminalAiPlatformException(error.message ?? error.code);
+    } on MissingPluginException {
+      throw const LocalTerminalAiPlatformException(
+        'Native runtime bridge is not available in this build.',
       );
     }
   }

@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'local_terminal_ai_platform_service.dart';
 import 'local_terminal_ai_settings_service.dart';
 
 const _gemma4E2BLiteRtLmUrl =
@@ -34,6 +35,7 @@ class LocalTerminalAiManagedModelSpec {
     required this.url,
     required this.fileType,
     required this.fileName,
+    this.preferredBackend,
     this.foregroundDownload,
   });
 
@@ -52,11 +54,15 @@ class LocalTerminalAiManagedModelSpec {
   /// Artifact file name.
   final String fileName;
 
+  /// Preferred inference backend for this managed model, if needed.
+  final PreferredBackend? preferredBackend;
+
   /// Whether Android should force foreground download mode.
   final bool? foregroundDownload;
 
   /// Stable runtime signature for this managed model.
-  String get signature => '$modelId:${fileType.name}:$fileName';
+  String get signature =>
+      '$modelId:${fileType.name}:$fileName:${preferredBackend?.name ?? 'default'}';
 }
 
 /// Current state of the managed Gemma 4 fallback download.
@@ -110,7 +116,10 @@ class LocalTerminalAiManagedModelState {
 /// Shared coordinator for the managed Gemma 4 fallback download.
 abstract class LocalTerminalAiManagedModelCoordinator {
   /// Starts or cancels background synchronization for the current settings.
-  Future<void> sync(LocalTerminalAiSettings settings);
+  Future<void> sync(
+    LocalTerminalAiSettings settings, {
+    LocalTerminalAiRuntimeInfo? runtimeInfo,
+  });
 
   /// Ensures the managed fallback is ready and returns its spec when applicable.
   Future<LocalTerminalAiManagedModelSpec?> ensureReadyFor(
@@ -147,12 +156,29 @@ class LocalTerminalAiManagedModelController
   }
 
   @override
-  Future<void> sync(LocalTerminalAiSettings settings) async {
+  Future<void> sync(
+    LocalTerminalAiSettings settings, {
+    LocalTerminalAiRuntimeInfo? runtimeInfo,
+  }) async {
     final spec = localTerminalAiManagedGemma4SpecForSettings(settings);
     if (spec == null) {
       _activeSignature = null;
       _cancelActiveDownload();
       if (!_disposed) {
+        state = const LocalTerminalAiManagedModelState.idle();
+      }
+      return;
+    }
+
+    final effectiveRuntimeInfo =
+        runtimeInfo ??
+        await ref.read(localTerminalAiPlatformServiceProvider).getRuntimeInfo();
+    if (!shouldAutoSyncManagedGemma4(
+      settings: settings,
+      runtimeInfo: effectiveRuntimeInfo,
+    )) {
+      _cancelActiveDownload();
+      if (!_disposed && !state.isReady) {
         state = const LocalTerminalAiManagedModelState.idle();
       }
       return;
@@ -299,6 +325,14 @@ class LocalTerminalAiManagedModelController
 bool shouldUseManagedGemma4Fallback(LocalTerminalAiSettings settings) =>
     localTerminalAiManagedGemma4SpecForSettings(settings) != null;
 
+/// Whether managed Gemma 4 should start downloading in the background now.
+bool shouldAutoSyncManagedGemma4({
+  required LocalTerminalAiSettings settings,
+  LocalTerminalAiRuntimeInfo? runtimeInfo,
+}) =>
+    localTerminalAiManagedGemma4SpecForSettings(settings) != null &&
+    !(runtimeInfo?.supportedPlatform ?? false);
+
 /// Returns the managed Gemma 4 artifact for the current platform and settings.
 LocalTerminalAiManagedModelSpec? localTerminalAiManagedGemma4SpecForSettings(
   LocalTerminalAiSettings settings,
@@ -323,6 +357,7 @@ LocalTerminalAiManagedModelSpec? localTerminalAiManagedGemma4Spec() {
       url: _gemma4E2BLiteRtLmUrl,
       fileType: ModelFileType.task,
       fileName: 'gemma-4-E2B-it.litertlm',
+      preferredBackend: PreferredBackend.cpu,
       foregroundDownload: true,
     ),
     TargetPlatform.iOS => const LocalTerminalAiManagedModelSpec(

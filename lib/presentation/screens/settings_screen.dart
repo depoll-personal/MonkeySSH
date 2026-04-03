@@ -786,7 +786,7 @@ class _OnDeviceAiSection extends ConsumerWidget {
           leading: const Icon(Icons.auto_fix_high_outlined),
           title: const Text('Runtime status'),
           subtitle: Text(
-            '$nativeStatusText If no native model is ready, MonkeySSH downloads managed Gemma 4 automatically.',
+            '$nativeStatusText MonkeySSH prepares the built-in runtime first, then falls back to managed Gemma 4 only if native setup stays unavailable.',
           ),
         ),
         ListTile(
@@ -797,6 +797,7 @@ class _OnDeviceAiSection extends ConsumerWidget {
               settings: settings,
               managedModel: managedModel,
               managedSpec: managedSpec,
+              runtimeInfo: runtimeInfo,
             ),
           ),
           onTap:
@@ -816,6 +817,7 @@ class _OnDeviceAiSection extends ConsumerWidget {
             settings: settings,
             managedModel: managedModel,
             managedSpec: managedSpec,
+            runtimeInfo: runtimeInfo,
             onRetry: managedSpec == null
                 ? null
                 : () {
@@ -833,6 +835,7 @@ class _OnDeviceAiSection extends ConsumerWidget {
             _fallbackModelHelpText(
               settings: settings,
               managedSpec: managedSpec,
+              runtimeInfo: runtimeInfo,
             ),
             style: Theme.of(context).textTheme.bodySmall,
           ),
@@ -845,12 +848,19 @@ class _OnDeviceAiSection extends ConsumerWidget {
     required LocalTerminalAiSettings settings,
     required LocalTerminalAiManagedModelState managedModel,
     required LocalTerminalAiManagedModelSpec? managedSpec,
+    required AsyncValue<LocalTerminalAiRuntimeInfo> runtimeInfo,
   }) {
     if (managedSpec == null) {
       return 'Managed Gemma 4 download is not available on this platform yet.';
     }
     if (!settings.enabled) {
       return '${managedSpec.displayName} downloads automatically after you enable the assistant.';
+    }
+    final nativeRuntime = runtimeInfo.asData?.value;
+    if ((nativeRuntime?.supportedPlatform ?? false) && !managedModel.isReady) {
+      return nativeRuntime!.canUseNativeRuntime
+          ? '${managedSpec.displayName} stays on standby while ${nativeRuntime.providerLabel} is ready.'
+          : '${nativeRuntime.providerLabel} is preparing first. ${managedSpec.displayName} will download only if the built-in runtime stays unavailable.';
     }
     return switch (managedModel.status) {
       LocalTerminalAiManagedModelStatus.ready =>
@@ -868,6 +878,7 @@ class _OnDeviceAiSection extends ConsumerWidget {
     required LocalTerminalAiSettings settings,
     required LocalTerminalAiManagedModelState managedModel,
     required LocalTerminalAiManagedModelSpec? managedSpec,
+    required AsyncValue<LocalTerminalAiRuntimeInfo> runtimeInfo,
     required VoidCallback? onRetry,
   }) {
     if (managedSpec == null) {
@@ -875,6 +886,10 @@ class _OnDeviceAiSection extends ConsumerWidget {
     }
     if (!settings.enabled) {
       return const Icon(Icons.download_outlined);
+    }
+    if ((runtimeInfo.asData?.value.supportedPlatform ?? false) &&
+        !managedModel.isReady) {
+      return const Icon(Icons.hourglass_top_outlined);
     }
 
     return switch (managedModel.status) {
@@ -904,8 +919,12 @@ class _OnDeviceAiSection extends ConsumerWidget {
   String _fallbackModelHelpText({
     required LocalTerminalAiSettings settings,
     required LocalTerminalAiManagedModelSpec? managedSpec,
+    required AsyncValue<LocalTerminalAiRuntimeInfo> runtimeInfo,
   }) {
     if (managedSpec != null) {
+      if (runtimeInfo.asData?.value.supportedPlatform ?? false) {
+        return 'MonkeySSH prepares the built-in on-device runtime first when Android or iOS exposes one. If that runtime stays unavailable, it falls back to managed ${managedSpec.displayName}. Commands are never run automatically.';
+      }
       return 'MonkeySSH uses the built-in on-device runtime when Android or iOS exposes one. Otherwise it downloads managed ${managedSpec.displayName}. Commands are never run automatically.';
     }
     return 'MonkeySSH uses the built-in on-device runtime when Android or iOS exposes one. Managed Gemma 4 download is not available on this platform yet. Commands are never run automatically.';

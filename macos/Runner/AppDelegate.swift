@@ -102,6 +102,8 @@ class AppDelegate: FlutterAppDelegate {
       switch call.method {
       case "getRuntimeInfo":
         result(self.localTerminalAiRuntimeInfo())
+      case "prepareRuntime":
+        result(self.localTerminalAiRuntimeInfo())
       case "generateText":
         self.handleLocalTerminalAiGenerate(call, result: result)
       default:

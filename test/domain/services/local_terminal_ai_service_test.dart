@@ -43,9 +43,10 @@ void main() {
       final platform = _FakeLocalTerminalAiPlatformService(
         runtimeInfo: const LocalTerminalAiRuntimeInfo(
           provider: LocalTerminalAiPlatformProvider.androidAiCore,
-          supportedPlatform: true,
+          supportedPlatform: false,
           available: false,
-          statusMessage: 'Gemini Nano is not ready on this device.',
+          statusMessage:
+              'Android AI Core prompt generation is unavailable on this device.',
         ),
         response: 'unused',
       );
@@ -77,14 +78,97 @@ void main() {
     });
 
     test(
-      'surfaces a helpful managed-download message when no runtime is ready',
+      'tries the native runtime while Android AI Core is still preparing',
       () async {
         final platform = _FakeLocalTerminalAiPlatformService(
           runtimeInfo: const LocalTerminalAiRuntimeInfo(
             provider: LocalTerminalAiPlatformProvider.androidAiCore,
             supportedPlatform: true,
             available: false,
-            statusMessage: 'Gemini Nano is not ready on this device.',
+            statusMessage:
+                'Gemini Nano is supported here but still downloading or preparing.',
+          ),
+          response: 'pwd || Print directory',
+        );
+        final fallback = _FakeFallbackRuntime(response: 'unused');
+        final managedModelCoordinator = _FakeManagedModelCoordinator(
+          managedModel: const LocalTerminalAiManagedModelSpec(
+            modelId: 'gemma-4-E2B-it',
+            displayName: 'Gemma 4 E2B',
+            url: 'https://example.com/gemma-4-E2B-it.litertlm',
+            fileType: ModelFileType.task,
+            fileName: 'gemma-4-E2B-it.litertlm',
+          ),
+        );
+        final service = LocalTerminalAiService(
+          platformRuntime: platform,
+          managedModelCoordinator: managedModelCoordinator,
+          fallbackRuntime: fallback,
+        );
+
+        final suggestions = await service.suggestCommands(
+          settings: const LocalTerminalAiSettings(enabled: true),
+          taskDescription: 'show current directory',
+          hostLabel: 'prod',
+        );
+
+        expect(platform.generateCallCount, 1);
+        expect(managedModelCoordinator.ensureReadyCallCount, 0);
+        expect(fallback.generateCallCount, 0);
+        expect(suggestions.single.command, 'pwd');
+      },
+    );
+
+    test('falls back to managed Gemma 4 if native provisioning fails', () async {
+      final platform = _FakeLocalTerminalAiPlatformService(
+        runtimeInfo: const LocalTerminalAiRuntimeInfo(
+          provider: LocalTerminalAiPlatformProvider.androidAiCore,
+          supportedPlatform: true,
+          available: false,
+          statusMessage:
+              'Gemini Nano is supported here but still downloading or preparing.',
+        ),
+        response: 'unused',
+        generateError: const LocalTerminalAiPlatformException(
+          'Android AI Core preparation failed.',
+        ),
+      );
+      final fallback = _FakeFallbackRuntime(response: 'pwd || Print directory');
+      final service = LocalTerminalAiService(
+        platformRuntime: platform,
+        managedModelCoordinator: _FakeManagedModelCoordinator(
+          managedModel: const LocalTerminalAiManagedModelSpec(
+            modelId: 'gemma-4-E2B-it',
+            displayName: 'Gemma 4 E2B',
+            url: 'https://example.com/gemma-4-E2B-it.litertlm',
+            fileType: ModelFileType.task,
+            fileName: 'gemma-4-E2B-it.litertlm',
+          ),
+        ),
+        fallbackRuntime: fallback,
+      );
+
+      final suggestions = await service.suggestCommands(
+        settings: const LocalTerminalAiSettings(enabled: true),
+        taskDescription: 'show current directory',
+        hostLabel: 'prod',
+      );
+
+      expect(platform.generateCallCount, 1);
+      expect(fallback.generateCallCount, 1);
+      expect(suggestions.single.command, 'pwd');
+    });
+
+    test(
+      'surfaces a helpful managed-download message when no runtime is ready',
+      () async {
+        final platform = _FakeLocalTerminalAiPlatformService(
+          runtimeInfo: const LocalTerminalAiRuntimeInfo(
+            provider: LocalTerminalAiPlatformProvider.androidAiCore,
+            supportedPlatform: false,
+            available: false,
+            statusMessage:
+                'Android AI Core prompt generation is unavailable on this device.',
           ),
           response: 'unused',
         );
@@ -141,9 +225,10 @@ void main() {
       final platform = _FakeLocalTerminalAiPlatformService(
         runtimeInfo: const LocalTerminalAiRuntimeInfo(
           provider: LocalTerminalAiPlatformProvider.androidAiCore,
-          supportedPlatform: true,
+          supportedPlatform: false,
           available: false,
-          statusMessage: 'Gemini Nano is not ready on this device.',
+          statusMessage:
+              'Android AI Core prompt generation is unavailable on this device.',
         ),
         response: 'unused',
       );
@@ -183,10 +268,12 @@ class _FakeLocalTerminalAiPlatformService
   _FakeLocalTerminalAiPlatformService({
     required this.runtimeInfo,
     required this.response,
+    this.generateError,
   });
 
   final LocalTerminalAiRuntimeInfo runtimeInfo;
   final String response;
+  final LocalTerminalAiPlatformException? generateError;
   int generateCallCount = 0;
 
   @override
@@ -198,6 +285,9 @@ class _FakeLocalTerminalAiPlatformService
     required int maxTokens,
   }) async {
     generateCallCount += 1;
+    if (generateError case final error?) {
+      throw error;
+    }
     return response;
   }
 }
@@ -240,5 +330,8 @@ class _FakeManagedModelCoordinator
   Future<void> retry(LocalTerminalAiSettings settings) async {}
 
   @override
-  Future<void> sync(LocalTerminalAiSettings settings) async {}
+  Future<void> sync(
+    LocalTerminalAiSettings settings, {
+    LocalTerminalAiRuntimeInfo? runtimeInfo,
+  }) async {}
 }

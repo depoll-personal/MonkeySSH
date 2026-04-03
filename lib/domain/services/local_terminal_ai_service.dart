@@ -157,8 +157,16 @@ class LocalTerminalAiService {
     }
 
     final runtimeInfo = await platformRuntime.getRuntimeInfo();
-    if (runtimeInfo.canUseNativeRuntime) {
-      return platformRuntime.generateText(prompt: prompt, maxTokens: maxTokens);
+    String? nativeRuntimeFailure;
+    if (runtimeInfo.shouldAttemptNativeRuntime) {
+      try {
+        return await platformRuntime.generateText(
+          prompt: prompt,
+          maxTokens: maxTokens,
+        );
+      } on LocalTerminalAiPlatformException catch (error) {
+        nativeRuntimeFailure = error.message;
+      }
     }
 
     LocalTerminalAiManagedModelSpec? managedModel;
@@ -168,11 +176,21 @@ class LocalTerminalAiService {
       throw LocalTerminalAiConfigurationException(error.toString());
     }
     if (managedModel != null) {
-      return _fallbackRuntime.generateText(
-        prompt: prompt,
-        maxTokens: maxTokens,
-        managedModel: managedModel,
-      );
+      try {
+        return await _fallbackRuntime.generateText(
+          prompt: prompt,
+          maxTokens: maxTokens,
+          managedModel: managedModel,
+        );
+      } on Exception catch (error) {
+        throw LocalTerminalAiConfigurationException(
+          _formatManagedRuntimeError(error, managedModel),
+        );
+      }
+    }
+
+    if (nativeRuntimeFailure != null) {
+      throw LocalTerminalAiConfigurationException(nativeRuntimeFailure);
     }
 
     throw LocalTerminalAiConfigurationException(
@@ -297,6 +315,17 @@ class LocalTerminalAiService {
     }
     return firstLine;
   }
+
+  String _formatManagedRuntimeError(
+    Object error,
+    LocalTerminalAiManagedModelSpec managedModel,
+  ) {
+    final errorMessage = error.toString().trim();
+    if (errorMessage.contains('Failed to invoke the compiled model')) {
+      return 'Managed ${managedModel.displayName} is installed but could not start on this device. MonkeySSH will keep preferring the built-in runtime when it is available.';
+    }
+    return 'Managed ${managedModel.displayName} failed: $errorMessage';
+  }
 }
 
 /// Runtime interface for a fallback app-bundled or user-provided local model.
@@ -338,7 +367,10 @@ class FlutterGemmaLocalTerminalAiFallbackRuntime
       _activeSignature = signature;
     }
 
-    final model = await FlutterGemma.getActiveModel(maxTokens: maxTokens);
+    final model = await FlutterGemma.getActiveModel(
+      maxTokens: maxTokens,
+      preferredBackend: managedModel.preferredBackend,
+    );
     try {
       final session = await model.createSession(
         temperature: 0.2,

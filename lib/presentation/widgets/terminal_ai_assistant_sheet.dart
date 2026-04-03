@@ -326,8 +326,9 @@ bool _canUseAssistant(
   if (!settings.enabled) {
     return false;
   }
-  final nativeReady = runtimeInfo.asData?.value.canUseNativeRuntime ?? false;
-  if (nativeReady) {
+  final nativeRuntimeSupported =
+      runtimeInfo.asData?.value.shouldAttemptNativeRuntime ?? false;
+  if (nativeRuntimeSupported) {
     return true;
   }
   return managedModel.isReady;
@@ -363,6 +364,9 @@ class _AssistantStatusCard extends StatelessWidget {
               ? 'Using ${info.providerLabel} on this device.'
               : 'Using ${info.providerLabel} (${info.modelName}) on this device.';
         }
+        if (info.supportedPlatform) {
+          return '${info.statusMessage} MonkeySSH will keep trying ${info.providerLabel} before falling back to managed Gemma 4.';
+        }
         if (managedSpec != null) {
           return switch (managedModel.status) {
             LocalTerminalAiManagedModelStatus.ready =>
@@ -386,7 +390,7 @@ class _AssistantStatusCard extends StatelessWidget {
         if (managedSpec != null) {
           return managedModel.isReady
               ? 'Managed ${managedSpec.displayName} is ready while the built-in runtime is still being checked.'
-              : 'Checking the built-in runtime and managed ${managedSpec.displayName} download status...';
+              : 'Checking the built-in runtime before deciding whether managed ${managedSpec.displayName} is needed...';
         }
         return 'Checking whether this device exposes a built-in on-device model...';
       },

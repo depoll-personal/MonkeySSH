@@ -48,12 +48,37 @@ class LocalTerminalAiBridge(binaryMessenger: BinaryMessenger) {
                     result.success(withContext(Dispatchers.Default) { buildRuntimeInfo() })
                 }
             }
+            "prepareRuntime" -> {
+                scope.launch {
+                    handlePrepareRuntime(result)
+                }
+            }
             "generateText" -> {
                 scope.launch {
                     handleGenerateText(call, result)
                 }
             }
             else -> result.notImplemented()
+        }
+    }
+
+    private suspend fun handlePrepareRuntime(result: MethodChannel.Result) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            result.success(null)
+            return
+        }
+
+        try {
+            withContext(Dispatchers.Default) {
+                ensureModelReady(getGenerativeModel())
+            }
+            result.success(null)
+        } catch (error: Exception) {
+            result.error(
+                "preparation_error",
+                error.message ?: "Android AI Core preparation failed.",
+                null,
+            )
         }
     }
 
