@@ -55,6 +55,13 @@ void main() {
       expect(find.text('Appearance'), findsOneWidget);
       expect(find.text('Security'), findsOneWidget);
       expect(find.text('Terminal'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('Managed Gemma 4 download'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Managed Gemma 4 download'), findsOneWidget);
 
       // Scroll to find About section
       await tester.scrollUntilVisible(

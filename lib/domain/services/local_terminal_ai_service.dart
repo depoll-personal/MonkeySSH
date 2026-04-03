@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'local_terminal_ai_managed_model_service.dart';
 import 'local_terminal_ai_platform_service.dart';
 import 'local_terminal_ai_settings_service.dart';
 
@@ -52,6 +53,9 @@ class LocalTerminalAiConfigurationException implements Exception {
 final localTerminalAiServiceProvider = Provider<LocalTerminalAiService>(
   (ref) => LocalTerminalAiService(
     platformRuntime: ref.watch(localTerminalAiPlatformServiceProvider),
+    managedModelCoordinator: ref.watch(
+      localTerminalAiManagedModelProvider.notifier,
+    ),
   ),
 );
 
@@ -60,12 +64,16 @@ class LocalTerminalAiService {
   /// Creates a new [LocalTerminalAiService].
   LocalTerminalAiService({
     required this.platformRuntime,
+    required LocalTerminalAiManagedModelCoordinator managedModelCoordinator,
     LocalTerminalAiFallbackRuntime? fallbackRuntime,
-  }) : _fallbackRuntime =
+  }) : _managedModelCoordinator = managedModelCoordinator,
+       _fallbackRuntime =
            fallbackRuntime ?? FlutterGemmaLocalTerminalAiFallbackRuntime();
 
   /// Native platform runtime bridge used when the OS exposes a built-in model.
   final LocalTerminalAiPlatformService platformRuntime;
+
+  final LocalTerminalAiManagedModelCoordinator _managedModelCoordinator;
 
   final LocalTerminalAiFallbackRuntime _fallbackRuntime;
 
@@ -149,29 +157,26 @@ class LocalTerminalAiService {
     }
 
     final runtimeInfo = await platformRuntime.getRuntimeInfo();
-    if (settings.preferNativeRuntime && runtimeInfo.canUseNativeRuntime) {
+    if (runtimeInfo.canUseNativeRuntime) {
       return platformRuntime.generateText(prompt: prompt, maxTokens: maxTokens);
     }
 
-    if (settings.hasConfiguredFallbackModel) {
+    LocalTerminalAiManagedModelSpec? managedModel;
+    try {
+      managedModel = await _managedModelCoordinator.ensureReadyFor(settings);
+    } on Exception catch (error) {
+      throw LocalTerminalAiConfigurationException(error.toString());
+    }
+    if (managedModel != null) {
       return _fallbackRuntime.generateText(
-        settings: settings,
         prompt: prompt,
         maxTokens: maxTokens,
-      );
-    }
-
-    if (settings.preferNativeRuntime) {
-      throw LocalTerminalAiConfigurationException(
-        '${runtimeInfo.statusMessage} Select a local '
-        '${localTerminalAiSupportedModelFileLabel()} in Settings to use the '
-        'fallback runtime.',
+        managedModel: managedModel,
       );
     }
 
     throw LocalTerminalAiConfigurationException(
-      'Select a local ${localTerminalAiSupportedModelFileLabel()} in Settings '
-      'before using the fallback runtime.',
+      '${runtimeInfo.statusMessage} Gemma 4 download is not available on this platform.',
     );
   }
 
@@ -298,9 +303,9 @@ class LocalTerminalAiService {
 abstract class LocalTerminalAiFallbackRuntime {
   /// Runs the prompt through the configured fallback runtime.
   Future<String> generateText({
-    required LocalTerminalAiSettings settings,
     required String prompt,
     required int maxTokens,
+    required LocalTerminalAiManagedModelSpec managedModel,
   });
 }
 
@@ -313,31 +318,23 @@ class FlutterGemmaLocalTerminalAiFallbackRuntime
 
   @override
   Future<String> generateText({
-    required LocalTerminalAiSettings settings,
     required String prompt,
     required int maxTokens,
+    required LocalTerminalAiManagedModelSpec managedModel,
   }) => _serializeInference(() async {
     await _ensureInitialized();
 
-    final fileType = settings.inferredFileType;
-    final modelPath = settings.modelPath;
-    if (modelPath == null || modelPath.trim().isEmpty) {
-      throw LocalTerminalAiConfigurationException(
-        'Select a local ${localTerminalAiSupportedModelFileLabel()} in Settings.',
-      );
-    }
-    if (fileType == null) {
-      throw LocalTerminalAiConfigurationException(
-        'Unsupported model file for this platform. Use a ${localTerminalAiSupportedModelFileLabel()}.',
-      );
-    }
-
-    final signature = settings.signature;
+    final signature = managedModel.signature;
     if (_activeSignature != signature || !FlutterGemma.hasActiveModel()) {
       await FlutterGemma.installModel(
-        modelType: settings.modelType,
-        fileType: fileType,
-      ).fromFile(modelPath).install();
+            modelType: ModelType.gemmaIt,
+            fileType: managedModel.fileType,
+          )
+          .fromNetwork(
+            managedModel.url,
+            foreground: managedModel.foregroundDownload,
+          )
+          .install();
       _activeSignature = signature;
     }
 

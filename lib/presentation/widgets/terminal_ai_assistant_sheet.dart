@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../domain/services/local_terminal_ai_managed_model_service.dart';
 import '../../domain/services/local_terminal_ai_platform_service.dart';
 import '../../domain/services/local_terminal_ai_service.dart';
 import '../../domain/services/local_terminal_ai_settings_service.dart';
@@ -61,10 +62,11 @@ class _TerminalAiAssistantSheetState
   @override
   Widget build(BuildContext context) {
     final settings = ref.watch(localTerminalAiSettingsProvider);
+    final managedModel = ref.watch(localTerminalAiManagedModelProvider);
     final runtimeInfo = ref.watch(localTerminalAiRuntimeInfoProvider);
     final theme = Theme.of(context);
     final currentLine = widget.currentTerminalLine?.trimRight();
-    final canGenerate = _canUseAssistant(settings, runtimeInfo);
+    final canGenerate = _canUseAssistant(settings, runtimeInfo, managedModel);
 
     return SafeArea(
       top: false,
@@ -102,6 +104,7 @@ class _TerminalAiAssistantSheetState
               const SizedBox(height: 16),
               _AssistantStatusCard(
                 settings: settings,
+                managedModel: managedModel,
                 runtimeInfo: runtimeInfo,
                 onOpenSettings: () {
                   Navigator.pop(context);
@@ -318,71 +321,80 @@ class _TerminalAiAssistantSheetState
 bool _canUseAssistant(
   LocalTerminalAiSettings settings,
   AsyncValue<LocalTerminalAiRuntimeInfo> runtimeInfo,
+  LocalTerminalAiManagedModelState managedModel,
 ) {
   if (!settings.enabled) {
     return false;
   }
   final nativeReady = runtimeInfo.asData?.value.canUseNativeRuntime ?? false;
-  if (settings.preferNativeRuntime && nativeReady) {
+  if (nativeReady) {
     return true;
   }
-  return settings.hasConfiguredFallbackModel;
+  return managedModel.isReady;
 }
 
 class _AssistantStatusCard extends StatelessWidget {
   const _AssistantStatusCard({
     required this.settings,
+    required this.managedModel,
     required this.runtimeInfo,
     required this.onOpenSettings,
   });
 
   final LocalTerminalAiSettings settings;
+  final LocalTerminalAiManagedModelState managedModel;
   final AsyncValue<LocalTerminalAiRuntimeInfo> runtimeInfo;
   final VoidCallback onOpenSettings;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isConfigured = _canUseAssistant(settings, runtimeInfo);
+    final managedSpec = localTerminalAiManagedGemma4Spec();
+    final isConfigured = _canUseAssistant(settings, runtimeInfo, managedModel);
     final subtitle = runtimeInfo.when(
       data: (info) {
         if (!settings.enabled) {
-          return 'Enable the assistant in Settings to start using it.';
+          return managedSpec == null
+              ? 'Enable the assistant in Settings to start using it.'
+              : 'Enable the assistant in Settings to start downloading ${managedSpec.displayName}.';
         }
-        if (settings.preferNativeRuntime && info.canUseNativeRuntime) {
+        if (info.canUseNativeRuntime) {
           return info.modelName == null
               ? 'Using ${info.providerLabel} on this device.'
               : 'Using ${info.providerLabel} (${info.modelName}) on this device.';
         }
-        if (settings.hasConfiguredFallbackModel) {
-          return 'Using ${localTerminalAiModelTypeLabel(settings.modelType)} with ${settings.modelFileName} as the local fallback model.';
+        if (managedSpec != null) {
+          return switch (managedModel.status) {
+            LocalTerminalAiManagedModelStatus.ready =>
+              'Using managed ${managedSpec.displayName}.',
+            LocalTerminalAiManagedModelStatus.downloading =>
+              'Downloading managed ${managedSpec.displayName} (${managedModel.progress}%).',
+            LocalTerminalAiManagedModelStatus.failed =>
+              'Managed ${managedSpec.displayName} download failed. Open Settings to retry.',
+            LocalTerminalAiManagedModelStatus.idle =>
+              'Preparing the managed ${managedSpec.displayName} download...',
+          };
         }
-        if (settings.modelPath != null) {
-          return '${settings.modelFileName} is not supported on this platform. Add a local ${localTerminalAiSupportedModelFileLabel()} to use the fallback runtime.';
-        }
-        if (settings.preferNativeRuntime) {
-          return '${info.statusMessage} Add a local ${localTerminalAiSupportedModelFileLabel()} to use the fallback runtime.';
-        }
-        return 'Choose a local ${localTerminalAiSupportedModelFileLabel()} in Settings.';
+        return '${info.statusMessage} Managed Gemma 4 download is not available on this platform.';
       },
       loading: () {
         if (!settings.enabled) {
-          return 'Enable the assistant in Settings to start using it.';
+          return managedSpec == null
+              ? 'Enable the assistant in Settings to start using it.'
+              : 'Enable the assistant in Settings to start downloading ${managedSpec.displayName}.';
         }
-        if (settings.hasConfiguredFallbackModel) {
-          return 'Checking the built-in runtime. ${localTerminalAiModelTypeLabel(settings.modelType)} is configured as fallback.';
-        }
-        if (settings.modelPath != null) {
-          return '${settings.modelFileName} is selected, but this platform needs a local ${localTerminalAiSupportedModelFileLabel()}.';
+        if (managedSpec != null) {
+          return managedModel.isReady
+              ? 'Managed ${managedSpec.displayName} is ready while the built-in runtime is still being checked.'
+              : 'Checking the built-in runtime and managed ${managedSpec.displayName} download status...';
         }
         return 'Checking whether this device exposes a built-in on-device model...';
       },
       error: (error, _) {
-        if (settings.hasConfiguredFallbackModel) {
-          return 'Native runtime check failed. ${localTerminalAiModelTypeLabel(settings.modelType)} remains available as fallback.';
-        }
-        if (settings.modelPath != null) {
-          return '${settings.modelFileName} is not supported on this platform. Add a local ${localTerminalAiSupportedModelFileLabel()} to use the fallback runtime.';
+        if (managedSpec != null) {
+          return managedModel.isReady
+              ? 'Native runtime check failed. Managed ${managedSpec.displayName} remains available as fallback.'
+              : 'Native runtime check failed and managed ${managedSpec.displayName} is not ready yet.';
         }
         return error.toString();
       },

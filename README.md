@@ -66,16 +66,12 @@ MonkeySSH can optionally use an on-device model inside the terminal screen to su
 
 - Open `Settings` → `On-device AI`
 - Enable the assistant
-- Leave `Prefer built-in system model` enabled to use:
+- MonkeySSH uses the built-in runtime when the device exposes one:
   - Apple `FoundationModels` on supported Apple Intelligence devices
   - Android AI Core / Gemini Nano on supported Android devices
-- Optionally configure a fallback local model file
-  - Use `.task` on iOS
-  - Use `.task` or `.litertlm` on Android
-  - Use `.litertlm` on macOS/Windows/Linux
-- Pick the matching fallback model family (for example `Gemma` for Gemma 3 or Gemma 4, `FunctionGemma`, `Qwen`, or `DeepSeek`)
+- If the built-in runtime is unavailable, MonkeySSH downloads a managed `Gemma 4 E2B` model automatically
 
-The assistant runs locally and only inserts commands after an explicit review step. If the built-in system model is unavailable on a device, MonkeySSH falls back to the configured local model file.
+The assistant runs locally and only inserts commands after an explicit review step. If the built-in system model is unavailable on a device, MonkeySSH falls back to the managed Gemma 4 download.
 
 This branch now targets Android API 26+ and iOS 16+ so the native Apple/Android runtime integrations can build cleanly. Native AI availability still depends on device support and OS capabilities.
 

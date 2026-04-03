@@ -1,15 +1,13 @@
 import 'dart:async';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:path/path.dart' as path;
 
 import '../../app/app_metadata.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/auth_service.dart';
+import '../../domain/services/local_terminal_ai_managed_model_service.dart';
 import '../../domain/services/local_terminal_ai_platform_service.dart';
 import '../../domain/services/local_terminal_ai_settings_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
@@ -747,7 +745,9 @@ class _OnDeviceAiSection extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final settings = ref.watch(localTerminalAiSettingsProvider);
+    final managedModel = ref.watch(localTerminalAiManagedModelProvider);
     final runtimeInfo = ref.watch(localTerminalAiRuntimeInfoProvider);
+    final managedSpec = localTerminalAiManagedGemma4Spec();
     final nativeStatusText = runtimeInfo.when(
       data: (info) {
         if (info.canUseNativeRuntime) {
@@ -784,58 +784,58 @@ class _OnDeviceAiSection extends ConsumerWidget {
         ),
         SwitchListTile(
           secondary: const Icon(Icons.auto_fix_high_outlined),
-          title: const Text('Prefer built-in system model'),
+          title: const Text('Runtime selection'),
           subtitle: Text(
-            settings.preferNativeRuntime
-                ? nativeStatusText
-                : 'Use the configured fallback model file even when this device offers a built-in model.',
+            '$nativeStatusText If no native model is ready, MonkeySSH downloads managed Gemma 4 automatically.',
           ),
-          value: settings.preferNativeRuntime,
-          onChanged: (value) {
-            unawaited(
-              ref
-                  .read(localTerminalAiSettingsProvider.notifier)
-                  .setPreferNativeRuntime(preferNativeRuntime: value),
-            );
-          },
+          value: true,
+          onChanged: null,
         ),
         ListTile(
-          leading: const Icon(Icons.psychology_alt_outlined),
-          title: const Text('Fallback model family'),
-          subtitle: Text(localTerminalAiModelTypeLabel(settings.modelType)),
-          onTap: () => _showModelTypeDialog(context, ref, settings.modelType),
-        ),
-        ListTile(
-          leading: const Icon(Icons.memory_outlined),
-          title: const Text('Fallback model file'),
+          leading: const Icon(Icons.download_for_offline_outlined),
+          title: const Text('Managed Gemma 4 download'),
           subtitle: Text(
-            settings.modelPath == null
-                ? 'Optional unless native runtime is unavailable or disabled'
-                : path.basename(settings.modelPath!),
+            _managedModelSubtitle(
+              settings: settings,
+              managedModel: managedModel,
+              managedSpec: managedSpec,
+            ),
           ),
-          onTap: () => _pickModelFile(context, ref),
-          trailing: settings.modelPath == null
-              ? null
-              : IconButton(
-                  onPressed: () {
+          onTap:
+              managedSpec != null &&
+                  settings.enabled &&
+                  managedModel.status ==
+                      LocalTerminalAiManagedModelStatus.failed
+              ? () {
+                  unawaited(
+                    ref
+                        .read(localTerminalAiManagedModelProvider.notifier)
+                        .retry(settings),
+                  );
+                }
+              : null,
+          trailing: _managedModelTrailing(
+            settings: settings,
+            managedModel: managedModel,
+            managedSpec: managedSpec,
+            onRetry: managedSpec == null
+                ? null
+                : () {
                     unawaited(
                       ref
-                          .read(localTerminalAiSettingsProvider.notifier)
-                          .setModelPath(null),
+                          .read(localTerminalAiManagedModelProvider.notifier)
+                          .retry(settings),
                     );
                   },
-                  icon: const Icon(Icons.clear),
-                  tooltip: 'Clear model file',
-                ),
+          ),
         ),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
           child: Text(
-            settings.modelPath == null
-                ? 'MonkeySSH prefers a built-in system model where the current platform supports it. ${localTerminalAiSupportedModelFileHelpText()}'
-                : settings.hasConfiguredFallbackModel
-                ? settings.modelPath!
-                : '${settings.modelPath!}\nThis file is not supported on this platform. ${localTerminalAiSupportedModelFileHelpText()}',
+            _fallbackModelHelpText(
+              settings: settings,
+              managedSpec: managedSpec,
+            ),
             style: Theme.of(context).textTheme.bodySmall,
           ),
         ),
@@ -843,62 +843,74 @@ class _OnDeviceAiSection extends ConsumerWidget {
     );
   }
 
-  Future<void> _pickModelFile(BuildContext context, WidgetRef ref) async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: const ['task', 'litertlm'],
-    );
-    final selectedPath = result?.files.single.path;
-    if (selectedPath == null || selectedPath.trim().isEmpty) {
-      return;
+  String _managedModelSubtitle({
+    required LocalTerminalAiSettings settings,
+    required LocalTerminalAiManagedModelState managedModel,
+    required LocalTerminalAiManagedModelSpec? managedSpec,
+  }) {
+    if (managedSpec == null) {
+      return 'Managed Gemma 4 download is not available on this platform yet.';
     }
-
-    await ref
-        .read(localTerminalAiSettingsProvider.notifier)
-        .setModelPath(selectedPath);
-    if (!context.mounted) {
-      return;
+    if (!settings.enabled) {
+      return '${managedSpec.displayName} downloads automatically after you enable the assistant.';
     }
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Selected ${path.basename(selectedPath)}')),
-    );
+    return switch (managedModel.status) {
+      LocalTerminalAiManagedModelStatus.ready =>
+        '${managedSpec.displayName} is installed and ready as the managed fallback.',
+      LocalTerminalAiManagedModelStatus.downloading =>
+        'Downloading ${managedSpec.displayName} (${managedModel.progress}%).',
+      LocalTerminalAiManagedModelStatus.failed =>
+        'Download failed. Tap to retry.',
+      LocalTerminalAiManagedModelStatus.idle =>
+        'Preparing the managed ${managedSpec.displayName} download...',
+    };
   }
 
-  void _showModelTypeDialog(
-    BuildContext context,
-    WidgetRef ref,
-    ModelType current,
-  ) {
-    showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Model family'),
-        content: RadioGroup<ModelType>(
-          groupValue: current,
-          onChanged: (value) {
-            if (value != null) {
-              unawaited(
-                ref
-                    .read(localTerminalAiSettingsProvider.notifier)
-                    .setModelType(value),
-              );
-              Navigator.pop(context);
-            }
-          },
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: supportedLocalTerminalAiModelTypes
-                .map(
-                  (modelType) => RadioListTile<ModelType>(
-                    title: Text(localTerminalAiModelTypeLabel(modelType)),
-                    value: modelType,
-                  ),
-                )
-                .toList(),
-          ),
+  Widget? _managedModelTrailing({
+    required LocalTerminalAiSettings settings,
+    required LocalTerminalAiManagedModelState managedModel,
+    required LocalTerminalAiManagedModelSpec? managedSpec,
+    required VoidCallback? onRetry,
+  }) {
+    if (managedSpec == null) {
+      return const Icon(Icons.info_outline);
+    }
+    if (!settings.enabled) {
+      return const Icon(Icons.download_outlined);
+    }
+
+    return switch (managedModel.status) {
+      LocalTerminalAiManagedModelStatus.ready => const Icon(
+        Icons.check_circle_outline,
+      ),
+      LocalTerminalAiManagedModelStatus.downloading => SizedBox.square(
+        dimension: 20,
+        child: CircularProgressIndicator(
+          value: managedModel.progress == 0
+              ? null
+              : managedModel.progress / 100,
+          strokeWidth: 2,
         ),
       ),
-    );
+      LocalTerminalAiManagedModelStatus.failed => IconButton(
+        onPressed: onRetry,
+        tooltip: 'Retry managed Gemma 4 download',
+        icon: const Icon(Icons.refresh),
+      ),
+      LocalTerminalAiManagedModelStatus.idle => const Icon(
+        Icons.hourglass_top_outlined,
+      ),
+    };
+  }
+
+  String _fallbackModelHelpText({
+    required LocalTerminalAiSettings settings,
+    required LocalTerminalAiManagedModelSpec? managedSpec,
+  }) {
+    if (managedSpec != null) {
+      return 'MonkeySSH uses the built-in on-device runtime when Android or iOS exposes one. Otherwise it downloads managed ${managedSpec.displayName}. Commands are never run automatically.';
+    }
+    return 'MonkeySSH uses the built-in on-device runtime when Android or iOS exposes one. Managed Gemma 4 download is not available on this platform yet. Commands are never run automatically.';
   }
 }
 
