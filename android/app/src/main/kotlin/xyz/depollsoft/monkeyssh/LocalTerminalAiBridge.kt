@@ -15,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Method-channel bridge for Android's built-in on-device GenAI runtime.
@@ -44,7 +45,7 @@ class LocalTerminalAiBridge(binaryMessenger: BinaryMessenger) {
         when (call.method) {
             "getRuntimeInfo" -> {
                 scope.launch {
-                    result.success(buildRuntimeInfo())
+                    result.success(withContext(Dispatchers.Default) { buildRuntimeInfo() })
                 }
             }
             "generateText" -> {
@@ -70,16 +71,20 @@ class LocalTerminalAiBridge(binaryMessenger: BinaryMessenger) {
         }
 
         try {
-            val model = getGenerativeModel()
-            ensureModelReady(model)
-            val response = model.generateContent(
-                generateContentRequest(TextPart(prompt)) {
-                    temperature = 0.2f
-                    maxOutputTokens = maxTokens
-                    candidateCount = 1
-                },
-            )
-            val text = response.candidates.firstOrNull()?.text?.trim()
+            val text =
+                withContext(Dispatchers.Default) {
+                    val model = getGenerativeModel()
+                    ensureModelReady(model)
+                    val response =
+                        model.generateContent(
+                            generateContentRequest(TextPart(prompt)) {
+                                temperature = 0.2f
+                                maxOutputTokens = maxTokens
+                                candidateCount = 1
+                            },
+                        )
+                    response.candidates.firstOrNull()?.text?.trim()
+                }
             if (text.isNullOrEmpty()) {
                 result.error(
                     "empty_response",

@@ -73,7 +73,7 @@ MonkeySSH can optionally use an on-device model inside the terminal screen to su
 
 The assistant runs locally and only inserts commands after an explicit review step. If the built-in system model is unavailable on a device, MonkeySSH falls back to the managed Gemma 4 download.
 
-This branch now targets Android API 26+ and iOS 16+ so the native Apple/Android runtime integrations can build cleanly. Native AI availability still depends on device support and OS capabilities.
+This branch now targets Android API 26+ and iOS 16+ for app builds and fallback runtime integration. Apple's built-in `FoundationModels` runtime is still gated by the native availability checks on iOS 26+ and macOS 26+, so older supported Apple OS versions use the managed Gemma 4 path whenever the built-in runtime is unavailable. Native AI availability still depends on device support and OS capabilities.
 
 The iOS device build works with these settings. `flutter build ios --simulator` is still blocked upstream because the `flutter_gemma` fallback runtime pulls in `TensorFlowLiteSelectTfOps`, whose xcframework currently ships only device slices.
 

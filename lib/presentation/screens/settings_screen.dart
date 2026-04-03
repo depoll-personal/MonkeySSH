@@ -782,14 +782,12 @@ class _OnDeviceAiSection extends ConsumerWidget {
             );
           },
         ),
-        SwitchListTile(
-          secondary: const Icon(Icons.auto_fix_high_outlined),
-          title: const Text('Runtime selection'),
+        ListTile(
+          leading: const Icon(Icons.auto_fix_high_outlined),
+          title: const Text('Runtime status'),
           subtitle: Text(
             '$nativeStatusText If no native model is ready, MonkeySSH downloads managed Gemma 4 automatically.',
           ),
-          value: true,
-          onChanged: null,
         ),
         ListTile(
           leading: const Icon(Icons.download_for_offline_outlined),

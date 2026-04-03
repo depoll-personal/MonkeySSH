@@ -183,6 +183,7 @@ void main() {
       expect(SettingKeys.defaultPort, 'default_port');
       expect(SettingKeys.defaultUsername, 'default_username');
       expect(SettingKeys.autoLockTimeout, 'auto_lock_timeout');
+      expect(SettingKeys.localTerminalAiEnabled, 'local_terminal_ai_enabled');
     });
   });
 

@@ -56,6 +56,17 @@ void main() {
       expect(find.text('Security'), findsOneWidget);
       expect(find.text('Terminal'), findsOneWidget);
       await tester.scrollUntilVisible(
+        find.text('Runtime status'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Runtime status'), findsOneWidget);
+      expect(
+        find.widgetWithText(SwitchListTile, 'Runtime status'),
+        findsNothing,
+      );
+      await tester.scrollUntilVisible(
         find.text('Managed Gemma 4 download'),
         200,
         scrollable: find.byType(Scrollable).first,

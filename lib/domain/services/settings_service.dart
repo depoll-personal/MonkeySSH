@@ -64,16 +64,6 @@ abstract final class SettingKeys {
   /// Enable the experimental on-device terminal AI assistant.
   static const localTerminalAiEnabled = 'local_terminal_ai_enabled';
 
-  /// Selected on-device model file path for the terminal AI assistant.
-  static const localTerminalAiModelPath = 'local_terminal_ai_model_path';
-
-  /// Selected model family for the terminal AI assistant.
-  static const localTerminalAiModelType = 'local_terminal_ai_model_type';
-
-  /// Prefer a built-in native on-device model when the platform exposes one.
-  static const localTerminalAiPreferNativeRuntime =
-      'local_terminal_ai_prefer_native_runtime';
-
   /// Enable shared clipboard between device and remote session.
   ///
   /// The terminal can sync through OSC 52 and remote clipboard utilities when

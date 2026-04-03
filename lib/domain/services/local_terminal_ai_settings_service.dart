@@ -44,11 +44,6 @@ class LocalTerminalAiSettingsNotifier
 
   Future<void> _init() async {
     final enabled = await _settings.getBool(SettingKeys.localTerminalAiEnabled);
-    await Future.wait<void>(<Future<void>>[
-      _settings.delete(SettingKeys.localTerminalAiModelPath),
-      _settings.delete(SettingKeys.localTerminalAiModelType),
-      _settings.delete(SettingKeys.localTerminalAiPreferNativeRuntime),
-    ]);
     if (_disposed) {
       return;
     }
