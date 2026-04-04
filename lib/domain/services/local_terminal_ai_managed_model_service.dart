@@ -155,6 +155,55 @@ Future<InferenceModelSession> createManagedGemmaInferenceSession(
   InferenceModel model,
 ) => model.createSession(temperature: _managedGemmaSessionTemperature);
 
+/// Whether an error indicates that Gemma started downloading but could not
+/// initialize a runnable inference engine on the device.
+bool isManagedGemmaRuntimeStartupError(Object error) {
+  final errorMessage = error.toString().trim();
+  return errorMessage.contains('Failed to invoke the compiled model') ||
+      errorMessage.contains('failedToInitializeEngine') ||
+      errorMessage.contains('Error building tflite model');
+}
+
+/// Returns the backend order to try for managed Gemma runtime startup.
+List<PreferredBackend?> managedGemmaRuntimeBackends(
+  LocalTerminalAiManagedModelSpec spec,
+) {
+  final preferredBackend = spec.preferredBackend;
+  if (preferredBackend == null || preferredBackend == PreferredBackend.cpu) {
+    return <PreferredBackend?>[preferredBackend];
+  }
+  return <PreferredBackend?>[preferredBackend, PreferredBackend.cpu];
+}
+
+/// Runs a managed Gemma operation, retrying CPU after a startup failure when
+/// the preferred backend is more aggressive than CPU.
+Future<T> runWithManagedGemmaBackendFallback<T>({
+  required LocalTerminalAiManagedModelSpec spec,
+  required Future<T> Function(PreferredBackend? preferredBackend) operation,
+}) async {
+  final backends = managedGemmaRuntimeBackends(spec);
+  Object? lastError;
+  StackTrace? lastStackTrace;
+  for (var index = 0; index < backends.length; index += 1) {
+    final backend = backends[index];
+    try {
+      return await operation(backend);
+    } on Exception catch (error, stackTrace) {
+      lastError = error;
+      lastStackTrace = stackTrace;
+      final hasFallback = index + 1 < backends.length;
+      if (!hasFallback || !isManagedGemmaRuntimeStartupError(error)) {
+        rethrow;
+      }
+    }
+  }
+
+  if (lastError case final Object error) {
+    Error.throwWithStackTrace(error, lastStackTrace!);
+  }
+  throw StateError('Managed Gemma backend fallback exhausted without running.');
+}
+
 /// Coordinates managed Gemma 4 fallback downloads through `flutter_gemma`.
 class LocalTerminalAiManagedModelController
     extends Notifier<LocalTerminalAiManagedModelState>
@@ -347,27 +396,28 @@ class LocalTerminalAiManagedModelController
 
   Future<void> _verifyManagedModelRuntime(
     LocalTerminalAiManagedModelSpec spec,
-  ) async {
-    final model = await FlutterGemma.getActiveModel(
-      maxTokens: 256,
-      preferredBackend: spec.preferredBackend,
-    );
-    try {
-      final session = await createManagedGemmaInferenceSession(model);
-      await session.close();
-    } finally {
-      await model.close();
-    }
-  }
+  ) => runWithManagedGemmaBackendFallback(
+    spec: spec,
+    operation: (preferredBackend) async {
+      final model = await FlutterGemma.getActiveModel(
+        maxTokens: 256,
+        preferredBackend: preferredBackend,
+      );
+      try {
+        final session = await createManagedGemmaInferenceSession(model);
+        await session.close();
+      } finally {
+        await model.close();
+      }
+    },
+  );
 
   String _formatManagedModelSetupError(
     Object error,
     LocalTerminalAiManagedModelSpec spec,
   ) {
     final errorMessage = error.toString().trim();
-    if (errorMessage.contains('Failed to invoke the compiled model') ||
-        errorMessage.contains('failedToInitializeEngine') ||
-        errorMessage.contains('Error building tflite model')) {
+    if (isManagedGemmaRuntimeStartupError(error)) {
       return 'Managed ${spec.displayName} downloaded but could not start on this device. Retry the setup from Settings.';
     }
     return 'Managed ${spec.displayName} setup failed: $errorMessage';

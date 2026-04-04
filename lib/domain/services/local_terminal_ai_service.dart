@@ -312,9 +312,7 @@ class LocalTerminalAiService {
     LocalTerminalAiManagedModelSpec managedModel,
   ) {
     final errorMessage = error.toString().trim();
-    if (errorMessage.contains('Failed to invoke the compiled model') ||
-        errorMessage.contains('failedToInitializeEngine') ||
-        errorMessage.contains('Error building tflite model')) {
+    if (isManagedGemmaRuntimeStartupError(error)) {
       return 'Managed ${managedModel.displayName} is installed but could not start on this device. Reinstall it from Settings and try again.';
     }
     return 'Managed ${managedModel.displayName} failed: $errorMessage';
@@ -357,21 +355,28 @@ class FlutterGemmaLocalTerminalAiFallbackRuntime
           .install();
     }
 
-    final model = await FlutterGemma.getActiveModel(
-      maxTokens: maxTokens,
-      preferredBackend: managedModel.preferredBackend,
+    return runWithManagedGemmaBackendFallback(
+      spec: managedModel,
+      operation: (preferredBackend) async {
+        final model = await FlutterGemma.getActiveModel(
+          maxTokens: maxTokens,
+          preferredBackend: preferredBackend,
+        );
+        try {
+          final session = await createManagedGemmaInferenceSession(model);
+          try {
+            await session.addQueryChunk(
+              Message.text(text: prompt, isUser: true),
+            );
+            return (await session.getResponse()).trimRight();
+          } finally {
+            await session.close();
+          }
+        } finally {
+          await model.close();
+        }
+      },
     );
-    try {
-      final session = await createManagedGemmaInferenceSession(model);
-      try {
-        await session.addQueryChunk(Message.text(text: prompt, isUser: true));
-        return (await session.getResponse()).trimRight();
-      } finally {
-        await session.close();
-      }
-    } finally {
-      await model.close();
-    }
   });
 
   Future<void> _ensureInitialized() =>

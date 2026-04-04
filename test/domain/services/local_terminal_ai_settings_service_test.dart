@@ -41,6 +41,65 @@ void main() {
   });
 
   test(
+    'managed Gemma runtime falls back from gpu to cpu on startup errors',
+    () async {
+      const spec = LocalTerminalAiManagedModelSpec(
+        modelId: 'gemma-4-E2B-it',
+        displayName: 'Gemma 4 E2B',
+        url: 'https://example.com/gemma-4-E2B-it.litertlm',
+        fileType: ModelFileType.task,
+        fileName: 'gemma-4-E2B-it.litertlm',
+        preferredBackend: PreferredBackend.gpu,
+      );
+      final attemptedBackends = <PreferredBackend?>[];
+
+      final result = await runWithManagedGemmaBackendFallback<PreferredBackend?>(
+        spec: spec,
+        operation: (preferredBackend) async {
+          attemptedBackends.add(preferredBackend);
+          if (preferredBackend == PreferredBackend.gpu) {
+            throw Exception(
+              'PlatformException(failedToInitializeEngine, INTERNAL: RET_CHECK failure model Error building tflite model, null, null)',
+            );
+          }
+          return preferredBackend;
+        },
+      );
+
+      expect(result, PreferredBackend.cpu);
+      expect(attemptedBackends, <PreferredBackend?>[
+        PreferredBackend.gpu,
+        PreferredBackend.cpu,
+      ]);
+    },
+  );
+
+  test('managed Gemma runtime does not retry non-startup errors', () async {
+    const spec = LocalTerminalAiManagedModelSpec(
+      modelId: 'gemma-4-E2B-it',
+      displayName: 'Gemma 4 E2B',
+      url: 'https://example.com/gemma-4-E2B-it.litertlm',
+      fileType: ModelFileType.task,
+      fileName: 'gemma-4-E2B-it.litertlm',
+      preferredBackend: PreferredBackend.gpu,
+    );
+    final attemptedBackends = <PreferredBackend?>[];
+
+    await expectLater(
+      () => runWithManagedGemmaBackendFallback<void>(
+        spec: spec,
+        operation: (preferredBackend) async {
+          attemptedBackends.add(preferredBackend);
+          throw Exception('network timeout');
+        },
+      ),
+      throwsA(isA<Exception>()),
+    );
+
+    expect(attemptedBackends, <PreferredBackend?>[PreferredBackend.gpu]);
+  });
+
+  test(
     'managed Gemma 4 does not auto-download when the assistant is disabled',
     () {
       const settings = LocalTerminalAiSettings(enabled: false);
