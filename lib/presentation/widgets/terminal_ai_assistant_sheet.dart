@@ -64,7 +64,7 @@ class _TerminalAiAssistantSheetState
     final managedModel = ref.watch(localTerminalAiManagedModelProvider);
     final theme = Theme.of(context);
     final currentLine = widget.currentTerminalLine?.trimRight();
-    final canGenerate = _canUseAssistant(settings, managedModel);
+    final canGenerate = _canStartAssistantRequest(settings, managedModel);
 
     return SafeArea(
       top: false,
@@ -315,7 +315,12 @@ class _TerminalAiAssistantSheetState
   }
 }
 
-bool _canUseAssistant(
+bool _canStartAssistantRequest(
+  LocalTerminalAiSettings settings,
+  LocalTerminalAiManagedModelState managedModel,
+) => settings.enabled && managedModel.isInstalled;
+
+bool _isAssistantReady(
   LocalTerminalAiSettings settings,
   LocalTerminalAiManagedModelState managedModel,
 ) => settings.enabled && managedModel.isReady;
@@ -335,7 +340,8 @@ class _AssistantStatusCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final managedSpec = localTerminalAiManagedGemma4Spec();
-    final isConfigured = _canUseAssistant(settings, managedModel);
+    final canStart = _canStartAssistantRequest(settings, managedModel);
+    final isReady = _isAssistantReady(settings, managedModel);
     final autoVerifiesInBackground = shouldAutoVerifyManagedGemma4InBackground(
       settings: settings,
     );
@@ -363,7 +369,7 @@ class _AssistantStatusCard extends StatelessWidget {
           };
 
     return Card(
-      color: isConfigured
+      color: canStart
           ? theme.colorScheme.primaryContainer.withAlpha(70)
           : theme.colorScheme.surfaceContainerHighest,
       child: Padding(
@@ -374,14 +380,20 @@ class _AssistantStatusCard extends StatelessWidget {
             Row(
               children: [
                 Icon(
-                  isConfigured
+                  isReady
                       ? Icons.check_circle_outline
+                      : canStart
+                      ? Icons.download_done_outlined
                       : Icons.settings_suggest_outlined,
                 ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(
-                    isConfigured ? 'Assistant ready' : 'Setup required',
+                    isReady
+                        ? 'Assistant ready'
+                        : canStart
+                        ? 'Assistant available'
+                        : 'Setup required',
                     style: theme.textTheme.titleSmall,
                   ),
                 ),
