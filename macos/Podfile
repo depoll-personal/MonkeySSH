@@ -45,4 +45,40 @@ post_install do |installer|
       end
     end
   end
+
+  main_project = installer.aggregate_targets.first.user_project
+  runner_target = main_project.targets.find { |target| target.name == 'Runner' }
+
+  if runner_target
+    phase_name = 'Setup LiteRT-LM Desktop'
+    existing_phase = runner_target.shell_script_build_phases.find { |phase| phase.name == phase_name }
+    phase = existing_phase || runner_target.new_shell_script_build_phase(phase_name)
+    phase.shell_script = <<-SCRIPT
+PLUGIN_PATH="${PODS_ROOT}/../Flutter/ephemeral/.symlinks/plugins/flutter_gemma/macos"
+APP_BUNDLE="${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app"
+RESOURCES_DIR="$APP_BUNDLE/Contents/Resources"
+JAR_NAME="litertlm-server.jar"
+JAR_CACHE_DIR="$HOME/Library/Caches/flutter_gemma/jar"
+JAR_CACHE_PATH="$JAR_CACHE_DIR/$JAR_NAME"
+JAR_URL="https://github.com/DenisovAV/flutter_gemma/releases/download/v0.12.6/$JAR_NAME"
+JAR_CHECKSUM="fefc53d076533de164b5ce07c65f9aedc4739f83efc93e67625f0d90029ae5b7"
+
+mkdir -p "$RESOURCES_DIR" "$JAR_CACHE_DIR"
+if [ ! -f "$RESOURCES_DIR/$JAR_NAME" ]; then
+  if [ ! -f "$JAR_CACHE_PATH" ]; then
+    TMP_JAR_PATH="$JAR_CACHE_PATH.tmp"
+    rm -f "$TMP_JAR_PATH"
+    curl -L --fail --retry 3 --progress-bar -o "$TMP_JAR_PATH" "$JAR_URL"
+    echo "$JAR_CHECKSUM  $TMP_JAR_PATH" | shasum -a 256 -c -
+    mv "$TMP_JAR_PATH" "$JAR_CACHE_PATH"
+  fi
+  cp "$JAR_CACHE_PATH" "$RESOURCES_DIR/$JAR_NAME"
+fi
+
+if [ -f "$PLUGIN_PATH/scripts/setup_desktop.sh" ]; then
+  sh "$PLUGIN_PATH/scripts/setup_desktop.sh" "$PLUGIN_PATH" "$APP_BUNDLE"
+fi
+SCRIPT
+    main_project.save
+  end
 end

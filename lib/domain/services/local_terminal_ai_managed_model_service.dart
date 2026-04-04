@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path_provider/path_provider.dart';
 
 import 'local_terminal_ai_platform_service.dart';
 import 'local_terminal_ai_settings_service.dart';
@@ -267,6 +269,7 @@ class LocalTerminalAiManagedModelController
     }
 
     try {
+      await _prepareManagedDownloadEnvironment();
       await FlutterGemma.initialize();
       final builder = FlutterGemma.installModel(
         modelType: ModelType.gemmaIt,
@@ -351,6 +354,18 @@ class LocalTerminalAiManagedModelController
       return 'Managed ${spec.displayName} downloaded but could not start on this device. Retry the setup from Settings.';
     }
     return 'Managed ${spec.displayName} setup failed: $errorMessage';
+  }
+
+  Future<void> _prepareManagedDownloadEnvironment() async {
+    if (kIsWeb || !Platform.isMacOS) {
+      return;
+    }
+
+    final documentsDirectory = await getApplicationDocumentsDirectory();
+    await documentsDirectory.create(recursive: true);
+
+    final cacheDirectory = await getApplicationCacheDirectory();
+    await cacheDirectory.create(recursive: true);
   }
 }
 
