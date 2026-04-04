@@ -17,10 +17,10 @@ void main() {
     expect(spec!.fileName, 'gemma-4-E2B-it.litertlm');
     expect(spec.url, contains('gemma-4-E2B-it.litertlm'));
     expect(spec.fileType, ModelFileType.task);
-    expect(spec.preferredBackend, PreferredBackend.npu);
+    expect(spec.preferredBackend, PreferredBackend.gpu);
   });
 
-  test('managed Gemma 4 is unavailable on iOS for now', () {
+  test('managed Gemma 4 uses LiteRT-LM on iOS', () {
     debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
 
@@ -28,7 +28,10 @@ void main() {
 
     final spec = localTerminalAiManagedGemma4SpecForSettings(settings);
 
-    expect(spec, isNull);
+    expect(spec, isNotNull);
+    expect(spec!.fileName, 'gemma-4-E2B-it.litertlm');
+    expect(spec.url, contains('7fa1d78473894f7e736a21d920c3aa80f950c0db'));
+    expect(spec.preferredBackend, PreferredBackend.gpu);
   });
 
   test('managed Gemma 4 auto-downloads whenever the assistant is enabled', () {

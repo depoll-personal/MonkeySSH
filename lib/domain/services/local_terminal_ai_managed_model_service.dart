@@ -9,8 +9,11 @@ import 'package:path_provider/path_provider.dart';
 import 'local_terminal_ai_platform_service.dart';
 import 'local_terminal_ai_settings_service.dart';
 
+const _gemma4E2BLiteRtLmCommitHash = '7fa1d78473894f7e736a21d920c3aa80f950c0db';
+const _gemma4E2BLiteRtLmFileName = 'gemma-4-E2B-it.litertlm';
 const _gemma4E2BLiteRtLmUrl =
-    'https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm';
+    'https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/'
+    '$_gemma4E2BLiteRtLmCommitHash/$_gemma4E2BLiteRtLmFileName?download=true';
 const _gemma4E2BModelId = 'gemma-4-E2B-it';
 const _managedGemmaSessionTemperature = 0.2;
 
@@ -416,11 +419,18 @@ LocalTerminalAiManagedModelSpec? localTerminalAiManagedGemma4Spec() {
       displayName: 'Gemma 4 E2B',
       url: _gemma4E2BLiteRtLmUrl,
       fileType: ModelFileType.task,
-      fileName: 'gemma-4-E2B-it.litertlm',
-      preferredBackend: PreferredBackend.npu,
+      fileName: _gemma4E2BLiteRtLmFileName,
+      preferredBackend: PreferredBackend.gpu,
       foregroundDownload: true,
     ),
-    TargetPlatform.iOS => null,
+    TargetPlatform.iOS => const LocalTerminalAiManagedModelSpec(
+      modelId: _gemma4E2BModelId,
+      displayName: 'Gemma 4 E2B',
+      url: _gemma4E2BLiteRtLmUrl,
+      fileType: ModelFileType.task,
+      fileName: _gemma4E2BLiteRtLmFileName,
+      preferredBackend: PreferredBackend.gpu,
+    ),
     TargetPlatform.macOS ||
     TargetPlatform.windows ||
     TargetPlatform.linux => const LocalTerminalAiManagedModelSpec(
@@ -428,7 +438,7 @@ LocalTerminalAiManagedModelSpec? localTerminalAiManagedGemma4Spec() {
       displayName: 'Gemma 4 E2B',
       url: _gemma4E2BLiteRtLmUrl,
       fileType: ModelFileType.task,
-      fileName: 'gemma-4-E2B-it.litertlm',
+      fileName: _gemma4E2BLiteRtLmFileName,
     ),
     TargetPlatform.fuchsia => null,
   };
