@@ -3289,6 +3289,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       builder: (context) => TerminalAiAssistantSheet(
         hostLabel: _host?.label ?? 'Terminal',
         currentTerminalLine: _buildWrappedTerminalCommandSnapshot()?.text,
+        shellStatusLabel: describeTerminalShellStatus(
+          _shellStatus,
+          lastExitCode: _lastExitCode,
+        ),
+        recentTerminalContext: _buildRecentTerminalContextSnapshot(),
         workingDirectoryPath: _workingDirectoryPath,
         onInsertSuggestedCommand: (command) =>
             _insertAiGeneratedText(command, isCompletion: false),
@@ -4275,6 +4280,64 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final cursorOffset =
         rowStarts[rowIndex] + columnOffsets[rowIndex][cursorColumn];
     return (text: builder.toString(), cursorOffset: cursorOffset);
+  }
+
+  String? _buildRecentTerminalContextSnapshot() {
+    const maxLogicalLines = 8;
+    const maxChars = 900;
+
+    final buffer = _terminal.buffer;
+    final row = buffer.absoluteCursorY;
+    if (row < 0 || row >= buffer.height) {
+      return null;
+    }
+
+    var commandStartRow = row;
+    while (commandStartRow > 0 && buffer.lines[commandStartRow].isWrapped) {
+      commandStartRow--;
+    }
+    if (commandStartRow == 0) {
+      return null;
+    }
+
+    final logicalLines = <String>[];
+    var lineIndex = commandStartRow - 1;
+    while (lineIndex >= 0 && logicalLines.length < maxLogicalLines) {
+      var logicalStartRow = lineIndex;
+      while (logicalStartRow > 0 && buffer.lines[logicalStartRow].isWrapped) {
+        logicalStartRow--;
+      }
+
+      final builder = StringBuffer();
+      for (
+        var currentRow = logicalStartRow;
+        currentRow <= lineIndex;
+        currentRow++
+      ) {
+        final lineSnapshot = _buildTerminalLineSnapshot(
+          buffer.lines[currentRow],
+          buffer.viewWidth,
+          preserveTrailingPadding: currentRow < lineIndex,
+        );
+        builder.write(lineSnapshot.text);
+      }
+
+      final logicalLine = builder.toString().trimRight();
+      if (logicalLine.trim().isNotEmpty) {
+        logicalLines.insert(0, logicalLine);
+      }
+      lineIndex = logicalStartRow - 1;
+    }
+
+    if (logicalLines.isEmpty) {
+      return null;
+    }
+
+    final context = logicalLines.join('\n');
+    if (context.length <= maxChars) {
+      return context;
+    }
+    return '...${context.substring(context.length - (maxChars - 3))}';
   }
 
   String? _terminalTextBeforeCursor() {

@@ -53,6 +53,55 @@ void main() {
     );
 
     test(
+      'adds bounded terminal context to native suggestion prompts',
+      () async {
+        final platformService = _FakePlatformService(
+          runtimeInfo: const LocalTerminalAiRuntimeInfo(
+            provider: LocalTerminalAiPlatformProvider.appleFoundationModels,
+            supportedPlatform: true,
+            available: true,
+            statusMessage: 'Apple Intelligence is ready on this device.',
+            modelName: 'Apple Intelligence',
+          ),
+          response: 'pwd || Print directory',
+        );
+        final service = LocalTerminalAiService(
+          managedModelCoordinator: _FakeManagedModelCoordinator(),
+          platformService: platformService,
+          fallbackRuntime: _FakeFallbackRuntime(response: 'unused'),
+        );
+        final recentContext = List<String>.generate(
+          24,
+          (index) => 'line $index ${'context ' * 12}',
+        ).join('\n');
+
+        await service.suggestCommands(
+          settings: const LocalTerminalAiSettings(enabled: true),
+          taskDescription: 'show current directory and recent errors',
+          hostLabel: 'prod shell',
+          workingDirectoryPath: '/srv/very/long/path',
+          currentTerminalLine: 'tail -f logs/app.log',
+          shellStatusLabel: 'Prompt',
+          recentTerminalContext: recentContext,
+        );
+
+        expect(
+          platformService.lastPrompt,
+          contains(
+            'Local runtime: Apple Foundation Models (Apple Intelligence)',
+          ),
+        );
+        expect(platformService.lastPrompt, contains('Shell status: Prompt'));
+        expect(
+          platformService.lastPrompt,
+          contains('Recent terminal context:'),
+        );
+        expect(platformService.lastPrompt, isNot(contains('line 0 context')));
+        expect(platformService.lastPrompt, contains('line 23 context'));
+      },
+    );
+
+    test(
       'prepares Gemini Nano before generating when Android support exists',
       () async {
         final platformService = _FakePlatformService(
@@ -114,6 +163,7 @@ void main() {
       expect(fallback.generateCallCount, 1);
       expect(fallback.lastManagedModel?.modelId, 'gemma-4-E2B-it');
       expect(fallback.lastMaxTokens, 256);
+      expect(fallback.lastPrompt, contains('Local runtime: Managed Gemma 4'));
       expect(suggestions.single.command, 'pwd');
     });
 
@@ -298,6 +348,7 @@ class _FakePlatformService extends LocalTerminalAiPlatformService {
   final String? response;
   int prepareCallCount = 0;
   int generateCallCount = 0;
+  String? lastPrompt;
 
   @override
   Future<LocalTerminalAiRuntimeInfo> getRuntimeInfo() async => runtimeInfo;
@@ -311,6 +362,7 @@ class _FakePlatformService extends LocalTerminalAiPlatformService {
     required int maxTokens,
   }) async {
     generateCallCount += 1;
+    lastPrompt = prompt;
     return response ?? 'pwd || Print directory';
   }
 }
@@ -323,6 +375,7 @@ class _FakeFallbackRuntime implements LocalTerminalAiFallbackRuntime {
   int generateCallCount = 0;
   int? lastMaxTokens;
   LocalTerminalAiManagedModelSpec? lastManagedModel;
+  String? lastPrompt;
 
   @override
   Future<String> generateText({
@@ -333,6 +386,7 @@ class _FakeFallbackRuntime implements LocalTerminalAiFallbackRuntime {
     generateCallCount += 1;
     lastManagedModel = managedModel;
     lastMaxTokens = maxTokens;
+    lastPrompt = prompt;
     if (error case final error?) {
       throw error;
     }

@@ -16,6 +16,8 @@ class TerminalAiAssistantSheet extends ConsumerStatefulWidget {
     required this.onInsertCompletion,
     required this.onOpenSettings,
     this.currentTerminalLine,
+    this.shellStatusLabel,
+    this.recentTerminalContext,
     this.workingDirectoryPath,
     super.key,
   });
@@ -25,6 +27,12 @@ class TerminalAiAssistantSheet extends ConsumerStatefulWidget {
 
   /// Current command line snapshot from the terminal.
   final String? currentTerminalLine;
+
+  /// Current shell lifecycle state reported by shell integration.
+  final String? shellStatusLabel;
+
+  /// Small recent transcript window from the terminal buffer.
+  final String? recentTerminalContext;
 
   /// Current working directory for the terminal session.
   final String? workingDirectoryPath;
@@ -249,6 +257,8 @@ class _TerminalAiAssistantSheetState
             hostLabel: widget.hostLabel,
             workingDirectoryPath: widget.workingDirectoryPath,
             currentTerminalLine: widget.currentTerminalLine,
+            shellStatusLabel: widget.shellStatusLabel,
+            recentTerminalContext: widget.recentTerminalContext,
           );
       if (!mounted) {
         return;
@@ -292,6 +302,8 @@ class _TerminalAiAssistantSheetState
             currentTerminalLine: currentLine,
             hostLabel: widget.hostLabel,
             workingDirectoryPath: widget.workingDirectoryPath,
+            shellStatusLabel: widget.shellStatusLabel,
+            recentTerminalContext: widget.recentTerminalContext,
           );
       if (!mounted) {
         return;

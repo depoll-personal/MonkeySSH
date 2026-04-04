@@ -9,6 +9,12 @@ import 'local_terminal_ai_settings_service.dart';
 
 const _maxSuggestionTokens = 256;
 const _maxCompletionTokens = 256;
+const _maxTaskDescriptionPromptChars = 280;
+const _maxHostLabelPromptChars = 80;
+const _maxWorkingDirectoryPromptChars = 160;
+const _maxCurrentTerminalLinePromptChars = 480;
+const _maxShellStatusPromptChars = 48;
+const _maxRecentTerminalContextPromptChars = 900;
 
 /// A single command suggestion produced by the on-device AI assistant.
 class LocalTerminalAiSuggestion {
@@ -87,6 +93,8 @@ class LocalTerminalAiService {
     required String hostLabel,
     String? workingDirectoryPath,
     String? currentTerminalLine,
+    String? shellStatusLabel,
+    String? recentTerminalContext,
   }) async {
     final trimmedTask = taskDescription.trim();
     if (trimmedTask.isEmpty) {
@@ -95,13 +103,18 @@ class LocalTerminalAiService {
       );
     }
 
+    final runtimeInfo = await _platformService.getRuntimeInfo();
     final response = await _runPrompt(
       settings: settings,
+      runtimeInfo: runtimeInfo,
       prompt: _buildSuggestionPrompt(
+        runtimeLabel: _promptRuntimeLabel(runtimeInfo),
         taskDescription: trimmedTask,
         hostLabel: hostLabel,
         workingDirectoryPath: workingDirectoryPath,
         currentTerminalLine: currentTerminalLine,
+        shellStatusLabel: shellStatusLabel,
+        recentTerminalContext: recentTerminalContext,
       ),
       maxTokens: _maxSuggestionTokens,
     );
@@ -114,6 +127,8 @@ class LocalTerminalAiService {
     required String currentTerminalLine,
     required String hostLabel,
     String? workingDirectoryPath,
+    String? shellStatusLabel,
+    String? recentTerminalContext,
   }) async {
     final trimmedLine = currentTerminalLine.trimRight();
     if (trimmedLine.isEmpty) {
@@ -122,12 +137,17 @@ class LocalTerminalAiService {
       );
     }
 
+    final runtimeInfo = await _platformService.getRuntimeInfo();
     final response = await _runPrompt(
       settings: settings,
+      runtimeInfo: runtimeInfo,
       prompt: _buildCompletionPrompt(
+        runtimeLabel: _promptRuntimeLabel(runtimeInfo),
         currentTerminalLine: trimmedLine,
         hostLabel: hostLabel,
         workingDirectoryPath: workingDirectoryPath,
+        shellStatusLabel: shellStatusLabel,
+        recentTerminalContext: recentTerminalContext,
       ),
       maxTokens: _maxCompletionTokens,
     );
@@ -150,6 +170,7 @@ class LocalTerminalAiService {
 
   Future<String> _runPrompt({
     required LocalTerminalAiSettings settings,
+    required LocalTerminalAiRuntimeInfo runtimeInfo,
     required String prompt,
     required int maxTokens,
   }) async {
@@ -159,7 +180,6 @@ class LocalTerminalAiService {
       );
     }
 
-    final runtimeInfo = await _platformService.getRuntimeInfo();
     if (runtimeInfo.shouldAttemptNativeRuntime) {
       return _runNativePrompt(
         runtimeInfo: runtimeInfo,
@@ -223,21 +243,49 @@ class LocalTerminalAiService {
   }
 
   String _buildSuggestionPrompt({
+    required String runtimeLabel,
     required String taskDescription,
     required String hostLabel,
     String? workingDirectoryPath,
     String? currentTerminalLine,
+    String? shellStatusLabel,
+    String? recentTerminalContext,
   }) {
+    final normalizedTaskDescription = _normalizePromptText(
+      taskDescription,
+      maxChars: _maxTaskDescriptionPromptChars,
+    );
+    final normalizedHostLabel = _normalizePromptText(
+      hostLabel,
+      maxChars: _maxHostLabelPromptChars,
+    );
     final workingDirectory = _promptValueOrFallback(
       workingDirectoryPath,
       fallback: 'unknown',
+      maxChars: _maxWorkingDirectoryPromptChars,
     );
     final currentLine = _promptValueOrFallback(
       currentTerminalLine,
       fallback: 'empty',
+      maxChars: _maxCurrentTerminalLinePromptChars,
+      preferTail: true,
+    );
+    final shellStatus = _promptValueOrFallback(
+      shellStatusLabel,
+      fallback: 'unknown',
+      maxChars: _maxShellStatusPromptChars,
+    );
+    final terminalContext = _promptValueOrFallback(
+      recentTerminalContext,
+      fallback: 'none',
+      maxChars: _maxRecentTerminalContextPromptChars,
+      preferTail: true,
     );
     final buffer = StringBuffer()
       ..writeln('You are an on-device terminal assistant inside an SSH client.')
+      ..writeln(
+        'You are running on a small on-device model, so use only the highest-value context below.',
+      )
       ..writeln('Suggest concise shell commands for the user request.')
       ..writeln('Keep the answer safe and practical.')
       ..writeln('Return at most three suggestions.')
@@ -248,43 +296,126 @@ class LocalTerminalAiService {
       ..writeln(
         'Prefer a single command over chained shell commands when possible.',
       )
+      ..writeln(
+        'Do not invent remote platform details that are not present in the context.',
+      )
       ..writeln('If nothing is appropriate, return exactly NO_SUGGESTION.')
       ..writeln()
-      ..writeln('Host: $hostLabel')
+      ..writeln('Local runtime: $runtimeLabel')
+      ..writeln('Host: $normalizedHostLabel')
+      ..writeln('Shell status: $shellStatus')
       ..writeln('Working directory: $workingDirectory')
       ..writeln('Current terminal line: $currentLine')
-      ..writeln('User request: $taskDescription');
+      ..writeln('Recent terminal context:')
+      ..writeln(terminalContext)
+      ..writeln('User request: $normalizedTaskDescription');
     return buffer.toString();
   }
 
   String _buildCompletionPrompt({
+    required String runtimeLabel,
     required String currentTerminalLine,
     required String hostLabel,
     String? workingDirectoryPath,
+    String? shellStatusLabel,
+    String? recentTerminalContext,
   }) {
+    final normalizedHostLabel = _normalizePromptText(
+      hostLabel,
+      maxChars: _maxHostLabelPromptChars,
+    );
+    final normalizedCurrentLine = _normalizePromptText(
+      currentTerminalLine,
+      maxChars: _maxCurrentTerminalLinePromptChars,
+      preferTail: true,
+    );
     final workingDirectory = _promptValueOrFallback(
       workingDirectoryPath,
       fallback: 'unknown',
+      maxChars: _maxWorkingDirectoryPromptChars,
+    );
+    final shellStatus = _promptValueOrFallback(
+      shellStatusLabel,
+      fallback: 'unknown',
+      maxChars: _maxShellStatusPromptChars,
+    );
+    final terminalContext = _promptValueOrFallback(
+      recentTerminalContext,
+      fallback: 'none',
+      maxChars: _maxRecentTerminalContextPromptChars,
+      preferTail: true,
     );
     final buffer = StringBuffer()
       ..writeln('You are an on-device terminal assistant inside an SSH client.')
+      ..writeln(
+        'You are running on a small on-device model, so focus on the current line and the freshest terminal context.',
+      )
       ..writeln(
         'Complete the current terminal line by returning only the text that should be appended after the current cursor position.',
       )
       ..writeln('Do not repeat existing text from the line.')
       ..writeln('Do not add markdown, quotes, or explanation.')
       ..writeln('Keep the completion on a single line.')
+      ..writeln(
+        'Do not invent remote platform details that are not present in the context.',
+      )
       ..writeln('If no useful completion exists, return exactly NO_COMPLETION.')
       ..writeln()
-      ..writeln('Host: $hostLabel')
+      ..writeln('Local runtime: $runtimeLabel')
+      ..writeln('Host: $normalizedHostLabel')
+      ..writeln('Shell status: $shellStatus')
       ..writeln('Working directory: $workingDirectory')
-      ..writeln('Current terminal line: $currentTerminalLine');
+      ..writeln('Recent terminal context:')
+      ..writeln(terminalContext)
+      ..writeln('Current terminal line: $normalizedCurrentLine');
     return buffer.toString();
   }
 
-  String _promptValueOrFallback(String? value, {required String fallback}) {
+  String _promptRuntimeLabel(LocalTerminalAiRuntimeInfo runtimeInfo) {
+    if (runtimeInfo.provider == LocalTerminalAiPlatformProvider.none) {
+      return 'Managed Gemma 4';
+    }
+    final modelName = runtimeInfo.modelName?.trim();
+    if (modelName case final String modelName when modelName.isNotEmpty) {
+      return '${runtimeInfo.providerLabel} ($modelName)';
+    }
+    return runtimeInfo.providerLabel;
+  }
+
+  String _promptValueOrFallback(
+    String? value, {
+    required String fallback,
+    required int maxChars,
+    bool preferTail = false,
+  }) {
     final trimmedValue = value?.trim();
-    return trimmedValue?.isNotEmpty ?? false ? trimmedValue! : fallback;
+    return trimmedValue?.isNotEmpty ?? false
+        ? _normalizePromptText(
+            trimmedValue!,
+            maxChars: maxChars,
+            preferTail: preferTail,
+          )
+        : fallback;
+  }
+
+  String _normalizePromptText(
+    String value, {
+    required int maxChars,
+    bool preferTail = false,
+  }) {
+    final normalized = value
+        .replaceAll('\r\n', '\n')
+        .replaceAll('\r', '\n')
+        .trim();
+    if (normalized.length <= maxChars) {
+      return normalized;
+    }
+    if (maxChars <= 3) {
+      return normalized.substring(0, maxChars);
+    }
+    return preferTail
+        ? '...${normalized.substring(normalized.length - (maxChars - 3))}'
+        : '${normalized.substring(0, maxChars - 3)}...';
   }
 
   String _formatManagedModelSetupError(Object error) {
