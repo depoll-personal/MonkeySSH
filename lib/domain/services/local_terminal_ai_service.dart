@@ -162,10 +162,16 @@ class LocalTerminalAiService {
       try {
         return await platformRuntime.generateText(
           prompt: prompt,
-          maxTokens: maxTokens,
+          maxTokens: _nativeMaxTokensForRuntime(
+            runtimeInfo: runtimeInfo,
+            requestedMaxTokens: maxTokens,
+          ),
         );
       } on LocalTerminalAiPlatformException catch (error) {
         nativeRuntimeFailure = error.message;
+        if (runtimeInfo.canUseNativeRuntime) {
+          throw LocalTerminalAiConfigurationException(nativeRuntimeFailure);
+        }
       }
     }
 
@@ -314,6 +320,16 @@ class LocalTerminalAiService {
       return firstLine.substring(currentTerminalLine.length);
     }
     return firstLine;
+  }
+
+  int _nativeMaxTokensForRuntime({
+    required LocalTerminalAiRuntimeInfo runtimeInfo,
+    required int requestedMaxTokens,
+  }) {
+    if (runtimeInfo.provider == LocalTerminalAiPlatformProvider.androidAiCore) {
+      return requestedMaxTokens.clamp(1, 256);
+    }
+    return requestedMaxTokens;
   }
 
   String _formatManagedRuntimeError(

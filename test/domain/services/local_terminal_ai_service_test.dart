@@ -35,8 +35,38 @@ void main() {
       );
 
       expect(platform.generateCallCount, 1);
+      expect(platform.lastMaxTokens, 1024);
       expect(fallback.generateCallCount, 0);
       expect(suggestions.single.command, 'ls');
+    });
+
+    test('caps Android native requests to ML Kit token limits', () async {
+      final platform = _FakeLocalTerminalAiPlatformService(
+        runtimeInfo: const LocalTerminalAiRuntimeInfo(
+          provider: LocalTerminalAiPlatformProvider.androidAiCore,
+          supportedPlatform: true,
+          available: true,
+          statusMessage: 'Gemini Nano is ready on this device.',
+          modelName: 'nano-v3',
+        ),
+        response: 'pwd || Print directory',
+      );
+      final fallback = _FakeFallbackRuntime(response: 'unused');
+      final service = LocalTerminalAiService(
+        platformRuntime: platform,
+        managedModelCoordinator: _FakeManagedModelCoordinator(),
+        fallbackRuntime: fallback,
+      );
+
+      await service.suggestCommands(
+        settings: const LocalTerminalAiSettings(enabled: true),
+        taskDescription: 'show current directory',
+        hostLabel: 'prod',
+      );
+
+      expect(platform.generateCallCount, 1);
+      expect(platform.lastMaxTokens, 256);
+      expect(fallback.generateCallCount, 0);
     });
 
     test('falls back to managed Gemma 4 when native is unavailable', () async {
@@ -160,6 +190,61 @@ void main() {
     });
 
     test(
+      'surfaces the native runtime failure directly when the built-in runtime was ready',
+      () async {
+        final platform = _FakeLocalTerminalAiPlatformService(
+          runtimeInfo: const LocalTerminalAiRuntimeInfo(
+            provider: LocalTerminalAiPlatformProvider.androidAiCore,
+            supportedPlatform: true,
+            available: true,
+            statusMessage: 'Gemini Nano is ready on this device.',
+            modelName: 'nano-v3',
+          ),
+          response: 'unused',
+          generateError: const LocalTerminalAiPlatformException(
+            'Android AI Core generation failed.',
+          ),
+        );
+        final fallback = _FakeFallbackRuntime(
+          response: 'pwd || Print directory',
+        );
+        final managedModelCoordinator = _FakeManagedModelCoordinator(
+          managedModel: const LocalTerminalAiManagedModelSpec(
+            modelId: 'gemma-4-E2B-it',
+            displayName: 'Gemma 4 E2B',
+            url: 'https://example.com/gemma-4-E2B-it.litertlm',
+            fileType: ModelFileType.task,
+            fileName: 'gemma-4-E2B-it.litertlm',
+          ),
+        );
+        final service = LocalTerminalAiService(
+          platformRuntime: platform,
+          managedModelCoordinator: managedModelCoordinator,
+          fallbackRuntime: fallback,
+        );
+
+        await expectLater(
+          service.suggestCommands(
+            settings: const LocalTerminalAiSettings(enabled: true),
+            taskDescription: 'show current directory',
+            hostLabel: 'prod',
+          ),
+          throwsA(
+            isA<LocalTerminalAiConfigurationException>().having(
+              (error) => error.message,
+              'message',
+              'Android AI Core generation failed.',
+            ),
+          ),
+        );
+
+        expect(platform.generateCallCount, 1);
+        expect(managedModelCoordinator.ensureReadyCallCount, 0);
+        expect(fallback.generateCallCount, 0);
+      },
+    );
+
+    test(
       'surfaces a helpful managed-download message when no runtime is ready',
       () async {
         final platform = _FakeLocalTerminalAiPlatformService(
@@ -275,6 +360,7 @@ class _FakeLocalTerminalAiPlatformService
   final String response;
   final LocalTerminalAiPlatformException? generateError;
   int generateCallCount = 0;
+  int? lastMaxTokens;
 
   @override
   Future<LocalTerminalAiRuntimeInfo> getRuntimeInfo() async => runtimeInfo;
@@ -285,6 +371,7 @@ class _FakeLocalTerminalAiPlatformService
     required int maxTokens,
   }) async {
     generateCallCount += 1;
+    lastMaxTokens = maxTokens;
     if (generateError case final error?) {
       throw error;
     }

@@ -24,6 +24,7 @@ class LocalTerminalAiBridge(binaryMessenger: BinaryMessenger) {
     companion object {
         private const val CHANNEL_NAME = "xyz.depollsoft.monkeyssh/local_terminal_ai"
         private const val PROVIDER_NAME = "androidAiCore"
+        private const val MAX_NATIVE_OUTPUT_TOKENS = 256
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -96,6 +97,7 @@ class LocalTerminalAiBridge(binaryMessenger: BinaryMessenger) {
         }
 
         try {
+            val effectiveMaxTokens = maxTokens.coerceIn(1, MAX_NATIVE_OUTPUT_TOKENS)
             val text =
                 withContext(Dispatchers.Default) {
                     val model = getGenerativeModel()
@@ -104,7 +106,7 @@ class LocalTerminalAiBridge(binaryMessenger: BinaryMessenger) {
                         model.generateContent(
                             generateContentRequest(TextPart(prompt)) {
                                 temperature = 0.2f
-                                maxOutputTokens = maxTokens
+                                maxOutputTokens = effectiveMaxTokens
                                 candidateCount = 1
                             },
                         )
