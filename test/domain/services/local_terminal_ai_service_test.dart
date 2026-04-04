@@ -126,6 +126,41 @@ void main() {
       );
     });
 
+    test('surfaces a helpful iOS engine startup message', () async {
+      final service = LocalTerminalAiService(
+        managedModelCoordinator: _FakeManagedModelCoordinator(
+          managedModel: const LocalTerminalAiManagedModelSpec(
+            modelId: 'gemma-4-E2B-it',
+            displayName: 'Gemma 4 E2B',
+            url: 'https://example.com/gemma-4-E2B-it.litertlm',
+            fileType: ModelFileType.task,
+            fileName: 'gemma-4-E2B-it.litertlm',
+          ),
+        ),
+        fallbackRuntime: _FakeFallbackRuntime(
+          response: 'unused',
+          error: Exception(
+            'PlatformException(failedToInitializeEngine, INTERNAL: RET_CHECK failure model Error building tflite model, null, null)',
+          ),
+        ),
+      );
+
+      await expectLater(
+        service.suggestCommands(
+          settings: const LocalTerminalAiSettings(enabled: true),
+          taskDescription: 'list files',
+          hostLabel: 'prod',
+        ),
+        throwsA(
+          isA<LocalTerminalAiConfigurationException>().having(
+            (error) => error.message,
+            'message',
+            contains('installed but could not start on this device'),
+          ),
+        ),
+      );
+    });
+
     test('does not try to run when the assistant is disabled', () async {
       final fallback = _FakeFallbackRuntime(response: 'pwd || Print directory');
       final managedModelCoordinator = _FakeManagedModelCoordinator(

@@ -12,6 +12,7 @@ import 'local_terminal_ai_settings_service.dart';
 const _gemma4E2BLiteRtLmUrl =
     'https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm';
 const _gemma4E2BModelId = 'gemma-4-E2B-it';
+const _managedGemmaSessionTemperature = 0.2;
 
 /// Download lifecycle for the managed Gemma 4 fallback.
 enum LocalTerminalAiManagedModelStatus {
@@ -144,6 +145,12 @@ final localTerminalAiManagedModelProvider =
       LocalTerminalAiManagedModelController,
       LocalTerminalAiManagedModelState
     >(LocalTerminalAiManagedModelController.new);
+
+/// Creates a managed Gemma inference session with conservative cross-platform
+/// sampler settings.
+Future<InferenceModelSession> createManagedGemmaInferenceSession(
+  InferenceModel model,
+) => model.createSession(temperature: _managedGemmaSessionTemperature);
 
 /// Coordinates managed Gemma 4 fallback downloads through `flutter_gemma`.
 class LocalTerminalAiManagedModelController
@@ -342,7 +349,12 @@ class LocalTerminalAiManagedModelController
       maxTokens: 256,
       preferredBackend: spec.preferredBackend,
     );
-    await model.close();
+    try {
+      final session = await createManagedGemmaInferenceSession(model);
+      await session.close();
+    } finally {
+      await model.close();
+    }
   }
 
   String _formatManagedModelSetupError(
@@ -350,7 +362,9 @@ class LocalTerminalAiManagedModelController
     LocalTerminalAiManagedModelSpec spec,
   ) {
     final errorMessage = error.toString().trim();
-    if (errorMessage.contains('Failed to invoke the compiled model')) {
+    if (errorMessage.contains('Failed to invoke the compiled model') ||
+        errorMessage.contains('failedToInitializeEngine') ||
+        errorMessage.contains('Error building tflite model')) {
       return 'Managed ${spec.displayName} downloaded but could not start on this device. Retry the setup from Settings.';
     }
     return 'Managed ${spec.displayName} setup failed: $errorMessage';
