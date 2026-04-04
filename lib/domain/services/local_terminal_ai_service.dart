@@ -6,6 +6,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'local_terminal_ai_managed_model_service.dart';
 import 'local_terminal_ai_settings_service.dart';
 
+const _maxSuggestionTokens = 256;
+const _maxCompletionTokens = 256;
+
 /// A single command suggestion produced by the on-device AI assistant.
 class LocalTerminalAiSuggestion {
   /// Creates a new [LocalTerminalAiSuggestion].
@@ -94,7 +97,7 @@ class LocalTerminalAiService {
         workingDirectoryPath: workingDirectoryPath,
         currentTerminalLine: currentTerminalLine,
       ),
-      maxTokens: 1024,
+      maxTokens: _maxSuggestionTokens,
     );
     return _parseSuggestions(response);
   }
@@ -120,7 +123,7 @@ class LocalTerminalAiService {
         hostLabel: hostLabel,
         workingDirectoryPath: workingDirectoryPath,
       ),
-      maxTokens: 768,
+      maxTokens: _maxCompletionTokens,
     );
 
     final suffix = _normalizeCompletionSuffix(
@@ -154,7 +157,9 @@ class LocalTerminalAiService {
     try {
       managedModel = await _managedModelCoordinator.ensureReadyFor(settings);
     } on Exception catch (error) {
-      throw LocalTerminalAiConfigurationException(error.toString());
+      throw LocalTerminalAiConfigurationException(
+        _formatManagedModelSetupError(error),
+      );
     }
     if (managedModel != null) {
       try {
@@ -240,6 +245,15 @@ class LocalTerminalAiService {
     return trimmedValue?.isNotEmpty ?? false ? trimmedValue! : fallback;
   }
 
+  String _formatManagedModelSetupError(Object error) {
+    final errorMessage = error.toString();
+    const exceptionPrefix = 'Exception: ';
+    if (errorMessage.startsWith(exceptionPrefix)) {
+      return errorMessage.substring(exceptionPrefix.length);
+    }
+    return errorMessage;
+  }
+
   List<LocalTerminalAiSuggestion> _parseSuggestions(String response) {
     final normalizedResponse = response.trim();
     if (normalizedResponse == 'NO_SUGGESTION') {
@@ -318,7 +332,6 @@ abstract class LocalTerminalAiFallbackRuntime {
 /// `flutter_gemma`-backed fallback runtime used off the native system path.
 class FlutterGemmaLocalTerminalAiFallbackRuntime
     implements LocalTerminalAiFallbackRuntime {
-  String? _activeSignature;
   Future<void>? _initializationFuture;
   Future<void> _inferenceChain = Future<void>.value();
 
@@ -330,8 +343,7 @@ class FlutterGemmaLocalTerminalAiFallbackRuntime
   }) => _serializeInference(() async {
     await _ensureInitialized();
 
-    final signature = managedModel.signature;
-    if (_activeSignature != signature || !FlutterGemma.hasActiveModel()) {
+    if (!FlutterGemma.hasActiveModel()) {
       await FlutterGemma.installModel(
             modelType: ModelType.gemmaIt,
             fileType: managedModel.fileType,
@@ -341,7 +353,6 @@ class FlutterGemmaLocalTerminalAiFallbackRuntime
             foreground: managedModel.foregroundDownload,
           )
           .install();
-      _activeSignature = signature;
     }
 
     final model = await FlutterGemma.getActiveModel(

@@ -19,6 +19,9 @@ enum LocalTerminalAiManagedModelStatus {
   /// The managed model is currently downloading or installing.
   downloading,
 
+  /// The managed model download finished and the runtime is being warmed up.
+  verifying,
+
   /// The managed model is installed and ready to use.
   ready,
 
@@ -97,6 +100,9 @@ class LocalTerminalAiManagedModelState {
   /// Whether a managed download is currently in flight.
   bool get isDownloading =>
       status == LocalTerminalAiManagedModelStatus.downloading;
+
+  /// Whether a managed verification step is currently in flight.
+  bool get isVerifying => status == LocalTerminalAiManagedModelStatus.verifying;
 
   /// Returns a copy of this state with replacements applied.
   LocalTerminalAiManagedModelState copyWith({
@@ -281,6 +287,15 @@ class LocalTerminalAiManagedModelController
         return;
       }
       state = LocalTerminalAiManagedModelState(
+        status: LocalTerminalAiManagedModelStatus.verifying,
+        spec: spec,
+        progress: 100,
+      );
+      await _verifyManagedModelRuntime(spec);
+      if (_disposed || _activeSignature != spec.signature) {
+        return;
+      }
+      state = LocalTerminalAiManagedModelState(
         status: LocalTerminalAiManagedModelStatus.ready,
         spec: spec,
         progress: 100,
@@ -298,7 +313,7 @@ class LocalTerminalAiManagedModelController
       state = LocalTerminalAiManagedModelState(
         status: LocalTerminalAiManagedModelStatus.failed,
         spec: spec,
-        errorMessage: error.toString(),
+        errorMessage: _formatManagedModelSetupError(error, spec),
       );
     } finally {
       if (identical(_cancelToken, token)) {
@@ -315,6 +330,27 @@ class LocalTerminalAiManagedModelController
       );
     }
     _cancelToken = null;
+  }
+
+  Future<void> _verifyManagedModelRuntime(
+    LocalTerminalAiManagedModelSpec spec,
+  ) async {
+    final model = await FlutterGemma.getActiveModel(
+      maxTokens: 256,
+      preferredBackend: spec.preferredBackend,
+    );
+    await model.close();
+  }
+
+  String _formatManagedModelSetupError(
+    Object error,
+    LocalTerminalAiManagedModelSpec spec,
+  ) {
+    final errorMessage = error.toString().trim();
+    if (errorMessage.contains('Failed to invoke the compiled model')) {
+      return 'Managed ${spec.displayName} downloaded but could not start on this device. Retry the setup from Settings.';
+    }
+    return 'Managed ${spec.displayName} setup failed: $errorMessage';
   }
 }
 
@@ -352,7 +388,6 @@ LocalTerminalAiManagedModelSpec? localTerminalAiManagedGemma4Spec() {
       url: _gemma4E2BLiteRtLmUrl,
       fileType: ModelFileType.task,
       fileName: 'gemma-4-E2B-it.litertlm',
-      preferredBackend: PreferredBackend.cpu,
       foregroundDownload: true,
     ),
     TargetPlatform.iOS => const LocalTerminalAiManagedModelSpec(

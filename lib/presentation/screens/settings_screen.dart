@@ -849,10 +849,11 @@ class _OnDeviceAiSection extends ConsumerWidget {
     return switch (managedModel.status) {
       LocalTerminalAiManagedModelStatus.ready =>
         '${managedSpec.displayName} is installed and ready.',
+      LocalTerminalAiManagedModelStatus.verifying =>
+        'Finalizing ${managedSpec.displayName} so it can start on this device.',
       LocalTerminalAiManagedModelStatus.downloading =>
         'Downloading ${managedSpec.displayName} (${managedModel.progress}%).',
-      LocalTerminalAiManagedModelStatus.failed =>
-        'Download failed. Tap to retry.',
+      LocalTerminalAiManagedModelStatus.failed => 'Setup failed. Tap to retry.',
       LocalTerminalAiManagedModelStatus.idle =>
         'Preparing the managed ${managedSpec.displayName} download...',
     };
@@ -875,6 +876,10 @@ class _OnDeviceAiSection extends ConsumerWidget {
       LocalTerminalAiManagedModelStatus.ready => const Icon(
         Icons.check_circle_outline,
       ),
+      LocalTerminalAiManagedModelStatus.verifying => const SizedBox.square(
+        dimension: 20,
+        child: CircularProgressIndicator(strokeWidth: 2),
+      ),
       LocalTerminalAiManagedModelStatus.downloading => SizedBox.square(
         dimension: 20,
         child: CircularProgressIndicator(
@@ -886,7 +891,7 @@ class _OnDeviceAiSection extends ConsumerWidget {
       ),
       LocalTerminalAiManagedModelStatus.failed => IconButton(
         onPressed: onRetry,
-        tooltip: 'Retry managed Gemma 4 download',
+        tooltip: 'Retry managed Gemma 4 setup',
         icon: const Icon(Icons.refresh),
       ),
       LocalTerminalAiManagedModelStatus.idle => const Icon(

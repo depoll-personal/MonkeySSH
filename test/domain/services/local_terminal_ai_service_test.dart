@@ -34,7 +34,7 @@ void main() {
       expect(managedModelCoordinator.ensureReadyCallCount, 1);
       expect(fallback.generateCallCount, 1);
       expect(fallback.lastManagedModel?.modelId, 'gemma-4-E2B-it');
-      expect(fallback.lastMaxTokens, 1024);
+      expect(fallback.lastMaxTokens, 256);
       expect(suggestions.single.command, 'pwd');
     });
 
@@ -61,7 +61,7 @@ void main() {
 
       expect(completion.suffix, ' -la');
       expect(completion.preview, 'ls -la');
-      expect(fallback.lastMaxTokens, 768);
+      expect(fallback.lastMaxTokens, 256);
     });
 
     test(

@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/services/local_terminal_ai_managed_model_service.dart';
 import 'package:monkeyssh/domain/services/local_terminal_ai_settings_service.dart';
@@ -15,6 +16,8 @@ void main() {
     expect(spec, isNotNull);
     expect(spec!.fileName, 'gemma-4-E2B-it.litertlm');
     expect(spec.url, contains('gemma-4-E2B-it.litertlm'));
+    expect(spec.fileType, ModelFileType.task);
+    expect(spec.preferredBackend, isNull);
   });
 
   test('managed Gemma 4 download also applies on iOS', () {
@@ -27,6 +30,7 @@ void main() {
 
     expect(spec, isNotNull);
     expect(spec!.fileName, 'gemma-4-E2B-it.litertlm');
+    expect(spec.fileType, ModelFileType.task);
   });
 
   test('managed Gemma 4 auto-downloads whenever the assistant is enabled', () {

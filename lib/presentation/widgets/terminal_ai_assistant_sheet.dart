@@ -345,10 +345,12 @@ class _AssistantStatusCard extends StatelessWidget {
         : switch (managedModel.status) {
             LocalTerminalAiManagedModelStatus.ready =>
               'Using managed ${managedSpec.displayName} on this device.',
+            LocalTerminalAiManagedModelStatus.verifying =>
+              'Finalizing managed ${managedSpec.displayName} on this device.',
             LocalTerminalAiManagedModelStatus.downloading =>
               'Downloading managed ${managedSpec.displayName} (${managedModel.progress}%).',
             LocalTerminalAiManagedModelStatus.failed =>
-              'Managed ${managedSpec.displayName} download failed. Open Settings to retry.',
+              'Managed ${managedSpec.displayName} setup failed. Open Settings to retry.',
             LocalTerminalAiManagedModelStatus.idle =>
               'Preparing the managed ${managedSpec.displayName} download...',
           };
