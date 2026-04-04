@@ -843,8 +843,11 @@ class _OnDeviceAiSection extends ConsumerWidget {
     if (managedSpec == null) {
       return 'Managed Gemma 4 download is not available on this platform yet.';
     }
+    final autoSyncsInSettings = shouldAutoSyncManagedGemma4(settings: settings);
     if (!settings.enabled) {
-      return '${managedSpec.displayName} downloads automatically after you enable the assistant.';
+      return autoSyncsInSettings
+          ? '${managedSpec.displayName} downloads automatically after you enable the assistant.'
+          : '${managedSpec.displayName} will download when you first use the assistant.';
     }
     return switch (managedModel.status) {
       LocalTerminalAiManagedModelStatus.ready =>
@@ -855,7 +858,9 @@ class _OnDeviceAiSection extends ConsumerWidget {
         'Downloading ${managedSpec.displayName} (${managedModel.progress}%).',
       LocalTerminalAiManagedModelStatus.failed => 'Setup failed. Tap to retry.',
       LocalTerminalAiManagedModelStatus.idle =>
-        'Preparing the managed ${managedSpec.displayName} download...',
+        autoSyncsInSettings
+            ? 'Preparing the managed ${managedSpec.displayName} download...'
+            : '${managedSpec.displayName} will start when you first ask for suggestions or completions.',
     };
   }
 
@@ -905,6 +910,12 @@ class _OnDeviceAiSection extends ConsumerWidget {
     required LocalTerminalAiManagedModelSpec? managedSpec,
   }) {
     if (managedSpec != null) {
+      final autoSyncsInSettings = shouldAutoSyncManagedGemma4(
+        settings: settings,
+      );
+      if (!autoSyncsInSettings && settings.enabled) {
+        return 'MonkeySSH uses managed ${managedSpec.displayName} for terminal suggestions and completions on this branch. On iPhone, managed setup waits until you actually use the assistant. Commands are never run automatically.';
+      }
       return 'MonkeySSH uses managed ${managedSpec.displayName} for terminal suggestions and completions on this branch. Commands are never run automatically.';
     }
     return 'MonkeySSH uses managed Gemma 4 for terminal suggestions and completions on this branch. Managed download is not available on this platform yet. Commands are never run automatically.';

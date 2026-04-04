@@ -336,10 +336,13 @@ class _AssistantStatusCard extends StatelessWidget {
     final theme = Theme.of(context);
     final managedSpec = localTerminalAiManagedGemma4Spec();
     final isConfigured = _canUseAssistant(settings, managedModel);
+    final autoSyncsInSettings = shouldAutoSyncManagedGemma4(settings: settings);
     final subtitle = !settings.enabled
         ? managedSpec == null
               ? 'Enable the assistant in Settings to start using it.'
-              : 'Enable the assistant in Settings to start downloading ${managedSpec.displayName}.'
+              : autoSyncsInSettings
+              ? 'Enable the assistant in Settings to start downloading ${managedSpec.displayName}.'
+              : 'Enable the assistant in Settings to start using ${managedSpec.displayName}.'
         : managedSpec == null
         ? 'Managed Gemma 4 download is not available on this platform.'
         : switch (managedModel.status) {
@@ -352,7 +355,9 @@ class _AssistantStatusCard extends StatelessWidget {
             LocalTerminalAiManagedModelStatus.failed =>
               'Managed ${managedSpec.displayName} setup failed. Open Settings to retry.',
             LocalTerminalAiManagedModelStatus.idle =>
-              'Preparing the managed ${managedSpec.displayName} download...',
+              autoSyncsInSettings
+                  ? 'Preparing the managed ${managedSpec.displayName} download...'
+                  : 'Managed ${managedSpec.displayName} will start the first time you ask for suggestions or completions.',
           };
 
     return Card(

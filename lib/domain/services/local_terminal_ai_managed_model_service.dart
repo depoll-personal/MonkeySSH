@@ -444,7 +444,19 @@ bool shouldUseManagedGemma4Fallback(LocalTerminalAiSettings settings) =>
 bool shouldAutoSyncManagedGemma4({
   required LocalTerminalAiSettings settings,
   LocalTerminalAiRuntimeInfo? runtimeInfo,
-}) => localTerminalAiManagedGemma4SpecForSettings(settings) != null;
+}) {
+  if (localTerminalAiManagedGemma4SpecForSettings(settings) == null) {
+    return false;
+  }
+
+  // iOS runtime startup is deferred until explicit use so merely opening
+  // Settings does not touch the managed Gemma runtime path.
+  if (defaultTargetPlatform == TargetPlatform.iOS) {
+    return false;
+  }
+
+  return true;
+}
 
 /// Returns the managed Gemma 4 artifact for the current platform and settings.
 LocalTerminalAiManagedModelSpec? localTerminalAiManagedGemma4SpecForSettings(
