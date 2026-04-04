@@ -56,6 +56,9 @@ PODS:
   - MediaPipeTasksGenAI (0.10.24):
     - MediaPipeTasksGenAIC (= 0.10.24)
   - MediaPipeTasksGenAIC (0.10.24)
+  - mobile_scanner (7.0.0):
+    - Flutter
+    - FlutterMacOS
   - package_info_plus (0.4.5):
     - Flutter
   - pasteboard (0.0.1):
@@ -91,6 +94,7 @@ DEPENDENCIES:
   - integration_test (from `.symlinks/plugins/integration_test/ios`)
   - large_file_handler (from `.symlinks/plugins/large_file_handler/ios`)
   - local_auth_darwin (from `.symlinks/plugins/local_auth_darwin/darwin`)
+  - mobile_scanner (from `.symlinks/plugins/mobile_scanner/darwin`)
   - package_info_plus (from `.symlinks/plugins/package_info_plus/ios`)
   - pasteboard (from `.symlinks/plugins/pasteboard/ios`)
   - share_plus (from `.symlinks/plugins/share_plus/ios`)
@@ -126,6 +130,8 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/large_file_handler/ios"
   local_auth_darwin:
     :path: ".symlinks/plugins/local_auth_darwin/darwin"
+  mobile_scanner:
+    :path: ".symlinks/plugins/mobile_scanner/darwin"
   package_info_plus:
     :path: ".symlinks/plugins/package_info_plus/ios"
   pasteboard:
@@ -150,6 +156,7 @@ SPEC CHECKSUMS:
   local_auth_darwin: c3ee6cce0a8d56be34c8ccb66ba31f7f180aaebb
   MediaPipeTasksGenAI: 076ba7032a6e9da16db9c7cf0c3b67c751c18bc1
   MediaPipeTasksGenAIC: ec35d9f431f6a6b651a0bc9f67a4ed149ffa575c
+  mobile_scanner: 9157936403f5a0644ca3779a38ff8404c5434a93
   package_info_plus: af8e2ca6888548050f16fa2f1938db7b5a5df499
   pasteboard: 3913b69d3f2be214970a8ae94e7e87fe76e47e98
   SDWebImage: e9fc87c1aab89a8ab1bbd74eba378c6f53be8abf
