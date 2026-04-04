@@ -1,0 +1,34 @@
+#
+# To learn more about a Podspec see http://guides.cocoapods.org/syntax/podspec.html.
+# Run `pod lib lint flutter_gemma.podspec` to validate before publishing.
+#
+Pod::Spec.new do |s|
+  s.name             = 'flutter_gemma'
+  s.version          = '0.13.0'
+  s.summary          = 'Flutter plugin for running Gemma AI models locally with Gemma 3 Nano support.'
+  s.description      = <<-DESC
+The plugin allows running the Gemma AI model locally on a device from a Flutter application.
+Includes support for Gemma 3 Nano models with optimized MediaPipe GenAI v0.10.33.
+                       DESC
+  s.homepage         = 'https://github.com/DenisovAV/flutter_gemma'
+  s.license          = { :file => '../LICENSE' }
+  s.author           = { 'Flutter Berlin' => 'flutter@flutterberlin.dev' }
+  s.source           = { :path => '.' }
+  s.source_files = 'Classes/*.swift'
+  s.dependency 'Flutter'
+  s.dependency 'MediaPipeTasksGenAI', '= 0.10.33'
+  s.dependency 'MediaPipeTasksGenAIC', '= 0.10.33'
+  s.dependency 'TensorFlowLiteC', '0.0.1-nightly.20250619'
+  s.dependency 'TensorFlowLiteSwift', '0.0.1-nightly.20250619'
+  s.dependency 'TensorFlowLiteSelectTfOps', '0.0.1-nightly.20250619'
+  s.platform = :ios, '16.0'
+
+  s.pod_target_xcconfig = {
+    'DEFINES_MODULE' => 'YES',
+    'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386',
+    # Conditional force_load: only for device builds (TensorFlowLiteSelectTfOps doesn't have simulator slice)
+    'OTHER_LDFLAGS[sdk=iphoneos*]' => '-force_load $(SRCROOT)/Pods/TensorFlowLiteSelectTfOps/Frameworks/TensorFlowLiteSelectTfOps.xcframework/ios-arm64/TensorFlowLiteSelectTfOps.framework/TensorFlowLiteSelectTfOps',
+    'OTHER_LDFLAGS[sdk=iphonesimulator*]' => ''
+  }
+  s.swift_version = '5.0'
+end

@@ -15,6 +15,7 @@ analyzer:
     - "**/*.mocks.dart"
     - "build/**"
     - ".dart_tool/**"
+    - "packages/flutter_gemma/**"
 
 linter:
   rules:
