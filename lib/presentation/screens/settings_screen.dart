@@ -9,6 +9,7 @@ import '../../app/app_metadata.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/auth_service.dart';
 import '../../domain/services/local_terminal_ai_managed_model_service.dart';
+import '../../domain/services/local_terminal_ai_platform_service.dart';
 import '../../domain/services/local_terminal_ai_settings_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
@@ -751,6 +752,8 @@ class _OnDeviceAiSection extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final settings = ref.watch(localTerminalAiSettingsProvider);
     final managedModel = ref.watch(localTerminalAiManagedModelProvider);
+    final runtimeInfoAsync = ref.watch(localTerminalAiRuntimeInfoProvider);
+    final runtimeInfo = runtimeInfoAsync.asData?.value;
     final managedSpec = localTerminalAiManagedGemma4Spec();
 
     return Column(
@@ -778,54 +781,55 @@ class _OnDeviceAiSection extends ConsumerWidget {
           leading: const Icon(Icons.auto_fix_high_outlined),
           title: const Text('Runtime status'),
           subtitle: Text(
-            managedSpec == null
-                ? 'Managed Gemma 4 is not available on this platform yet.'
-                : 'MonkeySSH uses managed ${managedSpec.displayName} for terminal suggestions and completions on this branch.',
-          ),
-        ),
-        ListTile(
-          leading: const Icon(Icons.download_for_offline_outlined),
-          title: const Text('Managed Gemma 4 download'),
-          subtitle: Text(
-            _managedModelSubtitle(
-              settings: settings,
-              managedModel: managedModel,
+            _runtimeStatusSubtitle(
+              runtimeInfo: runtimeInfo,
+              runtimeInfoLoading: runtimeInfoAsync.isLoading,
               managedSpec: managedSpec,
             ),
           ),
-          onTap:
-              managedSpec != null &&
-                  settings.enabled &&
-                  managedModel.status ==
-                      LocalTerminalAiManagedModelStatus.failed
-              ? () {
-                  unawaited(
-                    ref
-                        .read(localTerminalAiManagedModelProvider.notifier)
-                        .retry(settings),
-                  );
-                }
-              : null,
-          trailing: _managedModelTrailing(
-            settings: settings,
-            managedModel: managedModel,
-            managedSpec: managedSpec,
-            onRetry: managedSpec == null
-                ? null
-                : () {
+        ),
+        if (managedSpec != null)
+          ListTile(
+            leading: const Icon(Icons.download_for_offline_outlined),
+            title: const Text('Managed Gemma 4 download'),
+            subtitle: Text(
+              _managedModelSubtitle(
+                settings: settings,
+                managedModel: managedModel,
+                managedSpec: managedSpec,
+              ),
+            ),
+            onTap:
+                settings.enabled &&
+                    managedModel.status ==
+                        LocalTerminalAiManagedModelStatus.failed
+                ? () {
                     unawaited(
                       ref
                           .read(localTerminalAiManagedModelProvider.notifier)
                           .retry(settings),
                     );
-                  },
+                  }
+                : null,
+            trailing: _managedModelTrailing(
+              settings: settings,
+              managedModel: managedModel,
+              onRetry: () {
+                unawaited(
+                  ref
+                      .read(localTerminalAiManagedModelProvider.notifier)
+                      .retry(settings),
+                );
+              },
+            ),
           ),
-        ),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
           child: Text(
             _fallbackModelHelpText(
               settings: settings,
+              runtimeInfo: runtimeInfo,
+              runtimeInfoLoading: runtimeInfoAsync.isLoading,
               managedSpec: managedSpec,
             ),
             style: Theme.of(context).textTheme.bodySmall,
@@ -835,14 +839,30 @@ class _OnDeviceAiSection extends ConsumerWidget {
     );
   }
 
+  String _runtimeStatusSubtitle({
+    required LocalTerminalAiRuntimeInfo? runtimeInfo,
+    required bool runtimeInfoLoading,
+    required LocalTerminalAiManagedModelSpec? managedSpec,
+  }) {
+    if (runtimeInfoLoading) {
+      return 'Checking which on-device runtime is available on this device.';
+    }
+    if (runtimeInfo != null &&
+        runtimeInfo.provider != LocalTerminalAiPlatformProvider.none) {
+      return '${runtimeInfo.providerLabel}: ${runtimeInfo.statusMessage}';
+    }
+    if (managedSpec != null) {
+      return 'Desktop uses managed ${managedSpec.displayName} for terminal suggestions and completions on this branch.';
+    }
+    return runtimeInfo?.statusMessage ??
+        'This platform does not expose a built-in on-device language model.';
+  }
+
   String _managedModelSubtitle({
     required LocalTerminalAiSettings settings,
     required LocalTerminalAiManagedModelState managedModel,
-    required LocalTerminalAiManagedModelSpec? managedSpec,
+    required LocalTerminalAiManagedModelSpec managedSpec,
   }) {
-    if (managedSpec == null) {
-      return 'Managed Gemma 4 download is not available on this platform yet.';
-    }
     final autoVerifiesInBackground = shouldAutoVerifyManagedGemma4InBackground(
       settings: settings,
     );
@@ -869,12 +889,8 @@ class _OnDeviceAiSection extends ConsumerWidget {
   Widget? _managedModelTrailing({
     required LocalTerminalAiSettings settings,
     required LocalTerminalAiManagedModelState managedModel,
-    required LocalTerminalAiManagedModelSpec? managedSpec,
-    required VoidCallback? onRetry,
+    required VoidCallback onRetry,
   }) {
-    if (managedSpec == null) {
-      return const Icon(Icons.info_outline);
-    }
     if (!settings.enabled) {
       return const Icon(Icons.download_outlined);
     }
@@ -912,17 +928,30 @@ class _OnDeviceAiSection extends ConsumerWidget {
 
   String _fallbackModelHelpText({
     required LocalTerminalAiSettings settings,
+    required LocalTerminalAiRuntimeInfo? runtimeInfo,
+    required bool runtimeInfoLoading,
     required LocalTerminalAiManagedModelSpec? managedSpec,
   }) {
+    if (runtimeInfoLoading) {
+      return 'MonkeySSH is checking which on-device model this device can use for terminal suggestions and completions. Commands are never run automatically.';
+    }
+    if (runtimeInfo?.provider ==
+        LocalTerminalAiPlatformProvider.appleFoundationModels) {
+      return 'On iPhone, MonkeySSH uses Apple Foundation Models for terminal suggestions and completions. Commands are never run automatically.';
+    }
+    if (runtimeInfo?.provider ==
+        LocalTerminalAiPlatformProvider.androidAiCore) {
+      return 'On Android, MonkeySSH uses Gemini Nano through Android AI Core for terminal suggestions and completions. Commands are never run automatically.';
+    }
     if (managedSpec != null) {
       final autoVerifiesInBackground =
           shouldAutoVerifyManagedGemma4InBackground(settings: settings);
       if (!autoVerifiesInBackground && settings.enabled) {
-        return 'MonkeySSH uses managed ${managedSpec.displayName} for terminal suggestions and completions on this branch. The download starts after you enable the assistant, and on iPhone the final runtime startup waits until you actually use it. Commands are never run automatically.';
+        return 'On desktop, MonkeySSH uses managed ${managedSpec.displayName} for terminal suggestions and completions on this branch. The download starts after you enable the assistant. Commands are never run automatically.';
       }
-      return 'MonkeySSH uses managed ${managedSpec.displayName} for terminal suggestions and completions on this branch. Commands are never run automatically.';
+      return 'On desktop, MonkeySSH uses managed ${managedSpec.displayName} for terminal suggestions and completions on this branch. Commands are never run automatically.';
     }
-    return 'MonkeySSH uses managed Gemma 4 for terminal suggestions and completions on this branch. Managed download is not available on this platform yet. Commands are never run automatically.';
+    return 'This platform does not currently expose a supported on-device terminal AI runtime. Commands are never run automatically.';
   }
 }
 

@@ -4,6 +4,7 @@ import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'local_terminal_ai_managed_model_service.dart';
+import 'local_terminal_ai_platform_service.dart';
 import 'local_terminal_ai_settings_service.dart';
 
 const _maxSuggestionTokens = 256;
@@ -57,6 +58,7 @@ final localTerminalAiServiceProvider = Provider<LocalTerminalAiService>(
     managedModelCoordinator: ref.watch(
       localTerminalAiManagedModelProvider.notifier,
     ),
+    platformService: ref.watch(localTerminalAiPlatformServiceProvider),
   ),
 );
 
@@ -65,12 +67,16 @@ class LocalTerminalAiService {
   /// Creates a new [LocalTerminalAiService].
   LocalTerminalAiService({
     required LocalTerminalAiManagedModelCoordinator managedModelCoordinator,
+    LocalTerminalAiPlatformService? platformService,
     LocalTerminalAiFallbackRuntime? fallbackRuntime,
   }) : _managedModelCoordinator = managedModelCoordinator,
+       _platformService =
+           platformService ?? const LocalTerminalAiPlatformService(),
        _fallbackRuntime =
            fallbackRuntime ?? FlutterGemmaLocalTerminalAiFallbackRuntime();
 
   final LocalTerminalAiManagedModelCoordinator _managedModelCoordinator;
+  final LocalTerminalAiPlatformService _platformService;
 
   final LocalTerminalAiFallbackRuntime _fallbackRuntime;
 
@@ -153,6 +159,15 @@ class LocalTerminalAiService {
       );
     }
 
+    final runtimeInfo = await _platformService.getRuntimeInfo();
+    if (runtimeInfo.shouldAttemptNativeRuntime) {
+      return _runNativePrompt(
+        runtimeInfo: runtimeInfo,
+        prompt: prompt,
+        maxTokens: maxTokens,
+      );
+    }
+
     LocalTerminalAiManagedModelSpec? managedModel;
     try {
       managedModel = await _managedModelCoordinator.ensureReadyFor(settings);
@@ -175,9 +190,36 @@ class LocalTerminalAiService {
       }
     }
 
-    throw const LocalTerminalAiConfigurationException(
-      'Managed Gemma 4 download is not available on this platform.',
-    );
+    throw LocalTerminalAiConfigurationException(runtimeInfo.statusMessage);
+  }
+
+  Future<String> _runNativePrompt({
+    required LocalTerminalAiRuntimeInfo runtimeInfo,
+    required String prompt,
+    required int maxTokens,
+  }) async {
+    if (runtimeInfo.provider ==
+            LocalTerminalAiPlatformProvider.appleFoundationModels &&
+        !runtimeInfo.available) {
+      throw LocalTerminalAiConfigurationException(runtimeInfo.statusMessage);
+    }
+
+    try {
+      if (runtimeInfo.provider ==
+              LocalTerminalAiPlatformProvider.androidAiCore &&
+          !runtimeInfo.available) {
+        await _platformService.prepareRuntime();
+      }
+      return await _platformService.generateText(
+        prompt: prompt,
+        maxTokens: maxTokens,
+      );
+    } on LocalTerminalAiPlatformException catch (error) {
+      final trimmedMessage = error.message.trim();
+      throw LocalTerminalAiConfigurationException(
+        trimmedMessage.isNotEmpty ? trimmedMessage : runtimeInfo.statusMessage,
+      );
+    }
   }
 
   String _buildSuggestionPrompt({

@@ -23,7 +23,7 @@ String localTerminalAiPlatformProviderLabel(
   LocalTerminalAiPlatformProvider.none => 'No built-in model',
   LocalTerminalAiPlatformProvider.appleFoundationModels =>
     'Apple Foundation Models',
-  LocalTerminalAiPlatformProvider.androidAiCore => 'Android AI Core',
+  LocalTerminalAiPlatformProvider.androidAiCore => 'Gemini Nano',
 };
 
 /// Exception raised when the platform-native runtime fails to execute.

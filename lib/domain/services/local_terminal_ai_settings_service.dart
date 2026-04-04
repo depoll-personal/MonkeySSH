@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'local_terminal_ai_managed_model_service.dart';
+import 'local_terminal_ai_platform_service.dart';
 import 'settings_service.dart';
 
 /// Persisted settings for the experimental on-device terminal AI assistant.
@@ -31,11 +32,13 @@ final localTerminalAiSettingsProvider =
 class LocalTerminalAiSettingsNotifier
     extends Notifier<LocalTerminalAiSettings> {
   late final SettingsService _settings;
+  late final LocalTerminalAiPlatformService _platformService;
   bool _disposed = false;
 
   @override
   LocalTerminalAiSettings build() {
     _settings = ref.watch(settingsServiceProvider);
+    _platformService = ref.watch(localTerminalAiPlatformServiceProvider);
     _disposed = false;
     ref.onDispose(() => _disposed = true);
     unawaited(Future<void>.microtask(_init));
@@ -63,8 +66,14 @@ class LocalTerminalAiSettingsNotifier
     if (_disposed) {
       return;
     }
-    unawaited(
-      ref.read(localTerminalAiManagedModelProvider.notifier).sync(state),
-    );
+    ref.invalidate(localTerminalAiRuntimeInfoProvider);
+    final runtimeInfo = await _platformService.getRuntimeInfo();
+    if (_disposed) {
+      return;
+    }
+    await ref
+        .read(localTerminalAiManagedModelProvider.notifier)
+        .sync(state, runtimeInfo: runtimeInfo);
+    ref.invalidate(localTerminalAiRuntimeInfoProvider);
   }
 }

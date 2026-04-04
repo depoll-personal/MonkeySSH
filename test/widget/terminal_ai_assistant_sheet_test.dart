@@ -22,6 +22,8 @@ LocalTerminalAiSettings _settingsState = const LocalTerminalAiSettings(
 );
 LocalTerminalAiManagedModelState _managedModelState =
     const LocalTerminalAiManagedModelState.idle();
+LocalTerminalAiRuntimeInfo _runtimeInfoState =
+    const LocalTerminalAiRuntimeInfo.unsupported();
 
 class _StaticLocalTerminalAiSettingsNotifier
     extends LocalTerminalAiSettingsNotifier {
@@ -55,6 +57,12 @@ class _StaticLocalTerminalAiManagedModelController
 }
 
 void main() {
+  setUp(() {
+    _settingsState = const LocalTerminalAiSettings(enabled: true);
+    _managedModelState = const LocalTerminalAiManagedModelState.idle();
+    _runtimeInfoState = const LocalTerminalAiRuntimeInfo.unsupported();
+  });
+
   Future<void> pumpAssistantSheet(WidgetTester tester) async {
     await tester.pumpWidget(
       ProviderScope(
@@ -64,6 +72,9 @@ void main() {
           ),
           localTerminalAiManagedModelProvider.overrideWith(
             _StaticLocalTerminalAiManagedModelController.new,
+          ),
+          localTerminalAiRuntimeInfoProvider.overrideWith(
+            (ref) async => _runtimeInfoState,
           ),
         ],
         child: MaterialApp(
@@ -106,29 +117,67 @@ void main() {
       expect(suggestCompletionButton.onPressed, isNotNull);
       expect(find.text('Assistant available'), findsOneWidget);
     },
+    variant: const TargetPlatformVariant(<TargetPlatform>{
+      TargetPlatform.macOS,
+    }),
   );
 
-  testWidgets('disables assistant actions while the model is downloading', (
-    tester,
-  ) async {
-    _settingsState = const LocalTerminalAiSettings(enabled: true);
-    _managedModelState = const LocalTerminalAiManagedModelState(
-      status: LocalTerminalAiManagedModelStatus.downloading,
-      spec: _managedSpec,
-      progress: 42,
-    );
+  testWidgets(
+    'keeps assistant actions enabled when Gemini Nano support exists',
+    (tester) async {
+      _settingsState = const LocalTerminalAiSettings(enabled: true);
+      _managedModelState = const LocalTerminalAiManagedModelState.idle();
+      _runtimeInfoState = const LocalTerminalAiRuntimeInfo(
+        provider: LocalTerminalAiPlatformProvider.androidAiCore,
+        supportedPlatform: true,
+        available: false,
+        statusMessage:
+            'Gemini Nano is supported here but still downloading or preparing.',
+      );
 
-    await pumpAssistantSheet(tester);
+      await pumpAssistantSheet(tester);
 
-    final suggestCommandsButton = tester.widget<FilledButton>(
-      find.widgetWithText(FilledButton, 'Suggest commands'),
-    );
-    final suggestCompletionButton = tester.widget<FilledButton>(
-      find.widgetWithText(FilledButton, 'Suggest completion'),
-    );
+      final suggestCommandsButton = tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, 'Suggest commands'),
+      );
+      final suggestCompletionButton = tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, 'Suggest completion'),
+      );
 
-    expect(suggestCommandsButton.onPressed, isNull);
-    expect(suggestCompletionButton.onPressed, isNull);
-    expect(find.text('Setup required'), findsOneWidget);
-  });
+      expect(suggestCommandsButton.onPressed, isNotNull);
+      expect(suggestCompletionButton.onPressed, isNotNull);
+      expect(find.text('Assistant available'), findsOneWidget);
+    },
+    variant: const TargetPlatformVariant(<TargetPlatform>{
+      TargetPlatform.android,
+    }),
+  );
+
+  testWidgets(
+    'disables assistant actions while the model is downloading',
+    (tester) async {
+      _settingsState = const LocalTerminalAiSettings(enabled: true);
+      _managedModelState = const LocalTerminalAiManagedModelState(
+        status: LocalTerminalAiManagedModelStatus.downloading,
+        spec: _managedSpec,
+        progress: 42,
+      );
+
+      await pumpAssistantSheet(tester);
+
+      final suggestCommandsButton = tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, 'Suggest commands'),
+      );
+      final suggestCompletionButton = tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, 'Suggest completion'),
+      );
+
+      expect(suggestCommandsButton.onPressed, isNull);
+      expect(suggestCompletionButton.onPressed, isNull);
+      expect(find.text('Setup required'), findsOneWidget);
+    },
+    variant: const TargetPlatformVariant(<TargetPlatform>{
+      TargetPlatform.macOS,
+    }),
+  );
 }

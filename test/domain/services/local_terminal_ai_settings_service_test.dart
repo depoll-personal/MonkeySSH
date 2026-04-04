@@ -5,8 +5,8 @@ import 'package:monkeyssh/domain/services/local_terminal_ai_managed_model_servic
 import 'package:monkeyssh/domain/services/local_terminal_ai_settings_service.dart';
 
 void main() {
-  test('managed Gemma 4 download uses LiteRT-LM on Android', () {
-    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+  test('managed Gemma 4 download uses LiteRT-LM on desktop', () {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
 
     const settings = LocalTerminalAiSettings(enabled: true);
@@ -17,10 +17,10 @@ void main() {
     expect(spec!.fileName, 'gemma-4-E2B-it.litertlm');
     expect(spec.url, contains('gemma-4-E2B-it.litertlm'));
     expect(spec.fileType, ModelFileType.litertlm);
-    expect(spec.preferredBackend, PreferredBackend.gpu);
+    expect(spec.preferredBackend, isNull);
   });
 
-  test('managed Gemma 4 is unavailable on iOS without a task artifact', () {
+  test('managed Gemma 4 is unavailable on iOS', () {
     debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
 
@@ -31,17 +31,15 @@ void main() {
     expect(spec, isNull);
   });
 
-  test('managed Gemma 4 auto-downloads on Android when enabled', () {
+  test('managed Gemma 4 is unavailable on Android', () {
     debugDefaultTargetPlatformOverride = TargetPlatform.android;
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
 
     const settings = LocalTerminalAiSettings(enabled: true);
 
-    expect(shouldAutoSyncManagedGemma4(settings: settings), isTrue);
-    expect(
-      shouldAutoVerifyManagedGemma4InBackground(settings: settings),
-      isTrue,
-    );
+    final spec = localTerminalAiManagedGemma4SpecForSettings(settings);
+
+    expect(spec, isNull);
   });
 
   test(
@@ -114,6 +112,19 @@ void main() {
 
   test('managed Gemma 4 does not auto-download on iOS', () {
     debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+    const settings = LocalTerminalAiSettings(enabled: true);
+
+    expect(shouldAutoSyncManagedGemma4(settings: settings), isFalse);
+    expect(
+      shouldAutoVerifyManagedGemma4InBackground(settings: settings),
+      isFalse,
+    );
+  });
+
+  test('managed Gemma 4 does not auto-download on Android', () {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
 
     const settings = LocalTerminalAiSettings(enabled: true);

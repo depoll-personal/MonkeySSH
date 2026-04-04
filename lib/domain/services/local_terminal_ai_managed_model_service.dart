@@ -581,15 +581,7 @@ LocalTerminalAiManagedModelSpec? localTerminalAiManagedGemma4Spec() {
   }
 
   return switch (defaultTargetPlatform) {
-    TargetPlatform.android => const LocalTerminalAiManagedModelSpec(
-      modelId: _gemma4E2BModelId,
-      displayName: 'Gemma 4 E2B',
-      url: _gemma4E2BLiteRtLmUrl,
-      fileType: ModelFileType.litertlm,
-      fileName: _gemma4E2BLiteRtLmFileName,
-      preferredBackend: PreferredBackend.gpu,
-      foregroundDownload: true,
-    ),
+    TargetPlatform.android => null,
     TargetPlatform.iOS => null,
     TargetPlatform.macOS ||
     TargetPlatform.windows ||

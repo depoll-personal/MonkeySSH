@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/services/local_terminal_ai_managed_model_service.dart';
+import '../../domain/services/local_terminal_ai_platform_service.dart';
 import '../../domain/services/local_terminal_ai_service.dart';
 import '../../domain/services/local_terminal_ai_settings_service.dart';
 
@@ -62,9 +63,15 @@ class _TerminalAiAssistantSheetState
   Widget build(BuildContext context) {
     final settings = ref.watch(localTerminalAiSettingsProvider);
     final managedModel = ref.watch(localTerminalAiManagedModelProvider);
+    final runtimeInfoAsync = ref.watch(localTerminalAiRuntimeInfoProvider);
+    final runtimeInfo = runtimeInfoAsync.asData?.value;
     final theme = Theme.of(context);
     final currentLine = widget.currentTerminalLine?.trimRight();
-    final canGenerate = _canStartAssistantRequest(settings, managedModel);
+    final canGenerate = _canStartAssistantRequest(
+      settings,
+      managedModel,
+      runtimeInfo,
+    );
 
     return SafeArea(
       top: false,
@@ -103,6 +110,8 @@ class _TerminalAiAssistantSheetState
               _AssistantStatusCard(
                 settings: settings,
                 managedModel: managedModel,
+                runtimeInfo: runtimeInfo,
+                runtimeInfoLoading: runtimeInfoAsync.isLoading,
                 onOpenSettings: () {
                   Navigator.pop(context);
                   widget.onOpenSettings();
@@ -256,6 +265,7 @@ class _TerminalAiAssistantSheetState
         _errorMessage = error.toString();
       });
     } finally {
+      ref.invalidate(localTerminalAiRuntimeInfoProvider);
       if (mounted) {
         setState(() => _isGeneratingSuggestions = false);
       }
@@ -298,6 +308,7 @@ class _TerminalAiAssistantSheetState
         _errorMessage = error.toString();
       });
     } finally {
+      ref.invalidate(localTerminalAiRuntimeInfoProvider);
       if (mounted) {
         setState(() => _isGeneratingCompletion = false);
       }
@@ -318,39 +329,68 @@ class _TerminalAiAssistantSheetState
 bool _canStartAssistantRequest(
   LocalTerminalAiSettings settings,
   LocalTerminalAiManagedModelState managedModel,
-) => settings.enabled && managedModel.isInstalled;
+  LocalTerminalAiRuntimeInfo? runtimeInfo,
+) =>
+    settings.enabled &&
+    ((runtimeInfo?.shouldAttemptNativeRuntime ?? false) ||
+        managedModel.isInstalled);
 
 bool _isAssistantReady(
   LocalTerminalAiSettings settings,
   LocalTerminalAiManagedModelState managedModel,
-) => settings.enabled && managedModel.isReady;
+  LocalTerminalAiRuntimeInfo? runtimeInfo,
+) =>
+    settings.enabled &&
+    ((runtimeInfo?.available ?? false) || managedModel.isReady);
 
 class _AssistantStatusCard extends StatelessWidget {
   const _AssistantStatusCard({
     required this.settings,
     required this.managedModel,
+    required this.runtimeInfo,
+    required this.runtimeInfoLoading,
     required this.onOpenSettings,
   });
 
   final LocalTerminalAiSettings settings;
   final LocalTerminalAiManagedModelState managedModel;
+  final LocalTerminalAiRuntimeInfo? runtimeInfo;
+  final bool runtimeInfoLoading;
   final VoidCallback onOpenSettings;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final managedSpec = localTerminalAiManagedGemma4Spec();
-    final canStart = _canStartAssistantRequest(settings, managedModel);
-    final isReady = _isAssistantReady(settings, managedModel);
+    final canStart = _canStartAssistantRequest(
+      settings,
+      managedModel,
+      runtimeInfo,
+    );
+    final isReady = _isAssistantReady(settings, managedModel, runtimeInfo);
     final autoVerifiesInBackground = shouldAutoVerifyManagedGemma4InBackground(
       settings: settings,
     );
+    final title = isReady
+        ? 'Assistant ready'
+        : canStart
+        ? 'Assistant available'
+        : 'Setup required';
     final subtitle = !settings.enabled
-        ? managedSpec == null
+        ? runtimeInfo?.provider != LocalTerminalAiPlatformProvider.none
+              ? 'Enable the assistant in Settings to use ${runtimeInfo!.providerLabel} on this device.'
+              : managedSpec == null
               ? 'Enable the assistant in Settings to start using it.'
               : 'Enable the assistant in Settings to start downloading ${managedSpec.displayName}.'
+        : runtimeInfoLoading
+        ? 'Checking which on-device runtime this device can use.'
+        : runtimeInfo?.provider != null &&
+              runtimeInfo!.provider != LocalTerminalAiPlatformProvider.none
+        ? runtimeInfo!.available
+              ? 'Using ${runtimeInfo!.modelName ?? runtimeInfo!.providerLabel} on this device.'
+              : runtimeInfo!.statusMessage
         : managedSpec == null
-        ? 'Managed Gemma 4 download is not available on this platform.'
+        ? 'This device does not currently expose a supported on-device terminal AI runtime.'
         : switch (managedModel.status) {
             LocalTerminalAiManagedModelStatus.ready =>
               'Using managed ${managedSpec.displayName} on this device.',
@@ -387,16 +427,7 @@ class _AssistantStatusCard extends StatelessWidget {
                       : Icons.settings_suggest_outlined,
                 ),
                 const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    isReady
-                        ? 'Assistant ready'
-                        : canStart
-                        ? 'Assistant available'
-                        : 'Setup required',
-                    style: theme.textTheme.titleSmall,
-                  ),
-                ),
+                Expanded(child: Text(title, style: theme.textTheme.titleSmall)),
               ],
             ),
             const SizedBox(height: 8),

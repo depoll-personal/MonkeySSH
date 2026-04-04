@@ -82,13 +82,7 @@ void main() {
         find.widgetWithText(SwitchListTile, 'Runtime status'),
         findsNothing,
       );
-      await tester.scrollUntilVisible(
-        find.text('Managed Gemma 4 download'),
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
-      await tester.pumpAndSettle();
-      expect(find.text('Managed Gemma 4 download'), findsOneWidget);
+      expect(find.text('Managed Gemma 4 download'), findsNothing);
 
       // Scroll to find About section
       await tester.scrollUntilVisible(
