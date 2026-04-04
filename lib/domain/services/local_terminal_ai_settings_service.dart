@@ -32,22 +32,23 @@ final localTerminalAiSettingsProvider =
 class LocalTerminalAiSettingsNotifier
     extends Notifier<LocalTerminalAiSettings> {
   late final SettingsService _settings;
-  late final LocalTerminalAiPlatformService _platformService;
   bool _disposed = false;
+  int _stateGeneration = 0;
 
   @override
   LocalTerminalAiSettings build() {
     _settings = ref.watch(settingsServiceProvider);
-    _platformService = ref.watch(localTerminalAiPlatformServiceProvider);
     _disposed = false;
+    _stateGeneration = 0;
     ref.onDispose(() => _disposed = true);
     unawaited(Future<void>.microtask(_init));
     return const LocalTerminalAiSettings(enabled: false);
   }
 
   Future<void> _init() async {
+    final generation = _stateGeneration;
     final enabled = await _settings.getBool(SettingKeys.localTerminalAiEnabled);
-    if (_disposed) {
+    if (_disposed || generation != _stateGeneration) {
       return;
     }
 
@@ -57,6 +58,7 @@ class LocalTerminalAiSettingsNotifier
 
   /// Enables or disables the assistant.
   Future<void> setEnabled({required bool enabled}) async {
+    _stateGeneration += 1;
     await _settings.setBool(SettingKeys.localTerminalAiEnabled, value: enabled);
     state = state.copyWith(enabled: enabled);
     unawaited(_syncRuntimeTargets());
@@ -66,14 +68,14 @@ class LocalTerminalAiSettingsNotifier
     if (_disposed) {
       return;
     }
-    ref.invalidate(localTerminalAiRuntimeInfoProvider);
-    final runtimeInfo = await _platformService.getRuntimeInfo();
+    final runtimeInfo = await ref.refresh(
+      localTerminalAiRuntimeInfoProvider.future,
+    );
     if (_disposed) {
       return;
     }
     await ref
         .read(localTerminalAiManagedModelProvider.notifier)
         .sync(state, runtimeInfo: runtimeInfo);
-    ref.invalidate(localTerminalAiRuntimeInfoProvider);
   }
 }

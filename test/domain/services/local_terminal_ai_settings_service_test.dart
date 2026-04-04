@@ -1,8 +1,15 @@
+import 'dart:async';
+
+import 'package:drift/native.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_gemma/flutter_gemma.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/domain/services/local_terminal_ai_managed_model_service.dart';
+import 'package:monkeyssh/domain/services/local_terminal_ai_platform_service.dart';
 import 'package:monkeyssh/domain/services/local_terminal_ai_settings_service.dart';
+import 'package:monkeyssh/domain/services/settings_service.dart';
 
 void main() {
   test('managed Gemma 4 download uses LiteRT-LM on desktop', () {
@@ -158,4 +165,151 @@ void main() {
     expect(result, PreferredBackend.cpu);
     expect(attemptedBackends, <PreferredBackend?>[PreferredBackend.cpu]);
   });
+
+  test('user toggle is not overwritten by delayed settings init', () async {
+    final initialEnabled = Completer<bool>();
+    final settingsService = _FakeSettingsService(initialEnabled.future);
+    final platformService = _FakeLocalTerminalAiPlatformService();
+    final managedController = _FakeLocalTerminalAiManagedModelController();
+    final container = ProviderContainer(
+      overrides: [
+        settingsServiceProvider.overrideWithValue(settingsService),
+        localTerminalAiPlatformServiceProvider.overrideWithValue(
+          platformService,
+        ),
+        localTerminalAiManagedModelProvider.overrideWith(
+          () => managedController,
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    addTearDown(settingsService.close);
+
+    expect(container.read(localTerminalAiSettingsProvider).enabled, isFalse);
+
+    await Future<void>.delayed(Duration.zero);
+    await container
+        .read(localTerminalAiSettingsProvider.notifier)
+        .setEnabled(enabled: true);
+
+    initialEnabled.complete(false);
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(container.read(localTerminalAiSettingsProvider).enabled, isTrue);
+    expect(settingsService.storedEnabled, isTrue);
+  });
+
+  test('runtime sync fetches runtime info once per toggle', () async {
+    final settingsService = _FakeSettingsService(Future<bool>.value(false));
+    final platformService = _FakeLocalTerminalAiPlatformService();
+    final managedController = _FakeLocalTerminalAiManagedModelController();
+    final container = ProviderContainer(
+      overrides: [
+        settingsServiceProvider.overrideWithValue(settingsService),
+        localTerminalAiPlatformServiceProvider.overrideWithValue(
+          platformService,
+        ),
+        localTerminalAiManagedModelProvider.overrideWith(
+          () => managedController,
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    addTearDown(settingsService.close);
+
+    container.read(localTerminalAiSettingsProvider);
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    platformService.getRuntimeInfoCallCount = 0;
+    managedController.syncCalls.clear();
+
+    await container
+        .read(localTerminalAiSettingsProvider.notifier)
+        .setEnabled(enabled: true);
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(platformService.getRuntimeInfoCallCount, 1);
+    expect(managedController.syncCalls, hasLength(1));
+    expect(managedController.syncCalls.single.settings.enabled, isTrue);
+  });
+}
+
+class _FakeSettingsService extends SettingsService {
+  factory _FakeSettingsService(Future<bool> initialEnabled) {
+    final database = AppDatabase.forTesting(NativeDatabase.memory());
+    return _FakeSettingsService._(database, initialEnabled);
+  }
+
+  _FakeSettingsService._(this._database, this._initialEnabled)
+    : super(_database);
+
+  final AppDatabase _database;
+  final Future<bool> _initialEnabled;
+  bool storedEnabled = false;
+  bool _didReadInitialValue = false;
+
+  Future<void> close() => _database.close();
+
+  @override
+  Future<bool> getBool(String key, {bool defaultValue = false}) async {
+    if (key == SettingKeys.localTerminalAiEnabled && !_didReadInitialValue) {
+      _didReadInitialValue = true;
+      return _initialEnabled;
+    }
+    return storedEnabled;
+  }
+
+  @override
+  Future<void> setBool(String key, {required bool value}) async {
+    if (key == SettingKeys.localTerminalAiEnabled) {
+      storedEnabled = value;
+      return;
+    }
+    await super.setBool(key, value: value);
+  }
+}
+
+class _FakeLocalTerminalAiPlatformService
+    extends LocalTerminalAiPlatformService {
+  int getRuntimeInfoCallCount = 0;
+
+  @override
+  Future<LocalTerminalAiRuntimeInfo> getRuntimeInfo() async {
+    getRuntimeInfoCallCount += 1;
+    return const LocalTerminalAiRuntimeInfo.unsupported();
+  }
+}
+
+class _FakeLocalTerminalAiManagedModelController
+    extends LocalTerminalAiManagedModelController {
+  final List<
+    ({
+      LocalTerminalAiSettings settings,
+      LocalTerminalAiRuntimeInfo? runtimeInfo,
+    })
+  >
+  syncCalls = [];
+
+  @override
+  LocalTerminalAiManagedModelState build() =>
+      const LocalTerminalAiManagedModelState.idle();
+
+  @override
+  Future<LocalTerminalAiManagedModelSpec?> ensureReadyFor(
+    LocalTerminalAiSettings settings,
+  ) async => null;
+
+  @override
+  Future<void> retry(LocalTerminalAiSettings settings) async {}
+
+  @override
+  Future<void> sync(
+    LocalTerminalAiSettings settings, {
+    LocalTerminalAiRuntimeInfo? runtimeInfo,
+  }) async {
+    syncCalls.add((settings: settings, runtimeInfo: runtimeInfo));
+  }
 }

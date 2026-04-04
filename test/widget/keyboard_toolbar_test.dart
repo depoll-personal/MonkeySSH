@@ -162,18 +162,23 @@ void main() {
     testWidgets('assistant button exposes an accessibility label', (
       tester,
     ) async {
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: KeyboardToolbar(
-              terminal: terminal,
-              onAssistantPressed: () {},
+      final semantics = tester.ensureSemantics();
+      try {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: KeyboardToolbar(
+                terminal: terminal,
+                onAssistantPressed: () {},
+              ),
             ),
           ),
-        ),
-      );
+        );
 
-      expect(find.bySemanticsLabel('AI assistant'), findsOneWidget);
+        expect(find.bySemanticsLabel('AI assistant'), findsOneWidget);
+      } finally {
+        semantics.dispose();
+      }
     });
 
     testWidgets('Tab ignores the system keyboard shift state', (tester) async {

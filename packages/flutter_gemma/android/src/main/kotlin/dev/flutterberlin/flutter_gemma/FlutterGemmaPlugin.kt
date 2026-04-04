@@ -9,8 +9,13 @@ import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.collect
 
-import dev.flutterberlin.flutter_gemma.engines.*
+import dev.flutterberlin.flutter_gemma.engines.EngineConfig
+import dev.flutterberlin.flutter_gemma.engines.EngineFactory
+import dev.flutterberlin.flutter_gemma.engines.InferenceEngine
+import dev.flutterberlin.flutter_gemma.engines.InferenceSession
+import dev.flutterberlin.flutter_gemma.engines.SessionConfig
 
 /** FlutterGemmaPlugin */
 class FlutterGemmaPlugin: FlutterPlugin {

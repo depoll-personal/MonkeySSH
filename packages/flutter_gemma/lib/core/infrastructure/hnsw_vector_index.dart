@@ -111,7 +111,7 @@ class HnswVectorIndex {
     }
 
     // Over-fetch candidates (HNSW returns approximate results)
-    final candidateCount = (topK * 2).clamp(1, _embeddings.length);
+    final candidateCount = (topK * 2).clamp(1, _embeddings.length).toInt();
     final searchResult = _index!.search(queryEmbedding, candidateCount);
 
     // Recalculate exact similarity and filter by threshold

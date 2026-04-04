@@ -11,7 +11,7 @@ class BlobUrlManager {
   /// Maps filename to blob URL for tracking
   final Map<String, String> _activeBlobUrls = {};
 
-  BlobUrlManager(this._jsInterop, WebFileSystemService fileSystemService);
+  BlobUrlManager(this._jsInterop, WebFileSystemService _fileSystemService);
 
   /// Tracks a new blob URL for a model file.
   ///

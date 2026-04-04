@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -129,7 +127,15 @@ class LocalTerminalAiPlatformService {
   );
 
   static bool get _supportsPlatform =>
-      !kIsWeb && (Platform.isAndroid || Platform.isIOS || Platform.isMacOS);
+      !kIsWeb &&
+      switch (defaultTargetPlatform) {
+        TargetPlatform.android ||
+        TargetPlatform.iOS ||
+        TargetPlatform.macOS => true,
+        TargetPlatform.fuchsia ||
+        TargetPlatform.linux ||
+        TargetPlatform.windows => false,
+      };
 
   /// Returns availability details for the current native on-device runtime.
   Future<LocalTerminalAiRuntimeInfo> getRuntimeInfo() async {

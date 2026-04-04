@@ -149,7 +149,7 @@ class ImageTokenizer {
       // Check for common image token patterns
       final patterns = [
         RegExp(r'<image>.*?</image>', dotAll: true),
-        RegExp(r'<｜image｜>.*?</｜image｜>', dotAll: true),
+        RegExp(r'<｜image｜>.*?<｜/image｜>', dotAll: true),
         RegExp(r'\[IMAGE\].*\[/IMAGE\]', dotAll: true),
         RegExp(r'image_data', caseSensitive: false),
       ];

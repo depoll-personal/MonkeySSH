@@ -19,13 +19,14 @@ class SourceHandlerRegistry {
   /// Order matters - handlers are checked in registration order.
   ///
   /// Throws [UnsupportedError] if no handler supports the source.
-  SourceHandler? getHandler(ModelSource source) {
+  SourceHandler getHandler(ModelSource source) {
     for (final handler in handlers) {
       if (handler.supports(source)) {
         return handler;
       }
     }
     throw UnsupportedError(
-        'No handler found for source type: ${source.runtimeType}');
+      'No handler found for source type: ${source.runtimeType}',
+    );
   }
 }

@@ -5,6 +5,7 @@
 library;
 
 import 'dart:js_interop';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 
 /// External JS functions for Cache API
@@ -50,8 +51,8 @@ class StorageQuota {
 
   StorageQuota(this.usage, this.quota);
 
-  double get usagePercent => (usage / quota) * 100;
-  int get available => quota - usage;
+  double get usagePercent => quota <= 0 ? 0 : (usage / quota) * 100;
+  int get available => quota <= 0 ? 0 : quota - usage;
 
   @override
   String toString() =>
