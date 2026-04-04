@@ -602,7 +602,7 @@ LocalTerminalAiManagedModelSpec? localTerminalAiManagedGemma4Spec() {
       url: _gemma4E2BLiteRtLmUrl,
       fileType: ModelFileType.litertlm,
       fileName: _gemma4E2BLiteRtLmFileName,
-      preferredBackend: PreferredBackend.gpu,
+      preferredBackend: PreferredBackend.cpu,
     ),
     TargetPlatform.macOS ||
     TargetPlatform.windows ||

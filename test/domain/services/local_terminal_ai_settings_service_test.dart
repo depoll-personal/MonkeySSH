@@ -31,7 +31,7 @@ void main() {
     expect(spec, isNotNull);
     expect(spec!.fileName, 'gemma-4-E2B-it.litertlm');
     expect(spec.url, contains('7fa1d78473894f7e736a21d920c3aa80f950c0db'));
-    expect(spec.preferredBackend, PreferredBackend.gpu);
+    expect(spec.preferredBackend, PreferredBackend.cpu);
   });
 
   test('managed Gemma 4 auto-downloads on Android when enabled', () {
@@ -126,5 +126,28 @@ void main() {
       shouldAutoVerifyManagedGemma4InBackground(settings: settings),
       isFalse,
     );
+  });
+
+  test('managed Gemma runtime stays on cpu when already cpu-first', () async {
+    const spec = LocalTerminalAiManagedModelSpec(
+      modelId: 'gemma-4-E2B-it',
+      displayName: 'Gemma 4 E2B',
+      url: 'https://example.com/gemma-4-E2B-it.litertlm',
+      fileType: ModelFileType.litertlm,
+      fileName: 'gemma-4-E2B-it.litertlm',
+      preferredBackend: PreferredBackend.cpu,
+    );
+    final attemptedBackends = <PreferredBackend?>[];
+
+    final result = await runWithManagedGemmaBackendFallback<PreferredBackend?>(
+      spec: spec,
+      operation: (preferredBackend) async {
+        attemptedBackends.add(preferredBackend);
+        return preferredBackend;
+      },
+    );
+
+    expect(result, PreferredBackend.cpu);
+    expect(attemptedBackends, <PreferredBackend?>[PreferredBackend.cpu]);
   });
 }
