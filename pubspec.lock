@@ -241,6 +241,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.0.9"
+  dart_sentencepiece_tokenizer:
+    dependency: transitive
+    description:
+      name: dart_sentencepiece_tokenizer
+      sha256: "2bf57cae1a899195a5f38eaab5152b45ab11e7fe0e0cd4ac9ac5565120972a88"
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.3.1"
   dart_style:
     dependency: transitive
     description:
@@ -343,10 +351,10 @@ packages:
     dependency: "direct main"
     description:
       name: flutter_gemma
-      sha256: "75885d49ef1683c1d7a10621e08dcf76bee268b0ce88e5e7ad2325e98a012167"
+      sha256: "29333b30fdcc2e18952ab3083b5218bc093d17a72a1feb46f11c2003fe52ff88"
       url: "https://pub.dev"
     source: hosted
-    version: "0.12.6"
+    version: "0.13.0"
   flutter_launcher_icons:
     dependency: "direct dev"
     description:
@@ -1197,13 +1205,13 @@ packages:
     source: hosted
     version: "1.10.2"
   sqlite3:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
       name: sqlite3
-      sha256: "3145bd74dcdb4fd6f5c6dda4d4e4490a8087d7f286a14dee5d37087290f0f8a2"
+      sha256: caa693ad15a587a2b4fde093b728131a1827903872171089dedb16f7665d3a91
       url: "https://pub.dev"
     source: hosted
-    version: "2.9.4"
+    version: "3.2.0"
   sqlite3_flutter_libs:
     dependency: "direct main"
     description:

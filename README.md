@@ -70,7 +70,7 @@ MonkeySSH can optionally use an on-device model inside the terminal screen to su
 
 The assistant runs locally and only inserts commands after an explicit review step.
 
-This branch now targets Android API 26+ and iOS 16+ for app builds. Managed Gemma 4 uses the Edge Gallery-aligned LiteRT-LM E2B artifact with a GPU-first mobile preference on Android and iOS, then retries CPU if engine startup fails.
+This branch now targets Android API 26+ and iOS 16+ for app builds. Managed Gemma 4 uses the Edge Gallery-aligned LiteRT-LM E2B artifact with `flutter_gemma`'s native `.litertlm` handling, a GPU-first mobile preference on Android and iOS, and CPU retry if engine startup fails.
 
 The managed download is pinned to the same public Gemma 4 E2B LiteRT-LM repo snapshot Edge Gallery uses for Android. `flutter build ios --simulator` is still blocked upstream because the `flutter_gemma` fallback runtime pulls in `TensorFlowLiteSelectTfOps`, whose xcframework currently ships only device slices.
 

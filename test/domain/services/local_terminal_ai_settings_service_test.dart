@@ -16,7 +16,7 @@ void main() {
     expect(spec, isNotNull);
     expect(spec!.fileName, 'gemma-4-E2B-it.litertlm');
     expect(spec.url, contains('gemma-4-E2B-it.litertlm'));
-    expect(spec.fileType, ModelFileType.task);
+    expect(spec.fileType, ModelFileType.litertlm);
     expect(spec.preferredBackend, PreferredBackend.gpu);
   });
 
@@ -47,7 +47,7 @@ void main() {
         modelId: 'gemma-4-E2B-it',
         displayName: 'Gemma 4 E2B',
         url: 'https://example.com/gemma-4-E2B-it.litertlm',
-        fileType: ModelFileType.task,
+        fileType: ModelFileType.litertlm,
         fileName: 'gemma-4-E2B-it.litertlm',
         preferredBackend: PreferredBackend.gpu,
       );
@@ -79,7 +79,7 @@ void main() {
       modelId: 'gemma-4-E2B-it',
       displayName: 'Gemma 4 E2B',
       url: 'https://example.com/gemma-4-E2B-it.litertlm',
-      fileType: ModelFileType.task,
+      fileType: ModelFileType.litertlm,
       fileName: 'gemma-4-E2B-it.litertlm',
       preferredBackend: PreferredBackend.gpu,
     );
