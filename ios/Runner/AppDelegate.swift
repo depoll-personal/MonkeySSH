@@ -176,7 +176,7 @@ import UniformTypeIdentifiers
       case "getRuntimeInfo":
         result(self.localTerminalAiRuntimeInfo())
       case "prepareRuntime":
-        result(self.localTerminalAiRuntimeInfo())
+        result(nil)
       case "generateText":
         self.handleLocalTerminalAiGenerate(call, result: result)
       default:

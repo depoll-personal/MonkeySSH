@@ -147,6 +147,18 @@ void main() {
       },
     );
 
+    test('always marks AI-generated commands for review', () {
+      final review = assessAiGeneratedCommandInsertion('echo ready');
+
+      expect(review.requiresReview, isTrue);
+      expect(
+        review.reasons,
+        equals(<TerminalCommandReviewReason>[
+          TerminalCommandReviewReason.aiGenerated,
+        ]),
+      );
+    });
+
     test('flags standalone ampersands as shell chaining', () {
       final snippetReview = assessSnippetCommandInsertion(
         'echo ready & echo done',
