@@ -560,12 +560,6 @@ bool shouldAutoVerifyManagedGemma4InBackground({
     return false;
   }
 
-  // iOS downloads the managed model eagerly, but runtime startup is deferred
-  // until first assistant use so scrolling Settings never warms the engine.
-  if (defaultTargetPlatform == TargetPlatform.iOS) {
-    return false;
-  }
-
   return true;
 }
 
@@ -596,14 +590,7 @@ LocalTerminalAiManagedModelSpec? localTerminalAiManagedGemma4Spec() {
       preferredBackend: PreferredBackend.gpu,
       foregroundDownload: true,
     ),
-    TargetPlatform.iOS => const LocalTerminalAiManagedModelSpec(
-      modelId: _gemma4E2BModelId,
-      displayName: 'Gemma 4 E2B',
-      url: _gemma4E2BLiteRtLmUrl,
-      fileType: ModelFileType.litertlm,
-      fileName: _gemma4E2BLiteRtLmFileName,
-      preferredBackend: PreferredBackend.cpu,
-    ),
+    TargetPlatform.iOS => null,
     TargetPlatform.macOS ||
     TargetPlatform.windows ||
     TargetPlatform.linux => const LocalTerminalAiManagedModelSpec(

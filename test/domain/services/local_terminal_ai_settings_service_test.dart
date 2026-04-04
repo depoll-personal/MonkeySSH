@@ -20,7 +20,7 @@ void main() {
     expect(spec.preferredBackend, PreferredBackend.gpu);
   });
 
-  test('managed Gemma 4 uses LiteRT-LM on iOS', () {
+  test('managed Gemma 4 is unavailable on iOS without a task artifact', () {
     debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
 
@@ -28,10 +28,7 @@ void main() {
 
     final spec = localTerminalAiManagedGemma4SpecForSettings(settings);
 
-    expect(spec, isNotNull);
-    expect(spec!.fileName, 'gemma-4-E2B-it.litertlm');
-    expect(spec.url, contains('7fa1d78473894f7e736a21d920c3aa80f950c0db'));
-    expect(spec.preferredBackend, PreferredBackend.cpu);
+    expect(spec, isNull);
   });
 
   test('managed Gemma 4 auto-downloads on Android when enabled', () {
@@ -115,13 +112,13 @@ void main() {
     },
   );
 
-  test('managed Gemma 4 downloads on iOS but defers warm-up', () {
+  test('managed Gemma 4 does not auto-download on iOS', () {
     debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
 
     const settings = LocalTerminalAiSettings(enabled: true);
 
-    expect(shouldAutoSyncManagedGemma4(settings: settings), isTrue);
+    expect(shouldAutoSyncManagedGemma4(settings: settings), isFalse);
     expect(
       shouldAutoVerifyManagedGemma4InBackground(settings: settings),
       isFalse,
