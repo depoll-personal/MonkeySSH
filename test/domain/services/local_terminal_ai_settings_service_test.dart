@@ -17,10 +17,10 @@ void main() {
     expect(spec!.fileName, 'gemma-4-E2B-it.litertlm');
     expect(spec.url, contains('gemma-4-E2B-it.litertlm'));
     expect(spec.fileType, ModelFileType.task);
-    expect(spec.preferredBackend, isNull);
+    expect(spec.preferredBackend, PreferredBackend.npu);
   });
 
-  test('managed Gemma 4 download also applies on iOS', () {
+  test('managed Gemma 4 is unavailable on iOS for now', () {
     debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
 
@@ -28,9 +28,7 @@ void main() {
 
     final spec = localTerminalAiManagedGemma4SpecForSettings(settings);
 
-    expect(spec, isNotNull);
-    expect(spec!.fileName, 'gemma-4-E2B-it.litertlm');
-    expect(spec.fileType, ModelFileType.task);
+    expect(spec, isNull);
   });
 
   test('managed Gemma 4 auto-downloads whenever the assistant is enabled', () {

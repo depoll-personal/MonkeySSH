@@ -417,15 +417,10 @@ LocalTerminalAiManagedModelSpec? localTerminalAiManagedGemma4Spec() {
       url: _gemma4E2BLiteRtLmUrl,
       fileType: ModelFileType.task,
       fileName: 'gemma-4-E2B-it.litertlm',
+      preferredBackend: PreferredBackend.npu,
       foregroundDownload: true,
     ),
-    TargetPlatform.iOS => const LocalTerminalAiManagedModelSpec(
-      modelId: _gemma4E2BModelId,
-      displayName: 'Gemma 4 E2B',
-      url: _gemma4E2BLiteRtLmUrl,
-      fileType: ModelFileType.task,
-      fileName: 'gemma-4-E2B-it.litertlm',
-    ),
+    TargetPlatform.iOS => null,
     TargetPlatform.macOS ||
     TargetPlatform.windows ||
     TargetPlatform.linux => const LocalTerminalAiManagedModelSpec(

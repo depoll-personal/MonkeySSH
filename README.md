@@ -66,13 +66,13 @@ MonkeySSH can optionally use an on-device model inside the terminal screen to su
 
 - Open `Settings` → `On-device AI`
 - Enable the assistant
-- MonkeySSH downloads and uses a managed `Gemma 4 E2B` model for terminal suggestions and completions on this branch
+- MonkeySSH downloads and uses a managed `Gemma 4 E2B` model for terminal suggestions and completions on this branch where the current runtime artifacts support it
 
 The assistant runs locally and only inserts commands after an explicit review step.
 
-This branch now targets Android API 26+ and iOS 16+ for app builds and managed Gemma runtime integration.
+This branch now targets Android API 26+ and iOS 16+ for app builds. Managed Gemma 4 currently targets Android NPU devices and desktop platforms on this branch.
 
-The iOS device build works with these settings. `flutter build ios --simulator` is still blocked upstream because the `flutter_gemma` fallback runtime pulls in `TensorFlowLiteSelectTfOps`, whose xcframework currently ships only device slices.
+The public Gemma 4 repo currently exposes `.litertlm` and `web.task` artifacts, but not a mobile `.task` bundle for iOS. `flutter build ios --simulator` is still blocked upstream because the `flutter_gemma` fallback runtime pulls in `TensorFlowLiteSelectTfOps`, whose xcframework currently ships only device slices.
 
 ### Building
 
