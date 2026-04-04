@@ -34,17 +34,18 @@ void main() {
     expect(spec.preferredBackend, PreferredBackend.gpu);
   });
 
-  test(
-    'managed Gemma 4 auto-downloads on Android when the assistant is enabled',
-    () {
-      debugDefaultTargetPlatformOverride = TargetPlatform.android;
-      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+  test('managed Gemma 4 auto-downloads on Android when enabled', () {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
 
-      const settings = LocalTerminalAiSettings(enabled: true);
+    const settings = LocalTerminalAiSettings(enabled: true);
 
-      expect(shouldAutoSyncManagedGemma4(settings: settings), isTrue);
-    },
-  );
+    expect(shouldAutoSyncManagedGemma4(settings: settings), isTrue);
+    expect(
+      shouldAutoVerifyManagedGemma4InBackground(settings: settings),
+      isTrue,
+    );
+  });
 
   test(
     'managed Gemma runtime falls back from gpu to cpu on startup errors',
@@ -114,12 +115,16 @@ void main() {
     },
   );
 
-  test('managed Gemma 4 does not auto-download on iOS when enabled', () {
+  test('managed Gemma 4 downloads on iOS but defers warm-up', () {
     debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
 
     const settings = LocalTerminalAiSettings(enabled: true);
 
-    expect(shouldAutoSyncManagedGemma4(settings: settings), isFalse);
+    expect(shouldAutoSyncManagedGemma4(settings: settings), isTrue);
+    expect(
+      shouldAutoVerifyManagedGemma4InBackground(settings: settings),
+      isFalse,
+    );
   });
 }

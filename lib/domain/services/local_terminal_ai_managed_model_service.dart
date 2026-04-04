@@ -25,6 +25,9 @@ enum LocalTerminalAiManagedModelStatus {
   /// The managed model is currently downloading or installing.
   downloading,
 
+  /// The managed model is downloaded and installed, but not yet warmed up.
+  installed,
+
   /// The managed model download finished and the runtime is being warmed up.
   verifying,
 
@@ -102,6 +105,10 @@ class LocalTerminalAiManagedModelState {
 
   /// Whether the managed fallback is ready to use.
   bool get isReady => status == LocalTerminalAiManagedModelStatus.ready;
+
+  /// Whether the managed fallback is downloaded and installed.
+  bool get isInstalled =>
+      status == LocalTerminalAiManagedModelStatus.installed || isReady;
 
   /// Whether a managed download is currently in flight.
   bool get isDownloading =>
@@ -210,6 +217,7 @@ class LocalTerminalAiManagedModelController
     implements LocalTerminalAiManagedModelCoordinator {
   CancelToken? _cancelToken;
   Future<void>? _downloadFuture;
+  Future<void>? _verificationFuture;
   String? _activeSignature;
   bool _disposed = false;
 
@@ -248,11 +256,18 @@ class LocalTerminalAiManagedModelController
       return;
     }
 
-    if (state.isReady && state.spec?.signature == spec.signature) {
+    final autoVerify = shouldAutoVerifyManagedGemma4InBackground(
+      settings: settings,
+      runtimeInfo: runtimeInfo,
+    );
+    if (state.spec?.signature == spec.signature &&
+        (state.isDownloading ||
+            state.isVerifying ||
+            (autoVerify ? state.isReady : state.isInstalled))) {
       return;
     }
 
-    unawaited(ensureReadyFor(settings));
+    unawaited(_syncManagedModel(spec: spec, verifyRuntime: autoVerify));
   }
 
   @override
@@ -268,9 +283,43 @@ class LocalTerminalAiManagedModelController
       return state.spec;
     }
 
+    await _ensureManagedModelDownloaded(spec);
+    await _ensureManagedModelVerified(spec);
+    return _resolveCompletedSpec(spec);
+  }
+
+  @override
+  Future<void> retry(LocalTerminalAiSettings settings) async {
+    if (localTerminalAiManagedGemma4SpecForSettings(settings) == null) {
+      return;
+    }
+    _cancelActiveDownload();
+    _verificationFuture = null;
+    _activeSignature = null;
+    await ensureReadyFor(settings);
+  }
+
+  Future<void> _syncManagedModel({
+    required LocalTerminalAiManagedModelSpec spec,
+    required bool verifyRuntime,
+  }) async {
+    await _ensureManagedModelDownloaded(spec);
+    if (verifyRuntime) {
+      await _ensureManagedModelVerified(spec);
+    }
+  }
+
+  Future<void> _ensureManagedModelDownloaded(
+    LocalTerminalAiManagedModelSpec spec,
+  ) async {
+    if (state.isInstalled && state.spec?.signature == spec.signature) {
+      return;
+    }
+
     if (_downloadFuture != null && _activeSignature == spec.signature) {
       await _downloadFuture;
-      return _resolveCompletedSpec(spec);
+      _throwIfManagedModelFailed(spec);
+      return;
     }
 
     _cancelActiveDownload();
@@ -284,16 +333,37 @@ class LocalTerminalAiManagedModelController
         _downloadFuture = null;
       }
     }
-    return _resolveCompletedSpec(spec);
+    _throwIfManagedModelFailed(spec);
   }
 
-  @override
-  Future<void> retry(LocalTerminalAiSettings settings) async {
-    if (localTerminalAiManagedGemma4SpecForSettings(settings) == null) {
+  Future<void> _ensureManagedModelVerified(
+    LocalTerminalAiManagedModelSpec spec,
+  ) async {
+    if (state.isReady && state.spec?.signature == spec.signature) {
       return;
     }
-    _activeSignature = null;
-    await ensureReadyFor(settings);
+
+    if (_verificationFuture != null && _activeSignature == spec.signature) {
+      await _verificationFuture;
+      _throwIfManagedModelFailed(spec);
+      return;
+    }
+
+    await _ensureManagedModelDownloaded(spec);
+    if (_disposed || _activeSignature != spec.signature) {
+      return;
+    }
+
+    final future = _verifyInstalledManagedModel(spec);
+    _verificationFuture = future;
+    try {
+      await future;
+    } finally {
+      if (identical(_verificationFuture, future)) {
+        _verificationFuture = null;
+      }
+    }
+    _throwIfManagedModelFailed(spec);
   }
 
   Future<LocalTerminalAiManagedModelSpec?> _resolveCompletedSpec(
@@ -349,16 +419,7 @@ class LocalTerminalAiManagedModelController
         return;
       }
       state = LocalTerminalAiManagedModelState(
-        status: LocalTerminalAiManagedModelStatus.verifying,
-        spec: spec,
-        progress: 100,
-      );
-      await _verifyManagedModelRuntime(spec);
-      if (_disposed || _activeSignature != spec.signature) {
-        return;
-      }
-      state = LocalTerminalAiManagedModelState(
-        status: LocalTerminalAiManagedModelStatus.ready,
+        status: LocalTerminalAiManagedModelStatus.installed,
         spec: spec,
         progress: 100,
       );
@@ -381,6 +442,40 @@ class LocalTerminalAiManagedModelController
       if (identical(_cancelToken, token)) {
         _cancelToken = null;
       }
+    }
+  }
+
+  Future<void> _verifyInstalledManagedModel(
+    LocalTerminalAiManagedModelSpec spec,
+  ) async {
+    if (!_disposed) {
+      state = LocalTerminalAiManagedModelState(
+        status: LocalTerminalAiManagedModelStatus.verifying,
+        spec: spec,
+        progress: 100,
+      );
+    }
+
+    try {
+      await _verifyManagedModelRuntime(spec);
+      if (_disposed || _activeSignature != spec.signature) {
+        return;
+      }
+      state = LocalTerminalAiManagedModelState(
+        status: LocalTerminalAiManagedModelStatus.ready,
+        spec: spec,
+        progress: 100,
+      );
+    } on Object catch (error) {
+      if (_disposed || _activeSignature != spec.signature) {
+        return;
+      }
+      state = LocalTerminalAiManagedModelState(
+        status: LocalTerminalAiManagedModelStatus.failed,
+        spec: spec,
+        progress: 100,
+        errorMessage: _formatManagedModelSetupError(error, spec),
+      );
     }
   }
 
@@ -434,6 +529,16 @@ class LocalTerminalAiManagedModelController
     final cacheDirectory = await getApplicationCacheDirectory();
     await cacheDirectory.create(recursive: true);
   }
+
+  void _throwIfManagedModelFailed(LocalTerminalAiManagedModelSpec spec) {
+    if (state.status == LocalTerminalAiManagedModelStatus.failed &&
+        state.spec?.signature == spec.signature) {
+      throw Exception(
+        state.errorMessage ??
+            'Downloading the managed ${spec.displayName} fallback failed.',
+      );
+    }
+  }
 }
 
 /// Whether the current settings should use the managed Gemma 4 fallback.
@@ -444,13 +549,19 @@ bool shouldUseManagedGemma4Fallback(LocalTerminalAiSettings settings) =>
 bool shouldAutoSyncManagedGemma4({
   required LocalTerminalAiSettings settings,
   LocalTerminalAiRuntimeInfo? runtimeInfo,
+}) => localTerminalAiManagedGemma4SpecForSettings(settings) != null;
+
+/// Whether managed Gemma 4 should be warmed up in the background now.
+bool shouldAutoVerifyManagedGemma4InBackground({
+  required LocalTerminalAiSettings settings,
+  LocalTerminalAiRuntimeInfo? runtimeInfo,
 }) {
   if (localTerminalAiManagedGemma4SpecForSettings(settings) == null) {
     return false;
   }
 
-  // iOS runtime startup is deferred until explicit use so merely opening
-  // Settings does not touch the managed Gemma runtime path.
+  // iOS downloads the managed model eagerly, but runtime startup is deferred
+  // until first assistant use so scrolling Settings never warms the engine.
   if (defaultTargetPlatform == TargetPlatform.iOS) {
     return false;
   }

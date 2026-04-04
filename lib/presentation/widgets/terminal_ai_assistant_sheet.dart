@@ -336,18 +336,22 @@ class _AssistantStatusCard extends StatelessWidget {
     final theme = Theme.of(context);
     final managedSpec = localTerminalAiManagedGemma4Spec();
     final isConfigured = _canUseAssistant(settings, managedModel);
-    final autoSyncsInSettings = shouldAutoSyncManagedGemma4(settings: settings);
+    final autoVerifiesInBackground = shouldAutoVerifyManagedGemma4InBackground(
+      settings: settings,
+    );
     final subtitle = !settings.enabled
         ? managedSpec == null
               ? 'Enable the assistant in Settings to start using it.'
-              : autoSyncsInSettings
-              ? 'Enable the assistant in Settings to start downloading ${managedSpec.displayName}.'
-              : 'Enable the assistant in Settings to start using ${managedSpec.displayName}.'
+              : 'Enable the assistant in Settings to start downloading ${managedSpec.displayName}.'
         : managedSpec == null
         ? 'Managed Gemma 4 download is not available on this platform.'
         : switch (managedModel.status) {
             LocalTerminalAiManagedModelStatus.ready =>
               'Using managed ${managedSpec.displayName} on this device.',
+            LocalTerminalAiManagedModelStatus.installed =>
+              autoVerifiesInBackground
+                  ? 'Managed ${managedSpec.displayName} is downloaded and finishing setup.'
+                  : 'Managed ${managedSpec.displayName} is downloaded. It will finish setup the first time you ask for suggestions or completions.',
             LocalTerminalAiManagedModelStatus.verifying =>
               'Finalizing managed ${managedSpec.displayName} on this device.',
             LocalTerminalAiManagedModelStatus.downloading =>
@@ -355,9 +359,7 @@ class _AssistantStatusCard extends StatelessWidget {
             LocalTerminalAiManagedModelStatus.failed =>
               'Managed ${managedSpec.displayName} setup failed. Open Settings to retry.',
             LocalTerminalAiManagedModelStatus.idle =>
-              autoSyncsInSettings
-                  ? 'Preparing the managed ${managedSpec.displayName} download...'
-                  : 'Managed ${managedSpec.displayName} will start the first time you ask for suggestions or completions.',
+              'Preparing the managed ${managedSpec.displayName} download...',
           };
 
     return Card(

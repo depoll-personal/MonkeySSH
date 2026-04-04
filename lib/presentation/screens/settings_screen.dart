@@ -843,24 +843,26 @@ class _OnDeviceAiSection extends ConsumerWidget {
     if (managedSpec == null) {
       return 'Managed Gemma 4 download is not available on this platform yet.';
     }
-    final autoSyncsInSettings = shouldAutoSyncManagedGemma4(settings: settings);
+    final autoVerifiesInBackground = shouldAutoVerifyManagedGemma4InBackground(
+      settings: settings,
+    );
     if (!settings.enabled) {
-      return autoSyncsInSettings
-          ? '${managedSpec.displayName} downloads automatically after you enable the assistant.'
-          : '${managedSpec.displayName} will download when you first use the assistant.';
+      return '${managedSpec.displayName} downloads automatically after you enable the assistant.';
     }
     return switch (managedModel.status) {
       LocalTerminalAiManagedModelStatus.ready =>
         '${managedSpec.displayName} is installed and ready.',
+      LocalTerminalAiManagedModelStatus.installed =>
+        autoVerifiesInBackground
+            ? '${managedSpec.displayName} is downloaded and finishing setup.'
+            : '${managedSpec.displayName} is downloaded. Final setup starts the first time you use the assistant.',
       LocalTerminalAiManagedModelStatus.verifying =>
         'Finalizing ${managedSpec.displayName} so it can start on this device.',
       LocalTerminalAiManagedModelStatus.downloading =>
         'Downloading ${managedSpec.displayName} (${managedModel.progress}%).',
       LocalTerminalAiManagedModelStatus.failed => 'Setup failed. Tap to retry.',
       LocalTerminalAiManagedModelStatus.idle =>
-        autoSyncsInSettings
-            ? 'Preparing the managed ${managedSpec.displayName} download...'
-            : '${managedSpec.displayName} will start when you first ask for suggestions or completions.',
+        'Preparing the managed ${managedSpec.displayName} download...',
     };
   }
 
@@ -880,6 +882,9 @@ class _OnDeviceAiSection extends ConsumerWidget {
     return switch (managedModel.status) {
       LocalTerminalAiManagedModelStatus.ready => const Icon(
         Icons.check_circle_outline,
+      ),
+      LocalTerminalAiManagedModelStatus.installed => const Icon(
+        Icons.download_done_outlined,
       ),
       LocalTerminalAiManagedModelStatus.verifying => const SizedBox.square(
         dimension: 20,
@@ -910,11 +915,10 @@ class _OnDeviceAiSection extends ConsumerWidget {
     required LocalTerminalAiManagedModelSpec? managedSpec,
   }) {
     if (managedSpec != null) {
-      final autoSyncsInSettings = shouldAutoSyncManagedGemma4(
-        settings: settings,
-      );
-      if (!autoSyncsInSettings && settings.enabled) {
-        return 'MonkeySSH uses managed ${managedSpec.displayName} for terminal suggestions and completions on this branch. On iPhone, managed setup waits until you actually use the assistant. Commands are never run automatically.';
+      final autoVerifiesInBackground =
+          shouldAutoVerifyManagedGemma4InBackground(settings: settings);
+      if (!autoVerifiesInBackground && settings.enabled) {
+        return 'MonkeySSH uses managed ${managedSpec.displayName} for terminal suggestions and completions on this branch. The download starts after you enable the assistant, and on iPhone the final runtime startup waits until you actually use it. Commands are never run automatically.';
       }
       return 'MonkeySSH uses managed ${managedSpec.displayName} for terminal suggestions and completions on this branch. Commands are never run automatically.';
     }
