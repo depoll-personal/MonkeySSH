@@ -4,7 +4,6 @@ import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'local_terminal_ai_managed_model_service.dart';
-import 'local_terminal_ai_platform_service.dart';
 import 'local_terminal_ai_settings_service.dart';
 
 /// A single command suggestion produced by the on-device AI assistant.
@@ -52,7 +51,6 @@ class LocalTerminalAiConfigurationException implements Exception {
 /// Provider for the on-device terminal AI assistant service.
 final localTerminalAiServiceProvider = Provider<LocalTerminalAiService>(
   (ref) => LocalTerminalAiService(
-    platformRuntime: ref.watch(localTerminalAiPlatformServiceProvider),
     managedModelCoordinator: ref.watch(
       localTerminalAiManagedModelProvider.notifier,
     ),
@@ -63,15 +61,11 @@ final localTerminalAiServiceProvider = Provider<LocalTerminalAiService>(
 class LocalTerminalAiService {
   /// Creates a new [LocalTerminalAiService].
   LocalTerminalAiService({
-    required this.platformRuntime,
     required LocalTerminalAiManagedModelCoordinator managedModelCoordinator,
     LocalTerminalAiFallbackRuntime? fallbackRuntime,
   }) : _managedModelCoordinator = managedModelCoordinator,
        _fallbackRuntime =
            fallbackRuntime ?? FlutterGemmaLocalTerminalAiFallbackRuntime();
-
-  /// Native platform runtime bridge used when the OS exposes a built-in model.
-  final LocalTerminalAiPlatformService platformRuntime;
 
   final LocalTerminalAiManagedModelCoordinator _managedModelCoordinator;
 
@@ -156,25 +150,6 @@ class LocalTerminalAiService {
       );
     }
 
-    final runtimeInfo = await platformRuntime.getRuntimeInfo();
-    String? nativeRuntimeFailure;
-    if (runtimeInfo.shouldAttemptNativeRuntime) {
-      try {
-        return await platformRuntime.generateText(
-          prompt: prompt,
-          maxTokens: _nativeMaxTokensForRuntime(
-            runtimeInfo: runtimeInfo,
-            requestedMaxTokens: maxTokens,
-          ),
-        );
-      } on LocalTerminalAiPlatformException catch (error) {
-        nativeRuntimeFailure = error.message;
-        if (runtimeInfo.canUseNativeRuntime) {
-          throw LocalTerminalAiConfigurationException(nativeRuntimeFailure);
-        }
-      }
-    }
-
     LocalTerminalAiManagedModelSpec? managedModel;
     try {
       managedModel = await _managedModelCoordinator.ensureReadyFor(settings);
@@ -195,12 +170,8 @@ class LocalTerminalAiService {
       }
     }
 
-    if (nativeRuntimeFailure != null) {
-      throw LocalTerminalAiConfigurationException(nativeRuntimeFailure);
-    }
-
-    throw LocalTerminalAiConfigurationException(
-      '${runtimeInfo.statusMessage} Gemma 4 download is not available on this platform.',
+    throw const LocalTerminalAiConfigurationException(
+      'Managed Gemma 4 download is not available on this platform.',
     );
   }
 
@@ -301,7 +272,7 @@ class LocalTerminalAiService {
 
     if (suggestions.isEmpty) {
       throw const LocalTerminalAiConfigurationException(
-        'The local model returned an unexpected response. Try a different model family or file.',
+        'The local model returned an unexpected response. Try again.',
       );
     }
 
@@ -322,23 +293,13 @@ class LocalTerminalAiService {
     return firstLine;
   }
 
-  int _nativeMaxTokensForRuntime({
-    required LocalTerminalAiRuntimeInfo runtimeInfo,
-    required int requestedMaxTokens,
-  }) {
-    if (runtimeInfo.provider == LocalTerminalAiPlatformProvider.androidAiCore) {
-      return requestedMaxTokens.clamp(1, 256);
-    }
-    return requestedMaxTokens;
-  }
-
   String _formatManagedRuntimeError(
     Object error,
     LocalTerminalAiManagedModelSpec managedModel,
   ) {
     final errorMessage = error.toString().trim();
     if (errorMessage.contains('Failed to invoke the compiled model')) {
-      return 'Managed ${managedModel.displayName} is installed but could not start on this device. MonkeySSH will keep preferring the built-in runtime when it is available.';
+      return 'Managed ${managedModel.displayName} is installed but could not start on this device. Reinstall it from Settings and try again.';
     }
     return 'Managed ${managedModel.displayName} failed: $errorMessage';
   }

@@ -3,7 +3,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/services/local_terminal_ai_managed_model_service.dart';
-import '../../domain/services/local_terminal_ai_platform_service.dart';
 import '../../domain/services/local_terminal_ai_service.dart';
 import '../../domain/services/local_terminal_ai_settings_service.dart';
 
@@ -63,10 +62,9 @@ class _TerminalAiAssistantSheetState
   Widget build(BuildContext context) {
     final settings = ref.watch(localTerminalAiSettingsProvider);
     final managedModel = ref.watch(localTerminalAiManagedModelProvider);
-    final runtimeInfo = ref.watch(localTerminalAiRuntimeInfoProvider);
     final theme = Theme.of(context);
     final currentLine = widget.currentTerminalLine?.trimRight();
-    final canGenerate = _canUseAssistant(settings, runtimeInfo, managedModel);
+    final canGenerate = _canUseAssistant(settings, managedModel);
 
     return SafeArea(
       top: false,
@@ -105,7 +103,6 @@ class _TerminalAiAssistantSheetState
               _AssistantStatusCard(
                 settings: settings,
                 managedModel: managedModel,
-                runtimeInfo: runtimeInfo,
                 onOpenSettings: () {
                   Navigator.pop(context);
                   widget.onOpenSettings();
@@ -320,57 +317,34 @@ class _TerminalAiAssistantSheetState
 
 bool _canUseAssistant(
   LocalTerminalAiSettings settings,
-  AsyncValue<LocalTerminalAiRuntimeInfo> runtimeInfo,
   LocalTerminalAiManagedModelState managedModel,
-) {
-  if (!settings.enabled) {
-    return false;
-  }
-  final nativeRuntimeSupported =
-      runtimeInfo.asData?.value.shouldAttemptNativeRuntime ?? false;
-  if (nativeRuntimeSupported) {
-    return true;
-  }
-  return managedModel.isReady;
-}
+) => settings.enabled && managedModel.isReady;
 
 class _AssistantStatusCard extends StatelessWidget {
   const _AssistantStatusCard({
     required this.settings,
     required this.managedModel,
-    required this.runtimeInfo,
     required this.onOpenSettings,
   });
 
   final LocalTerminalAiSettings settings;
   final LocalTerminalAiManagedModelState managedModel;
-  final AsyncValue<LocalTerminalAiRuntimeInfo> runtimeInfo;
   final VoidCallback onOpenSettings;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final managedSpec = localTerminalAiManagedGemma4Spec();
-    final isConfigured = _canUseAssistant(settings, runtimeInfo, managedModel);
-    final subtitle = runtimeInfo.when(
-      data: (info) {
-        if (!settings.enabled) {
-          return managedSpec == null
+    final isConfigured = _canUseAssistant(settings, managedModel);
+    final subtitle = !settings.enabled
+        ? managedSpec == null
               ? 'Enable the assistant in Settings to start using it.'
-              : 'Enable the assistant in Settings to start downloading ${managedSpec.displayName}.';
-        }
-        if (info.canUseNativeRuntime) {
-          return info.modelName == null
-              ? 'Using ${info.providerLabel} on this device.'
-              : 'Using ${info.providerLabel} (${info.modelName}) on this device.';
-        }
-        if (info.supportedPlatform) {
-          return '${info.statusMessage} MonkeySSH will keep trying ${info.providerLabel} before falling back to managed Gemma 4.';
-        }
-        if (managedSpec != null) {
-          return switch (managedModel.status) {
+              : 'Enable the assistant in Settings to start downloading ${managedSpec.displayName}.'
+        : managedSpec == null
+        ? 'Managed Gemma 4 download is not available on this platform.'
+        : switch (managedModel.status) {
             LocalTerminalAiManagedModelStatus.ready =>
-              'Using managed ${managedSpec.displayName}.',
+              'Using managed ${managedSpec.displayName} on this device.',
             LocalTerminalAiManagedModelStatus.downloading =>
               'Downloading managed ${managedSpec.displayName} (${managedModel.progress}%).',
             LocalTerminalAiManagedModelStatus.failed =>
@@ -378,31 +352,6 @@ class _AssistantStatusCard extends StatelessWidget {
             LocalTerminalAiManagedModelStatus.idle =>
               'Preparing the managed ${managedSpec.displayName} download...',
           };
-        }
-        return '${info.statusMessage} Managed Gemma 4 download is not available on this platform.';
-      },
-      loading: () {
-        if (!settings.enabled) {
-          return managedSpec == null
-              ? 'Enable the assistant in Settings to start using it.'
-              : 'Enable the assistant in Settings to start downloading ${managedSpec.displayName}.';
-        }
-        if (managedSpec != null) {
-          return managedModel.isReady
-              ? 'Managed ${managedSpec.displayName} is ready while the built-in runtime is still being checked.'
-              : 'Checking the built-in runtime before deciding whether managed ${managedSpec.displayName} is needed...';
-        }
-        return 'Checking whether this device exposes a built-in on-device model...';
-      },
-      error: (error, _) {
-        if (managedSpec != null) {
-          return managedModel.isReady
-              ? 'Native runtime check failed. Managed ${managedSpec.displayName} remains available as fallback.'
-              : 'Native runtime check failed and managed ${managedSpec.displayName} is not ready yet.';
-        }
-        return error.toString();
-      },
-    );
 
     return Card(
       color: isConfigured

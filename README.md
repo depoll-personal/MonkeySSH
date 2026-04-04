@@ -66,14 +66,11 @@ MonkeySSH can optionally use an on-device model inside the terminal screen to su
 
 - Open `Settings` → `On-device AI`
 - Enable the assistant
-- MonkeySSH uses the built-in runtime when the device exposes one:
-  - Apple `FoundationModels` on supported Apple Intelligence devices
-  - Android AI Core / Gemini Nano on supported Android devices
-- If the built-in runtime is unavailable, MonkeySSH downloads a managed `Gemma 4 E2B` model automatically
+- MonkeySSH downloads and uses a managed `Gemma 4 E2B` model for terminal suggestions and completions on this branch
 
-The assistant runs locally and only inserts commands after an explicit review step. If the built-in system model is unavailable on a device, MonkeySSH falls back to the managed Gemma 4 download.
+The assistant runs locally and only inserts commands after an explicit review step.
 
-This branch now targets Android API 26+ and iOS 16+ for app builds and fallback runtime integration. Apple's built-in `FoundationModels` runtime is still gated by the native availability checks on iOS 26+ and macOS 26+, so older supported Apple OS versions use the managed Gemma 4 path whenever the built-in runtime is unavailable. Native AI availability still depends on device support and OS capabilities.
+This branch now targets Android API 26+ and iOS 16+ for app builds and managed Gemma runtime integration.
 
 The iOS device build works with these settings. `flutter build ios --simulator` is still blocked upstream because the `flutter_gemma` fallback runtime pulls in `TensorFlowLiteSelectTfOps`, whose xcframework currently ships only device slices.
 

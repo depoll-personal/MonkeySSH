@@ -170,12 +170,9 @@ class LocalTerminalAiManagedModelController
       return;
     }
 
-    final effectiveRuntimeInfo =
-        runtimeInfo ??
-        await ref.read(localTerminalAiPlatformServiceProvider).getRuntimeInfo();
     if (!shouldAutoSyncManagedGemma4(
       settings: settings,
-      runtimeInfo: effectiveRuntimeInfo,
+      runtimeInfo: runtimeInfo,
     )) {
       _cancelActiveDownload();
       if (!_disposed && !state.isReady) {
@@ -329,9 +326,7 @@ bool shouldUseManagedGemma4Fallback(LocalTerminalAiSettings settings) =>
 bool shouldAutoSyncManagedGemma4({
   required LocalTerminalAiSettings settings,
   LocalTerminalAiRuntimeInfo? runtimeInfo,
-}) =>
-    localTerminalAiManagedGemma4SpecForSettings(settings) != null &&
-    !(runtimeInfo?.supportedPlatform ?? false);
+}) => localTerminalAiManagedGemma4SpecForSettings(settings) != null;
 
 /// Returns the managed Gemma 4 artifact for the current platform and settings.
 LocalTerminalAiManagedModelSpec? localTerminalAiManagedGemma4SpecForSettings(
