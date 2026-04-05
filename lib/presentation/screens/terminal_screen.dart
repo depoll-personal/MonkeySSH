@@ -3368,241 +3368,33 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     final promptContext = _buildLocalTerminalAiPromptContext();
 
-    try {
-      final suggestions = await ref
+    final selectedCommand = await _showTerminalAiSuggestionPicker(
+      prompt: trimmedPrompt,
+      suggestionsFuture: ref
           .read(localTerminalAiServiceProvider)
           .suggestCommands(
             settings: ref.read(localTerminalAiSettingsProvider),
             taskDescription: trimmedPrompt,
             promptContext: promptContext,
-          );
-      if (!mounted) {
-        return;
-      }
-      if (suggestions.isEmpty) {
-        _showClipboardMessage('No local suggestions matched “$trimmedPrompt”.');
-        return;
-      }
-
-      final selectedCommand = await _showTerminalAiSuggestionPicker(
-        prompt: trimmedPrompt,
-        suggestions: suggestions,
-      );
-      if (!mounted || selectedCommand == null) {
-        return;
-      }
-      await _insertAiGeneratedText(selectedCommand, isCompletion: false);
-    } on LocalTerminalAiConfigurationException catch (error) {
-      if (!mounted) {
-        return;
-      }
-      _showClipboardMessage(error.message);
+          ),
+    );
+    if (!mounted || selectedCommand == null) {
+      return;
     }
+    await _insertAiGeneratedText(selectedCommand, isCompletion: false);
   }
 
   Future<String?> _showTerminalAiSuggestionPicker({
     required String prompt,
-    required List<LocalTerminalAiSuggestion> suggestions,
+    required Future<List<LocalTerminalAiSuggestion>> suggestionsFuture,
   }) => showModalBottomSheet<String>(
     context: context,
     backgroundColor: Colors.transparent,
     isScrollControlled: true,
-    builder: (sheetContext) {
-      final theme = Theme.of(sheetContext);
-      final colorScheme = theme.colorScheme;
-      final bottomInset = MediaQuery.viewInsetsOf(sheetContext).bottom;
-      return SafeArea(
-        top: false,
-        child: Padding(
-          padding: EdgeInsets.fromLTRB(12, 12, 12, bottomInset + 12),
-          child: Material(
-            color: Colors.transparent,
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: <Color>[
-                    colorScheme.surface,
-                    colorScheme.surfaceContainerHigh,
-                  ],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                borderRadius: BorderRadius.circular(28),
-                border: Border.all(color: colorScheme.primary.withAlpha(48)),
-                boxShadow: <BoxShadow>[
-                  BoxShadow(
-                    color: colorScheme.shadow.withAlpha(30),
-                    blurRadius: 24,
-                    offset: const Offset(0, 12),
-                  ),
-                ],
-              ),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Container(
-                          width: 34,
-                          height: 34,
-                          decoration: BoxDecoration(
-                            color: colorScheme.primary.withAlpha(28),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Icon(
-                            Icons.auto_awesome_rounded,
-                            color: colorScheme.primary,
-                            size: 18,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'Suggested commands',
-                                style: theme.textTheme.titleMedium,
-                              ),
-                              const SizedBox(height: 2),
-                              Text(
-                                prompt,
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  color: colorScheme.onSurfaceVariant,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        IconButton(
-                          onPressed: () => Navigator.of(sheetContext).pop(),
-                          icon: const Icon(Icons.close_rounded),
-                          tooltip: 'Close suggestions',
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 14),
-                    for (
-                      var index = 0;
-                      index < suggestions.length;
-                      index++
-                    ) ...[
-                      Material(
-                        color: Colors.transparent,
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(20),
-                          onTap: () => Navigator.of(
-                            sheetContext,
-                          ).pop(suggestions[index].command),
-                          child: Ink(
-                            decoration: BoxDecoration(
-                              color: colorScheme.surfaceContainerHighest
-                                  .withAlpha(220),
-                              borderRadius: BorderRadius.circular(20),
-                              border: Border.all(
-                                color: colorScheme.outlineVariant.withAlpha(
-                                  180,
-                                ),
-                              ),
-                            ),
-                            child: Padding(
-                              padding: const EdgeInsets.all(14),
-                              child: Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Container(
-                                    width: 26,
-                                    height: 26,
-                                    alignment: Alignment.center,
-                                    decoration: BoxDecoration(
-                                      color: colorScheme.primary.withAlpha(22),
-                                      borderRadius: BorderRadius.circular(9),
-                                    ),
-                                    child: Text(
-                                      '${index + 1}',
-                                      style: theme.textTheme.labelMedium
-                                          ?.copyWith(
-                                            color: colorScheme.primary,
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          suggestions[index].command,
-                                          style: theme.textTheme.bodyMedium
-                                              ?.copyWith(
-                                                fontFamily: 'monospace',
-                                                fontWeight: FontWeight.w600,
-                                              ),
-                                        ),
-                                        const SizedBox(height: 6),
-                                        Text(
-                                          suggestions[index].explanation,
-                                          style: theme.textTheme.bodySmall
-                                              ?.copyWith(
-                                                color: colorScheme
-                                                    .onSurfaceVariant,
-                                              ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  IconButton(
-                                    onPressed: () async {
-                                      await Clipboard.setData(
-                                        ClipboardData(
-                                          text: suggestions[index].command,
-                                        ),
-                                      );
-                                      if (!sheetContext.mounted) {
-                                        return;
-                                      }
-                                      ScaffoldMessenger.of(
-                                        sheetContext,
-                                      ).showSnackBar(
-                                        const SnackBar(
-                                          content: Text('Copied to clipboard'),
-                                        ),
-                                      );
-                                    },
-                                    icon: const Icon(Icons.copy_outlined),
-                                    tooltip: 'Copy command',
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                      if (index < suggestions.length - 1)
-                        const SizedBox(height: 10),
-                    ],
-                    const SizedBox(height: 12),
-                    Text(
-                      'Tap a suggestion to review it before insertion.',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
-    },
+    builder: (sheetContext) => _TerminalAiSuggestionSheet(
+      prompt: prompt,
+      suggestionsFuture: suggestionsFuture,
+    ),
   );
 
   Future<void> _insertAiGeneratedText(
@@ -5921,4 +5713,301 @@ class _TerminalStatusChip extends StatelessWidget {
       ),
     ),
   );
+}
+
+/// Bottom sheet that shows a spinner while AI suggestions are generating,
+/// then transitions to the suggestion list once results arrive.
+class _TerminalAiSuggestionSheet extends StatefulWidget {
+  const _TerminalAiSuggestionSheet({
+    required this.prompt,
+    required this.suggestionsFuture,
+  });
+
+  final String prompt;
+  final Future<List<LocalTerminalAiSuggestion>> suggestionsFuture;
+
+  @override
+  State<_TerminalAiSuggestionSheet> createState() =>
+      _TerminalAiSuggestionSheetState();
+}
+
+class _TerminalAiSuggestionSheetState
+    extends State<_TerminalAiSuggestionSheet> {
+  List<LocalTerminalAiSuggestion>? _suggestions;
+  String? _errorMessage;
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSuggestions();
+  }
+
+  Future<void> _loadSuggestions() async {
+    try {
+      final suggestions = await widget.suggestionsFuture;
+      if (!mounted) {
+        return;
+      }
+      if (suggestions.isEmpty) {
+        setState(() {
+          _isLoading = false;
+          _errorMessage = 'No suggestions matched your request.';
+        });
+        return;
+      }
+      setState(() {
+        _isLoading = false;
+        _suggestions = suggestions;
+      });
+    } on Object catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isLoading = false;
+        _errorMessage = error.toString();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(12, 12, 12, bottomInset + 12),
+        child: Material(
+          color: Colors.transparent,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: <Color>[
+                  colorScheme.surface,
+                  colorScheme.surfaceContainerHigh,
+                ],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(28),
+              border: Border.all(color: colorScheme.primary.withAlpha(48)),
+              boxShadow: <BoxShadow>[
+                BoxShadow(
+                  color: colorScheme.shadow.withAlpha(30),
+                  blurRadius: 24,
+                  offset: const Offset(0, 12),
+                ),
+              ],
+            ),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildHeader(theme, colorScheme),
+                  const SizedBox(height: 14),
+                  if (_isLoading)
+                    _buildLoadingIndicator(theme, colorScheme)
+                  else if (_errorMessage case final errorMessage?)
+                    _buildError(theme, colorScheme, errorMessage)
+                  else if (_suggestions case final suggestions?)
+                    ..._buildSuggestionCards(theme, colorScheme, suggestions),
+                  const SizedBox(height: 12),
+                  if (!_isLoading && _errorMessage == null)
+                    Text(
+                      'Tap a suggestion to review it before insertion.',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHeader(ThemeData theme, ColorScheme colorScheme) => Row(
+    children: [
+      Container(
+        width: 34,
+        height: 34,
+        decoration: BoxDecoration(
+          color: colorScheme.primary.withAlpha(28),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Icon(
+          Icons.auto_awesome_rounded,
+          color: colorScheme.primary,
+          size: 18,
+        ),
+      ),
+      const SizedBox(width: 12),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Suggested commands', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 2),
+            Text(
+              widget.prompt,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+      IconButton(
+        onPressed: () => Navigator.of(context).pop(),
+        icon: const Icon(Icons.close_rounded),
+        tooltip: 'Close suggestions',
+      ),
+    ],
+  );
+
+  Widget _buildLoadingIndicator(ThemeData theme, ColorScheme colorScheme) =>
+      Padding(
+        padding: const EdgeInsets.symmetric(vertical: 24),
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                width: 28,
+                height: 28,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.5,
+                  color: colorScheme.primary,
+                ),
+              ),
+              const SizedBox(height: 14),
+              Text(
+                'Generating suggestions\u2026',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+
+  Widget _buildError(
+    ThemeData theme,
+    ColorScheme colorScheme,
+    String message,
+  ) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 16),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(Icons.error_outline, color: colorScheme.error, size: 20),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            message,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: colorScheme.error,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+
+  List<Widget> _buildSuggestionCards(
+    ThemeData theme,
+    ColorScheme colorScheme,
+    List<LocalTerminalAiSuggestion> suggestions,
+  ) => [
+    for (var index = 0; index < suggestions.length; index++) ...[
+      Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(20),
+          onTap: () => Navigator.of(context).pop(suggestions[index].command),
+          child: Ink(
+            decoration: BoxDecoration(
+              color: colorScheme.surfaceContainerHighest.withAlpha(220),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: colorScheme.outlineVariant.withAlpha(180),
+              ),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: 26,
+                    height: 26,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: colorScheme.primary.withAlpha(22),
+                      borderRadius: BorderRadius.circular(9),
+                    ),
+                    child: Text(
+                      '${index + 1}',
+                      style: theme.textTheme.labelMedium?.copyWith(
+                        color: colorScheme.primary,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          suggestions[index].command,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            fontFamily: 'monospace',
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          suggestions[index].explanation,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () async {
+                      await Clipboard.setData(
+                        ClipboardData(text: suggestions[index].command),
+                      );
+                      if (!mounted) {
+                        return;
+                      }
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Copied to clipboard')),
+                      );
+                    },
+                    icon: const Icon(Icons.copy_outlined),
+                    tooltip: 'Copy command',
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+      if (index < suggestions.length - 1) const SizedBox(height: 10),
+    ],
+  ];
 }
