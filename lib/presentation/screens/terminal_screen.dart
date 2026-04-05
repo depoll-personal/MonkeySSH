@@ -4578,8 +4578,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   String? _buildRecentTerminalContextSnapshot() {
-    const maxLogicalLines = 14;
-    const maxChars = 2400;
+    const maxLogicalLines = 24;
+    const maxChars = 4000;
 
     final buffer = _terminal.buffer;
     final row = buffer.absoluteCursorY;

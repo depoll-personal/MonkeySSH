@@ -31,7 +31,7 @@ const _managedGemmaSessionTemperature = 0.2;
 /// because `flutter_gemma` caches the native model singleton by model name
 /// only — a warmup at 256 followed by inference at 1024 would silently
 /// reuse the 256-token engine, causing prompt-too-long failures.
-const managedGemmaMaxTokens = 1024;
+const managedGemmaMaxTokens = 4096;
 
 /// Download lifecycle for the managed terminal AI model fallback.
 enum LocalTerminalAiManagedModelStatus {
