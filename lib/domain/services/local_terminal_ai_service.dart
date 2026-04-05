@@ -19,6 +19,38 @@ const _unexpectedSuggestionResponseMessage =
     'The local model returned an unexpected response. Try again.';
 final _suggestionListPrefixPattern = RegExp(r'^(?:[-*•]+|\d+[.)])\s*');
 final _suggestionBacktickPattern = RegExp('`([^`]+)`');
+final _suggestionWhitespacePattern = RegExp(r'\s+');
+final _shellSyntaxCharacterPattern = RegExp(r"""[|&;<>()$`'"\\[\]{}=*?]""");
+final _simpleShellTokenPattern = RegExp(r'^[-./~:@%+,=\w]+$');
+const _placeholderSuggestionCommands = <String>{
+  'command',
+  'shell command',
+  'example command',
+  'sample command',
+  'command here',
+  'your command',
+  'your command here',
+};
+const _placeholderSuggestionExplanations = <String>{
+  'short explanation',
+  'brief explanation',
+  'explanation',
+  'reason',
+  'details',
+  'description',
+};
+const _descriptionLikeLeadingWords = <String>{
+  'check',
+  'display',
+  'find',
+  'get',
+  'inspect',
+  'list',
+  'print',
+  'review',
+  'show',
+  'view',
+};
 
 /// A single command suggestion produced by the on-device AI assistant.
 class LocalTerminalAiSuggestion {
@@ -317,9 +349,13 @@ class LocalTerminalAiService {
       ..writeln('Keep the answer safe and practical.')
       ..writeln('Return at most three suggestions.')
       ..writeln(
-        'Output format: one suggestion per line as COMMAND || short explanation.',
+        'Output format: one suggestion per line as an actual shell command, then ||, then a short explanation.',
       )
+      ..writeln('Example: ls -la || List files with details.')
       ..writeln('Do not use bullets, numbering, markdown, or code fences.')
+      ..writeln(
+        'Never output placeholders like COMMAND or short explanation, and never describe a command instead of writing it.',
+      )
       ..writeln(
         'Prefer a single command over chained shell commands when possible.',
       )
@@ -569,6 +605,13 @@ class LocalTerminalAiService {
     final normalized = explanation
         .replaceFirst(RegExp(r'^[:\-\u2013\u2014\s]+'), '')
         .trim();
+    final collapsedNormalized = normalized.toLowerCase().replaceAll(
+      _suggestionWhitespacePattern,
+      ' ',
+    );
+    if (_placeholderSuggestionExplanations.contains(collapsedNormalized)) {
+      return 'Suggested by the on-device model.';
+    }
     return normalized.isEmpty
         ? 'Suggested by the on-device model.'
         : normalized;
@@ -589,6 +632,13 @@ class LocalTerminalAiService {
     if (nonCommandPhrases.contains(command.toLowerCase())) {
       return false;
     }
+    final normalizedCommand = command.toLowerCase().replaceAll(
+      _suggestionWhitespacePattern,
+      ' ',
+    );
+    if (_placeholderSuggestionCommands.contains(normalizedCommand)) {
+      return false;
+    }
     final firstCodeUnit = command.codeUnitAt(0);
     final startsWithCommandCharacter =
         (firstCodeUnit >= 0x41 && firstCodeUnit <= 0x5A) ||
@@ -596,7 +646,49 @@ class LocalTerminalAiService {
         firstCodeUnit == 0x2E ||
         firstCodeUnit == 0x2F ||
         firstCodeUnit == 0x7E;
-    return startsWithCommandCharacter;
+    if (!startsWithCommandCharacter) {
+      return false;
+    }
+    if (_shellSyntaxCharacterPattern.hasMatch(command)) {
+      return true;
+    }
+    final tokens = command
+        .split(RegExp(r'\s+'))
+        .where((token) => token.isNotEmpty);
+    final tokenList = tokens.toList(growable: false);
+    if (tokenList.isEmpty) {
+      return false;
+    }
+    final hasExplicitShellArgument = tokenList
+        .skip(1)
+        .any(
+          (token) =>
+              token.startsWith('-') ||
+              token.contains('/') ||
+              token.contains('.') ||
+              token.contains(':') ||
+              token.contains('@') ||
+              token.contains('=') ||
+              token.contains(',') ||
+              RegExp(r'\d').hasMatch(token),
+        );
+    if (hasExplicitShellArgument) {
+      return true;
+    }
+    final allTokensLookShellSafe = tokenList.every(
+      _simpleShellTokenPattern.hasMatch,
+    );
+    if (!allTokensLookShellSafe) {
+      return false;
+    }
+    if (tokenList.length >= 4) {
+      return false;
+    }
+    if (tokenList.length >= 2 &&
+        _descriptionLikeLeadingWords.contains(tokenList.first.toLowerCase())) {
+      return false;
+    }
+    return true;
   }
 
   String _normalizeCompletionSuffix({

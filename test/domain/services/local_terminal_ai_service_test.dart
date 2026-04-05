@@ -230,7 +230,57 @@ Here are a few safe options:
           fallback.lastPrompt,
           contains('Local runtime: Managed Gemma 3n E2B'),
         );
+        expect(
+          fallback.lastPrompt,
+          contains('Example: ls -la || List files with details.'),
+        );
+        expect(
+          fallback.lastPrompt,
+          isNot(contains('COMMAND || short explanation')),
+        );
         expect(suggestions.single.command, 'pwd');
+      },
+    );
+
+    test(
+      'filters placeholder and prose-only lines from managed suggestions',
+      () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+        final fallback = _FakeFallbackRuntime(
+          response: '''
+COMMAND || short explanation
+ls -l
+list directory contents with detailed file info
+''',
+        );
+        final service = LocalTerminalAiService(
+          managedModelCoordinator: _FakeManagedModelCoordinator(
+            managedModel: const LocalTerminalAiManagedModelSpec(
+              modelId: 'gemma-3n-E2B-it',
+              displayName: 'Gemma 3n E2B',
+              url: 'https://example.com/gemma-3n-E2B-it-int4.task',
+              fileType: ModelFileType.task,
+              fileName: 'gemma-3n-E2B-it-int4.task',
+              requiresHuggingFaceToken: true,
+              preferredBackend: PreferredBackend.gpu,
+            ),
+          ),
+          platformService: _FakePlatformService.unsupported(),
+          fallbackRuntime: fallback,
+        );
+
+        final suggestions = await service.suggestCommands(
+          settings: const LocalTerminalAiSettings(enabled: true),
+          taskDescription: 'list files in detail',
+          hostLabel: 'prod',
+        );
+
+        expect(suggestions, hasLength(1));
+        expect(suggestions.single.command, 'ls -l');
+        expect(
+          suggestions.single.explanation,
+          'Suggested by the on-device model.',
+        );
       },
     );
 
