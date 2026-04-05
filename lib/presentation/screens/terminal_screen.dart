@@ -1360,6 +1360,58 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   int? get _lastExitCode => _observedSession?.lastExitCode;
 
+  SshConnectionState get _currentConnectionState {
+    final connectionId = _connectionId;
+    if (connectionId == null) {
+      return SshConnectionState.disconnected;
+    }
+    final connectionStates = ref.read(activeSessionsProvider);
+    return connectionStates[connectionId] ?? SshConnectionState.disconnected;
+  }
+
+  String _connectionStateLabel(SshConnectionState state) => switch (state) {
+    SshConnectionState.connected => 'Connected',
+    SshConnectionState.connecting => 'Connecting',
+    SshConnectionState.authenticating => 'Authenticating',
+    SshConnectionState.reconnecting => 'Reconnecting',
+    SshConnectionState.error => 'Error',
+    SshConnectionState.disconnected => 'Disconnected',
+  };
+
+  String? _selectedTerminalTextSnapshot() {
+    final selectedText = _isNativeSelectionMode
+        ? selectedNativeOverlayText(_nativeSelectionController.value)
+        : switch (_terminalController.selection) {
+            final selection? => trimTerminalSelectionText(
+              _terminal.buffer.getText(selection),
+            ),
+            null => null,
+          };
+    final trimmedSelectedText = selectedText?.trim();
+    return trimmedSelectedText?.isNotEmpty ?? false
+        ? trimmedSelectedText
+        : null;
+  }
+
+  LocalTerminalAiPromptContext _buildLocalTerminalAiPromptContext() =>
+      LocalTerminalAiPromptContext(
+        hostLabel: _host?.label ?? 'Terminal',
+        currentTerminalLine: _buildWrappedTerminalCommandSnapshot()?.text,
+        shellStatusLabel: describeTerminalShellStatus(
+          _shellStatus,
+          lastExitCode: _lastExitCode,
+        ),
+        recentTerminalContext: _buildRecentTerminalContextSnapshot(),
+        workingDirectoryPath: _workingDirectoryPath,
+        windowTitle: _windowTitle,
+        windowIconLabel: _iconName,
+        connectionStateLabel: _connectionStateLabel(_currentConnectionState),
+        selectedTerminalText: _selectedTerminalTextSnapshot(),
+        usingAlternateScreen: _isUsingAltBuffer,
+        terminalColumns: _terminal.viewWidth,
+        terminalRows: _terminal.viewHeight,
+      );
+
   String _terminalCommandAfterInsertion(String insertedText) {
     final snapshot = _buildWrappedTerminalCommandSnapshot();
     if (snapshot == null) {
@@ -3287,19 +3339,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<void> _showTerminalAiAssistant() async {
+    final promptContext = _buildLocalTerminalAiPromptContext();
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
       builder: (context) => TerminalAiAssistantSheet(
-        hostLabel: _host?.label ?? 'Terminal',
-        currentTerminalLine: _buildWrappedTerminalCommandSnapshot()?.text,
-        shellStatusLabel: describeTerminalShellStatus(
-          _shellStatus,
-          lastExitCode: _lastExitCode,
-        ),
-        recentTerminalContext: _buildRecentTerminalContextSnapshot(),
-        workingDirectoryPath: _workingDirectoryPath,
+        promptContext: promptContext,
         onInsertSuggestedCommand: (command) =>
             _insertAiGeneratedText(command, isCompletion: false),
         onInsertCompletion: (suffix) =>
@@ -3320,6 +3366,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (trimmedPrompt.isEmpty) {
       return;
     }
+    final promptContext = _buildLocalTerminalAiPromptContext();
 
     try {
       final suggestions = await ref
@@ -3327,14 +3374,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           .suggestCommands(
             settings: ref.read(localTerminalAiSettingsProvider),
             taskDescription: trimmedPrompt,
-            hostLabel: _host?.label ?? 'Terminal',
-            currentTerminalLine: _buildWrappedTerminalCommandSnapshot()?.text,
-            shellStatusLabel: describeTerminalShellStatus(
-              _shellStatus,
-              lastExitCode: _lastExitCode,
-            ),
-            recentTerminalContext: _buildRecentTerminalContextSnapshot(),
-            workingDirectoryPath: _workingDirectoryPath,
+            promptContext: promptContext,
           );
       if (!mounted) {
         return;
@@ -4538,8 +4578,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   String? _buildRecentTerminalContextSnapshot() {
-    const maxLogicalLines = 8;
-    const maxChars = 900;
+    const maxLogicalLines = 14;
+    const maxChars = 2400;
 
     final buffer = _terminal.buffer;
     final row = buffer.absoluteCursorY;

@@ -50,7 +50,7 @@ void main() {
         final suggestions = await service.suggestCommands(
           settings: const LocalTerminalAiSettings(enabled: true),
           taskDescription: 'show current directory',
-          hostLabel: 'prod',
+          promptContext: _promptContext(hostLabel: 'prod'),
         );
 
         expect(platformService.prepareCallCount, 0);
@@ -87,23 +87,40 @@ void main() {
         await service.suggestCommands(
           settings: const LocalTerminalAiSettings(enabled: true),
           taskDescription: 'show current directory and recent errors',
-          hostLabel: 'prod shell',
-          workingDirectoryPath: '/srv/very/long/path',
-          currentTerminalLine: 'tail -f logs/app.log',
-          shellStatusLabel: 'Prompt',
-          recentTerminalContext: recentContext,
+          promptContext: _promptContext(
+            hostLabel: 'prod shell',
+            workingDirectoryPath: '/srv/very/long/path',
+            currentTerminalLine: 'tail -f logs/app.log',
+            shellStatusLabel: 'Prompt',
+            recentTerminalContext: recentContext,
+            connectionStateLabel: 'Connected',
+            windowTitle: 'logs',
+            windowIconLabel: 'bash',
+            selectedTerminalText: 'panic: exploded',
+            usingAlternateScreen: true,
+            terminalColumns: 120,
+            terminalRows: 32,
+          ),
         );
 
         expect(
           platformService.lastPrompt,
-          contains(
-            'Local runtime: Apple Foundation Models (Apple Intelligence)',
-          ),
+          contains('runtime: Apple Foundation Models (Apple Intelligence)'),
         );
-        expect(platformService.lastPrompt, contains('Shell status: Prompt'));
+        expect(platformService.lastPrompt, contains('shell_status: Prompt'));
         expect(
           platformService.lastPrompt,
-          contains('Recent terminal context:'),
+          contains('connection_state: Connected'),
+        );
+        expect(platformService.lastPrompt, contains('window_title: logs'));
+        expect(platformService.lastPrompt, contains('window_icon: bash'));
+        expect(platformService.lastPrompt, contains('alternate_screen: yes'));
+        expect(platformService.lastPrompt, contains('terminal_size: 120 x 32'));
+        expect(platformService.lastPrompt, contains('selected_text:'));
+        expect(platformService.lastPrompt, contains('panic: exploded'));
+        expect(
+          platformService.lastPrompt,
+          contains('visible_terminal_context:'),
         );
         expect(platformService.lastPrompt, isNot(contains('line 0 context')));
         expect(platformService.lastPrompt, contains('line 23 context'));
@@ -137,7 +154,7 @@ Here are a few safe options:
         final suggestions = await service.suggestCommands(
           settings: const LocalTerminalAiSettings(enabled: true),
           taskDescription: 'show me some safe inspection commands',
-          hostLabel: 'prod',
+          promptContext: _promptContext(hostLabel: 'prod'),
         );
 
         expect(
@@ -171,7 +188,7 @@ Here are a few safe options:
         final suggestions = await service.suggestCommands(
           settings: const LocalTerminalAiSettings(enabled: true),
           taskDescription: 'show current directory',
-          hostLabel: 'prod',
+          promptContext: _promptContext(hostLabel: 'prod'),
         );
 
         expect(platformService.prepareCallCount, 1);
@@ -182,65 +199,63 @@ Here are a few safe options:
       },
     );
 
-    test(
-      'prefers managed Gemma 3n over Apple Foundation Models on iOS',
-      () async {
-        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
-        final platformService = _FakePlatformService(
-          runtimeInfo: const LocalTerminalAiRuntimeInfo(
-            provider: LocalTerminalAiPlatformProvider.appleFoundationModels,
-            supportedPlatform: true,
-            available: true,
-            statusMessage: 'Apple Intelligence is ready on this device.',
-            modelName: 'Apple Intelligence',
-          ),
-          response: 'native-response || unused',
-        );
-        final fallback = _FakeFallbackRuntime(
-          response: 'pwd || Print directory',
-        );
-        final managedModelCoordinator = _FakeManagedModelCoordinator(
-          managedModel: const LocalTerminalAiManagedModelSpec(
-            modelId: 'gemma-3n-E2B-it',
-            displayName: 'Gemma 3n E2B',
-            url: 'https://example.com/gemma-3n-E2B-it-int4.task',
-            fileType: ModelFileType.task,
-            fileName: 'gemma-3n-E2B-it-int4.task',
-            requiresHuggingFaceToken: true,
-            preferredBackend: PreferredBackend.gpu,
-          ),
-        );
-        final service = LocalTerminalAiService(
-          managedModelCoordinator: managedModelCoordinator,
-          platformService: platformService,
-          fallbackRuntime: fallback,
-        );
+    test('prefers managed Gemma 3n over Apple Foundation Models on iOS', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      final platformService = _FakePlatformService(
+        runtimeInfo: const LocalTerminalAiRuntimeInfo(
+          provider: LocalTerminalAiPlatformProvider.appleFoundationModels,
+          supportedPlatform: true,
+          available: true,
+          statusMessage: 'Apple Intelligence is ready on this device.',
+          modelName: 'Apple Intelligence',
+        ),
+        response: 'native-response || unused',
+      );
+      final fallback = _FakeFallbackRuntime(response: 'pwd || Print directory');
+      final managedModelCoordinator = _FakeManagedModelCoordinator(
+        managedModel: const LocalTerminalAiManagedModelSpec(
+          modelId: 'gemma-3n-E2B-it',
+          displayName: 'Gemma 3n E2B',
+          url: 'https://example.com/gemma-3n-E2B-it-int4.task',
+          fileType: ModelFileType.task,
+          fileName: 'gemma-3n-E2B-it-int4.task',
+          requiresHuggingFaceToken: true,
+          preferredBackend: PreferredBackend.gpu,
+        ),
+      );
+      final service = LocalTerminalAiService(
+        managedModelCoordinator: managedModelCoordinator,
+        platformService: platformService,
+        fallbackRuntime: fallback,
+      );
 
-        final suggestions = await service.suggestCommands(
-          settings: const LocalTerminalAiSettings(enabled: true),
-          taskDescription: 'show current directory',
-          hostLabel: 'prod',
-        );
+      final suggestions = await service.suggestCommands(
+        settings: const LocalTerminalAiSettings(enabled: true),
+        taskDescription: 'show current directory',
+        promptContext: _promptContext(hostLabel: 'prod'),
+      );
 
-        expect(platformService.generateCallCount, 0);
-        expect(managedModelCoordinator.ensureReadyCallCount, 1);
-        expect(fallback.generateCallCount, 1);
-        expect(fallback.lastManagedModel?.modelId, 'gemma-3n-E2B-it');
-        expect(
-          fallback.lastPrompt,
-          contains('Local runtime: Managed Gemma 3n E2B'),
-        );
-        expect(
-          fallback.lastPrompt,
-          contains('Example: ls -la || List files with details.'),
-        );
-        expect(
-          fallback.lastPrompt,
-          isNot(contains('COMMAND || short explanation')),
-        );
-        expect(suggestions.single.command, 'pwd');
-      },
-    );
+      expect(platformService.generateCallCount, 0);
+      expect(managedModelCoordinator.ensureReadyCallCount, 1);
+      expect(fallback.generateCallCount, 1);
+      expect(fallback.lastManagedModel?.modelId, 'gemma-3n-E2B-it');
+      expect(fallback.lastPrompt, contains('runtime: Managed Gemma 3n E2B'));
+      expect(
+        fallback.lastPrompt,
+        contains(
+          'Example: CMD: ls -la || WHY: List files in the current directory with details.',
+        ),
+      );
+      expect(
+        fallback.lastPrompt,
+        isNot(
+          contains(
+            'Output format: one suggestion per line as an actual shell command',
+          ),
+        ),
+      );
+      expect(suggestions.single.command, 'pwd');
+    });
 
     test(
       'filters placeholder and prose-only lines from managed suggestions',
@@ -272,7 +287,7 @@ list directory contents with detailed file info
         final suggestions = await service.suggestCommands(
           settings: const LocalTerminalAiSettings(enabled: true),
           taskDescription: 'list files in detail',
-          hostLabel: 'prod',
+          promptContext: _promptContext(hostLabel: 'prod'),
         );
 
         expect(suggestions, hasLength(1));
@@ -283,6 +298,45 @@ list directory contents with detailed file info
         );
       },
     );
+
+    test('parses tagged managed suggestions across multiple lines', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+      final fallback = _FakeFallbackRuntime(
+        response: '''
+CMD: ls -la
+WHY: List files in the current directory with details.
+CMD: tail -n 100 log/app.log || WHY: Show the most recent app log lines.
+''',
+      );
+      final service = LocalTerminalAiService(
+        managedModelCoordinator: _FakeManagedModelCoordinator(
+          managedModel: const LocalTerminalAiManagedModelSpec(
+            modelId: 'gemma-4-E2B-it',
+            displayName: 'Gemma 4 E2B',
+            url: 'https://example.com/gemma-4-E2B-it.litertlm',
+            fileType: ModelFileType.litertlm,
+            fileName: 'gemma-4-E2B-it.litertlm',
+          ),
+        ),
+        platformService: _FakePlatformService.unsupported(),
+        fallbackRuntime: fallback,
+      );
+
+      final suggestions = await service.suggestCommands(
+        settings: const LocalTerminalAiSettings(enabled: true),
+        taskDescription: 'inspect the filesystem and logs',
+        promptContext: _promptContext(hostLabel: 'prod'),
+      );
+
+      expect(
+        suggestions.map((suggestion) => suggestion.command).toList(),
+        <String>['ls -la', 'tail -n 100 log/app.log'],
+      );
+      expect(
+        suggestions.first.explanation,
+        'List files in the current directory with details.',
+      );
+    });
 
     test('uses managed Gemma 4 when it is ready for suggestions', () async {
       debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
@@ -305,20 +359,20 @@ list directory contents with detailed file info
       final suggestions = await service.suggestCommands(
         settings: const LocalTerminalAiSettings(enabled: true),
         taskDescription: 'show current directory',
-        hostLabel: 'prod',
+        promptContext: _promptContext(hostLabel: 'prod'),
       );
 
       expect(managedModelCoordinator.ensureReadyCallCount, 1);
       expect(fallback.generateCallCount, 1);
       expect(fallback.lastManagedModel?.modelId, 'gemma-4-E2B-it');
-      expect(fallback.lastMaxTokens, 256);
-      expect(fallback.lastPrompt, contains('Local runtime: Managed Gemma 4'));
+      expect(fallback.lastMaxTokens, 320);
+      expect(fallback.lastPrompt, contains('runtime: Managed Gemma 4'));
       expect(suggestions.single.command, 'pwd');
     });
 
     test('uses managed Gemma 4 when it is ready for completions', () async {
       debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
-      final fallback = _FakeFallbackRuntime(response: 'ls -la');
+      final fallback = _FakeFallbackRuntime(response: 'APPEND: -la');
       final service = LocalTerminalAiService(
         managedModelCoordinator: _FakeManagedModelCoordinator(
           managedModel: const LocalTerminalAiManagedModelSpec(
@@ -336,12 +390,12 @@ list directory contents with detailed file info
       final completion = await service.completeCurrentCommand(
         settings: const LocalTerminalAiSettings(enabled: true),
         currentTerminalLine: 'ls',
-        hostLabel: 'prod',
+        promptContext: _promptContext(hostLabel: 'prod'),
       );
 
       expect(completion.suffix, ' -la');
       expect(completion.preview, 'ls -la');
-      expect(fallback.lastMaxTokens, 256);
+      expect(fallback.lastMaxTokens, 320);
     });
 
     test(
@@ -357,7 +411,7 @@ list directory contents with detailed file info
           service.suggestCommands(
             settings: const LocalTerminalAiSettings(enabled: true),
             taskDescription: 'list files',
-            hostLabel: 'prod',
+            promptContext: _promptContext(hostLabel: 'prod'),
           ),
           throwsA(
             isA<LocalTerminalAiConfigurationException>().having(
@@ -395,7 +449,7 @@ list directory contents with detailed file info
         service.suggestCommands(
           settings: const LocalTerminalAiSettings(enabled: true),
           taskDescription: 'list files',
-          hostLabel: 'prod',
+          promptContext: _promptContext(hostLabel: 'prod'),
         ),
         throwsA(
           isA<LocalTerminalAiConfigurationException>().having(
@@ -434,7 +488,7 @@ list directory contents with detailed file info
         service.suggestCommands(
           settings: const LocalTerminalAiSettings(enabled: true),
           taskDescription: 'list files',
-          hostLabel: 'prod',
+          promptContext: _promptContext(hostLabel: 'prod'),
         ),
         throwsA(
           isA<LocalTerminalAiConfigurationException>().having(
@@ -467,7 +521,7 @@ list directory contents with detailed file info
         service.suggestCommands(
           settings: const LocalTerminalAiSettings(enabled: false),
           taskDescription: 'show current directory',
-          hostLabel: 'prod',
+          promptContext: _promptContext(hostLabel: 'prod'),
         ),
         throwsA(
           isA<LocalTerminalAiConfigurationException>().having(
@@ -485,6 +539,34 @@ list directory contents with detailed file info
     });
   });
 }
+
+LocalTerminalAiPromptContext _promptContext({
+  required String hostLabel,
+  String? currentTerminalLine,
+  String? shellStatusLabel,
+  String? recentTerminalContext,
+  String? workingDirectoryPath,
+  String? windowTitle,
+  String? windowIconLabel,
+  String? connectionStateLabel,
+  String? selectedTerminalText,
+  bool usingAlternateScreen = false,
+  int? terminalColumns,
+  int? terminalRows,
+}) => LocalTerminalAiPromptContext(
+  hostLabel: hostLabel,
+  currentTerminalLine: currentTerminalLine,
+  shellStatusLabel: shellStatusLabel,
+  recentTerminalContext: recentTerminalContext,
+  workingDirectoryPath: workingDirectoryPath,
+  windowTitle: windowTitle,
+  windowIconLabel: windowIconLabel,
+  connectionStateLabel: connectionStateLabel,
+  selectedTerminalText: selectedTerminalText,
+  usingAlternateScreen: usingAlternateScreen,
+  terminalColumns: terminalColumns,
+  terminalRows: terminalRows,
+);
 
 class _FakePlatformService extends LocalTerminalAiPlatformService {
   _FakePlatformService({required this.runtimeInfo, this.response});

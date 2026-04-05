@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/services/local_terminal_ai_managed_model_service.dart';
 import 'package:monkeyssh/domain/services/local_terminal_ai_platform_service.dart';
+import 'package:monkeyssh/domain/services/local_terminal_ai_service.dart';
 import 'package:monkeyssh/domain/services/local_terminal_ai_settings_service.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_ai_assistant_sheet.dart';
 
@@ -80,8 +81,10 @@ void main() {
         child: MaterialApp(
           home: Scaffold(
             body: TerminalAiAssistantSheet(
-              hostLabel: 'prod',
-              currentTerminalLine: 'git status',
+              promptContext: const LocalTerminalAiPromptContext(
+                hostLabel: 'prod',
+                currentTerminalLine: 'git status',
+              ),
               onInsertSuggestedCommand: (_) async {},
               onInsertCompletion: (_) async {},
               onOpenSettings: () {},

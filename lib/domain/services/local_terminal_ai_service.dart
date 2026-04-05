@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -7,14 +8,6 @@ import 'local_terminal_ai_managed_model_service.dart';
 import 'local_terminal_ai_platform_service.dart';
 import 'local_terminal_ai_settings_service.dart';
 
-const _maxSuggestionTokens = 256;
-const _maxCompletionTokens = 256;
-const _maxTaskDescriptionPromptChars = 280;
-const _maxHostLabelPromptChars = 80;
-const _maxWorkingDirectoryPromptChars = 160;
-const _maxCurrentTerminalLinePromptChars = 480;
-const _maxShellStatusPromptChars = 48;
-const _maxRecentTerminalContextPromptChars = 900;
 const _unexpectedSuggestionResponseMessage =
     'The local model returned an unexpected response. Try again.';
 final _suggestionListPrefixPattern = RegExp(r'^(?:[-*•]+|\d+[.)])\s*');
@@ -22,6 +15,34 @@ final _suggestionBacktickPattern = RegExp('`([^`]+)`');
 final _suggestionWhitespacePattern = RegExp(r'\s+');
 final _shellSyntaxCharacterPattern = RegExp(r"""[|&;<>()$`'"\\[\]{}=*?]""");
 final _simpleShellTokenPattern = RegExp(r'^[-./~:@%+,=\w]+$');
+const _managedPromptBudget = _LocalTerminalAiPromptBudget(
+  maxSuggestionTokens: 320,
+  maxCompletionTokens: 320,
+  maxTaskDescriptionChars: 480,
+  maxHostLabelChars: 120,
+  maxWindowTitleChars: 160,
+  maxWindowIconChars: 80,
+  maxConnectionStateChars: 48,
+  maxWorkingDirectoryChars: 240,
+  maxCurrentTerminalLineChars: 960,
+  maxShellStatusChars: 64,
+  maxSelectedTerminalTextChars: 900,
+  maxRecentTerminalContextChars: 2400,
+);
+const _nativePromptBudget = _LocalTerminalAiPromptBudget(
+  maxSuggestionTokens: 256,
+  maxCompletionTokens: 256,
+  maxTaskDescriptionChars: 280,
+  maxHostLabelChars: 80,
+  maxWindowTitleChars: 80,
+  maxWindowIconChars: 40,
+  maxConnectionStateChars: 32,
+  maxWorkingDirectoryChars: 160,
+  maxCurrentTerminalLineChars: 480,
+  maxShellStatusChars: 48,
+  maxSelectedTerminalTextChars: 360,
+  maxRecentTerminalContextChars: 900,
+);
 const _placeholderSuggestionCommands = <String>{
   'command',
   'shell command',
@@ -51,6 +72,92 @@ const _descriptionLikeLeadingWords = <String>{
   'show',
   'view',
 };
+
+/// Snapshot of the terminal session and visible screen state used for prompts.
+@immutable
+class LocalTerminalAiPromptContext {
+  /// Creates a new [LocalTerminalAiPromptContext].
+  const LocalTerminalAiPromptContext({
+    required this.hostLabel,
+    this.currentTerminalLine,
+    this.shellStatusLabel,
+    this.recentTerminalContext,
+    this.workingDirectoryPath,
+    this.windowTitle,
+    this.windowIconLabel,
+    this.connectionStateLabel,
+    this.selectedTerminalText,
+    this.usingAlternateScreen = false,
+    this.terminalColumns,
+    this.terminalRows,
+  });
+
+  /// Host label shown for the active terminal tab.
+  final String hostLabel;
+
+  /// Current wrapped terminal line at the cursor, if any.
+  final String? currentTerminalLine;
+
+  /// Current shell lifecycle state label, if available.
+  final String? shellStatusLabel;
+
+  /// Recent terminal text around the active prompt or cursor.
+  final String? recentTerminalContext;
+
+  /// Current working directory reported by shell integration.
+  final String? workingDirectoryPath;
+
+  /// Current terminal window title reported by the remote shell/app.
+  final String? windowTitle;
+
+  /// Current icon or mode label reported by the terminal session.
+  final String? windowIconLabel;
+
+  /// Human-readable SSH connection state for the session.
+  final String? connectionStateLabel;
+
+  /// Selected text the user is currently focusing on, if any.
+  final String? selectedTerminalText;
+
+  /// Whether the terminal is currently showing the alternate screen buffer.
+  final bool usingAlternateScreen;
+
+  /// Current terminal viewport column count.
+  final int? terminalColumns;
+
+  /// Current terminal viewport row count.
+  final int? terminalRows;
+}
+
+class _LocalTerminalAiPromptBudget {
+  const _LocalTerminalAiPromptBudget({
+    required this.maxSuggestionTokens,
+    required this.maxCompletionTokens,
+    required this.maxTaskDescriptionChars,
+    required this.maxHostLabelChars,
+    required this.maxWindowTitleChars,
+    required this.maxWindowIconChars,
+    required this.maxConnectionStateChars,
+    required this.maxWorkingDirectoryChars,
+    required this.maxCurrentTerminalLineChars,
+    required this.maxShellStatusChars,
+    required this.maxSelectedTerminalTextChars,
+    required this.maxRecentTerminalContextChars,
+  });
+
+  final int maxSuggestionTokens;
+  final int maxCompletionTokens;
+  final int maxTaskDescriptionChars;
+  final int maxHostLabelChars;
+  final int maxWindowTitleChars;
+  final int maxWindowIconChars;
+  final int maxConnectionStateChars;
+  final int maxWorkingDirectoryChars;
+  final int maxCurrentTerminalLineChars;
+  final int maxShellStatusChars;
+  final int maxSelectedTerminalTextChars;
+  final int maxRecentTerminalContextChars;
+}
 
 /// A single command suggestion produced by the on-device AI assistant.
 class LocalTerminalAiSuggestion {
@@ -126,11 +233,7 @@ class LocalTerminalAiService {
   Future<List<LocalTerminalAiSuggestion>> suggestCommands({
     required LocalTerminalAiSettings settings,
     required String taskDescription,
-    required String hostLabel,
-    String? workingDirectoryPath,
-    String? currentTerminalLine,
-    String? shellStatusLabel,
-    String? recentTerminalContext,
+    required LocalTerminalAiPromptContext promptContext,
   }) async {
     final trimmedTask = taskDescription.trim();
     if (trimmedTask.isEmpty) {
@@ -142,24 +245,24 @@ class LocalTerminalAiService {
     final preferredManagedModel = localTerminalAiManagedModelSpecForSettings(
       settings,
     );
+    final promptBudget = _promptBudgetFor(
+      preferredManagedModel: preferredManagedModel,
+    );
     final runtimeInfo = await _platformService.getRuntimeInfo();
     final response = await _runPrompt(
       settings: settings,
       runtimeInfo: runtimeInfo,
       preferredManagedModel: preferredManagedModel,
       prompt: _buildSuggestionPrompt(
+        promptBudget: promptBudget,
         runtimeLabel: _promptRuntimeLabel(
           runtimeInfo,
           preferredManagedModel: preferredManagedModel,
         ),
         taskDescription: trimmedTask,
-        hostLabel: hostLabel,
-        workingDirectoryPath: workingDirectoryPath,
-        currentTerminalLine: currentTerminalLine,
-        shellStatusLabel: shellStatusLabel,
-        recentTerminalContext: recentTerminalContext,
+        promptContext: promptContext,
       ),
-      maxTokens: _maxSuggestionTokens,
+      maxTokens: promptBudget.maxSuggestionTokens,
     );
     return _parseSuggestions(response);
   }
@@ -168,10 +271,7 @@ class LocalTerminalAiService {
   Future<LocalTerminalAiCompletion> completeCurrentCommand({
     required LocalTerminalAiSettings settings,
     required String currentTerminalLine,
-    required String hostLabel,
-    String? workingDirectoryPath,
-    String? shellStatusLabel,
-    String? recentTerminalContext,
+    required LocalTerminalAiPromptContext promptContext,
   }) async {
     final trimmedLine = currentTerminalLine.trimRight();
     if (trimmedLine.isEmpty) {
@@ -183,23 +283,24 @@ class LocalTerminalAiService {
     final preferredManagedModel = localTerminalAiManagedModelSpecForSettings(
       settings,
     );
+    final promptBudget = _promptBudgetFor(
+      preferredManagedModel: preferredManagedModel,
+    );
     final runtimeInfo = await _platformService.getRuntimeInfo();
     final response = await _runPrompt(
       settings: settings,
       runtimeInfo: runtimeInfo,
       preferredManagedModel: preferredManagedModel,
       prompt: _buildCompletionPrompt(
+        promptBudget: promptBudget,
         runtimeLabel: _promptRuntimeLabel(
           runtimeInfo,
           preferredManagedModel: preferredManagedModel,
         ),
         currentTerminalLine: trimmedLine,
-        hostLabel: hostLabel,
-        workingDirectoryPath: workingDirectoryPath,
-        shellStatusLabel: shellStatusLabel,
-        recentTerminalContext: recentTerminalContext,
+        promptContext: promptContext,
       ),
-      maxTokens: _maxCompletionTokens,
+      maxTokens: promptBudget.maxCompletionTokens,
     );
 
     final suffix = _normalizeCompletionSuffix(
@@ -302,59 +403,37 @@ class LocalTerminalAiService {
   }
 
   String _buildSuggestionPrompt({
+    required _LocalTerminalAiPromptBudget promptBudget,
     required String runtimeLabel,
     required String taskDescription,
-    required String hostLabel,
-    String? workingDirectoryPath,
-    String? currentTerminalLine,
-    String? shellStatusLabel,
-    String? recentTerminalContext,
+    required LocalTerminalAiPromptContext promptContext,
   }) {
     final normalizedTaskDescription = _normalizePromptText(
       taskDescription,
-      maxChars: _maxTaskDescriptionPromptChars,
-    );
-    final normalizedHostLabel = _normalizePromptText(
-      hostLabel,
-      maxChars: _maxHostLabelPromptChars,
-    );
-    final workingDirectory = _promptValueOrFallback(
-      workingDirectoryPath,
-      fallback: 'unknown',
-      maxChars: _maxWorkingDirectoryPromptChars,
-    );
-    final currentLine = _promptValueOrFallback(
-      currentTerminalLine,
-      fallback: 'empty',
-      maxChars: _maxCurrentTerminalLinePromptChars,
-      preferTail: true,
-    );
-    final shellStatus = _promptValueOrFallback(
-      shellStatusLabel,
-      fallback: 'unknown',
-      maxChars: _maxShellStatusPromptChars,
-    );
-    final terminalContext = _promptValueOrFallback(
-      recentTerminalContext,
-      fallback: 'none',
-      maxChars: _maxRecentTerminalContextPromptChars,
-      preferTail: true,
+      maxChars: promptBudget.maxTaskDescriptionChars,
     );
     final buffer = StringBuffer()
       ..writeln('You are an on-device terminal assistant inside an SSH client.')
       ..writeln(
-        'You are running on a small on-device model, so use only the highest-value context below.',
+        'Use the structured terminal context below to suggest shell commands that match what the user is looking at right now.',
       )
       ..writeln('Suggest concise shell commands for the user request.')
       ..writeln('Keep the answer safe and practical.')
       ..writeln('Return at most three suggestions.')
       ..writeln(
-        'Output format: one suggestion per line as an actual shell command, then ||, then a short explanation.',
+        'Output format: one suggestion per line as CMD: <actual shell command> || WHY: <short explanation>.',
       )
-      ..writeln('Example: ls -la || List files with details.')
-      ..writeln('Do not use bullets, numbering, markdown, or code fences.')
+      ..writeln(
+        'Example: CMD: ls -la || WHY: List files in the current directory with details.',
+      )
+      ..writeln(
+        'Do not use bullets, numbering, markdown, code fences, or extra prose.',
+      )
       ..writeln(
         'Never output placeholders like COMMAND or short explanation, and never describe a command instead of writing it.',
+      )
+      ..writeln(
+        'If selected text is present, treat it as the user\'s focus. If the visible terminal context shows logs, errors, or file output, prefer commands that build on that context.',
       )
       ..writeln(
         'Prefer a single command over chained shell commands when possible.',
@@ -364,74 +443,153 @@ class LocalTerminalAiService {
       )
       ..writeln('If nothing is appropriate, return exactly NO_SUGGESTION.')
       ..writeln()
-      ..writeln('Local runtime: $runtimeLabel')
-      ..writeln('Host: $normalizedHostLabel')
-      ..writeln('Shell status: $shellStatus')
-      ..writeln('Working directory: $workingDirectory')
-      ..writeln('Current terminal line: $currentLine')
-      ..writeln('Recent terminal context:')
-      ..writeln(terminalContext)
-      ..writeln('User request: $normalizedTaskDescription');
+      ..writeln('<terminal_context>')
+      ..writeln('runtime: $runtimeLabel');
+    _appendPromptContext(
+      buffer,
+      promptContext,
+      promptBudget: promptBudget,
+      includeCurrentTerminalLine: true,
+    );
+    buffer
+      ..writeln('</terminal_context>')
+      ..writeln('<user_request>')
+      ..writeln(normalizedTaskDescription)
+      ..writeln('</user_request>');
     return buffer.toString();
   }
 
   String _buildCompletionPrompt({
+    required _LocalTerminalAiPromptBudget promptBudget,
     required String runtimeLabel,
     required String currentTerminalLine,
-    required String hostLabel,
-    String? workingDirectoryPath,
-    String? shellStatusLabel,
-    String? recentTerminalContext,
+    required LocalTerminalAiPromptContext promptContext,
   }) {
-    final normalizedHostLabel = _normalizePromptText(
-      hostLabel,
-      maxChars: _maxHostLabelPromptChars,
-    );
     final normalizedCurrentLine = _normalizePromptText(
       currentTerminalLine,
-      maxChars: _maxCurrentTerminalLinePromptChars,
-      preferTail: true,
-    );
-    final workingDirectory = _promptValueOrFallback(
-      workingDirectoryPath,
-      fallback: 'unknown',
-      maxChars: _maxWorkingDirectoryPromptChars,
-    );
-    final shellStatus = _promptValueOrFallback(
-      shellStatusLabel,
-      fallback: 'unknown',
-      maxChars: _maxShellStatusPromptChars,
-    );
-    final terminalContext = _promptValueOrFallback(
-      recentTerminalContext,
-      fallback: 'none',
-      maxChars: _maxRecentTerminalContextPromptChars,
+      maxChars: promptBudget.maxCurrentTerminalLineChars,
       preferTail: true,
     );
     final buffer = StringBuffer()
       ..writeln('You are an on-device terminal assistant inside an SSH client.')
       ..writeln(
-        'You are running on a small on-device model, so focus on the current line and the freshest terminal context.',
+        'Use the structured terminal context below to complete the current terminal line.',
       )
       ..writeln(
         'Complete the current terminal line by returning only the text that should be appended after the current cursor position.',
       )
+      ..writeln(
+        'Return the shortest useful suffix that fits the current context.',
+      )
+      ..writeln('Output format: APPEND: <suffix>')
       ..writeln('Do not repeat existing text from the line.')
-      ..writeln('Do not add markdown, quotes, or explanation.')
+      ..writeln(
+        'Do not add markdown, quotes, explanation, or the full command.',
+      )
       ..writeln('Keep the completion on a single line.')
       ..writeln(
         'Do not invent remote platform details that are not present in the context.',
       )
       ..writeln('If no useful completion exists, return exactly NO_COMPLETION.')
       ..writeln()
-      ..writeln('Local runtime: $runtimeLabel')
-      ..writeln('Host: $normalizedHostLabel')
-      ..writeln('Shell status: $shellStatus')
-      ..writeln('Working directory: $workingDirectory')
-      ..writeln('Recent terminal context:')
-      ..writeln(terminalContext)
-      ..writeln('Current terminal line: $normalizedCurrentLine');
+      ..writeln('<terminal_context>')
+      ..writeln('runtime: $runtimeLabel');
+    _appendPromptContext(
+      buffer,
+      promptContext,
+      promptBudget: promptBudget,
+      includeCurrentTerminalLine: false,
+    );
+    buffer
+      ..writeln('current_terminal_line: $normalizedCurrentLine')
+      ..writeln('</terminal_context>');
     return buffer.toString();
+  }
+
+  _LocalTerminalAiPromptBudget _promptBudgetFor({
+    required LocalTerminalAiManagedModelSpec? preferredManagedModel,
+  }) => preferredManagedModel != null
+      ? _managedPromptBudget
+      : _nativePromptBudget;
+
+  void _appendPromptContext(
+    StringBuffer buffer,
+    LocalTerminalAiPromptContext promptContext, {
+    required _LocalTerminalAiPromptBudget promptBudget,
+    required bool includeCurrentTerminalLine,
+  }) {
+    final normalizedHostLabel = _normalizePromptText(
+      promptContext.hostLabel,
+      maxChars: promptBudget.maxHostLabelChars,
+    );
+    final workingDirectory = _promptValueOrFallback(
+      promptContext.workingDirectoryPath,
+      fallback: 'unknown',
+      maxChars: promptBudget.maxWorkingDirectoryChars,
+    );
+    final shellStatus = _promptValueOrFallback(
+      promptContext.shellStatusLabel,
+      fallback: 'unknown',
+      maxChars: promptBudget.maxShellStatusChars,
+    );
+    final terminalContext = _promptValueOrFallback(
+      promptContext.recentTerminalContext,
+      fallback: 'none',
+      maxChars: promptBudget.maxRecentTerminalContextChars,
+      preferTail: true,
+    );
+    final selectedText = _promptValueOrFallback(
+      promptContext.selectedTerminalText,
+      fallback: 'none',
+      maxChars: promptBudget.maxSelectedTerminalTextChars,
+    );
+    final windowTitle = _promptValueOrFallback(
+      promptContext.windowTitle,
+      fallback: 'none',
+      maxChars: promptBudget.maxWindowTitleChars,
+    );
+    final windowIcon = _promptValueOrFallback(
+      promptContext.windowIconLabel,
+      fallback: 'none',
+      maxChars: promptBudget.maxWindowIconChars,
+    );
+    final connectionState = _promptValueOrFallback(
+      promptContext.connectionStateLabel,
+      fallback: 'unknown',
+      maxChars: promptBudget.maxConnectionStateChars,
+    );
+    final terminalSize = switch ((
+      promptContext.terminalColumns,
+      promptContext.terminalRows,
+    )) {
+      (final int columns?, final int rows?) => '$columns x $rows',
+      _ => 'unknown',
+    };
+    buffer
+      ..writeln('host: $normalizedHostLabel')
+      ..writeln('connection_state: $connectionState')
+      ..writeln('working_directory: $workingDirectory')
+      ..writeln('shell_status: $shellStatus')
+      ..writeln('window_title: $windowTitle')
+      ..writeln('window_icon: $windowIcon')
+      ..writeln(
+        'alternate_screen: ${promptContext.usingAlternateScreen ? 'yes' : 'no'}',
+      )
+      ..writeln('terminal_size: $terminalSize');
+    if (includeCurrentTerminalLine) {
+      final currentLine = _promptValueOrFallback(
+        promptContext.currentTerminalLine,
+        fallback: 'empty',
+        maxChars: promptBudget.maxCurrentTerminalLineChars,
+        preferTail: true,
+      );
+      buffer.writeln('current_terminal_line: $currentLine');
+    }
+    buffer
+      ..writeln('selected_text:')
+      ..writeln(selectedText)
+      ..writeln('visible_terminal_context:')
+      ..writeln(terminalContext);
   }
 
   String _promptRuntimeLabel(
@@ -503,16 +661,63 @@ class LocalTerminalAiService {
     }
 
     final suggestions = <LocalTerminalAiSuggestion>[];
+    String? pendingCommand;
+    String? pendingExplanation;
+    void flushPendingSuggestion() {
+      final command = pendingCommand;
+      if (command == null) {
+        return;
+      }
+      final suggestion = _buildSuggestion(
+        command: command,
+        explanation: pendingExplanation,
+      );
+      pendingCommand = null;
+      pendingExplanation = null;
+      if (suggestion == null) {
+        return;
+      }
+      suggestions.add(suggestion);
+    }
+
     for (final rawLine in normalizedResponse.split('\n')) {
+      if (_tryParseTaggedSuggestionCommand(rawLine) case (
+        final String command,
+        final String? explanation,
+      )) {
+        flushPendingSuggestion();
+        pendingCommand = command;
+        pendingExplanation = explanation;
+        if (pendingExplanation != null) {
+          flushPendingSuggestion();
+        }
+        if (suggestions.length == 3) {
+          break;
+        }
+        continue;
+      }
+      if (_tryParseTaggedSuggestionExplanation(rawLine)
+          case final String explanation?) {
+        if (pendingCommand != null) {
+          pendingExplanation = explanation;
+          flushPendingSuggestion();
+          if (suggestions.length == 3) {
+            break;
+          }
+        }
+        continue;
+      }
       final suggestion = _parseSuggestionLine(rawLine);
       if (suggestion == null) {
         continue;
       }
+      flushPendingSuggestion();
       suggestions.add(suggestion);
       if (suggestions.length == 3) {
         break;
       }
     }
+    flushPendingSuggestion();
 
     if (suggestions.isEmpty) {
       throw const LocalTerminalAiConfigurationException(
@@ -571,6 +776,67 @@ class LocalTerminalAiService {
     );
   }
 
+  LocalTerminalAiSuggestion? _buildSuggestion({
+    required String command,
+    String? explanation,
+  }) {
+    final normalizedCommand = _normalizeSuggestionCommand(command);
+    final normalizedExplanation = _normalizeSuggestionExplanation(
+      explanation ?? 'Suggested by the on-device model.',
+    );
+    if (normalizedCommand.isEmpty ||
+        !_looksLikeShellCommand(normalizedCommand)) {
+      return null;
+    }
+    return LocalTerminalAiSuggestion(
+      command: normalizedCommand,
+      explanation: normalizedExplanation,
+    );
+  }
+
+  (String, String?)? _tryParseTaggedSuggestionCommand(String rawLine) {
+    final strippedLine = _stripSuggestionLinePrefix(rawLine);
+    final command = _stripLeadingLabel(strippedLine, const <String>[
+      'CMD:',
+      'COMMAND:',
+    ]);
+    if (command == null) {
+      return null;
+    }
+    final whySeparatorIndex = command.indexOf('||');
+    if (whySeparatorIndex == -1) {
+      return (command.trim(), null);
+    }
+    final rawCommand = command.substring(0, whySeparatorIndex).trim();
+    final rawExplanation = command.substring(whySeparatorIndex + 2).trim();
+    return (
+      rawCommand,
+      _stripLeadingLabel(rawExplanation, const <String>[
+        'WHY:',
+        'EXPLANATION:',
+      ]),
+    );
+  }
+
+  String? _tryParseTaggedSuggestionExplanation(String rawLine) =>
+      _stripLeadingLabel(_stripSuggestionLinePrefix(rawLine), const <String>[
+        'WHY:',
+        'EXPLANATION:',
+      ]);
+
+  String _stripSuggestionLinePrefix(String rawLine) =>
+      rawLine.trim().replaceFirst(_suggestionListPrefixPattern, '').trim();
+
+  String? _stripLeadingLabel(String line, List<String> labels) {
+    for (final label in labels) {
+      if (line.length >= label.length &&
+          line.substring(0, label.length).toUpperCase() == label) {
+        return line.substring(label.length).trim();
+      }
+    }
+    return null;
+  }
+
   (int, int)? _lastSuggestionExplanationSeparator(String line) {
     const separators = <String>[' — ', ' – ', ' - '];
     (int, int)? bestMatch;
@@ -588,6 +854,13 @@ class LocalTerminalAiService {
 
   String _normalizeSuggestionCommand(String command) {
     var normalized = command.trim();
+    final taggedCommand = _stripLeadingLabel(normalized, const <String>[
+      'CMD:',
+      'COMMAND:',
+    ]);
+    if (taggedCommand != null) {
+      normalized = taggedCommand;
+    }
     while (normalized.startsWith('`') && normalized.endsWith('`')) {
       normalized = normalized.substring(1, normalized.length - 1).trim();
     }
@@ -602,7 +875,11 @@ class LocalTerminalAiService {
   }
 
   String _normalizeSuggestionExplanation(String explanation) {
-    final normalized = explanation
+    final taggedExplanation = _stripLeadingLabel(
+      explanation.trim(),
+      const <String>['WHY:', 'EXPLANATION:'],
+    );
+    final normalized = (taggedExplanation ?? explanation)
         .replaceFirst(RegExp(r'^[:\-\u2013\u2014\s]+'), '')
         .trim();
     final collapsedNormalized = normalized.toLowerCase().replaceAll(
@@ -695,9 +972,15 @@ class LocalTerminalAiService {
     required String currentTerminalLine,
     required String response,
   }) {
-    final firstLine = response.replaceAll('\r', '').split('\n').first;
+    var firstLine = response.replaceAll('\r', '').split('\n').first;
     if (firstLine.trim() == 'NO_COMPLETION') {
       return '';
+    }
+    const appendPrefix = 'APPEND:';
+    if (firstLine.length >= appendPrefix.length &&
+        firstLine.substring(0, appendPrefix.length).toUpperCase() ==
+            appendPrefix) {
+      firstLine = firstLine.substring(appendPrefix.length);
     }
     if (firstLine.startsWith(currentTerminalLine)) {
       return firstLine.substring(currentTerminalLine.length);

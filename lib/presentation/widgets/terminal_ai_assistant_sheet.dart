@@ -12,31 +12,15 @@ import '../../domain/services/local_terminal_ai_settings_service.dart';
 class TerminalAiAssistantSheet extends ConsumerStatefulWidget {
   /// Creates a new [TerminalAiAssistantSheet].
   const TerminalAiAssistantSheet({
-    required this.hostLabel,
+    required this.promptContext,
     required this.onInsertSuggestedCommand,
     required this.onInsertCompletion,
     required this.onOpenSettings,
-    this.currentTerminalLine,
-    this.shellStatusLabel,
-    this.recentTerminalContext,
-    this.workingDirectoryPath,
     super.key,
   });
 
-  /// The currently connected host label.
-  final String hostLabel;
-
-  /// Current command line snapshot from the terminal.
-  final String? currentTerminalLine;
-
-  /// Current shell lifecycle state reported by shell integration.
-  final String? shellStatusLabel;
-
-  /// Small recent transcript window from the terminal buffer.
-  final String? recentTerminalContext;
-
-  /// Current working directory for the terminal session.
-  final String? workingDirectoryPath;
+  /// Terminal/session context snapshot supplied to the on-device model.
+  final LocalTerminalAiPromptContext promptContext;
 
   /// Inserts a full AI-generated command into the terminal.
   final Future<void> Function(String command) onInsertSuggestedCommand;
@@ -80,7 +64,7 @@ class _TerminalAiAssistantSheetState
         : const AsyncData<bool>(false);
     final hasHuggingFaceToken = huggingFaceTokenAsync.asData?.value ?? false;
     final theme = Theme.of(context);
-    final currentLine = widget.currentTerminalLine?.trimRight();
+    final currentLine = widget.promptContext.currentTerminalLine?.trimRight();
     final canGenerate = _canStartAssistantRequest(
       settings,
       managedModel,
@@ -265,11 +249,7 @@ class _TerminalAiAssistantSheetState
           .suggestCommands(
             settings: settings,
             taskDescription: _taskController.text,
-            hostLabel: widget.hostLabel,
-            workingDirectoryPath: widget.workingDirectoryPath,
-            currentTerminalLine: widget.currentTerminalLine,
-            shellStatusLabel: widget.shellStatusLabel,
-            recentTerminalContext: widget.recentTerminalContext,
+            promptContext: widget.promptContext,
           );
       if (!mounted) {
         return;
@@ -294,7 +274,7 @@ class _TerminalAiAssistantSheetState
   }
 
   Future<void> _generateCompletion() async {
-    final currentLine = widget.currentTerminalLine?.trimRight();
+    final currentLine = widget.promptContext.currentTerminalLine?.trimRight();
     if (currentLine == null || currentLine.trim().isEmpty) {
       return;
     }
@@ -311,10 +291,7 @@ class _TerminalAiAssistantSheetState
           .completeCurrentCommand(
             settings: settings,
             currentTerminalLine: currentLine,
-            hostLabel: widget.hostLabel,
-            workingDirectoryPath: widget.workingDirectoryPath,
-            shellStatusLabel: widget.shellStatusLabel,
-            recentTerminalContext: widget.recentTerminalContext,
+            promptContext: widget.promptContext,
           );
       if (!mounted) {
         return;
