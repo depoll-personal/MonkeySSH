@@ -535,7 +535,6 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     }
 
     unawaited(HapticFeedback.lightImpact());
-    _assistantFocusNode.unfocus();
     setState(() {
       _isSubmittingAssistantPrompt = true;
       _showsAssistantComposer = false;
