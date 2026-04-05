@@ -107,12 +107,19 @@ class LocalTerminalAiService {
       );
     }
 
+    final preferredManagedModel = localTerminalAiManagedModelSpecForSettings(
+      settings,
+    );
     final runtimeInfo = await _platformService.getRuntimeInfo();
     final response = await _runPrompt(
       settings: settings,
       runtimeInfo: runtimeInfo,
+      preferredManagedModel: preferredManagedModel,
       prompt: _buildSuggestionPrompt(
-        runtimeLabel: _promptRuntimeLabel(runtimeInfo),
+        runtimeLabel: _promptRuntimeLabel(
+          runtimeInfo,
+          preferredManagedModel: preferredManagedModel,
+        ),
         taskDescription: trimmedTask,
         hostLabel: hostLabel,
         workingDirectoryPath: workingDirectoryPath,
@@ -141,12 +148,19 @@ class LocalTerminalAiService {
       );
     }
 
+    final preferredManagedModel = localTerminalAiManagedModelSpecForSettings(
+      settings,
+    );
     final runtimeInfo = await _platformService.getRuntimeInfo();
     final response = await _runPrompt(
       settings: settings,
       runtimeInfo: runtimeInfo,
+      preferredManagedModel: preferredManagedModel,
       prompt: _buildCompletionPrompt(
-        runtimeLabel: _promptRuntimeLabel(runtimeInfo),
+        runtimeLabel: _promptRuntimeLabel(
+          runtimeInfo,
+          preferredManagedModel: preferredManagedModel,
+        ),
         currentTerminalLine: trimmedLine,
         hostLabel: hostLabel,
         workingDirectoryPath: workingDirectoryPath,
@@ -175,6 +189,7 @@ class LocalTerminalAiService {
   Future<String> _runPrompt({
     required LocalTerminalAiSettings settings,
     required LocalTerminalAiRuntimeInfo runtimeInfo,
+    required LocalTerminalAiManagedModelSpec? preferredManagedModel,
     required String prompt,
     required int maxTokens,
   }) async {
@@ -184,34 +199,42 @@ class LocalTerminalAiService {
       );
     }
 
+    if (preferredManagedModel != null) {
+      try {
+        final managedModel = await _managedModelCoordinator.ensureReadyFor(
+          settings,
+        );
+        if (managedModel == null) {
+          throw LocalTerminalAiConfigurationException(
+            'Managed ${preferredManagedModel.displayName} is not ready on this device yet.',
+          );
+        }
+        try {
+          return await _fallbackRuntime.generateText(
+            prompt: prompt,
+            maxTokens: maxTokens,
+            managedModel: managedModel,
+          );
+        } on Exception catch (error) {
+          throw LocalTerminalAiConfigurationException(
+            _formatManagedRuntimeError(error, managedModel),
+          );
+        }
+      } on LocalTerminalAiConfigurationException {
+        rethrow;
+      } on Exception catch (error) {
+        throw LocalTerminalAiConfigurationException(
+          _formatManagedModelSetupError(error),
+        );
+      }
+    }
+
     if (runtimeInfo.shouldAttemptNativeRuntime) {
       return _runNativePrompt(
         runtimeInfo: runtimeInfo,
         prompt: prompt,
         maxTokens: maxTokens,
       );
-    }
-
-    LocalTerminalAiManagedModelSpec? managedModel;
-    try {
-      managedModel = await _managedModelCoordinator.ensureReadyFor(settings);
-    } on Exception catch (error) {
-      throw LocalTerminalAiConfigurationException(
-        _formatManagedModelSetupError(error),
-      );
-    }
-    if (managedModel != null) {
-      try {
-        return await _fallbackRuntime.generateText(
-          prompt: prompt,
-          maxTokens: maxTokens,
-          managedModel: managedModel,
-        );
-      } on Exception catch (error) {
-        throw LocalTerminalAiConfigurationException(
-          _formatManagedRuntimeError(error, managedModel),
-        );
-      }
     }
 
     throw LocalTerminalAiConfigurationException(runtimeInfo.statusMessage);
@@ -375,9 +398,15 @@ class LocalTerminalAiService {
     return buffer.toString();
   }
 
-  String _promptRuntimeLabel(LocalTerminalAiRuntimeInfo runtimeInfo) {
+  String _promptRuntimeLabel(
+    LocalTerminalAiRuntimeInfo runtimeInfo, {
+    required LocalTerminalAiManagedModelSpec? preferredManagedModel,
+  }) {
+    if (preferredManagedModel != null) {
+      return 'Managed ${preferredManagedModel.displayName}';
+    }
     if (runtimeInfo.provider == LocalTerminalAiPlatformProvider.none) {
-      return 'Managed Gemma 4';
+      return 'Managed Gemma';
     }
     final modelName = runtimeInfo.modelName?.trim();
     if (modelName case final String modelName when modelName.isNotEmpty) {

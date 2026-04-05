@@ -82,7 +82,7 @@ void main() {
         find.widgetWithText(SwitchListTile, 'Runtime status'),
         findsNothing,
       );
-      expect(find.text('Managed Gemma 4 download'), findsNothing);
+      expect(find.text('Managed model download'), findsOneWidget);
 
       // Scroll to find About section
       await tester.scrollUntilVisible(

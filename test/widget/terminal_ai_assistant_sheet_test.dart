@@ -123,10 +123,14 @@ void main() {
   );
 
   testWidgets(
-    'keeps assistant actions enabled when Gemini Nano support exists',
+    'keeps assistant actions enabled when the Android managed model is installed',
     (tester) async {
       _settingsState = const LocalTerminalAiSettings(enabled: true);
-      _managedModelState = const LocalTerminalAiManagedModelState.idle();
+      _managedModelState = const LocalTerminalAiManagedModelState(
+        status: LocalTerminalAiManagedModelStatus.installed,
+        spec: _managedSpec,
+        progress: 100,
+      );
       _runtimeInfoState = const LocalTerminalAiRuntimeInfo(
         provider: LocalTerminalAiPlatformProvider.androidAiCore,
         supportedPlatform: true,

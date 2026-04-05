@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../domain/services/local_terminal_ai_credentials_service.dart';
 import '../../domain/services/local_terminal_ai_managed_model_service.dart';
 import '../../domain/services/local_terminal_ai_platform_service.dart';
 import '../../domain/services/local_terminal_ai_service.dart';
@@ -71,13 +72,20 @@ class _TerminalAiAssistantSheetState
   Widget build(BuildContext context) {
     final settings = ref.watch(localTerminalAiSettingsProvider);
     final managedModel = ref.watch(localTerminalAiManagedModelProvider);
+    final managedSpec = localTerminalAiManagedModelSpec();
     final runtimeInfoAsync = ref.watch(localTerminalAiRuntimeInfoProvider);
     final runtimeInfo = runtimeInfoAsync.asData?.value;
+    final huggingFaceTokenAsync = managedSpec?.requiresHuggingFaceToken ?? false
+        ? ref.watch(localTerminalAiHasHuggingFaceTokenProvider)
+        : const AsyncData<bool>(false);
+    final hasHuggingFaceToken = huggingFaceTokenAsync.asData?.value ?? false;
     final theme = Theme.of(context);
     final currentLine = widget.currentTerminalLine?.trimRight();
     final canGenerate = _canStartAssistantRequest(
       settings,
       managedModel,
+      managedSpec,
+      hasHuggingFaceToken,
       runtimeInfo,
     );
 
@@ -118,6 +126,9 @@ class _TerminalAiAssistantSheetState
               _AssistantStatusCard(
                 settings: settings,
                 managedModel: managedModel,
+                managedSpec: managedSpec,
+                hasHuggingFaceToken: hasHuggingFaceToken,
+                huggingFaceTokenLoading: huggingFaceTokenAsync.isLoading,
                 runtimeInfo: runtimeInfo,
                 runtimeInfoLoading: runtimeInfoAsync.isLoading,
                 onOpenSettings: () {
@@ -341,24 +352,44 @@ class _TerminalAiAssistantSheetState
 bool _canStartAssistantRequest(
   LocalTerminalAiSettings settings,
   LocalTerminalAiManagedModelState managedModel,
+  LocalTerminalAiManagedModelSpec? managedSpec,
+  bool hasHuggingFaceToken,
   LocalTerminalAiRuntimeInfo? runtimeInfo,
-) =>
-    settings.enabled &&
-    ((runtimeInfo?.shouldAttemptNativeRuntime ?? false) ||
-        managedModel.isInstalled);
+) {
+  if (!settings.enabled) {
+    return false;
+  }
+  if (managedSpec != null) {
+    if (managedSpec.requiresHuggingFaceToken && !hasHuggingFaceToken) {
+      return false;
+    }
+    return managedModel.isInstalled;
+  }
+  return runtimeInfo?.shouldAttemptNativeRuntime ?? false;
+}
 
 bool _isAssistantReady(
   LocalTerminalAiSettings settings,
   LocalTerminalAiManagedModelState managedModel,
+  LocalTerminalAiManagedModelSpec? managedSpec,
   LocalTerminalAiRuntimeInfo? runtimeInfo,
-) =>
-    settings.enabled &&
-    ((runtimeInfo?.available ?? false) || managedModel.isReady);
+) {
+  if (!settings.enabled) {
+    return false;
+  }
+  if (managedSpec != null) {
+    return managedModel.isReady;
+  }
+  return runtimeInfo?.available ?? false;
+}
 
 class _AssistantStatusCard extends StatelessWidget {
   const _AssistantStatusCard({
     required this.settings,
     required this.managedModel,
+    required this.managedSpec,
+    required this.hasHuggingFaceToken,
+    required this.huggingFaceTokenLoading,
     required this.runtimeInfo,
     required this.runtimeInfoLoading,
     required this.onOpenSettings,
@@ -366,6 +397,9 @@ class _AssistantStatusCard extends StatelessWidget {
 
   final LocalTerminalAiSettings settings;
   final LocalTerminalAiManagedModelState managedModel;
+  final LocalTerminalAiManagedModelSpec? managedSpec;
+  final bool hasHuggingFaceToken;
+  final bool huggingFaceTokenLoading;
   final LocalTerminalAiRuntimeInfo? runtimeInfo;
   final bool runtimeInfoLoading;
   final VoidCallback onOpenSettings;
@@ -373,52 +407,78 @@ class _AssistantStatusCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final managedSpec = localTerminalAiManagedGemma4Spec();
     final canStart = _canStartAssistantRequest(
       settings,
       managedModel,
+      managedSpec,
+      hasHuggingFaceToken,
       runtimeInfo,
     );
-    final isReady = _isAssistantReady(settings, managedModel, runtimeInfo);
-    final autoVerifiesInBackground = shouldAutoVerifyManagedGemma4InBackground(
-      settings: settings,
+    final isReady = _isAssistantReady(
+      settings,
+      managedModel,
+      managedSpec,
+      runtimeInfo,
     );
+    final autoVerifiesInBackground =
+        shouldAutoVerifyManagedLocalTerminalAiModelInBackground(
+          settings: settings,
+        );
     final title = isReady
         ? 'Assistant ready'
         : canStart
         ? 'Assistant available'
         : 'Setup required';
-    final subtitle = !settings.enabled
-        ? runtimeInfo?.provider != LocalTerminalAiPlatformProvider.none
-              ? 'Enable the assistant in Settings to use ${runtimeInfo!.providerLabel} on this device.'
-              : managedSpec == null
-              ? 'Enable the assistant in Settings to start using it.'
-              : 'Enable the assistant in Settings to start downloading ${managedSpec.displayName}.'
-        : runtimeInfoLoading
-        ? 'Checking which on-device runtime this device can use.'
-        : runtimeInfo?.provider != null &&
-              runtimeInfo!.provider != LocalTerminalAiPlatformProvider.none
-        ? runtimeInfo!.available
-              ? 'Using ${runtimeInfo!.modelName ?? runtimeInfo!.providerLabel} on this device.'
-              : runtimeInfo!.statusMessage
-        : managedSpec == null
-        ? 'This device does not currently expose a supported on-device terminal AI runtime.'
-        : switch (managedModel.status) {
-            LocalTerminalAiManagedModelStatus.ready =>
-              'Using managed ${managedSpec.displayName} on this device.',
-            LocalTerminalAiManagedModelStatus.installed =>
-              autoVerifiesInBackground
-                  ? 'Managed ${managedSpec.displayName} is downloaded and finishing setup.'
-                  : 'Managed ${managedSpec.displayName} is downloaded. It will finish setup the first time you ask for suggestions or completions.',
-            LocalTerminalAiManagedModelStatus.verifying =>
-              'Finalizing managed ${managedSpec.displayName} on this device.',
-            LocalTerminalAiManagedModelStatus.downloading =>
-              'Downloading managed ${managedSpec.displayName} (${managedModel.progress}%).',
-            LocalTerminalAiManagedModelStatus.failed =>
-              'Managed ${managedSpec.displayName} setup failed. Open Settings to retry.',
-            LocalTerminalAiManagedModelStatus.idle =>
-              'Preparing the managed ${managedSpec.displayName} download...',
-          };
+    late final String subtitle;
+    if (!settings.enabled) {
+      if (managedSpec case final LocalTerminalAiManagedModelSpec managedSpec) {
+        subtitle = managedSpec.requiresHuggingFaceToken && !hasHuggingFaceToken
+            ? 'Enable the assistant in Settings and add a Hugging Face token to download ${managedSpec.displayName}.'
+            : 'Enable the assistant in Settings to start downloading ${managedSpec.displayName}.';
+      } else if (runtimeInfo case final LocalTerminalAiRuntimeInfo runtimeInfo
+          when runtimeInfo.provider != LocalTerminalAiPlatformProvider.none) {
+        subtitle =
+            'Enable the assistant in Settings to use ${runtimeInfo.providerLabel} on this device.';
+      } else {
+        subtitle = 'Enable the assistant in Settings to start using it.';
+      }
+    } else if (managedSpec
+        case final LocalTerminalAiManagedModelSpec managedSpec) {
+      if (huggingFaceTokenLoading) {
+        subtitle =
+            'Checking whether a Hugging Face token is saved for ${managedSpec.displayName}.';
+      } else if (managedSpec.requiresHuggingFaceToken && !hasHuggingFaceToken) {
+        subtitle =
+            'Add a Hugging Face token in Settings to download managed ${managedSpec.displayName}.';
+      } else {
+        subtitle = switch (managedModel.status) {
+          LocalTerminalAiManagedModelStatus.ready =>
+            'Using managed ${managedSpec.displayName} on this device.',
+          LocalTerminalAiManagedModelStatus.installed =>
+            autoVerifiesInBackground
+                ? 'Managed ${managedSpec.displayName} is downloaded and finishing setup.'
+                : 'Managed ${managedSpec.displayName} is downloaded. It will finish setup the first time you ask for suggestions or completions.',
+          LocalTerminalAiManagedModelStatus.verifying =>
+            'Finalizing managed ${managedSpec.displayName} on this device.',
+          LocalTerminalAiManagedModelStatus.downloading =>
+            'Downloading managed ${managedSpec.displayName} (${managedModel.progress}%).',
+          LocalTerminalAiManagedModelStatus.failed =>
+            'Managed ${managedSpec.displayName} setup failed. Open Settings to retry.',
+          LocalTerminalAiManagedModelStatus.idle =>
+            'Preparing the managed ${managedSpec.displayName} download...',
+        };
+      }
+    } else if (runtimeInfoLoading) {
+      subtitle = 'Checking which on-device runtime this device can use.';
+    } else if (runtimeInfo case final LocalTerminalAiRuntimeInfo runtimeInfo
+        when runtimeInfo.provider != LocalTerminalAiPlatformProvider.none) {
+      subtitle = runtimeInfo.available
+          ? 'Using ${runtimeInfo.modelName ?? runtimeInfo.providerLabel} on this device.'
+          : runtimeInfo.statusMessage;
+    } else {
+      subtitle =
+          'This device does not currently expose a supported on-device terminal AI runtime.';
+    }
 
     return Card(
       color: canStart

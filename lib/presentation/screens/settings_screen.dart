@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -8,6 +9,7 @@ import 'package:intl/intl.dart';
 import '../../app/app_metadata.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/auth_service.dart';
+import '../../domain/services/local_terminal_ai_credentials_service.dart';
 import '../../domain/services/local_terminal_ai_managed_model_service.dart';
 import '../../domain/services/local_terminal_ai_platform_service.dart';
 import '../../domain/services/local_terminal_ai_settings_service.dart';
@@ -754,7 +756,11 @@ class _OnDeviceAiSection extends ConsumerWidget {
     final managedModel = ref.watch(localTerminalAiManagedModelProvider);
     final runtimeInfoAsync = ref.watch(localTerminalAiRuntimeInfoProvider);
     final runtimeInfo = runtimeInfoAsync.asData?.value;
-    final managedSpec = localTerminalAiManagedGemma4Spec();
+    final managedSpec = localTerminalAiManagedModelSpec();
+    final huggingFaceTokenAsync = managedSpec?.requiresHuggingFaceToken ?? false
+        ? ref.watch(localTerminalAiHasHuggingFaceTokenProvider)
+        : const AsyncData<bool>(false);
+    final hasHuggingFaceToken = huggingFaceTokenAsync.asData?.value ?? false;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -785,24 +791,59 @@ class _OnDeviceAiSection extends ConsumerWidget {
               runtimeInfo: runtimeInfo,
               runtimeInfoLoading: runtimeInfoAsync.isLoading,
               managedSpec: managedSpec,
+              hasHuggingFaceToken: hasHuggingFaceToken,
+              huggingFaceTokenLoading: huggingFaceTokenAsync.isLoading,
             ),
           ),
         ),
+        if (managedSpec?.requiresHuggingFaceToken ?? false)
+          ListTile(
+            leading: const Icon(Icons.key_outlined),
+            title: const Text('Hugging Face token'),
+            subtitle: Text(
+              _huggingFaceTokenSubtitle(
+                managedSpec: managedSpec!,
+                hasHuggingFaceToken: hasHuggingFaceToken,
+                huggingFaceTokenLoading: huggingFaceTokenAsync.isLoading,
+              ),
+            ),
+            trailing: huggingFaceTokenAsync.isLoading
+                ? const SizedBox.square(
+                    dimension: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : Icon(
+                    hasHuggingFaceToken
+                        ? Icons.check_circle_outline
+                        : Icons.edit_outlined,
+                  ),
+            onTap: managedSpec.requiresHuggingFaceToken
+                ? () => _showHuggingFaceTokenDialog(
+                    context,
+                    ref,
+                    settings: settings,
+                    hasHuggingFaceToken: hasHuggingFaceToken,
+                  )
+                : null,
+          ),
         if (managedSpec != null)
           ListTile(
             leading: const Icon(Icons.download_for_offline_outlined),
-            title: const Text('Managed Gemma 4 download'),
+            title: const Text('Managed model download'),
             subtitle: Text(
               _managedModelSubtitle(
                 settings: settings,
                 managedModel: managedModel,
                 managedSpec: managedSpec,
+                hasHuggingFaceToken: hasHuggingFaceToken,
               ),
             ),
             onTap:
                 settings.enabled &&
                     managedModel.status ==
-                        LocalTerminalAiManagedModelStatus.failed
+                        LocalTerminalAiManagedModelStatus.failed &&
+                    (!managedSpec.requiresHuggingFaceToken ||
+                        hasHuggingFaceToken)
                 ? () {
                     unawaited(
                       ref
@@ -814,6 +855,8 @@ class _OnDeviceAiSection extends ConsumerWidget {
             trailing: _managedModelTrailing(
               settings: settings,
               managedModel: managedModel,
+              managedSpec: managedSpec,
+              hasHuggingFaceToken: hasHuggingFaceToken,
               onRetry: () {
                 unawaited(
                   ref
@@ -831,6 +874,8 @@ class _OnDeviceAiSection extends ConsumerWidget {
               runtimeInfo: runtimeInfo,
               runtimeInfoLoading: runtimeInfoAsync.isLoading,
               managedSpec: managedSpec,
+              hasHuggingFaceToken: hasHuggingFaceToken,
+              huggingFaceTokenLoading: huggingFaceTokenAsync.isLoading,
             ),
             style: Theme.of(context).textTheme.bodySmall,
           ),
@@ -843,7 +888,18 @@ class _OnDeviceAiSection extends ConsumerWidget {
     required LocalTerminalAiRuntimeInfo? runtimeInfo,
     required bool runtimeInfoLoading,
     required LocalTerminalAiManagedModelSpec? managedSpec,
+    required bool hasHuggingFaceToken,
+    required bool huggingFaceTokenLoading,
   }) {
+    if (managedSpec != null) {
+      if (huggingFaceTokenLoading) {
+        return 'Checking whether a Hugging Face token is saved for ${managedSpec.displayName}.';
+      }
+      if (managedSpec.requiresHuggingFaceToken && !hasHuggingFaceToken) {
+        return '${_managedPlatformLabel()} uses managed ${managedSpec.displayName}. Add a Hugging Face token to download it.';
+      }
+      return '${_managedPlatformLabel()} uses managed ${managedSpec.displayName} for terminal suggestions and completions.';
+    }
     if (runtimeInfoLoading) {
       return 'Checking which on-device runtime is available on this device.';
     }
@@ -851,23 +907,41 @@ class _OnDeviceAiSection extends ConsumerWidget {
         runtimeInfo.provider != LocalTerminalAiPlatformProvider.none) {
       return '${runtimeInfo.providerLabel}: ${runtimeInfo.statusMessage}';
     }
-    if (managedSpec != null) {
-      return 'Desktop uses managed ${managedSpec.displayName} for terminal suggestions and completions.';
-    }
     return runtimeInfo?.statusMessage ??
         'This platform does not expose a built-in on-device language model.';
+  }
+
+  String _huggingFaceTokenSubtitle({
+    required LocalTerminalAiManagedModelSpec managedSpec,
+    required bool hasHuggingFaceToken,
+    required bool huggingFaceTokenLoading,
+  }) {
+    if (!managedSpec.requiresHuggingFaceToken) {
+      return '${managedSpec.displayName} does not require a Hugging Face token on this platform.';
+    }
+    if (huggingFaceTokenLoading) {
+      return 'Checking secure storage for a saved Hugging Face token.';
+    }
+    return hasHuggingFaceToken
+        ? 'Saved securely for gated ${managedSpec.displayName} downloads on this device.'
+        : 'Required for downloading ${managedSpec.displayName} from Hugging Face.';
   }
 
   String _managedModelSubtitle({
     required LocalTerminalAiSettings settings,
     required LocalTerminalAiManagedModelState managedModel,
     required LocalTerminalAiManagedModelSpec managedSpec,
+    required bool hasHuggingFaceToken,
   }) {
-    final autoVerifiesInBackground = shouldAutoVerifyManagedGemma4InBackground(
-      settings: settings,
-    );
+    final autoVerifiesInBackground =
+        shouldAutoVerifyManagedLocalTerminalAiModelInBackground(
+          settings: settings,
+        );
     if (!settings.enabled) {
       return '${managedSpec.displayName} downloads automatically after you enable the assistant.';
+    }
+    if (managedSpec.requiresHuggingFaceToken && !hasHuggingFaceToken) {
+      return 'Add a Hugging Face token to download ${managedSpec.displayName}.';
     }
     return switch (managedModel.status) {
       LocalTerminalAiManagedModelStatus.ready =>
@@ -889,10 +963,15 @@ class _OnDeviceAiSection extends ConsumerWidget {
   Widget? _managedModelTrailing({
     required LocalTerminalAiSettings settings,
     required LocalTerminalAiManagedModelState managedModel,
+    required LocalTerminalAiManagedModelSpec managedSpec,
+    required bool hasHuggingFaceToken,
     required VoidCallback onRetry,
   }) {
     if (!settings.enabled) {
       return const Icon(Icons.download_outlined);
+    }
+    if (managedSpec.requiresHuggingFaceToken && !hasHuggingFaceToken) {
+      return const Icon(Icons.key_outlined);
     }
 
     return switch (managedModel.status) {
@@ -917,7 +996,7 @@ class _OnDeviceAiSection extends ConsumerWidget {
       ),
       LocalTerminalAiManagedModelStatus.failed => IconButton(
         onPressed: onRetry,
-        tooltip: 'Retry managed Gemma 4 setup',
+        tooltip: 'Retry managed model setup',
         icon: const Icon(Icons.refresh),
       ),
       LocalTerminalAiManagedModelStatus.idle => const Icon(
@@ -931,7 +1010,27 @@ class _OnDeviceAiSection extends ConsumerWidget {
     required LocalTerminalAiRuntimeInfo? runtimeInfo,
     required bool runtimeInfoLoading,
     required LocalTerminalAiManagedModelSpec? managedSpec,
+    required bool hasHuggingFaceToken,
+    required bool huggingFaceTokenLoading,
   }) {
+    if (managedSpec != null) {
+      if (managedSpec.requiresHuggingFaceToken) {
+        if (huggingFaceTokenLoading) {
+          return 'MonkeySSH is checking secure storage for the Hugging Face token needed to download ${managedSpec.displayName}. Commands are never run automatically.';
+        }
+        if (!hasHuggingFaceToken) {
+          return 'On iPhone, MonkeySSH uses managed ${managedSpec.displayName} for terminal suggestions and completions. Add a Hugging Face token to download it. Commands are never run automatically.';
+        }
+      }
+      final autoVerifiesInBackground =
+          shouldAutoVerifyManagedLocalTerminalAiModelInBackground(
+            settings: settings,
+          );
+      if (!autoVerifiesInBackground && settings.enabled) {
+        return 'On ${_managedPlatformLabel().toLowerCase()}, MonkeySSH uses managed ${managedSpec.displayName} for terminal suggestions and completions. The download starts after you enable the assistant. Commands are never run automatically.';
+      }
+      return 'On ${_managedPlatformLabel().toLowerCase()}, MonkeySSH uses managed ${managedSpec.displayName} for terminal suggestions and completions. Commands are never run automatically.';
+    }
     if (runtimeInfoLoading) {
       return 'MonkeySSH is checking which on-device model this device can use for terminal suggestions and completions. Commands are never run automatically.';
     }
@@ -943,15 +1042,109 @@ class _OnDeviceAiSection extends ConsumerWidget {
         LocalTerminalAiPlatformProvider.androidAiCore) {
       return 'On Android, MonkeySSH uses Gemini Nano through Android AI Core for terminal suggestions and completions. Commands are never run automatically.';
     }
-    if (managedSpec != null) {
-      final autoVerifiesInBackground =
-          shouldAutoVerifyManagedGemma4InBackground(settings: settings);
-      if (!autoVerifiesInBackground && settings.enabled) {
-        return 'On desktop, MonkeySSH uses managed ${managedSpec.displayName} for terminal suggestions and completions. The download starts after you enable the assistant. Commands are never run automatically.';
-      }
-      return 'On desktop, MonkeySSH uses managed ${managedSpec.displayName} for terminal suggestions and completions. Commands are never run automatically.';
-    }
     return 'This platform does not currently expose a supported on-device terminal AI runtime. Commands are never run automatically.';
+  }
+
+  String _managedPlatformLabel() => switch (defaultTargetPlatform) {
+    TargetPlatform.iOS => 'iPhone',
+    TargetPlatform.android => 'Android',
+    TargetPlatform.macOS => 'Desktop',
+    TargetPlatform.windows => 'Desktop',
+    TargetPlatform.linux => 'Desktop',
+    TargetPlatform.fuchsia => 'This device',
+  };
+
+  Future<void> _showHuggingFaceTokenDialog(
+    BuildContext context,
+    WidgetRef ref, {
+    required LocalTerminalAiSettings settings,
+    required bool hasHuggingFaceToken,
+  }) async {
+    final controller = TextEditingController();
+    var obscureText = true;
+    String? errorText;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          title: const Text('Hugging Face token'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Save a read token here so MonkeySSH can download gated Gemma models on this device.',
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                obscureText: obscureText,
+                autocorrect: false,
+                enableSuggestions: false,
+                decoration: InputDecoration(
+                  labelText: 'Token',
+                  hintText: 'hf_...',
+                  errorText: errorText,
+                  suffixIcon: IconButton(
+                    onPressed: () => setState(() => obscureText = !obscureText),
+                    icon: Icon(
+                      obscureText ? Icons.visibility : Icons.visibility_off,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            if (hasHuggingFaceToken)
+              TextButton(
+                onPressed: () async {
+                  await ref
+                      .read(localTerminalAiCredentialsServiceProvider)
+                      .clearHuggingFaceToken();
+                  ref.invalidate(localTerminalAiHasHuggingFaceTokenProvider);
+                  if (dialogContext.mounted) {
+                    Navigator.of(dialogContext).pop();
+                  }
+                },
+                child: const Text('Remove'),
+              ),
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                final token = controller.text.trim();
+                if (token.isEmpty) {
+                  setState(
+                    () => errorText =
+                        'Enter a Hugging Face token or remove the saved one.',
+                  );
+                  return;
+                }
+                await ref
+                    .read(localTerminalAiCredentialsServiceProvider)
+                    .setHuggingFaceToken(token);
+                ref.invalidate(localTerminalAiHasHuggingFaceTokenProvider);
+                if (settings.enabled) {
+                  unawaited(
+                    ref
+                        .read(localTerminalAiManagedModelProvider.notifier)
+                        .retry(settings),
+                  );
+                }
+                if (dialogContext.mounted) {
+                  Navigator.of(dialogContext).pop();
+                }
+              },
+              child: Text(hasHuggingFaceToken ? 'Update' : 'Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+    controller.dispose();
   }
 }
 

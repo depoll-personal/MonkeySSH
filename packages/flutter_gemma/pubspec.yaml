@@ -62,6 +62,11 @@ flutter:
   # adding or updating assets for this project.
   plugin:
     platforms:
+      android:
+        package: dev.flutterberlin.flutter_gemma
+        pluginClass: FlutterGemmaPlugin
+      ios:
+        pluginClass: FlutterGemmaPlugin
       web:
         pluginClass: FlutterGemmaWeb
         fileName: web/flutter_gemma_web.dart

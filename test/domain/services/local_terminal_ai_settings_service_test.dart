@@ -18,7 +18,7 @@ void main() {
 
     const settings = LocalTerminalAiSettings(enabled: true);
 
-    final spec = localTerminalAiManagedGemma4SpecForSettings(settings);
+    final spec = localTerminalAiManagedModelSpecForSettings(settings);
 
     expect(spec, isNotNull);
     expect(spec!.fileName, 'gemma-4-E2B-it.litertlm');
@@ -27,26 +27,35 @@ void main() {
     expect(spec.preferredBackend, isNull);
   });
 
-  test('managed Gemma 4 is unavailable on iOS', () {
+  test('managed Gemma 3n download uses task format on iOS', () {
     debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
 
     const settings = LocalTerminalAiSettings(enabled: true);
 
-    final spec = localTerminalAiManagedGemma4SpecForSettings(settings);
+    final spec = localTerminalAiManagedModelSpecForSettings(settings);
 
-    expect(spec, isNull);
+    expect(spec, isNotNull);
+    expect(spec!.modelId, 'gemma-3n-E2B-it');
+    expect(spec.fileName, 'gemma-3n-E2B-it-int4.task');
+    expect(spec.fileType, ModelFileType.task);
+    expect(spec.requiresHuggingFaceToken, isTrue);
+    expect(spec.preferredBackend, PreferredBackend.gpu);
   });
 
-  test('managed Gemma 4 is unavailable on Android', () {
+  test('managed Gemma 4 download uses LiteRT-LM on Android', () {
     debugDefaultTargetPlatformOverride = TargetPlatform.android;
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
 
     const settings = LocalTerminalAiSettings(enabled: true);
 
-    final spec = localTerminalAiManagedGemma4SpecForSettings(settings);
+    final spec = localTerminalAiManagedModelSpecForSettings(settings);
 
-    expect(spec, isNull);
+    expect(spec, isNotNull);
+    expect(spec!.modelId, 'gemma-4-E2B-it');
+    expect(spec.fileType, ModelFileType.litertlm);
+    expect(spec.foregroundDownload, isTrue);
+    expect(spec.preferredBackend, PreferredBackend.gpu);
   });
 
   test(
@@ -109,39 +118,55 @@ void main() {
   });
 
   test(
-    'managed Gemma 4 does not auto-download when the assistant is disabled',
+    'managed model does not auto-download when the assistant is disabled',
     () {
       const settings = LocalTerminalAiSettings(enabled: false);
 
-      expect(shouldAutoSyncManagedGemma4(settings: settings), isFalse);
+      expect(
+        shouldAutoSyncManagedLocalTerminalAiModel(settings: settings),
+        isFalse,
+      );
     },
   );
 
-  test('managed Gemma 4 does not auto-download on iOS', () {
+  test('managed model auto-downloads on iOS when the assistant is enabled', () {
     debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
 
     const settings = LocalTerminalAiSettings(enabled: true);
 
-    expect(shouldAutoSyncManagedGemma4(settings: settings), isFalse);
     expect(
-      shouldAutoVerifyManagedGemma4InBackground(settings: settings),
-      isFalse,
+      shouldAutoSyncManagedLocalTerminalAiModel(settings: settings),
+      isTrue,
+    );
+    expect(
+      shouldAutoVerifyManagedLocalTerminalAiModelInBackground(
+        settings: settings,
+      ),
+      isTrue,
     );
   });
 
-  test('managed Gemma 4 does not auto-download on Android', () {
-    debugDefaultTargetPlatformOverride = TargetPlatform.android;
-    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+  test(
+    'managed model auto-downloads on Android when the assistant is enabled',
+    () {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
 
-    const settings = LocalTerminalAiSettings(enabled: true);
+      const settings = LocalTerminalAiSettings(enabled: true);
 
-    expect(shouldAutoSyncManagedGemma4(settings: settings), isFalse);
-    expect(
-      shouldAutoVerifyManagedGemma4InBackground(settings: settings),
-      isFalse,
-    );
-  });
+      expect(
+        shouldAutoSyncManagedLocalTerminalAiModel(settings: settings),
+        isTrue,
+      );
+      expect(
+        shouldAutoVerifyManagedLocalTerminalAiModelInBackground(
+          settings: settings,
+        ),
+        isTrue,
+      );
+    },
+  );
 
   test('managed Gemma runtime stays on cpu when already cpu-first', () async {
     const spec = LocalTerminalAiManagedModelSpec(

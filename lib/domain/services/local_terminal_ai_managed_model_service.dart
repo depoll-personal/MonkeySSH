@@ -6,10 +6,17 @@ import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'local_terminal_ai_credentials_service.dart';
 import 'local_terminal_ai_platform_service.dart';
 import 'local_terminal_ai_settings_service.dart';
 
-const _gemma4E2BLiteRtLmCommitHash = '7fa1d78473894f7e736a21d920c3aa80f950c0db';
+const _gemma3nE2BTaskCommitHash = '66c93e118deff9961db659f241678e61b847d165';
+const _gemma3nE2BTaskFileName = 'gemma-3n-E2B-it-int4.task';
+const _gemma3nE2BTaskUrl =
+    'https://huggingface.co/google/gemma-3n-E2B-it-litert-preview/resolve/'
+    '$_gemma3nE2BTaskCommitHash/$_gemma3nE2BTaskFileName?download=true';
+const _gemma3nE2BModelId = 'gemma-3n-E2B-it';
+const _gemma4E2BLiteRtLmCommitHash = '616f4124e6ff216292f16e7f73ff33b5ba9a4dd4';
 const _gemma4E2BLiteRtLmFileName = 'gemma-4-E2B-it.litertlm';
 const _gemma4E2BLiteRtLmUrl =
     'https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/'
@@ -17,7 +24,7 @@ const _gemma4E2BLiteRtLmUrl =
 const _gemma4E2BModelId = 'gemma-4-E2B-it';
 const _managedGemmaSessionTemperature = 0.2;
 
-/// Download lifecycle for the managed Gemma 4 fallback.
+/// Download lifecycle for the managed terminal AI model fallback.
 enum LocalTerminalAiManagedModelStatus {
   /// No managed download is active for the current settings.
   idle,
@@ -38,7 +45,7 @@ enum LocalTerminalAiManagedModelStatus {
   failed,
 }
 
-/// Platform-specific managed Gemma 4 artifact metadata.
+/// Platform-specific managed terminal AI artifact metadata.
 class LocalTerminalAiManagedModelSpec {
   /// Creates a new [LocalTerminalAiManagedModelSpec].
   const LocalTerminalAiManagedModelSpec({
@@ -47,6 +54,7 @@ class LocalTerminalAiManagedModelSpec {
     required this.url,
     required this.fileType,
     required this.fileName,
+    this.requiresHuggingFaceToken = false,
     this.preferredBackend,
     this.foregroundDownload,
   });
@@ -66,6 +74,9 @@ class LocalTerminalAiManagedModelSpec {
   /// Artifact file name.
   final String fileName;
 
+  /// Whether the download requires a Hugging Face token.
+  final bool requiresHuggingFaceToken;
+
   /// Preferred inference backend for this managed model, if needed.
   final PreferredBackend? preferredBackend;
 
@@ -77,7 +88,7 @@ class LocalTerminalAiManagedModelSpec {
       '$modelId:${fileType.name}:$fileName:${preferredBackend?.name ?? 'default'}';
 }
 
-/// Current state of the managed Gemma 4 fallback download.
+/// Current state of the managed terminal AI fallback download.
 class LocalTerminalAiManagedModelState {
   /// Creates a new [LocalTerminalAiManagedModelState].
   const LocalTerminalAiManagedModelState({
@@ -132,7 +143,7 @@ class LocalTerminalAiManagedModelState {
   );
 }
 
-/// Shared coordinator for the managed Gemma 4 fallback download.
+/// Shared coordinator for the managed terminal AI fallback download.
 abstract class LocalTerminalAiManagedModelCoordinator {
   /// Starts or cancels background synchronization for the current settings.
   Future<void> sync(
@@ -149,7 +160,7 @@ abstract class LocalTerminalAiManagedModelCoordinator {
   Future<void> retry(LocalTerminalAiSettings settings);
 }
 
-/// Provider for the managed Gemma 4 fallback state.
+/// Provider for the managed terminal AI fallback state.
 final localTerminalAiManagedModelProvider =
     NotifierProvider<
       LocalTerminalAiManagedModelController,
@@ -211,10 +222,11 @@ Future<T> runWithManagedGemmaBackendFallback<T>({
   throw StateError('Managed Gemma backend fallback exhausted without running.');
 }
 
-/// Coordinates managed Gemma 4 fallback downloads through `flutter_gemma`.
+/// Coordinates managed terminal AI model downloads through `flutter_gemma`.
 class LocalTerminalAiManagedModelController
     extends Notifier<LocalTerminalAiManagedModelState>
     implements LocalTerminalAiManagedModelCoordinator {
+  late LocalTerminalAiCredentialsService _credentials;
   CancelToken? _cancelToken;
   Future<void>? _downloadFuture;
   Future<void>? _verificationFuture;
@@ -223,6 +235,7 @@ class LocalTerminalAiManagedModelController
 
   @override
   LocalTerminalAiManagedModelState build() {
+    _credentials = ref.watch(localTerminalAiCredentialsServiceProvider);
     ref.onDispose(() {
       _disposed = true;
       _cancelActiveDownload();
@@ -235,7 +248,7 @@ class LocalTerminalAiManagedModelController
     LocalTerminalAiSettings settings, {
     LocalTerminalAiRuntimeInfo? runtimeInfo,
   }) async {
-    final spec = localTerminalAiManagedGemma4SpecForSettings(settings);
+    final spec = localTerminalAiManagedModelSpecForSettings(settings);
     if (spec == null) {
       _activeSignature = null;
       _cancelActiveDownload();
@@ -245,7 +258,7 @@ class LocalTerminalAiManagedModelController
       return;
     }
 
-    if (!shouldAutoSyncManagedGemma4(
+    if (!shouldAutoSyncManagedLocalTerminalAiModel(
       settings: settings,
       runtimeInfo: runtimeInfo,
     )) {
@@ -256,7 +269,7 @@ class LocalTerminalAiManagedModelController
       return;
     }
 
-    final autoVerify = shouldAutoVerifyManagedGemma4InBackground(
+    final autoVerify = shouldAutoVerifyManagedLocalTerminalAiModelInBackground(
       settings: settings,
       runtimeInfo: runtimeInfo,
     );
@@ -274,7 +287,7 @@ class LocalTerminalAiManagedModelController
   Future<LocalTerminalAiManagedModelSpec?> ensureReadyFor(
     LocalTerminalAiSettings settings,
   ) async {
-    final spec = localTerminalAiManagedGemma4SpecForSettings(settings);
+    final spec = localTerminalAiManagedModelSpecForSettings(settings);
     if (spec == null) {
       return null;
     }
@@ -290,7 +303,7 @@ class LocalTerminalAiManagedModelController
 
   @override
   Future<void> retry(LocalTerminalAiSettings settings) async {
-    if (localTerminalAiManagedGemma4SpecForSettings(settings) == null) {
+    if (localTerminalAiManagedModelSpecForSettings(settings) == null) {
       return;
     }
     _cancelActiveDownload();
@@ -400,10 +413,21 @@ class LocalTerminalAiManagedModelController
     try {
       await _prepareManagedDownloadEnvironment();
       await FlutterGemma.initialize();
-      final builder = FlutterGemma.installModel(
-        modelType: ModelType.gemmaIt,
-        fileType: spec.fileType,
-      ).fromNetwork(spec.url, foreground: spec.foregroundDownload);
+      final huggingFaceToken = await _credentials.getHuggingFaceToken();
+      if (spec.requiresHuggingFaceToken && huggingFaceToken == null) {
+        throw Exception(
+          'Add a Hugging Face token in Settings to download ${spec.displayName}.',
+        );
+      }
+      final builder =
+          FlutterGemma.installModel(
+            modelType: ModelType.gemmaIt,
+            fileType: spec.fileType,
+          ).fromNetwork(
+            spec.url,
+            token: huggingFaceToken,
+            foreground: spec.foregroundDownload,
+          );
       await builder.withCancelToken(token).withProgress((progress) {
         if (_disposed || _activeSignature != spec.signature) {
           return;
@@ -483,7 +507,7 @@ class LocalTerminalAiManagedModelController
     final token = _cancelToken;
     if (token != null && !token.isCancelled) {
       token.cancel(
-        'Managed Gemma 4 download is no longer needed for the current settings.',
+        'Managed terminal AI download is no longer needed for the current settings.',
       );
     }
     _cancelToken = null;
@@ -512,6 +536,13 @@ class LocalTerminalAiManagedModelController
     LocalTerminalAiManagedModelSpec spec,
   ) {
     final errorMessage = error.toString().trim();
+    const exceptionPrefix = 'Exception: ';
+    if (errorMessage.startsWith(
+      '$exceptionPrefix'
+      'Add a Hugging Face token in Settings',
+    )) {
+      return errorMessage.substring(exceptionPrefix.length);
+    }
     if (isManagedGemmaRuntimeStartupError(error)) {
       return 'Managed ${spec.displayName} downloaded but could not start on this device. Retry the setup from Settings.';
     }
@@ -541,48 +572,64 @@ class LocalTerminalAiManagedModelController
   }
 }
 
-/// Whether the current settings should use the managed Gemma 4 fallback.
-bool shouldUseManagedGemma4Fallback(LocalTerminalAiSettings settings) =>
-    localTerminalAiManagedGemma4SpecForSettings(settings) != null;
+/// Whether the current settings should use a managed terminal AI model.
+bool shouldUseManagedLocalTerminalAiModel(LocalTerminalAiSettings settings) =>
+    localTerminalAiManagedModelSpecForSettings(settings) != null;
 
-/// Whether managed Gemma 4 should start downloading in the background now.
-bool shouldAutoSyncManagedGemma4({
+/// Whether the managed terminal AI model should start downloading now.
+bool shouldAutoSyncManagedLocalTerminalAiModel({
   required LocalTerminalAiSettings settings,
   LocalTerminalAiRuntimeInfo? runtimeInfo,
-}) => localTerminalAiManagedGemma4SpecForSettings(settings) != null;
+}) => localTerminalAiManagedModelSpecForSettings(settings) != null;
 
-/// Whether managed Gemma 4 should be warmed up in the background now.
-bool shouldAutoVerifyManagedGemma4InBackground({
+/// Whether the managed terminal AI model should be warmed up in background.
+bool shouldAutoVerifyManagedLocalTerminalAiModelInBackground({
   required LocalTerminalAiSettings settings,
   LocalTerminalAiRuntimeInfo? runtimeInfo,
 }) {
-  if (localTerminalAiManagedGemma4SpecForSettings(settings) == null) {
+  if (localTerminalAiManagedModelSpecForSettings(settings) == null) {
     return false;
   }
 
   return true;
 }
 
-/// Returns the managed Gemma 4 artifact for the current platform and settings.
-LocalTerminalAiManagedModelSpec? localTerminalAiManagedGemma4SpecForSettings(
+/// Returns the managed terminal AI model for the current platform and settings.
+LocalTerminalAiManagedModelSpec? localTerminalAiManagedModelSpecForSettings(
   LocalTerminalAiSettings settings,
 ) {
   if (!settings.enabled) {
     return null;
   }
 
-  return localTerminalAiManagedGemma4Spec();
+  return localTerminalAiManagedModelSpec();
 }
 
-/// Returns the managed Gemma 4 artifact for the current platform, if supported.
-LocalTerminalAiManagedModelSpec? localTerminalAiManagedGemma4Spec() {
+/// Returns the managed terminal AI model for the current platform, if supported.
+LocalTerminalAiManagedModelSpec? localTerminalAiManagedModelSpec() {
   if (kIsWeb) {
     return null;
   }
 
   return switch (defaultTargetPlatform) {
-    TargetPlatform.android => null,
-    TargetPlatform.iOS => null,
+    TargetPlatform.android => const LocalTerminalAiManagedModelSpec(
+      modelId: _gemma4E2BModelId,
+      displayName: 'Gemma 4 E2B',
+      url: _gemma4E2BLiteRtLmUrl,
+      fileType: ModelFileType.litertlm,
+      fileName: _gemma4E2BLiteRtLmFileName,
+      preferredBackend: PreferredBackend.gpu,
+      foregroundDownload: true,
+    ),
+    TargetPlatform.iOS => const LocalTerminalAiManagedModelSpec(
+      modelId: _gemma3nE2BModelId,
+      displayName: 'Gemma 3n E2B',
+      url: _gemma3nE2BTaskUrl,
+      fileType: ModelFileType.task,
+      fileName: _gemma3nE2BTaskFileName,
+      requiresHuggingFaceToken: true,
+      preferredBackend: PreferredBackend.gpu,
+    ),
     TargetPlatform.macOS ||
     TargetPlatform.windows ||
     TargetPlatform.linux => const LocalTerminalAiManagedModelSpec(

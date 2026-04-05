@@ -1,5 +1,6 @@
 // ignore_for_file: public_member_api_docs
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/services/local_terminal_ai_managed_model_service.dart';
@@ -9,6 +10,14 @@ import 'package:monkeyssh/domain/services/local_terminal_ai_settings_service.dar
 
 void main() {
   group('LocalTerminalAiService', () {
+    setUp(() {
+      debugDefaultTargetPlatformOverride = TargetPlatform.fuchsia;
+    });
+
+    tearDown(() {
+      debugDefaultTargetPlatformOverride = null;
+    });
+
     test(
       'uses Apple Foundation Models when the native runtime is ready for suggestions',
       () async {
@@ -173,7 +182,60 @@ Here are a few safe options:
       },
     );
 
+    test(
+      'prefers managed Gemma 3n over Apple Foundation Models on iOS',
+      () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+        final platformService = _FakePlatformService(
+          runtimeInfo: const LocalTerminalAiRuntimeInfo(
+            provider: LocalTerminalAiPlatformProvider.appleFoundationModels,
+            supportedPlatform: true,
+            available: true,
+            statusMessage: 'Apple Intelligence is ready on this device.',
+            modelName: 'Apple Intelligence',
+          ),
+          response: 'native-response || unused',
+        );
+        final fallback = _FakeFallbackRuntime(
+          response: 'pwd || Print directory',
+        );
+        final managedModelCoordinator = _FakeManagedModelCoordinator(
+          managedModel: const LocalTerminalAiManagedModelSpec(
+            modelId: 'gemma-3n-E2B-it',
+            displayName: 'Gemma 3n E2B',
+            url: 'https://example.com/gemma-3n-E2B-it-int4.task',
+            fileType: ModelFileType.task,
+            fileName: 'gemma-3n-E2B-it-int4.task',
+            requiresHuggingFaceToken: true,
+            preferredBackend: PreferredBackend.gpu,
+          ),
+        );
+        final service = LocalTerminalAiService(
+          managedModelCoordinator: managedModelCoordinator,
+          platformService: platformService,
+          fallbackRuntime: fallback,
+        );
+
+        final suggestions = await service.suggestCommands(
+          settings: const LocalTerminalAiSettings(enabled: true),
+          taskDescription: 'show current directory',
+          hostLabel: 'prod',
+        );
+
+        expect(platformService.generateCallCount, 0);
+        expect(managedModelCoordinator.ensureReadyCallCount, 1);
+        expect(fallback.generateCallCount, 1);
+        expect(fallback.lastManagedModel?.modelId, 'gemma-3n-E2B-it');
+        expect(
+          fallback.lastPrompt,
+          contains('Local runtime: Managed Gemma 3n E2B'),
+        );
+        expect(suggestions.single.command, 'pwd');
+      },
+    );
+
     test('uses managed Gemma 4 when it is ready for suggestions', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
       final fallback = _FakeFallbackRuntime(response: 'pwd || Print directory');
       final managedModelCoordinator = _FakeManagedModelCoordinator(
         managedModel: const LocalTerminalAiManagedModelSpec(
@@ -205,6 +267,7 @@ Here are a few safe options:
     });
 
     test('uses managed Gemma 4 when it is ready for completions', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
       final fallback = _FakeFallbackRuntime(response: 'ls -la');
       final service = LocalTerminalAiService(
         managedModelCoordinator: _FakeManagedModelCoordinator(
@@ -258,6 +321,7 @@ Here are a few safe options:
     );
 
     test('surfaces a helpful managed runtime startup message', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
       final service = LocalTerminalAiService(
         managedModelCoordinator: _FakeManagedModelCoordinator(
           managedModel: const LocalTerminalAiManagedModelSpec(
@@ -294,14 +358,17 @@ Here are a few safe options:
     });
 
     test('surfaces a helpful iOS engine startup message', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
       final service = LocalTerminalAiService(
         managedModelCoordinator: _FakeManagedModelCoordinator(
           managedModel: const LocalTerminalAiManagedModelSpec(
-            modelId: 'gemma-4-E2B-it',
-            displayName: 'Gemma 4 E2B',
-            url: 'https://example.com/gemma-4-E2B-it.litertlm',
-            fileType: ModelFileType.litertlm,
-            fileName: 'gemma-4-E2B-it.litertlm',
+            modelId: 'gemma-3n-E2B-it',
+            displayName: 'Gemma 3n E2B',
+            url: 'https://example.com/gemma-3n-E2B-it-int4.task',
+            fileType: ModelFileType.task,
+            fileName: 'gemma-3n-E2B-it-int4.task',
+            requiresHuggingFaceToken: true,
+            preferredBackend: PreferredBackend.gpu,
           ),
         ),
         platformService: _FakePlatformService.unsupported(),
