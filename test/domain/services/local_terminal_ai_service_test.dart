@@ -370,6 +370,56 @@ CMD: tail -n 100 log/app.log || WHY: Show the most recent app log lines.
       expect(suggestions.single.command, 'pwd');
     });
 
+    test('uses a compact prompt budget for managed Gemma 4 on Android', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      final fallback = _FakeFallbackRuntime(
+        response: 'CMD: ls -la || WHY: List files with details.',
+      );
+      final service = LocalTerminalAiService(
+        managedModelCoordinator: _FakeManagedModelCoordinator(
+          managedModel: const LocalTerminalAiManagedModelSpec(
+            modelId: 'gemma-4-E2B-it',
+            displayName: 'Gemma 4 E2B',
+            url: 'https://example.com/gemma-4-E2B-it.litertlm',
+            fileType: ModelFileType.litertlm,
+            fileName: 'gemma-4-E2B-it.litertlm',
+          ),
+        ),
+        platformService: _FakePlatformService.unsupported(),
+        fallbackRuntime: fallback,
+      );
+
+      final suggestions = await service.suggestCommands(
+        settings: const LocalTerminalAiSettings(enabled: true),
+        taskDescription: 'inspect current files and logs',
+        promptContext: _promptContext(
+          hostLabel: 'prod',
+          currentTerminalLine: 'tail -f log/app.log',
+          shellStatusLabel: 'Prompt',
+          recentTerminalContext: 'error line\nstack trace line',
+          workingDirectoryPath: '/srv/app',
+          selectedTerminalText: 'NullPointerException',
+        ),
+      );
+
+      expect(fallback.lastMaxTokens, 256);
+      expect(
+        fallback.lastPrompt,
+        contains('Each line: CMD: <command> || WHY: <short reason>'),
+      );
+      expect(fallback.lastPrompt, contains('ctx{'));
+      expect(fallback.lastPrompt, contains('sel:NullPointerException'));
+      expect(
+        fallback.lastPrompt,
+        isNot(
+          contains(
+            'Use the structured terminal context below to suggest shell commands',
+          ),
+        ),
+      );
+      expect(suggestions.single.command, 'ls -la');
+    });
+
     test('uses managed Gemma 4 when it is ready for completions', () async {
       debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
       final fallback = _FakeFallbackRuntime(response: 'APPEND: -la');
@@ -396,6 +446,43 @@ CMD: tail -n 100 log/app.log || WHY: Show the most recent app log lines.
       expect(completion.suffix, ' -la');
       expect(completion.preview, 'ls -la');
       expect(fallback.lastMaxTokens, 320);
+    });
+
+    test('surfaces a friendly managed prompt-length message', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      final service = LocalTerminalAiService(
+        managedModelCoordinator: _FakeManagedModelCoordinator(
+          managedModel: const LocalTerminalAiManagedModelSpec(
+            modelId: 'gemma-4-E2B-it',
+            displayName: 'Gemma 4 E2B',
+            url: 'https://example.com/gemma-4-E2B-it.litertlm',
+            fileType: ModelFileType.litertlm,
+            fileName: 'gemma-4-E2B-it.litertlm',
+          ),
+        ),
+        platformService: _FakePlatformService.unsupported(),
+        fallbackRuntime: _FakeFallbackRuntime(
+          response: 'unused',
+          error: Exception(
+            'PlatformException(LiteRtLmJniException, Failed to call nativeSendMessage: INVALID_ARGUMENT: Input token ids are too long. Exceeding the maximum number of tokens allowed: 304 >= 256, null, null)',
+          ),
+        ),
+      );
+
+      await expectLater(
+        service.suggestCommands(
+          settings: const LocalTerminalAiSettings(enabled: true),
+          taskDescription: 'show current directory',
+          promptContext: _promptContext(hostLabel: 'prod'),
+        ),
+        throwsA(
+          isA<LocalTerminalAiConfigurationException>().having(
+            (error) => error.message,
+            'message',
+            'Managed Gemma 4 E2B needs a shorter prompt on this device. Try again with less terminal context.',
+          ),
+        ),
+      );
     });
 
     test(

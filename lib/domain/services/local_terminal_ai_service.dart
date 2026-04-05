@@ -29,6 +29,20 @@ const _managedPromptBudget = _LocalTerminalAiPromptBudget(
   maxSelectedTerminalTextChars: 900,
   maxRecentTerminalContextChars: 2400,
 );
+const _androidManagedPromptBudget = _LocalTerminalAiPromptBudget(
+  maxSuggestionTokens: 256,
+  maxCompletionTokens: 256,
+  maxTaskDescriptionChars: 160,
+  maxHostLabelChars: 60,
+  maxWindowTitleChars: 60,
+  maxWindowIconChars: 24,
+  maxConnectionStateChars: 24,
+  maxWorkingDirectoryChars: 100,
+  maxCurrentTerminalLineChars: 180,
+  maxShellStatusChars: 32,
+  maxSelectedTerminalTextChars: 120,
+  maxRecentTerminalContextChars: 320,
+);
 const _nativePromptBudget = _LocalTerminalAiPromptBudget(
   maxSuggestionTokens: 256,
   maxCompletionTokens: 256,
@@ -245,6 +259,9 @@ class LocalTerminalAiService {
     final preferredManagedModel = localTerminalAiManagedModelSpecForSettings(
       settings,
     );
+    final useCompactManagedPrompt = _shouldUseCompactManagedPrompt(
+      preferredManagedModel: preferredManagedModel,
+    );
     final promptBudget = _promptBudgetFor(
       preferredManagedModel: preferredManagedModel,
     );
@@ -253,15 +270,25 @@ class LocalTerminalAiService {
       settings: settings,
       runtimeInfo: runtimeInfo,
       preferredManagedModel: preferredManagedModel,
-      prompt: _buildSuggestionPrompt(
-        promptBudget: promptBudget,
-        runtimeLabel: _promptRuntimeLabel(
-          runtimeInfo,
-          preferredManagedModel: preferredManagedModel,
-        ),
-        taskDescription: trimmedTask,
-        promptContext: promptContext,
-      ),
+      prompt: useCompactManagedPrompt
+          ? _buildCompactSuggestionPrompt(
+              promptBudget: promptBudget,
+              runtimeLabel: _promptRuntimeLabel(
+                runtimeInfo,
+                preferredManagedModel: preferredManagedModel,
+              ),
+              taskDescription: trimmedTask,
+              promptContext: promptContext,
+            )
+          : _buildSuggestionPrompt(
+              promptBudget: promptBudget,
+              runtimeLabel: _promptRuntimeLabel(
+                runtimeInfo,
+                preferredManagedModel: preferredManagedModel,
+              ),
+              taskDescription: trimmedTask,
+              promptContext: promptContext,
+            ),
       maxTokens: promptBudget.maxSuggestionTokens,
     );
     return _parseSuggestions(response);
@@ -283,6 +310,9 @@ class LocalTerminalAiService {
     final preferredManagedModel = localTerminalAiManagedModelSpecForSettings(
       settings,
     );
+    final useCompactManagedPrompt = _shouldUseCompactManagedPrompt(
+      preferredManagedModel: preferredManagedModel,
+    );
     final promptBudget = _promptBudgetFor(
       preferredManagedModel: preferredManagedModel,
     );
@@ -291,15 +321,25 @@ class LocalTerminalAiService {
       settings: settings,
       runtimeInfo: runtimeInfo,
       preferredManagedModel: preferredManagedModel,
-      prompt: _buildCompletionPrompt(
-        promptBudget: promptBudget,
-        runtimeLabel: _promptRuntimeLabel(
-          runtimeInfo,
-          preferredManagedModel: preferredManagedModel,
-        ),
-        currentTerminalLine: trimmedLine,
-        promptContext: promptContext,
-      ),
+      prompt: useCompactManagedPrompt
+          ? _buildCompactCompletionPrompt(
+              promptBudget: promptBudget,
+              runtimeLabel: _promptRuntimeLabel(
+                runtimeInfo,
+                preferredManagedModel: preferredManagedModel,
+              ),
+              currentTerminalLine: trimmedLine,
+              promptContext: promptContext,
+            )
+          : _buildCompletionPrompt(
+              promptBudget: promptBudget,
+              runtimeLabel: _promptRuntimeLabel(
+                runtimeInfo,
+                preferredManagedModel: preferredManagedModel,
+              ),
+              currentTerminalLine: trimmedLine,
+              promptContext: promptContext,
+            ),
       maxTokens: promptBudget.maxCompletionTokens,
     );
 
@@ -506,11 +546,86 @@ class LocalTerminalAiService {
     return buffer.toString();
   }
 
+  String _buildCompactSuggestionPrompt({
+    required _LocalTerminalAiPromptBudget promptBudget,
+    required String runtimeLabel,
+    required String taskDescription,
+    required LocalTerminalAiPromptContext promptContext,
+  }) {
+    final normalizedTaskDescription = _normalizePromptText(
+      taskDescription,
+      maxChars: promptBudget.maxTaskDescriptionChars,
+    );
+    final buffer = StringBuffer()
+      ..writeln(
+        'Suggest up to 3 safe shell commands for this SSH terminal task.',
+      )
+      ..writeln('Each line: CMD: <command> || WHY: <short reason>')
+      ..writeln('No bullets, markdown, or extra prose. If none: NO_SUGGESTION.')
+      ..writeln(
+        'Use selected_text first, then current_line, then visible_context.',
+      )
+      ..writeln('Use only facts below.')
+      ..writeln('ctx{');
+    _appendCompactPromptContext(
+      buffer,
+      promptContext,
+      promptBudget: promptBudget,
+      runtimeLabel: runtimeLabel,
+      includeCurrentTerminalLine: true,
+    );
+    buffer
+      ..writeln('}')
+      ..writeln('task{$normalizedTaskDescription}');
+    return buffer.toString();
+  }
+
+  String _buildCompactCompletionPrompt({
+    required _LocalTerminalAiPromptBudget promptBudget,
+    required String runtimeLabel,
+    required String currentTerminalLine,
+    required LocalTerminalAiPromptContext promptContext,
+  }) {
+    final normalizedCurrentLine = _normalizePromptText(
+      currentTerminalLine,
+      maxChars: promptBudget.maxCurrentTerminalLineChars,
+      preferTail: true,
+    );
+    final buffer = StringBuffer()
+      ..writeln('Complete this SSH terminal line.')
+      ..writeln('Return one line only: APPEND: <suffix>')
+      ..writeln('No quotes, explanation, markdown, or full command.')
+      ..writeln('If none: NO_COMPLETION.')
+      ..writeln('Use only facts below.')
+      ..writeln('ctx{');
+    _appendCompactPromptContext(
+      buffer,
+      promptContext,
+      promptBudget: promptBudget,
+      runtimeLabel: runtimeLabel,
+      includeCurrentTerminalLine: false,
+    );
+    buffer
+      ..writeln('line:$normalizedCurrentLine')
+      ..writeln('}');
+    return buffer.toString();
+  }
+
   _LocalTerminalAiPromptBudget _promptBudgetFor({
     required LocalTerminalAiManagedModelSpec? preferredManagedModel,
   }) => preferredManagedModel != null
-      ? _managedPromptBudget
+      ? (_shouldUseCompactManagedPrompt(
+              preferredManagedModel: preferredManagedModel,
+            )
+            ? _androidManagedPromptBudget
+            : _managedPromptBudget)
       : _nativePromptBudget;
+
+  bool _shouldUseCompactManagedPrompt({
+    required LocalTerminalAiManagedModelSpec? preferredManagedModel,
+  }) =>
+      preferredManagedModel != null &&
+      defaultTargetPlatform == TargetPlatform.android;
 
   void _appendPromptContext(
     StringBuffer buffer,
@@ -590,6 +705,71 @@ class LocalTerminalAiService {
       ..writeln(selectedText)
       ..writeln('visible_terminal_context:')
       ..writeln(terminalContext);
+  }
+
+  void _appendCompactPromptContext(
+    StringBuffer buffer,
+    LocalTerminalAiPromptContext promptContext, {
+    required _LocalTerminalAiPromptBudget promptBudget,
+    required String runtimeLabel,
+    required bool includeCurrentTerminalLine,
+  }) {
+    final normalizedHostLabel = _normalizePromptText(
+      promptContext.hostLabel,
+      maxChars: promptBudget.maxHostLabelChars,
+    );
+    final workingDirectory = _promptValueOrFallback(
+      promptContext.workingDirectoryPath,
+      fallback: '-',
+      maxChars: promptBudget.maxWorkingDirectoryChars,
+    );
+    final shellStatus = _promptValueOrFallback(
+      promptContext.shellStatusLabel,
+      fallback: '-',
+      maxChars: promptBudget.maxShellStatusChars,
+    );
+    final terminalContext = _promptValueOrFallback(
+      promptContext.recentTerminalContext,
+      fallback: '-',
+      maxChars: promptBudget.maxRecentTerminalContextChars,
+      preferTail: true,
+    );
+    final selectedText = _promptValueOrFallback(
+      promptContext.selectedTerminalText,
+      fallback: '-',
+      maxChars: promptBudget.maxSelectedTerminalTextChars,
+      preferTail: true,
+    );
+    final windowTitle = _promptValueOrFallback(
+      promptContext.windowTitle,
+      fallback: '-',
+      maxChars: promptBudget.maxWindowTitleChars,
+    );
+    final connectionState = _promptValueOrFallback(
+      promptContext.connectionStateLabel,
+      fallback: '-',
+      maxChars: promptBudget.maxConnectionStateChars,
+    );
+    buffer
+      ..writeln('rt:$runtimeLabel')
+      ..writeln('host:$normalizedHostLabel')
+      ..writeln('conn:$connectionState')
+      ..writeln('cwd:$workingDirectory')
+      ..writeln('shell:$shellStatus')
+      ..writeln('win:$windowTitle')
+      ..writeln('alt:${promptContext.usingAlternateScreen ? 'y' : 'n'}');
+    if (includeCurrentTerminalLine) {
+      final currentLine = _promptValueOrFallback(
+        promptContext.currentTerminalLine,
+        fallback: '-',
+        maxChars: promptBudget.maxCurrentTerminalLineChars,
+        preferTail: true,
+      );
+      buffer.writeln('line:$currentLine');
+    }
+    buffer
+      ..writeln('sel:$selectedText')
+      ..writeln('ctx:$terminalContext');
   }
 
   String _promptRuntimeLabel(
@@ -996,7 +1176,16 @@ class LocalTerminalAiService {
     if (isManagedGemmaRuntimeStartupError(error)) {
       return 'Managed ${managedModel.displayName} is installed but could not start on this device. Reinstall it from Settings and try again.';
     }
+    if (_isManagedGemmaPromptTooLongError(error)) {
+      return 'Managed ${managedModel.displayName} needs a shorter prompt on this device. Try again with less terminal context.';
+    }
     return 'Managed ${managedModel.displayName} failed: $errorMessage';
+  }
+
+  bool _isManagedGemmaPromptTooLongError(Object error) {
+    final errorMessage = error.toString();
+    return errorMessage.contains('Input token ids are too long') ||
+        errorMessage.contains('maximum number of tokens allowed');
   }
 }
 
