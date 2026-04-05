@@ -1,4 +1,6 @@
 import 'dart:typed_data';
+
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_gemma/core/services/asset_loader.dart';
 import 'package:large_file_handler/large_file_handler.dart';
 
@@ -13,9 +15,10 @@ class FlutterAssetLoader implements AssetLoader {
   final _handler = LargeFileHandler();
 
   @override
-  Future<Uint8List> loadAsset(String path) async => throw UnimplementedError(
-      'FlutterAssetLoader.loadAsset() is deprecated for large files. '
-      'Use copyAssetToFile() instead or call LargeFileHandler directly.');
+  Future<Uint8List> loadAsset(String path) async {
+    final byteData = await rootBundle.load(path);
+    return byteData.buffer.asUint8List();
+  }
 
   /// Copies asset file directly to target path using LargeFileHandler
   /// This is the CORRECT way to handle large files

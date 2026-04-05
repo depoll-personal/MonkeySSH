@@ -852,7 +852,7 @@ class _OnDeviceAiSection extends ConsumerWidget {
       return '${runtimeInfo.providerLabel}: ${runtimeInfo.statusMessage}';
     }
     if (managedSpec != null) {
-      return 'Desktop uses managed ${managedSpec.displayName} for terminal suggestions and completions on this branch.';
+      return 'Desktop uses managed ${managedSpec.displayName} for terminal suggestions and completions.';
     }
     return runtimeInfo?.statusMessage ??
         'This platform does not expose a built-in on-device language model.';
@@ -947,9 +947,9 @@ class _OnDeviceAiSection extends ConsumerWidget {
       final autoVerifiesInBackground =
           shouldAutoVerifyManagedGemma4InBackground(settings: settings);
       if (!autoVerifiesInBackground && settings.enabled) {
-        return 'On desktop, MonkeySSH uses managed ${managedSpec.displayName} for terminal suggestions and completions on this branch. The download starts after you enable the assistant. Commands are never run automatically.';
+        return 'On desktop, MonkeySSH uses managed ${managedSpec.displayName} for terminal suggestions and completions. The download starts after you enable the assistant. Commands are never run automatically.';
       }
-      return 'On desktop, MonkeySSH uses managed ${managedSpec.displayName} for terminal suggestions and completions on this branch. Commands are never run automatically.';
+      return 'On desktop, MonkeySSH uses managed ${managedSpec.displayName} for terminal suggestions and completions. Commands are never run automatically.';
     }
     return 'This platform does not currently expose a supported on-device terminal AI runtime. Commands are never run automatically.';
   }
