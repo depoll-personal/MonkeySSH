@@ -365,7 +365,7 @@ CMD: tail -n 100 log/app.log || WHY: Show the most recent app log lines.
       expect(managedModelCoordinator.ensureReadyCallCount, 1);
       expect(fallback.generateCallCount, 1);
       expect(fallback.lastManagedModel?.modelId, 'gemma-4-E2B-it');
-      expect(fallback.lastMaxTokens, 320);
+      expect(fallback.lastMaxTokens, 512);
       expect(fallback.lastPrompt, contains('runtime: Managed Gemma 4'));
       expect(suggestions.single.command, 'pwd');
     });
@@ -402,7 +402,7 @@ CMD: tail -n 100 log/app.log || WHY: Show the most recent app log lines.
         ),
       );
 
-      expect(fallback.lastMaxTokens, 256);
+      expect(fallback.lastMaxTokens, 512);
       expect(
         fallback.lastPrompt,
         contains('Each line: CMD: <command> || WHY: <short reason>'),
@@ -445,7 +445,7 @@ CMD: tail -n 100 log/app.log || WHY: Show the most recent app log lines.
 
       expect(completion.suffix, ' -la');
       expect(completion.preview, 'ls -la');
-      expect(fallback.lastMaxTokens, 320);
+      expect(fallback.lastMaxTokens, 512);
     });
 
     test('surfaces a friendly managed prompt-length message', () async {

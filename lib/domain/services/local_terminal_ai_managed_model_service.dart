@@ -24,6 +24,15 @@ const _gemma4E2BLiteRtLmUrl =
 const _gemma4E2BModelId = 'gemma-4-E2B-it';
 const _managedGemmaSessionTemperature = 0.2;
 
+/// The context window size used when initializing the managed Gemma model.
+///
+/// This value is passed to `FlutterGemma.getActiveModel(maxTokens:)` both
+/// during verification warmup and during inference. It must be consistent
+/// because `flutter_gemma` caches the native model singleton by model name
+/// only — a warmup at 256 followed by inference at 1024 would silently
+/// reuse the 256-token engine, causing prompt-too-long failures.
+const managedGemmaMaxTokens = 1024;
+
 /// Download lifecycle for the managed terminal AI model fallback.
 enum LocalTerminalAiManagedModelStatus {
   /// No managed download is active for the current settings.
@@ -519,7 +528,8 @@ class LocalTerminalAiManagedModelController
     spec: spec,
     operation: (preferredBackend) async {
       final model = await FlutterGemma.getActiveModel(
-        maxTokens: 256,
+        // ignore: avoid_redundant_argument_values
+        maxTokens: managedGemmaMaxTokens,
         preferredBackend: preferredBackend,
       );
       try {

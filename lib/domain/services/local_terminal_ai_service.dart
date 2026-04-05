@@ -16,8 +16,8 @@ final _suggestionWhitespacePattern = RegExp(r'\s+');
 final _shellSyntaxCharacterPattern = RegExp(r"""[|&;<>()$`'"\\[\]{}=*?]""");
 final _simpleShellTokenPattern = RegExp(r'^[-./~:@%+,=\w]+$');
 const _managedPromptBudget = _LocalTerminalAiPromptBudget(
-  maxSuggestionTokens: 320,
-  maxCompletionTokens: 320,
+  maxSuggestionTokens: 512,
+  maxCompletionTokens: 512,
   maxTaskDescriptionChars: 480,
   maxHostLabelChars: 120,
   maxWindowTitleChars: 160,
@@ -30,18 +30,18 @@ const _managedPromptBudget = _LocalTerminalAiPromptBudget(
   maxRecentTerminalContextChars: 2400,
 );
 const _androidManagedPromptBudget = _LocalTerminalAiPromptBudget(
-  maxSuggestionTokens: 256,
-  maxCompletionTokens: 256,
-  maxTaskDescriptionChars: 160,
-  maxHostLabelChars: 60,
-  maxWindowTitleChars: 60,
-  maxWindowIconChars: 24,
-  maxConnectionStateChars: 24,
-  maxWorkingDirectoryChars: 100,
-  maxCurrentTerminalLineChars: 180,
-  maxShellStatusChars: 32,
-  maxSelectedTerminalTextChars: 120,
-  maxRecentTerminalContextChars: 320,
+  maxSuggestionTokens: 512,
+  maxCompletionTokens: 512,
+  maxTaskDescriptionChars: 480,
+  maxHostLabelChars: 120,
+  maxWindowTitleChars: 120,
+  maxWindowIconChars: 60,
+  maxConnectionStateChars: 48,
+  maxWorkingDirectoryChars: 200,
+  maxCurrentTerminalLineChars: 640,
+  maxShellStatusChars: 64,
+  maxSelectedTerminalTextChars: 600,
+  maxRecentTerminalContextChars: 1600,
 );
 const _nativePromptBudget = _LocalTerminalAiPromptBudget(
   maxSuggestionTokens: 256,
@@ -1229,7 +1229,8 @@ class FlutterGemmaLocalTerminalAiFallbackRuntime
       spec: managedModel,
       operation: (preferredBackend) async {
         final model = await FlutterGemma.getActiveModel(
-          maxTokens: maxTokens,
+          // ignore: avoid_redundant_argument_values
+          maxTokens: managedGemmaMaxTokens,
           preferredBackend: preferredBackend,
         );
         try {
