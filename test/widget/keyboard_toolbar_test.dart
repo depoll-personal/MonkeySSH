@@ -159,6 +159,49 @@ void main() {
       expect(output, contains('\r'));
     });
 
+    testWidgets('assistant button stays hidden without an assistant callback', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
+        ),
+      );
+
+      expect(find.byTooltip('AI assistant'), findsNothing);
+    });
+
+    testWidgets('assistant button opens an inline composer and submits', (
+      tester,
+    ) async {
+      var submittedPrompt = '';
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: KeyboardToolbar(
+              terminal: terminal,
+              onAssistantPromptSubmitted: (prompt) async {
+                submittedPrompt = prompt;
+              },
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.byTooltip('AI assistant'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(TextField), findsOneWidget);
+      await tester.enterText(find.byType(TextField), 'tail the app logs');
+      await tester.pump();
+      await tester.tap(find.byTooltip('Generate suggestions'));
+      await tester.pumpAndSettle();
+
+      expect(submittedPrompt, 'tail the app logs');
+      expect(find.byType(TextField), findsNothing);
+    });
+
     testWidgets('assistant button exposes an accessibility label', (
       tester,
     ) async {
@@ -169,7 +212,7 @@ void main() {
             home: Scaffold(
               body: KeyboardToolbar(
                 terminal: terminal,
-                onAssistantPressed: () {},
+                onAssistantPromptSubmitted: (_) async {},
               ),
             ),
           ),

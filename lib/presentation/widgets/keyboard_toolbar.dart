@@ -172,7 +172,7 @@ class KeyboardToolbar extends StatefulWidget {
     required this.terminal,
     this.controller,
     this.onKeyPressed,
-    this.onAssistantPressed,
+    this.onAssistantPromptSubmitted,
     this.terminalFocusNode,
     super.key,
   });
@@ -186,8 +186,10 @@ class KeyboardToolbar extends StatefulWidget {
   /// Optional callback when any key is pressed.
   final VoidCallback? onKeyPressed;
 
-  /// Optional callback for the AI assistant button.
-  final VoidCallback? onAssistantPressed;
+  /// Optional callback that receives an inline AI prompt from the toolbar.
+  ///
+  /// When this is null, the AI affordance is hidden entirely.
+  final Future<void> Function(String prompt)? onAssistantPromptSubmitted;
 
   /// Optional focus node for the terminal. When provided, the toolbar
   /// re-requests focus after interactions so the soft keyboard stays visible.
@@ -200,6 +202,10 @@ class KeyboardToolbar extends StatefulWidget {
 /// State for [KeyboardToolbar].
 class KeyboardToolbarState extends State<KeyboardToolbar> {
   late final KeyboardToolbarController _fallbackController;
+  late final TextEditingController _assistantController;
+  late final FocusNode _assistantFocusNode;
+  bool _showsAssistantComposer = false;
+  bool _isSubmittingAssistantPrompt = false;
 
   KeyboardToolbarController get _controller =>
       widget.controller ?? _fallbackController;
@@ -208,7 +214,10 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
   void initState() {
     super.initState();
     _fallbackController = KeyboardToolbarController();
+    _assistantController = TextEditingController();
+    _assistantFocusNode = FocusNode();
     _controller.addListener(_handleControllerChanged);
+    _assistantController.addListener(_handleAssistantChanged);
   }
 
   @override
@@ -220,16 +229,31 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       previousController.removeListener(_handleControllerChanged);
       nextController.addListener(_handleControllerChanged);
     }
+    if (widget.onAssistantPromptSubmitted == null && _showsAssistantComposer) {
+      _assistantController.clear();
+      _assistantFocusNode.unfocus();
+      _showsAssistantComposer = false;
+    }
   }
 
   @override
   void dispose() {
     _controller.removeListener(_handleControllerChanged);
+    _assistantController
+      ..removeListener(_handleAssistantChanged)
+      ..dispose();
+    _assistantFocusNode.dispose();
     _fallbackController.dispose();
     super.dispose();
   }
 
   void _handleControllerChanged() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  void _handleAssistantChanged() {
     if (mounted) {
       setState(() {});
     }
@@ -258,20 +282,122 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
         bottom: keepBottomSafeArea,
         child: Column(
           mainAxisSize: MainAxisSize.min,
-          children: [_buildModifierRow(), _buildNavigationRow()],
+          children: [
+            _buildAssistantComposer(theme),
+            _buildModifierRow(),
+            _buildNavigationRow(),
+          ],
         ),
       ),
     );
   }
 
+  Widget _buildAssistantComposer(ThemeData theme) => AnimatedSize(
+    duration: const Duration(milliseconds: 180),
+    curve: Curves.easeOutCubic,
+    child: !_showsAssistantComposer
+        ? const SizedBox.shrink()
+        : Padding(
+            padding: const EdgeInsets.fromLTRB(8, 8, 8, 4),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: <Color>[
+                    theme.colorScheme.surfaceContainerHighest,
+                    theme.colorScheme.surfaceContainerHigh,
+                  ],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(
+                  color: theme.colorScheme.primary.withAlpha(70),
+                ),
+                boxShadow: <BoxShadow>[
+                  BoxShadow(
+                    color: theme.colorScheme.shadow.withAlpha(18),
+                    blurRadius: 12,
+                    offset: const Offset(0, 6),
+                  ),
+                ],
+              ),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 30,
+                      height: 30,
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.primary.withAlpha(28),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(
+                        Icons.auto_awesome_rounded,
+                        size: 16,
+                        color: theme.colorScheme.primary,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: TextField(
+                        controller: _assistantController,
+                        focusNode: _assistantFocusNode,
+                        minLines: 1,
+                        maxLines: 2,
+                        textInputAction: TextInputAction.send,
+                        onSubmitted: (_) => unawaited(_submitAssistantPrompt()),
+                        decoration: InputDecoration(
+                          isCollapsed: true,
+                          border: InputBorder.none,
+                          hintText: 'Ask for a command…',
+                          hintStyle: theme.textTheme.bodyMedium?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          fontFamily: 'monospace',
+                          color: theme.colorScheme.onSurface,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: _toggleAssistantComposer,
+                      icon: const Icon(Icons.close_rounded),
+                      tooltip: 'Close AI prompt',
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    IconButton.filledTonal(
+                      onPressed:
+                          _assistantController.text.trim().isEmpty ||
+                              _isSubmittingAssistantPrompt
+                          ? null
+                          : () => unawaited(_submitAssistantPrompt()),
+                      icon: _isSubmittingAssistantPrompt
+                          ? const SizedBox.square(
+                              dimension: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.arrow_upward_rounded),
+                      tooltip: 'Generate suggestions',
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+  );
+
   Widget _buildModifierRow() => _KeyRow(
     children: [
-      if (widget.onAssistantPressed != null)
+      if (widget.onAssistantPromptSubmitted != null)
         _ToolbarButton(
           icon: Icons.auto_awesome_outlined,
           label: '',
-          onTap: widget.onAssistantPressed!,
+          onTap: _toggleAssistantComposer,
           tooltip: 'AI assistant',
+          isActive: _showsAssistantComposer,
         ),
       _ToolbarButton(
         label: 'Esc',
@@ -373,6 +499,56 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     HapticFeedback.selectionClick();
     _controller.toggleCtrl();
     _refocusTerminal();
+  }
+
+  void _toggleAssistantComposer() {
+    if (widget.onAssistantPromptSubmitted == null) {
+      return;
+    }
+    HapticFeedback.selectionClick();
+    setState(() {
+      final isOpening = !_showsAssistantComposer;
+      _showsAssistantComposer = isOpening;
+      if (!isOpening) {
+        _assistantController.clear();
+      }
+    });
+    if (_showsAssistantComposer) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _assistantFocusNode.requestFocus();
+        }
+      });
+      return;
+    }
+    _assistantFocusNode.unfocus();
+    _refocusTerminal();
+  }
+
+  Future<void> _submitAssistantPrompt() async {
+    final onAssistantPromptSubmitted = widget.onAssistantPromptSubmitted;
+    final prompt = _assistantController.text.trim();
+    if (onAssistantPromptSubmitted == null ||
+        prompt.isEmpty ||
+        _isSubmittingAssistantPrompt) {
+      return;
+    }
+
+    unawaited(HapticFeedback.lightImpact());
+    _assistantFocusNode.unfocus();
+    setState(() {
+      _isSubmittingAssistantPrompt = true;
+      _showsAssistantComposer = false;
+      _assistantController.clear();
+    });
+    try {
+      await onAssistantPromptSubmitted(prompt);
+    } finally {
+      if (mounted) {
+        setState(() => _isSubmittingAssistantPrompt = false);
+      }
+      _refocusTerminal();
+    }
   }
 
   void _toggleAlt() {
@@ -545,6 +721,7 @@ class _ToolbarButton extends StatefulWidget {
     this.onLongPressStart,
     this.onLongPressRepeat,
     this.tooltip,
+    this.isActive = false,
   });
 
   final String label;
@@ -553,6 +730,7 @@ class _ToolbarButton extends StatefulWidget {
   final VoidCallback? onLongPressStart;
   final VoidCallback? onLongPressRepeat;
   final String? tooltip;
+  final bool isActive;
 
   @override
   State<_ToolbarButton> createState() => _ToolbarButtonState();
@@ -624,11 +802,13 @@ class _ToolbarButtonState extends State<_ToolbarButton> {
       child: Container(
         margin: const EdgeInsets.all(2),
         decoration: BoxDecoration(
-          color: _isPressed
-              ? colorScheme.primary.withAlpha(50)
+          color: _isPressed || widget.isActive
+              ? colorScheme.primary.withAlpha(widget.isActive ? 68 : 50)
               : colorScheme.surfaceContainerHighest,
           borderRadius: BorderRadius.circular(6),
-          border: _isPressed ? Border.all(color: colorScheme.primary) : null,
+          border: _isPressed || widget.isActive
+              ? Border.all(color: colorScheme.primary)
+              : null,
         ),
         child: Center(
           child: widget.icon != null

@@ -15,6 +15,10 @@ const _maxWorkingDirectoryPromptChars = 160;
 const _maxCurrentTerminalLinePromptChars = 480;
 const _maxShellStatusPromptChars = 48;
 const _maxRecentTerminalContextPromptChars = 900;
+const _unexpectedSuggestionResponseMessage =
+    'The local model returned an unexpected response. Try again.';
+final _suggestionListPrefixPattern = RegExp(r'^(?:[-*•]+|\d+[.)])\s*');
+final _suggestionBacktickPattern = RegExp('`([^`]+)`');
 
 /// A single command suggestion produced by the on-device AI assistant.
 class LocalTerminalAiSuggestion {
@@ -435,23 +439,11 @@ class LocalTerminalAiService {
 
     final suggestions = <LocalTerminalAiSuggestion>[];
     for (final rawLine in normalizedResponse.split('\n')) {
-      final line = rawLine.trim();
-      if (line.isEmpty) {
+      final suggestion = _parseSuggestionLine(rawLine);
+      if (suggestion == null) {
         continue;
       }
-
-      final parts = line.split('||');
-      final command = parts.first.trim();
-      if (command.isEmpty) {
-        continue;
-      }
-
-      final explanation = parts.length > 1
-          ? parts.sublist(1).join('||').trim()
-          : 'Suggested by the on-device model.';
-      suggestions.add(
-        LocalTerminalAiSuggestion(command: command, explanation: explanation),
-      );
+      suggestions.add(suggestion);
       if (suggestions.length == 3) {
         break;
       }
@@ -459,11 +451,123 @@ class LocalTerminalAiService {
 
     if (suggestions.isEmpty) {
       throw const LocalTerminalAiConfigurationException(
-        'The local model returned an unexpected response. Try again.',
+        _unexpectedSuggestionResponseMessage,
       );
     }
 
     return suggestions;
+  }
+
+  LocalTerminalAiSuggestion? _parseSuggestionLine(String rawLine) {
+    var line = rawLine.trim();
+    if (line.isEmpty ||
+        line == '```' ||
+        line.startsWith('```') ||
+        line.toUpperCase() == 'NO_SUGGESTION') {
+      return null;
+    }
+
+    line = line.replaceFirst(_suggestionListPrefixPattern, '').trim();
+    if (line.isEmpty || line.endsWith(':')) {
+      return null;
+    }
+
+    var command = line;
+    var explanation = 'Suggested by the on-device model.';
+
+    final formattedParts = line.split('||');
+    if (formattedParts.length > 1) {
+      command = formattedParts.first.trim();
+      explanation = formattedParts.sublist(1).join('||').trim();
+    } else {
+      final commandMatch = _suggestionBacktickPattern.firstMatch(line);
+      if (commandMatch case final RegExpMatch commandMatch) {
+        command = commandMatch.group(1)!.trim();
+        final remainder = line.replaceFirst(commandMatch.group(0)!, '').trim();
+        explanation = _normalizeSuggestionExplanation(remainder);
+      } else if (_lastSuggestionExplanationSeparator(line) case (
+        final int index,
+        final int separatorLength,
+      )) {
+        command = line.substring(0, index).trim();
+        explanation = line.substring(index + separatorLength).trim();
+      }
+    }
+
+    command = _normalizeSuggestionCommand(command);
+    explanation = _normalizeSuggestionExplanation(explanation);
+    if (command.isEmpty || !_looksLikeShellCommand(command)) {
+      return null;
+    }
+
+    return LocalTerminalAiSuggestion(
+      command: command,
+      explanation: explanation,
+    );
+  }
+
+  (int, int)? _lastSuggestionExplanationSeparator(String line) {
+    const separators = <String>[' — ', ' – ', ' - '];
+    (int, int)? bestMatch;
+    for (final separator in separators) {
+      final index = line.lastIndexOf(separator);
+      if (index <= 0) {
+        continue;
+      }
+      if (bestMatch == null || index > bestMatch.$1) {
+        bestMatch = (index, separator.length);
+      }
+    }
+    return bestMatch;
+  }
+
+  String _normalizeSuggestionCommand(String command) {
+    var normalized = command.trim();
+    while (normalized.startsWith('`') && normalized.endsWith('`')) {
+      normalized = normalized.substring(1, normalized.length - 1).trim();
+    }
+    normalized = normalized
+        .replaceFirst(_suggestionListPrefixPattern, '')
+        .trim();
+    if ((normalized.startsWith('"') && normalized.endsWith('"')) ||
+        (normalized.startsWith("'") && normalized.endsWith("'"))) {
+      normalized = normalized.substring(1, normalized.length - 1).trim();
+    }
+    return normalized;
+  }
+
+  String _normalizeSuggestionExplanation(String explanation) {
+    final normalized = explanation
+        .replaceFirst(RegExp(r'^[:\-\u2013\u2014\s]+'), '')
+        .trim();
+    return normalized.isEmpty
+        ? 'Suggested by the on-device model.'
+        : normalized;
+  }
+
+  bool _looksLikeShellCommand(String command) {
+    if (command.isEmpty) {
+      return false;
+    }
+    const nonCommandPhrases = <String>{
+      'here are some options',
+      'here are a few options',
+      'here are some suggestions',
+      'suggestions',
+      'options',
+      'commands',
+    };
+    if (nonCommandPhrases.contains(command.toLowerCase())) {
+      return false;
+    }
+    final firstCodeUnit = command.codeUnitAt(0);
+    final startsWithCommandCharacter =
+        (firstCodeUnit >= 0x41 && firstCodeUnit <= 0x5A) ||
+        (firstCodeUnit >= 0x61 && firstCodeUnit <= 0x7A) ||
+        firstCodeUnit == 0x2E ||
+        firstCodeUnit == 0x2F ||
+        firstCodeUnit == 0x7E;
+    return startsWithCommandCharacter;
   }
 
   String _normalizeCompletionSuffix({

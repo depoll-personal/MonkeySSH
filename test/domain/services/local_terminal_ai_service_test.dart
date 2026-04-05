@@ -102,6 +102,43 @@ void main() {
     );
 
     test(
+      'parses numbered Apple Foundation Models suggestions without strict delimiters',
+      () async {
+        final platformService = _FakePlatformService(
+          runtimeInfo: const LocalTerminalAiRuntimeInfo(
+            provider: LocalTerminalAiPlatformProvider.appleFoundationModels,
+            supportedPlatform: true,
+            available: true,
+            statusMessage: 'Apple Intelligence is ready on this device.',
+            modelName: 'Apple Intelligence',
+          ),
+          response: '''
+Here are a few safe options:
+1. `pwd` — Print the current directory
+2. `ls -la` - List files with details
+3. `tail -n 50 log/app.log` — Show the latest app log lines
+''',
+        );
+        final service = LocalTerminalAiService(
+          managedModelCoordinator: _FakeManagedModelCoordinator(),
+          platformService: platformService,
+          fallbackRuntime: _FakeFallbackRuntime(response: 'unused'),
+        );
+
+        final suggestions = await service.suggestCommands(
+          settings: const LocalTerminalAiSettings(enabled: true),
+          taskDescription: 'show me some safe inspection commands',
+          hostLabel: 'prod',
+        );
+
+        expect(
+          suggestions.map((suggestion) => suggestion.command).toList(),
+          <String>['pwd', 'ls -la', 'tail -n 50 log/app.log'],
+        );
+      },
+    );
+
+    test(
       'prepares Gemini Nano before generating when Android support exists',
       () async {
         final platformService = _FakePlatformService(
