@@ -532,12 +532,13 @@ class LocalTerminalAiManagedModelController
         maxTokens: managedGemmaMaxTokens,
         preferredBackend: preferredBackend,
       );
-      try {
-        final session = await createManagedGemmaInferenceSession(model);
-        await session.close();
-      } finally {
-        await model.close();
-      }
+      // Create and immediately close a throwaway session to force the native
+      // engine to finish initialization (weight upload, GPU compilation, etc.).
+      // We intentionally do NOT close the model itself so it stays warm as a
+      // singleton — the next getActiveModel() call reuses this engine without
+      // a cold-start penalty.
+      final session = await createManagedGemmaInferenceSession(model);
+      await session.close();
     },
   );
 
