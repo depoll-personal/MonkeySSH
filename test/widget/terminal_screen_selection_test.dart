@@ -118,6 +118,78 @@ void main() {
     });
   });
 
+  group('resolveTerminalFilePathVerificationCandidates', () {
+    test(
+      'offers multiple known-extension parses for ambiguous explicit paths',
+      () {
+        final candidates = resolveTerminalFilePathVerificationCandidates(
+          '/srv/app/archive.tar.gzbackup',
+        );
+
+        expect(
+          candidates,
+          containsAllInOrder([
+            '/srv/app/archive.tar.gzbackup',
+            '/srv/app/archive.tar.gz',
+            '/srv/app/archive.tar',
+          ]),
+        );
+      },
+    );
+
+    test('leaves ordinary explicit paths unchanged', () {
+      expect(
+        resolveTerminalFilePathVerificationCandidates('/srv/app/lib/main.dart'),
+        ['/srv/app/lib/main.dart'],
+      );
+    });
+
+    test('keeps balanced trailing brackets that are part of the filename', () {
+      expect(
+        resolveTerminalFilePathVerificationCandidates(
+          '/srv/app/archive(test).dart',
+        ),
+        ['/srv/app/archive(test).dart'],
+      );
+    });
+
+    test(
+      'normalizes unmatched trailing brackets before candidate generation',
+      () {
+        expect(
+          resolveTerminalFilePathVerificationCandidates(
+            '/srv/app/archive.dart)',
+          ),
+          ['/srv/app/archive.dart'],
+        );
+      },
+    );
+  });
+
+  group('hasAmbiguousTerminalFilePathParsing', () {
+    test(
+      'returns false for ordinary explicit paths with a final known extension',
+      () {
+        expect(
+          hasAmbiguousTerminalFilePathParsing('/srv/app/lib/main.dart'),
+          isFalse,
+        );
+        expect(hasAmbiguousTerminalFilePathParsing('~/.ssh/config'), isFalse);
+        expect(hasAmbiguousTerminalFilePathParsing('/etc/hosts'), isFalse);
+      },
+    );
+
+    test(
+      'returns true when a known extension is followed by extra suffix text',
+      () {
+        expect(
+          hasAmbiguousTerminalFilePathParsing('/srv/app/archive.tar.gzbackup'),
+          isTrue,
+        );
+      },
+    );
+  });
+
   group('resolvePickedTerminalUploadFileName', () {
     test('prefers the picker-provided name when present', () {
       final file = PlatformFile(name: 'Screenshot.png', size: 0);
@@ -167,6 +239,30 @@ void main() {
         await stream!.transform(const SystemEncoding().decoder).join(),
         'copilot',
       );
+    });
+  });
+
+  group('resolveTerminalUploadPickerRequest', () {
+    test('allows selecting multiple images for terminal uploads', () {
+      final request = resolveTerminalUploadPickerRequest(images: true);
+
+      expect(request.dialogTitle, 'Select images to upload');
+      expect(request.pickerType, FileType.image);
+      expect(request.itemLabelSingular, 'image');
+      expect(request.itemLabelPlural, 'images');
+      expect(request.allowMultiple, isTrue);
+      expect(request.failureContext, 'Image picker upload');
+    });
+
+    test('allows selecting multiple files for terminal uploads', () {
+      final request = resolveTerminalUploadPickerRequest(images: false);
+
+      expect(request.dialogTitle, 'Select files to upload');
+      expect(request.pickerType, FileType.any);
+      expect(request.itemLabelSingular, 'file');
+      expect(request.itemLabelPlural, 'files');
+      expect(request.allowMultiple, isTrue);
+      expect(request.failureContext, 'File picker upload');
     });
   });
 
@@ -711,6 +807,27 @@ void main() {
       );
     });
 
+    test('only activates ambiguous explicit paths after verification', () {
+      expect(
+        hasAmbiguousTerminalFilePathParsing('/srv/app/lib/main.dartlines'),
+        isTrue,
+      );
+      expect(
+        shouldActivateTerminalFilePath(
+          '/srv/app/lib/main.dartlines',
+          hasVerifiedPath: false,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldActivateTerminalFilePath(
+          '/srv/app/lib/main.dartlines',
+          hasVerifiedPath: true,
+        ),
+        isTrue,
+      );
+    });
+
     test('only activates conservative relative paths after verification', () {
       expect(
         shouldActivateTerminalFilePath('lib/main.dart', hasVerifiedPath: false),
@@ -814,7 +931,7 @@ void main() {
             rowHeight: 24,
             viewportHeight: 300,
           ),
-          const Rect.fromLTWH(24, 39.9, 80, 1.6),
+          const Rect.fromLTWH(24, 39.58, 80, 1.92),
         );
       },
     );
@@ -829,7 +946,31 @@ void main() {
           textHeight: 16,
           viewportHeight: 300,
         ),
-        const Rect.fromLTWH(24, 34.25, 74, 1.6),
+        const Rect.fromLTWH(24, 34.25, 74, 1.28),
+      );
+    });
+
+    test('scales underline thickness down for smaller terminal text', () {
+      expect(
+        resolveTerminalPathUnderlineRect(
+          lineTopLeft: const Offset(24, 18),
+          lineEndOffset: const Offset(104, 18),
+          lineHeight: 12,
+          viewportHeight: 300,
+        ),
+        const Rect.fromLTWH(24, 28.54, 80, 0.96),
+      );
+    });
+
+    test('scales underline thickness up for larger terminal text', () {
+      expect(
+        resolveTerminalPathUnderlineRect(
+          lineTopLeft: const Offset(24, 18),
+          lineEndOffset: const Offset(104, 18),
+          lineHeight: 32,
+          viewportHeight: 300,
+        ),
+        const Rect.fromLTWH(24, 47, 80, 2.5),
       );
     });
 

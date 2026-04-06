@@ -575,7 +575,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   }
 
   bool _shouldTrimLeadingSwipeSpace() {
-    if (_trimLeadingSwipeSpaceAfterBufferClear) {
+    if (_trimLeadingSwipeSpaceAfterBufferClear ||
+        _trimLeadingSuggestionSpaceAfterDelete) {
       return true;
     }
 
