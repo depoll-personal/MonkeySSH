@@ -10,12 +10,6 @@ import 'local_terminal_ai_credentials_service.dart';
 import 'local_terminal_ai_platform_service.dart';
 import 'local_terminal_ai_settings_service.dart';
 
-const _gemma3nE2BTaskCommitHash = '66c93e118deff9961db659f241678e61b847d165';
-const _gemma3nE2BTaskFileName = 'gemma-3n-E2B-it-int4.task';
-const _gemma3nE2BTaskUrl =
-    'https://huggingface.co/google/gemma-3n-E2B-it-litert-preview/resolve/'
-    '$_gemma3nE2BTaskCommitHash/$_gemma3nE2BTaskFileName?download=true';
-const _gemma3nE2BModelId = 'gemma-3n-E2B-it';
 const _gemma4E2BLiteRtLmCommitHash = '616f4124e6ff216292f16e7f73ff33b5ba9a4dd4';
 const _gemma4E2BLiteRtLmFileName = 'gemma-4-E2B-it.litertlm';
 const _gemma4E2BLiteRtLmUrl =
@@ -633,12 +627,11 @@ LocalTerminalAiManagedModelSpec? localTerminalAiManagedModelSpec() {
       foregroundDownload: true,
     ),
     TargetPlatform.iOS => const LocalTerminalAiManagedModelSpec(
-      modelId: _gemma3nE2BModelId,
-      displayName: 'Gemma 3n E2B',
-      url: _gemma3nE2BTaskUrl,
-      fileType: ModelFileType.task,
-      fileName: _gemma3nE2BTaskFileName,
-      requiresHuggingFaceToken: true,
+      modelId: _gemma4E2BModelId,
+      displayName: 'Gemma 4 E2B',
+      url: _gemma4E2BLiteRtLmUrl,
+      fileType: ModelFileType.litertlm,
+      fileName: _gemma4E2BLiteRtLmFileName,
       preferredBackend: PreferredBackend.gpu,
     ),
     TargetPlatform.macOS ||

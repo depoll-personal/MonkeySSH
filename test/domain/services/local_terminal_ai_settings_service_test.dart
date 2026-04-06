@@ -27,7 +27,7 @@ void main() {
     expect(spec.preferredBackend, isNull);
   });
 
-  test('managed Gemma 3n download uses task format on iOS', () {
+  test('managed Gemma 4 download uses LiteRT-LM on iOS', () {
     debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
 
@@ -36,10 +36,9 @@ void main() {
     final spec = localTerminalAiManagedModelSpecForSettings(settings);
 
     expect(spec, isNotNull);
-    expect(spec!.modelId, 'gemma-3n-E2B-it');
-    expect(spec.fileName, 'gemma-3n-E2B-it-int4.task');
-    expect(spec.fileType, ModelFileType.task);
-    expect(spec.requiresHuggingFaceToken, isTrue);
+    expect(spec!.modelId, 'gemma-4-E2B-it');
+    expect(spec.fileType, ModelFileType.litertlm);
+    expect(spec.requiresHuggingFaceToken, isFalse);
     expect(spec.preferredBackend, PreferredBackend.gpu);
   });
 
