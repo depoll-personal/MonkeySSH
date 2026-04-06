@@ -284,13 +284,58 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
           mainAxisSize: MainAxisSize.min,
           children: [
             _buildAssistantComposer(theme),
-            _buildModifierRow(),
-            _buildNavigationRow(),
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [_buildModifierRow(), _buildNavigationRow()],
+                ),
+                if (widget.onAssistantPromptSubmitted != null)
+                  Positioned(
+                    top: -18,
+                    left: 0,
+                    right: 0,
+                    child: Center(child: _buildFloatingAiButton(colorScheme)),
+                  ),
+              ],
+            ),
           ],
         ),
       ),
     );
   }
+
+  Widget _buildFloatingAiButton(ColorScheme colorScheme) => Tooltip(
+    message: 'AI assistant',
+    child: Semantics(
+      label: 'AI assistant',
+      button: true,
+      child: Material(
+        type: MaterialType.circle,
+        elevation: 4,
+        color: _showsAssistantComposer
+            ? colorScheme.primary
+            : colorScheme.surfaceContainerHighest,
+        shadowColor: colorScheme.shadow.withAlpha(40),
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: _toggleAssistantComposer,
+          child: SizedBox(
+            width: 36,
+            height: 36,
+            child: Icon(
+              Icons.auto_awesome_rounded,
+              size: 18,
+              color: _showsAssistantComposer
+                  ? colorScheme.onPrimary
+                  : colorScheme.primary,
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
 
   Widget _buildAssistantComposer(ThemeData theme) => AnimatedSize(
     duration: const Duration(milliseconds: 180),
@@ -391,14 +436,6 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
 
   Widget _buildModifierRow() => _KeyRow(
     children: [
-      if (widget.onAssistantPromptSubmitted != null)
-        _ToolbarButton(
-          icon: Icons.auto_awesome_outlined,
-          label: '',
-          onTap: _toggleAssistantComposer,
-          tooltip: 'AI assistant',
-          isActive: _showsAssistantComposer,
-        ),
       _ToolbarButton(
         label: 'Esc',
         onTap: _sendEscape,
@@ -720,7 +757,6 @@ class _ToolbarButton extends StatefulWidget {
     this.onLongPressStart,
     this.onLongPressRepeat,
     this.tooltip,
-    this.isActive = false,
   });
 
   final String label;
@@ -729,7 +765,6 @@ class _ToolbarButton extends StatefulWidget {
   final VoidCallback? onLongPressStart;
   final VoidCallback? onLongPressRepeat;
   final String? tooltip;
-  final bool isActive;
 
   @override
   State<_ToolbarButton> createState() => _ToolbarButtonState();
@@ -801,13 +836,11 @@ class _ToolbarButtonState extends State<_ToolbarButton> {
       child: Container(
         margin: const EdgeInsets.all(2),
         decoration: BoxDecoration(
-          color: _isPressed || widget.isActive
-              ? colorScheme.primary.withAlpha(widget.isActive ? 68 : 50)
+          color: _isPressed
+              ? colorScheme.primary.withAlpha(50)
               : colorScheme.surfaceContainerHighest,
           borderRadius: BorderRadius.circular(6),
-          border: _isPressed || widget.isActive
-              ? Border.all(color: colorScheme.primary)
-              : null,
+          border: _isPressed ? Border.all(color: colorScheme.primary) : null,
         ),
         child: Center(
           child: widget.icon != null
