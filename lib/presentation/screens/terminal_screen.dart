@@ -1324,6 +1324,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _wasBackgrounded = false;
   bool _connectionLostWhileBackgrounded = false;
 
+  Future<List<LocalTerminalAiSuggestion>>? _aiSuggestionsFuture;
+  String? _aiSuggestionsPrompt;
+  Completer<String?>? _aiSuggestionsCompleter;
+
   bool get _isMobilePlatform =>
       defaultTargetPlatform == TargetPlatform.android ||
       defaultTargetPlatform == TargetPlatform.iOS;
@@ -2729,7 +2733,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ),
       body: Column(
         children: [
-          Expanded(child: _buildTerminalView(terminalTheme, isMobile)),
+          Expanded(
+            child: Stack(
+              children: [
+                _buildTerminalView(terminalTheme, isMobile),
+                if (_aiSuggestionsFuture != null &&
+                    _aiSuggestionsPrompt != null)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: _TerminalAiSuggestionSheet(
+                      prompt: _aiSuggestionsPrompt!,
+                      suggestionsFuture: _aiSuggestionsFuture!,
+                      onSelect: _dismissAiSuggestions,
+                      onDismiss: _dismissAiSuggestions,
+                    ),
+                  ),
+              ],
+            ),
+          ),
           if (_showKeyboard &&
               !showsDisconnectedOverlay &&
               (!_isNativeSelectionMode || _isMobilePlatform))
@@ -3481,15 +3504,31 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<String?> _showTerminalAiSuggestionPicker({
     required String prompt,
     required Future<List<LocalTerminalAiSuggestion>> suggestionsFuture,
-  }) => showModalBottomSheet<String>(
-    context: context,
-    backgroundColor: Colors.transparent,
-    isScrollControlled: true,
-    builder: (sheetContext) => _TerminalAiSuggestionSheet(
-      prompt: prompt,
-      suggestionsFuture: suggestionsFuture,
-    ),
-  );
+  }) {
+    _dismissAiSuggestions();
+    final completer = Completer<String?>();
+    setState(() {
+      _aiSuggestionsPrompt = prompt;
+      _aiSuggestionsFuture = suggestionsFuture;
+      _aiSuggestionsCompleter = completer;
+    });
+    return completer.future;
+  }
+
+  void _dismissAiSuggestions([String? selectedCommand]) {
+    final completer = _aiSuggestionsCompleter;
+    if (completer == null) {
+      return;
+    }
+    setState(() {
+      _aiSuggestionsPrompt = null;
+      _aiSuggestionsFuture = null;
+      _aiSuggestionsCompleter = null;
+    });
+    if (!completer.isCompleted) {
+      completer.complete(selectedCommand);
+    }
+  }
 
   Future<void> _insertAiGeneratedText(
     String insertedText, {
@@ -5809,16 +5848,20 @@ class _TerminalStatusChip extends StatelessWidget {
   );
 }
 
-/// Bottom sheet that shows a spinner while AI suggestions are generating,
+/// Overlay that shows a spinner while AI suggestions are generating,
 /// then transitions to the suggestion list once results arrive.
 class _TerminalAiSuggestionSheet extends StatefulWidget {
   const _TerminalAiSuggestionSheet({
     required this.prompt,
     required this.suggestionsFuture,
+    required this.onSelect,
+    required this.onDismiss,
   });
 
   final String prompt;
   final Future<List<LocalTerminalAiSuggestion>> suggestionsFuture;
+  final ValueChanged<String> onSelect;
+  final VoidCallback onDismiss;
 
   @override
   State<_TerminalAiSuggestionSheet> createState() =>
@@ -5869,57 +5912,45 @@ class _TerminalAiSuggestionSheetState
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
-    return SafeArea(
-      top: false,
-      child: Padding(
-        padding: EdgeInsets.fromLTRB(12, 12, 12, bottomInset + 12),
-        child: Material(
-          color: Colors.transparent,
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: <Color>[
-                  colorScheme.surface,
-                  colorScheme.surfaceContainerHigh,
-                ],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              borderRadius: BorderRadius.circular(28),
-              border: Border.all(color: colorScheme.primary.withAlpha(48)),
-              boxShadow: <BoxShadow>[
-                BoxShadow(
-                  color: colorScheme.shadow.withAlpha(30),
-                  blurRadius: 24,
-                  offset: const Offset(0, 12),
-                ),
+    return Padding(
+      padding: const EdgeInsets.all(8),
+      child: Material(
+        color: Colors.transparent,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: <Color>[
+                colorScheme.surface,
+                colorScheme.surfaceContainerHigh,
               ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
             ),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _buildHeader(theme, colorScheme),
-                  const SizedBox(height: 14),
-                  if (_isLoading)
-                    _buildLoadingIndicator(theme, colorScheme)
-                  else if (_errorMessage case final errorMessage?)
-                    _buildError(theme, colorScheme, errorMessage)
-                  else if (_suggestions case final suggestions?)
-                    ..._buildSuggestionCards(theme, colorScheme, suggestions),
-                  const SizedBox(height: 12),
-                  if (!_isLoading && _errorMessage == null)
-                    Text(
-                      'Tap a suggestion to review it before insertion.',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                ],
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: colorScheme.primary.withAlpha(48)),
+            boxShadow: <BoxShadow>[
+              BoxShadow(
+                color: colorScheme.shadow.withAlpha(40),
+                blurRadius: 16,
+                offset: const Offset(0, -4),
               ),
+            ],
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildHeader(theme, colorScheme),
+                const SizedBox(height: 10),
+                if (_isLoading)
+                  _buildLoadingIndicator(theme, colorScheme)
+                else if (_errorMessage case final errorMessage?)
+                  _buildError(theme, colorScheme, errorMessage)
+                else if (_suggestions case final suggestions?)
+                  ..._buildSuggestionCards(theme, colorScheme, suggestions),
+              ],
             ),
           ),
         ),
@@ -5929,64 +5960,50 @@ class _TerminalAiSuggestionSheetState
 
   Widget _buildHeader(ThemeData theme, ColorScheme colorScheme) => Row(
     children: [
-      Container(
-        width: 34,
-        height: 34,
-        decoration: BoxDecoration(
-          color: colorScheme.primary.withAlpha(28),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Icon(
-          Icons.auto_awesome_rounded,
-          color: colorScheme.primary,
-          size: 18,
-        ),
-      ),
-      const SizedBox(width: 12),
+      Icon(Icons.auto_awesome_rounded, color: colorScheme.primary, size: 16),
+      const SizedBox(width: 8),
       Expanded(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Suggested commands', style: theme.textTheme.titleMedium),
-            const SizedBox(height: 2),
-            Text(
-              widget.prompt,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ],
+        child: Text(
+          widget.prompt,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: colorScheme.onSurfaceVariant,
+          ),
         ),
       ),
-      IconButton(
-        onPressed: () => Navigator.of(context).pop(),
-        icon: const Icon(Icons.close_rounded),
-        tooltip: 'Close suggestions',
+      SizedBox(
+        width: 28,
+        height: 28,
+        child: IconButton(
+          onPressed: widget.onDismiss,
+          icon: const Icon(Icons.close_rounded, size: 16),
+          tooltip: 'Close suggestions',
+          padding: EdgeInsets.zero,
+        ),
       ),
     ],
   );
 
   Widget _buildLoadingIndicator(ThemeData theme, ColorScheme colorScheme) =>
       Padding(
-        padding: const EdgeInsets.symmetric(vertical: 24),
+        padding: const EdgeInsets.symmetric(vertical: 16),
         child: Center(
-          child: Column(
+          child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               SizedBox(
-                width: 28,
-                height: 28,
+                width: 16,
+                height: 16,
                 child: CircularProgressIndicator(
-                  strokeWidth: 2.5,
+                  strokeWidth: 2,
                   color: colorScheme.primary,
                 ),
               ),
-              const SizedBox(height: 14),
+              const SizedBox(width: 10),
               Text(
-                'Generating suggestions\u2026',
-                style: theme.textTheme.bodyMedium?.copyWith(
+                'Generating\u2026',
+                style: theme.textTheme.bodySmall?.copyWith(
                   color: colorScheme.onSurfaceVariant,
                 ),
               ),
@@ -6000,16 +6017,16 @@ class _TerminalAiSuggestionSheetState
     ColorScheme colorScheme,
     String message,
   ) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 16),
+    padding: const EdgeInsets.symmetric(vertical: 8),
     child: Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Icon(Icons.error_outline, color: colorScheme.error, size: 20),
-        const SizedBox(width: 10),
+        Icon(Icons.error_outline, color: colorScheme.error, size: 16),
+        const SizedBox(width: 8),
         Expanded(
           child: Text(
             message,
-            style: theme.textTheme.bodyMedium?.copyWith(
+            style: theme.textTheme.bodySmall?.copyWith(
               color: colorScheme.error,
             ),
           ),
@@ -6024,84 +6041,81 @@ class _TerminalAiSuggestionSheetState
     List<LocalTerminalAiSuggestion> suggestions,
   ) => [
     for (var index = 0; index < suggestions.length; index++) ...[
-      Material(
-        color: Colors.transparent,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(20),
-          onTap: () => Navigator.of(context).pop(suggestions[index].command),
-          child: Ink(
-            decoration: BoxDecoration(
-              color: colorScheme.surfaceContainerHighest.withAlpha(220),
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(
-                color: colorScheme.outlineVariant.withAlpha(180),
+      DecoratedBox(
+        decoration: BoxDecoration(
+          color: colorScheme.surfaceContainerHighest.withAlpha(220),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: colorScheme.outlineVariant.withAlpha(180)),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 6, 6),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                suggestions[index].command,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontFamily: 'monospace',
+                  fontWeight: FontWeight.w600,
+                ),
               ),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(14),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              const SizedBox(height: 4),
+              Text(
+                suggestions[index].explanation,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontSize: 11,
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
                 children: [
-                  Container(
-                    width: 26,
-                    height: 26,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      color: colorScheme.primary.withAlpha(22),
-                      borderRadius: BorderRadius.circular(9),
-                    ),
-                    child: Text(
-                      '${index + 1}',
-                      style: theme.textTheme.labelMedium?.copyWith(
-                        color: colorScheme.primary,
-                        fontWeight: FontWeight.w700,
+                  SizedBox(
+                    height: 30,
+                    child: TextButton.icon(
+                      onPressed: () async {
+                        await Clipboard.setData(
+                          ClipboardData(text: suggestions[index].command),
+                        );
+                        if (!mounted) {
+                          return;
+                        }
+                        ScaffoldMessenger.of(
+                          context,
+                        ).showSnackBar(const SnackBar(content: Text('Copied')));
+                      },
+                      icon: const Icon(Icons.copy_outlined, size: 14),
+                      label: const Text('Copy'),
+                      style: TextButton.styleFrom(
+                        textStyle: const TextStyle(fontSize: 11),
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        visualDensity: VisualDensity.compact,
                       ),
                     ),
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          suggestions[index].command,
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            fontFamily: 'monospace',
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          suggestions[index].explanation,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                      ],
+                  const SizedBox(width: 4),
+                  SizedBox(
+                    height: 30,
+                    child: FilledButton.icon(
+                      onPressed: () =>
+                          widget.onSelect(suggestions[index].command),
+                      icon: const Icon(Icons.input_rounded, size: 14),
+                      label: const Text('Insert'),
+                      style: FilledButton.styleFrom(
+                        textStyle: const TextStyle(fontSize: 11),
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        visualDensity: VisualDensity.compact,
+                      ),
                     ),
-                  ),
-                  IconButton(
-                    onPressed: () async {
-                      await Clipboard.setData(
-                        ClipboardData(text: suggestions[index].command),
-                      );
-                      if (!mounted) {
-                        return;
-                      }
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Copied to clipboard')),
-                      );
-                    },
-                    icon: const Icon(Icons.copy_outlined),
-                    tooltip: 'Copy command',
                   ),
                 ],
               ),
-            ),
+            ],
           ),
         ),
       ),
-      if (index < suggestions.length - 1) const SizedBox(height: 10),
+      if (index < suggestions.length - 1) const SizedBox(height: 8),
     ],
   ];
 }
