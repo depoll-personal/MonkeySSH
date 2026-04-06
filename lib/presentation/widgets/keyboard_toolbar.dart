@@ -173,6 +173,7 @@ class KeyboardToolbar extends StatefulWidget {
     this.controller,
     this.onKeyPressed,
     this.onAssistantPromptSubmitted,
+    this.onComposerVisibilityChanged,
     this.terminalFocusNode,
     super.key,
   });
@@ -191,6 +192,9 @@ class KeyboardToolbar extends StatefulWidget {
   /// When this is null, the AI affordance is hidden entirely.
   final Future<void> Function(String prompt)? onAssistantPromptSubmitted;
 
+  /// Called when the assistant composer visibility changes.
+  final ValueChanged<bool>? onComposerVisibilityChanged;
+
   /// Optional focus node for the terminal. When provided, the toolbar
   /// re-requests focus after interactions so the soft keyboard stays visible.
   final FocusNode? terminalFocusNode;
@@ -207,6 +211,9 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
   bool _showsAssistantComposer = false;
   bool _isSubmittingAssistantPrompt = false;
   bool _assistantTextEmpty = true;
+
+  /// Whether the AI assistant composer is currently visible.
+  bool get showsAssistantComposer => _showsAssistantComposer;
 
   KeyboardToolbarController get _controller =>
       widget.controller ?? _fallbackController;
@@ -269,6 +276,9 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     widget.terminalFocusNode?.requestFocus();
   }
 
+  /// Builds the AI assistant composer widget for external positioning.
+  Widget buildAssistantComposer() => _buildAssistantComposer(Theme.of(context));
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -288,14 +298,19 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _buildAssistantComposer(theme),
-            _buildModifierRow(),
-            if (widget.onAssistantPromptSubmitted != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 2, bottom: 2),
-                child: _buildFloatingAiButton(colorScheme),
-              ),
-            _buildNavigationRow(),
+            if (_showsAssistantComposer) _buildAssistantComposer(theme),
+            Stack(
+              clipBehavior: Clip.none,
+              alignment: Alignment.center,
+              children: [
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [_buildModifierRow(), _buildNavigationRow()],
+                ),
+                if (widget.onAssistantPromptSubmitted != null)
+                  _buildFloatingAiButton(colorScheme),
+              ],
+            ),
           ],
         ),
       ),
@@ -333,100 +348,91 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     ),
   );
 
-  Widget _buildAssistantComposer(ThemeData theme) => AnimatedSize(
-    duration: const Duration(milliseconds: 180),
-    curve: Curves.easeOutCubic,
-    child: !_showsAssistantComposer
-        ? const SizedBox.shrink()
-        : Padding(
-            padding: const EdgeInsets.fromLTRB(8, 8, 8, 4),
-            child: DecoratedBox(
+  Widget _buildAssistantComposer(ThemeData theme) => Padding(
+    padding: const EdgeInsets.fromLTRB(8, 8, 8, 4),
+    child: DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: <Color>[
+            theme.colorScheme.surfaceContainerHighest,
+            theme.colorScheme.surfaceContainerHigh,
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: theme.colorScheme.primary.withAlpha(70)),
+        boxShadow: <BoxShadow>[
+          BoxShadow(
+            color: theme.colorScheme.shadow.withAlpha(18),
+            blurRadius: 12,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
+        child: Row(
+          children: [
+            Container(
+              width: 30,
+              height: 30,
               decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: <Color>[
-                    theme.colorScheme.surfaceContainerHighest,
-                    theme.colorScheme.surfaceContainerHigh,
-                  ],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                borderRadius: BorderRadius.circular(18),
-                border: Border.all(
-                  color: theme.colorScheme.primary.withAlpha(70),
-                ),
-                boxShadow: <BoxShadow>[
-                  BoxShadow(
-                    color: theme.colorScheme.shadow.withAlpha(18),
-                    blurRadius: 12,
-                    offset: const Offset(0, 6),
-                  ),
-                ],
+                color: theme.colorScheme.primary.withAlpha(28),
+                borderRadius: BorderRadius.circular(10),
               ),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 30,
-                      height: 30,
-                      decoration: BoxDecoration(
-                        color: theme.colorScheme.primary.withAlpha(28),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Icon(
-                        Icons.auto_awesome_rounded,
-                        size: 16,
-                        color: theme.colorScheme.primary,
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: TextField(
-                        controller: _assistantController,
-                        focusNode: _assistantFocusNode,
-                        minLines: 1,
-                        maxLines: 2,
-                        textInputAction: TextInputAction.send,
-                        onSubmitted: (_) => unawaited(_submitAssistantPrompt()),
-                        decoration: InputDecoration(
-                          isCollapsed: true,
-                          border: InputBorder.none,
-                          hintText: 'Ask for a command…',
-                          hintStyle: theme.textTheme.bodyMedium?.copyWith(
-                            color: theme.colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          fontFamily: 'monospace',
-                          color: theme.colorScheme.onSurface,
-                        ),
-                      ),
-                    ),
-                    IconButton(
-                      onPressed: _toggleAssistantComposer,
-                      icon: const Icon(Icons.close_rounded),
-                      tooltip: 'Close AI prompt',
-                      visualDensity: VisualDensity.compact,
-                    ),
-                    IconButton.filledTonal(
-                      onPressed:
-                          _assistantTextEmpty || _isSubmittingAssistantPrompt
-                          ? null
-                          : () => unawaited(_submitAssistantPrompt()),
-                      icon: _isSubmittingAssistantPrompt
-                          ? const SizedBox.square(
-                              dimension: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.arrow_upward_rounded),
-                      tooltip: 'Generate suggestions',
-                      visualDensity: VisualDensity.compact,
-                    ),
-                  ],
+              child: Icon(
+                Icons.auto_awesome_rounded,
+                size: 16,
+                color: theme.colorScheme.primary,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: TextField(
+                controller: _assistantController,
+                focusNode: _assistantFocusNode,
+                minLines: 1,
+                maxLines: 2,
+                textInputAction: TextInputAction.send,
+                onSubmitted: (_) => unawaited(_submitAssistantPrompt()),
+                decoration: InputDecoration(
+                  isCollapsed: true,
+                  border: InputBorder.none,
+                  hintText: 'Ask for a command…',
+                  hintStyle: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  fontFamily: 'monospace',
+                  color: theme.colorScheme.onSurface,
                 ),
               ),
             ),
-          ),
+            IconButton(
+              onPressed: _toggleAssistantComposer,
+              icon: const Icon(Icons.close_rounded),
+              tooltip: 'Close AI prompt',
+              visualDensity: VisualDensity.compact,
+            ),
+            IconButton.filledTonal(
+              onPressed: _assistantTextEmpty || _isSubmittingAssistantPrompt
+                  ? null
+                  : () => unawaited(_submitAssistantPrompt()),
+              icon: _isSubmittingAssistantPrompt
+                  ? const SizedBox.square(
+                      dimension: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.arrow_upward_rounded),
+              tooltip: 'Generate suggestions',
+              visualDensity: VisualDensity.compact,
+            ),
+          ],
+        ),
+      ),
+    ),
   );
 
   Widget _buildModifierRow() => _KeyRow(
@@ -573,6 +579,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
         _assistantController.clear();
       }
     });
+    widget.onComposerVisibilityChanged?.call(_showsAssistantComposer);
     if (_showsAssistantComposer) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
@@ -600,6 +607,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       _showsAssistantComposer = false;
       _assistantController.clear();
     });
+    widget.onComposerVisibilityChanged?.call(false);
     try {
       await onAssistantPromptSubmitted(prompt);
     } finally {

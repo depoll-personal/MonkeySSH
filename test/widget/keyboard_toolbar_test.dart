@@ -179,11 +179,16 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
-            body: KeyboardToolbar(
-              terminal: terminal,
-              onAssistantPromptSubmitted: (prompt) async {
-                submittedPrompt = prompt;
-              },
+            body: Column(
+              children: [
+                const Expanded(child: SizedBox.expand()),
+                KeyboardToolbar(
+                  terminal: terminal,
+                  onAssistantPromptSubmitted: (prompt) async {
+                    submittedPrompt = prompt;
+                  },
+                ),
+              ],
             ),
           ),
         ),
@@ -193,8 +198,9 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byType(TextField), findsOneWidget);
-      await tester.enterText(find.byType(TextField), 'tail the app logs');
-      await tester.pump();
+      final textField = tester.widget<TextField>(find.byType(TextField));
+      textField.controller!.text = 'tail the app logs';
+      await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('Generate suggestions'));
       await tester.pumpAndSettle();
 

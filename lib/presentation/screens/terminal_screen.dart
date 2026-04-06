@@ -1258,6 +1258,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late FocusNode _terminalFocusNode;
   final _terminalTextInputController = TerminalTextInputHandlerController();
   final _toolbarController = KeyboardToolbarController();
+  final _toolbarKey = GlobalKey<KeyboardToolbarState>();
   SSHSession? _shell;
   StreamSubscription<void>? _doneSubscription;
   bool _isConnecting = true;
@@ -2735,6 +2736,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         children: [
           Expanded(
             child: Stack(
+              fit: StackFit.expand,
               children: [
                 _buildTerminalView(terminalTheme, isMobile),
                 if (_aiSuggestionsFuture != null &&
@@ -2757,6 +2759,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               !showsDisconnectedOverlay &&
               (!_isNativeSelectionMode || _isMobilePlatform))
             KeyboardToolbar(
+              key: _toolbarKey,
               controller: _toolbarController,
               terminal: _terminal,
               onKeyPressed: _followLiveOutput,
