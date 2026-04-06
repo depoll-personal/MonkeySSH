@@ -128,5 +128,5 @@ flutter {
 dependencies {
     implementation("com.google.mlkit:genai-prompt:1.0.0-beta1")
     implementation("eu.simonbinder:sqlite3-native-library:3.51.1")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 }

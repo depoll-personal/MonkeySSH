@@ -206,6 +206,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
   late final FocusNode _assistantFocusNode;
   bool _showsAssistantComposer = false;
   bool _isSubmittingAssistantPrompt = false;
+  bool _assistantTextEmpty = true;
 
   KeyboardToolbarController get _controller =>
       widget.controller ?? _fallbackController;
@@ -254,8 +255,12 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
   }
 
   void _handleAssistantChanged() {
-    if (mounted) {
-      setState(() {});
+    if (!mounted) {
+      return;
+    }
+    final isEmpty = _assistantController.text.trim().isEmpty;
+    if (isEmpty != _assistantTextEmpty) {
+      setState(() => _assistantTextEmpty = isEmpty);
     }
   }
 
@@ -405,8 +410,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
                     ),
                     IconButton.filledTonal(
                       onPressed:
-                          _assistantController.text.trim().isEmpty ||
-                              _isSubmittingAssistantPrompt
+                          _assistantTextEmpty || _isSubmittingAssistantPrompt
                           ? null
                           : () => unawaited(_submitAssistantPrompt()),
                       icon: _isSubmittingAssistantPrompt

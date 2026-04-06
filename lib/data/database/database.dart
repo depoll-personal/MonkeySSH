@@ -533,7 +533,7 @@ Future<void> _applyAppleDatabaseFilePolicy(
   Directory databaseDirectory,
   File databaseFile,
 ) async {
-  if (kIsWeb || !Platform.isIOS) {
+  if (kIsWeb || !(Platform.isIOS || Platform.isMacOS)) {
     return;
   }
 
