@@ -755,6 +755,11 @@ class SshService {
     Duration? keepAliveInterval,
   }) => SSHClient(
     socket,
+    algorithms: SSHAlgorithms(
+      kex: SSHAlgorithms.preferredKex(
+        includeSntrup761: SSHPostQuantumSupport.isSntrup761X25519Available,
+      ),
+    ),
     username: username,
     onVerifyHostKey: onVerifyHostKey,
     onPasswordRequest: onPasswordRequest,
