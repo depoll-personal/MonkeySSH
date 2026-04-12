@@ -1086,6 +1086,85 @@ void main() {
     });
   });
 
+  group('terminalSnapshotTextOffsetToCellOffset', () {
+    test('maps snapshot offsets to terminal cells across lines', () {
+      expect(
+        terminalSnapshotTextOffsetToCellOffset(
+          textOffset: 2,
+          lineCount: 2,
+          lineStarts: const [0, 4],
+          columnOffsets: const [
+            [0, 1, 2, 3],
+            [0, 1, 2],
+          ],
+          textLength: 6,
+        ),
+        const CellOffset(2, 0),
+      );
+      expect(
+        terminalSnapshotTextOffsetToCellOffset(
+          textOffset: 4,
+          lineCount: 2,
+          lineStarts: const [0, 4],
+          columnOffsets: const [
+            [0, 1, 2, 3],
+            [0, 1, 2],
+          ],
+          textLength: 6,
+        ),
+        const CellOffset(0, 1),
+      );
+    });
+
+    test('chooses the first matching column for trimmed trailing padding', () {
+      expect(
+        terminalSnapshotTextOffsetToCellOffset(
+          textOffset: 2,
+          lineCount: 1,
+          lineStarts: const [0],
+          columnOffsets: const [
+            [0, 1, 2, 2, 2],
+          ],
+          textLength: 2,
+        ),
+        const CellOffset(2, 0),
+      );
+    });
+  });
+
+  group('textSelectionToTerminalCellOffsets', () {
+    test('preserves base and extent directions', () {
+      expect(
+        textSelectionToTerminalCellOffsets(
+          selection: const TextSelection(baseOffset: 4, extentOffset: 1),
+          lineCount: 2,
+          lineStarts: const [0, 4],
+          columnOffsets: const [
+            [0, 1, 2, 3],
+            [0, 1, 2],
+          ],
+          textLength: 6,
+        ),
+        (base: const CellOffset(0, 1), extent: const CellOffset(1, 0)),
+      );
+    });
+
+    test('returns null for invalid selections', () {
+      expect(
+        textSelectionToTerminalCellOffsets(
+          selection: const TextSelection(baseOffset: -1, extentOffset: 1),
+          lineCount: 1,
+          lineStarts: const [0],
+          columnOffsets: const [
+            [0, 1],
+          ],
+          textLength: 1,
+        ),
+        isNull,
+      );
+    });
+  });
+
   group('applyTerminalCursorInsertion', () {
     test('appends inserted text at the current cursor offset', () {
       final nextValue = applyTerminalCursorInsertion(

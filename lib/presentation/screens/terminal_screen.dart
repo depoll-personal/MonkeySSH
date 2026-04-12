@@ -1129,6 +1129,83 @@ String selectedNativeOverlayText(TextEditingValue value) {
   return selection.textInside(value.text);
 }
 
+/// Maps a text-selection offset within a terminal snapshot back to a cell.
+@visibleForTesting
+CellOffset terminalSnapshotTextOffsetToCellOffset({
+  required int textOffset,
+  required int lineCount,
+  required List<int> lineStarts,
+  required List<List<int>> columnOffsets,
+  required int textLength,
+}) {
+  if (lineCount <= 0 || lineStarts.isEmpty || columnOffsets.isEmpty) {
+    return const CellOffset(0, 0);
+  }
+
+  final clampedOffset = textOffset.clamp(0, textLength);
+  var lineIndex = lineCount - 1;
+  for (var index = 0; index < lineCount; index += 1) {
+    final nextLineStart = index + 1 < lineCount
+        ? lineStarts[index + 1]
+        : textLength + 1;
+    if (clampedOffset < nextLineStart) {
+      lineIndex = index;
+      break;
+    }
+  }
+
+  final lineStart = lineStarts[lineIndex];
+  final nextLineStart = lineIndex + 1 < lineCount
+      ? lineStarts[lineIndex + 1]
+      : textLength + 1;
+  final lineTextEnd = lineIndex + 1 < lineCount
+      ? nextLineStart - 1
+      : textLength;
+  final lineOffset = (clampedOffset - lineStart).clamp(
+    0,
+    lineTextEnd - lineStart,
+  );
+  final lineColumnOffsets = columnOffsets[lineIndex];
+  for (var column = 0; column < lineColumnOffsets.length; column += 1) {
+    if (lineColumnOffsets[column] >= lineOffset) {
+      return CellOffset(column, lineIndex);
+    }
+  }
+
+  return CellOffset(lineColumnOffsets.length - 1, lineIndex);
+}
+
+/// Maps a text selection within a terminal snapshot back to terminal cells.
+@visibleForTesting
+({CellOffset base, CellOffset extent})? textSelectionToTerminalCellOffsets({
+  required TextSelection selection,
+  required int lineCount,
+  required List<int> lineStarts,
+  required List<List<int>> columnOffsets,
+  required int textLength,
+}) {
+  if (!selection.isValid) {
+    return null;
+  }
+
+  return (
+    base: terminalSnapshotTextOffsetToCellOffset(
+      textOffset: selection.baseOffset,
+      lineCount: lineCount,
+      lineStarts: lineStarts,
+      columnOffsets: columnOffsets,
+      textLength: textLength,
+    ),
+    extent: terminalSnapshotTextOffsetToCellOffset(
+      textOffset: selection.extentOffset,
+      lineCount: lineCount,
+      lineStarts: lineStarts,
+      columnOffsets: columnOffsets,
+      textLength: textLength,
+    ),
+  );
+}
+
 /// Applies pasted or rendered text at the terminal cursor within a wrapped line.
 @visibleForTesting
 String applyTerminalCursorInsertion({
@@ -1323,6 +1400,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final ScrollController _terminalScrollController;
   late final ScrollController _nativeSelectionScrollController;
   late final TextEditingController _nativeSelectionController;
+  late final FocusNode _nativeSelectionFocusNode;
   late FocusNode _terminalFocusNode;
   final _terminalTextInputController = TerminalTextInputHandlerController();
   final _toolbarController = KeyboardToolbarController();
@@ -1338,6 +1416,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isNativeSelectionMode = false;
   bool _revealsNativeSelectionOverlayInTouchScrollMode = false;
   bool _isSyncingNativeScroll = false;
+  bool _isSyncingNativeSelectionController = false;
+  bool _isSyncingTerminalSelectionFromOverlay = false;
+  TextSelection? _lastObservedNativeSelection;
   int? _connectionId;
   double? _pinchFontSize;
   double? _lastPinchScale;
@@ -1516,7 +1597,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ..addListener(_handleTerminalScroll);
     _nativeSelectionScrollController = ScrollController()
       ..addListener(_syncTerminalScrollFromNative);
-    _nativeSelectionController = TextEditingController();
+    _nativeSelectionController = TextEditingController()
+      ..addListener(_handleNativeSelectionControllerChanged);
+    _nativeSelectionFocusNode = FocusNode();
     _isUsingAltBuffer = _terminal.isUsingAltBuffer;
     _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
     _terminal.addListener(_onTerminalStateChanged);
@@ -1830,11 +1913,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     final selection = _terminalController.selection;
     final hasSelection = selection != null;
-    if (_isMobilePlatform && hasSelection) {
-      _enterNativeSelectionMode(
-        initialRange: selection,
-        revealOverlayInTouchScrollMode: _routesTouchScrollToTerminal,
-      );
+    if (_isMobilePlatform) {
+      if (hasSelection) {
+        if (!_isNativeSelectionMode) {
+          _enterNativeSelectionMode(
+            initialRange: selection,
+            revealOverlayInTouchScrollMode: _routesTouchScrollToTerminal,
+          );
+          return;
+        }
+        if (!_isSyncingTerminalSelectionFromOverlay) {
+          _syncNativeSelectionFromTerminal(selection);
+        }
+      }
+      if (_hasTerminalSelection != hasSelection) {
+        setState(() {
+          _hasTerminalSelection = hasSelection;
+        });
+      }
       return;
     }
 
@@ -3444,19 +3540,32 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Widget _nativeSelectionOverlay(TextStyle textStyle) => Positioned.fill(
     child: Padding(
       padding: terminalViewportPadding,
-      child: SingleChildScrollView(
-        controller: _nativeSelectionScrollController,
-        physics: const ClampingScrollPhysics(),
-        child: ValueListenableBuilder<TextEditingValue>(
-          valueListenable: _nativeSelectionController,
-          builder: (context, value, _) => SelectableText(
-            value.text,
-            style: textStyle,
-            onSelectionChanged: _handleNativeOverlaySelectionChanged,
-            strutStyle: StrutStyle.fromTextStyle(
-              textStyle,
-              forceStrutHeight: true,
-            ),
+      child: TextSelectionTheme(
+        data: TextSelectionTheme.of(
+          context,
+        ).copyWith(selectionColor: Colors.transparent),
+        child: TextField(
+          controller: _nativeSelectionController,
+          focusNode: _nativeSelectionFocusNode,
+          readOnly: true,
+          maxLines: null,
+          expands: true,
+          showCursor: false,
+          enableInteractiveSelection: true,
+          keyboardType: TextInputType.multiline,
+          textAlignVertical: TextAlignVertical.top,
+          scrollController: _nativeSelectionScrollController,
+          scrollPhysics: const ClampingScrollPhysics(),
+          style: textStyle,
+          strutStyle: StrutStyle.fromTextStyle(
+            textStyle,
+            forceStrutHeight: true,
+          ),
+          cursorColor: Colors.transparent,
+          decoration: const InputDecoration(
+            border: InputBorder.none,
+            isCollapsed: true,
+            contentPadding: EdgeInsets.zero,
           ),
         ),
       ),
@@ -3600,23 +3709,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             columnOffsets: snapshot.columnOffsets,
             textLength: snapshot.text.length,
           );
-    _nativeSelectionController.value = TextEditingValue(
-      text: snapshot.text,
-      selection: selection,
+    _setNativeSelectionControllerValue(
+      TextEditingValue(text: snapshot.text, selection: selection),
     );
     setState(() {
       _isNativeSelectionMode = true;
-      _hasTerminalSelection = false;
+      _hasTerminalSelection = initialRange != null;
       _revealsNativeSelectionOverlayInTouchScrollMode =
           _revealsNativeSelectionOverlayInTouchScrollMode ||
           revealOverlayInTouchScrollMode;
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      _nativeSelectionFocusNode.requestFocus();
       _syncNativeScrollFromTerminal();
     });
-    if (_terminalController.selection != null) {
-      _terminalController.clearSelection();
-    }
   }
 
   void _exitNativeSelectionMode() {
@@ -3628,7 +3737,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _hasTerminalSelection = false;
       _revealsNativeSelectionOverlayInTouchScrollMode = false;
     });
-    _nativeSelectionController.clear();
+    _setNativeSelectionControllerValue(TextEditingValue.empty);
     _terminalController.clearSelection();
     _terminalFocusNode.requestFocus();
   }
@@ -3646,9 +3755,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             extentOffset: previousSelection.extentOffset.clamp(0, maxOffset),
           )
         : const TextSelection.collapsed(offset: 0);
-    _nativeSelectionController.value = TextEditingValue(
-      text: snapshot.text,
-      selection: nextSelection,
+    _setNativeSelectionControllerValue(
+      TextEditingValue(text: snapshot.text, selection: nextSelection),
     );
   }
 
@@ -3764,6 +3872,76 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return TextSelection(baseOffset: start, extentOffset: end);
   }
 
+  void _setNativeSelectionControllerValue(TextEditingValue value) {
+    _isSyncingNativeSelectionController = true;
+    _lastObservedNativeSelection = value.selection;
+    _nativeSelectionController.value = value;
+    _isSyncingNativeSelectionController = false;
+  }
+
+  void _syncNativeSelectionFromTerminal(BufferRange selection) {
+    if (!_isNativeSelectionMode) {
+      return;
+    }
+    final snapshot = _buildNativeSelectionSnapshotData();
+    final textSelection = _bufferRangeToTextSelection(
+      selection,
+      viewWidth: _terminal.buffer.viewWidth,
+      lineCount: _terminal.buffer.height,
+      lineStarts: snapshot.lineStarts,
+      columnOffsets: snapshot.columnOffsets,
+      textLength: snapshot.text.length,
+    );
+    if (_nativeSelectionController.text != snapshot.text ||
+        _nativeSelectionController.selection != textSelection) {
+      _setNativeSelectionControllerValue(
+        TextEditingValue(text: snapshot.text, selection: textSelection),
+      );
+    }
+  }
+
+  void _syncTerminalSelectionFromNative(TextSelection selection) {
+    if (!_isNativeSelectionMode) {
+      return;
+    }
+    if (selection.isCollapsed) {
+      _terminalController.clearSelection();
+      return;
+    }
+
+    final snapshot = _buildNativeSelectionSnapshotData();
+    final positions = textSelectionToTerminalCellOffsets(
+      selection: selection,
+      lineCount: _terminal.buffer.height,
+      lineStarts: snapshot.lineStarts,
+      columnOffsets: snapshot.columnOffsets,
+      textLength: snapshot.text.length,
+    );
+    if (positions == null) {
+      return;
+    }
+
+    _isSyncingTerminalSelectionFromOverlay = true;
+    _terminalController.setSelection(
+      _terminal.buffer.createAnchor(positions.base.x, positions.base.y),
+      _terminal.buffer.createAnchor(positions.extent.x, positions.extent.y),
+    );
+    _isSyncingTerminalSelectionFromOverlay = false;
+  }
+
+  void _handleNativeSelectionControllerChanged() {
+    if (_isSyncingNativeSelectionController) {
+      return;
+    }
+    final selection = _nativeSelectionController.selection;
+    if (selection == _lastObservedNativeSelection) {
+      return;
+    }
+    _lastObservedNativeSelection = selection;
+    _handleNativeOverlaySelectionChanged(selection, null);
+    _syncTerminalSelectionFromNative(selection);
+  }
+
   void _handleNativeOverlaySelectionChanged(
     TextSelection selection,
     SelectionChangedCause? cause,
@@ -3800,8 +3978,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final textLength = _nativeSelectionController.text.length;
     final collapsedOffset = _nativeSelectionController.selection.extentOffset
         .clamp(0, textLength);
-    _nativeSelectionController.value = _nativeSelectionController.value
-        .copyWith(selection: TextSelection.collapsed(offset: collapsedOffset));
+    _setNativeSelectionControllerValue(
+      _nativeSelectionController.value.copyWith(
+        selection: TextSelection.collapsed(offset: collapsedOffset),
+      ),
+    );
     if (!mounted) {
       return;
     }
@@ -3828,7 +4009,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    _nativeSelectionController.clear();
+    _setNativeSelectionControllerValue(TextEditingValue.empty);
     _terminalController.clearSelection();
     setState(() {
       _isNativeSelectionMode = false;
@@ -4636,7 +4817,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   Future<void> _copySelection() async {
     if (_isNativeSelectionMode) {
-      final text = selectedNativeOverlayText(_nativeSelectionController.value);
+      final nativeTerminalSelection = _terminalController.selection;
+      final text = nativeTerminalSelection == null
+          ? selectedNativeOverlayText(_nativeSelectionController.value)
+          : trimTerminalSelectionText(
+              _terminal.buffer.getText(nativeTerminalSelection),
+            );
       if (text.isEmpty) {
         return;
       }
