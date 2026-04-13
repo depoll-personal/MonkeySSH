@@ -244,10 +244,9 @@ packages:
   dartssh2:
     dependency: "direct main"
     description:
-      name: dartssh2
-      sha256: aa98e1b859d65b261f8af9f880160ff9ac515a2da2467a1e8f0c27d665e17b2d
-      url: "https://pub.dev"
-    source: hosted
+      path: "packages/dartssh2"
+      relative: true
+    source: path
     version: "2.17.0"
   dbus:
     dependency: transitive
@@ -775,6 +774,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "9.3.0"
+  oqs:
+    dependency: transitive
+    description:
+      name: oqs
+      sha256: "83f550044d1e6fbd8cbc6d1cf937827220e3fe9572594293a4ae35562eeb260c"
+      url: "https://pub.dev"
+    source: hosted
+    version: "3.1.0"
   package_config:
     dependency: transitive
     description:
@@ -927,6 +934,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "6.5.0"
+  pqcrypto:
+    dependency: transitive
+    description:
+      name: pqcrypto
+      sha256: "1638d9553940c95eb39c1c0a25fa2b144dde46728a2c2758191a288b42d09a94"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.1.0"
   process:
     dependency: transitive
     description:
