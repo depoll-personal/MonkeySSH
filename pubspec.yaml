@@ -80,7 +80,7 @@ dev_dependencies:
   drift_dev: ^2.31.0
   
   # Testing
-  mocktail: ^1.0.4
+  mocktail: ^1.0.5
   integration_test:
     sdk: flutter
   
