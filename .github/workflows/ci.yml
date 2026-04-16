@@ -316,6 +316,14 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Download Ghostty VTE prebuilt
+        # Workaround for ghostty_vte 0.1.2 bug on Windows: hook's
+        # _shouldPreferSourceBuild checks path for "\.pub-cache\" which
+        # doesn't match Windows' "AppData\Local\Pub\Cache" pub cache path,
+        # causing it to skip the prebuilt download and attempt a source
+        # build that needs Ghostty's Zig source tree (not present).
+        run: dart run ghostty_vte:setup
+
       - name: Build Windows
         run: flutter build windows --release --no-tree-shake-icons -v
 
