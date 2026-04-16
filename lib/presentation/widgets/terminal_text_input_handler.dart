@@ -440,6 +440,20 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
     final key = logicalKeyToGhosttyKey(event.logicalKey);
     if (key == null) {
+      // Fall back to Ctrl-based control-character chords (e.g. Ctrl+C → \x03)
+      // when no GhosttyKey mapping exists for the logical key.
+      final modifierState = GhosttyTerminalModifierState.fromHardwareKeyboard();
+      final controlText = ghosttyTerminalControlText(
+        event,
+        modifiers: modifierState,
+      );
+      if (controlText != null && controlText.isNotEmpty) {
+        final sent = widget.terminal.write(controlText);
+        if (sent) {
+          _notifyUserInput();
+          return KeyEventResult.handled;
+        }
+      }
       return KeyEventResult.ignored;
     }
 
