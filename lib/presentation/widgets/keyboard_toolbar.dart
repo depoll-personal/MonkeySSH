@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:xterm/xterm.dart';
+import 'package:ghostty_vte_flutter/ghostty_vte_flutter.dart';
 
 import 'terminal_key_input.dart';
 
@@ -178,8 +178,8 @@ class KeyboardToolbar extends StatefulWidget {
     super.key,
   });
 
-  /// The terminal to send input to.
-  final Terminal terminal;
+  /// The terminal controller to send input to.
+  final GhosttyTerminalController terminal;
 
   /// Optional controller that keeps modifier state stable across rebuilds.
   final KeyboardToolbarController? controller;
@@ -439,7 +439,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
 
   void _sendEscape() {
     HapticFeedback.lightImpact();
-    widget.terminal.textInput('\x1b');
+    widget.terminal.write('\x1b');
     widget.onKeyPressed?.call();
     // Clear one-shot modifiers without the immediate refocus that
     // _consumeOneShot() would do. Refocus after a short delay so the
@@ -452,7 +452,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
 
   void _sendTab() {
     HapticFeedback.lightImpact();
-    widget.terminal.textInput(
+    widget.terminal.write(
       resolveTerminalTabInput(shiftActive: _controller.isShiftActive),
     );
     widget.onKeyPressed?.call();
@@ -491,7 +491,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       output = output.toUpperCase();
     }
 
-    widget.terminal.textInput(output);
+    widget.terminal.write(output);
     widget.onKeyPressed?.call();
     _consumeOneShot();
   }
@@ -504,7 +504,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     if (withHaptic) {
       HapticFeedback.lightImpact();
     }
-    widget.terminal.textInput(sequence);
+    widget.terminal.write(sequence);
     widget.onKeyPressed?.call();
     if (consumeOneShot) {
       _consumeOneShot();
@@ -528,9 +528,9 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     };
 
     if (modifier.isNotEmpty) {
-      widget.terminal.textInput('\x1b[1;$modifier$suffix');
+      widget.terminal.write('\x1b[1;$modifier$suffix');
     } else {
-      widget.terminal.textInput('\x1b[$suffix');
+      widget.terminal.write('\x1b[$suffix');
     }
 
     widget.onKeyPressed?.call();

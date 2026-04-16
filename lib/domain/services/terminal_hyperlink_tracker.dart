@@ -1,211 +1,62 @@
 import 'package:flutter/foundation.dart';
-import 'package:xterm/xterm.dart';
+import 'package:ghostty_vte_flutter/ghostty_vte_flutter.dart';
+
+import '../models/cell_offset.dart';
 
 /// Tracks OSC 8 terminal hyperlinks so taps can open links whose labels do not
 /// visibly contain the destination URL.
+///
+/// Under the Ghostty VTE backend, the controller's
+/// [GhosttyTerminalSnapshot] preserves cell-level hyperlink metadata via
+/// [GhosttyTerminalSnapshot.hyperlinkAt]. This tracker simply forwards
+/// resolve requests to the snapshot — OSC 8 sequences do not need to be
+/// intercepted separately because Ghostty parses and retains them natively.
 class TerminalHyperlinkTracker {
-  Terminal? _terminal;
-  final _trackedHyperlinks = <_TrackedTerminalHyperlink>[];
-  _PendingTerminalHyperlink? _pendingHyperlink;
+  GhosttyTerminalController? _controller;
 
-  /// Attaches this tracker to [terminal].
+  /// Attaches this tracker to [controller].
   ///
-  /// Reattaching to the same terminal preserves existing tracked hyperlinks so
-  /// links remain tappable when a persisted session screen is rebuilt.
-  void attach(Terminal terminal) {
-    if (identical(_terminal, terminal)) {
+  /// Reattaching to the same controller is a no-op.
+  void attach(GhosttyTerminalController controller) {
+    if (identical(_controller, controller)) {
       return;
     }
-
-    reset(keepTerminalReference: false);
-    _terminal = terminal;
+    _controller = controller;
   }
 
-  /// Clears any tracked hyperlinks and disposes their anchors.
-  void reset({bool keepTerminalReference = true}) {
-    _pendingHyperlink?.dispose();
-    _pendingHyperlink = null;
-
-    for (final hyperlink in _trackedHyperlinks) {
-      hyperlink.dispose();
-    }
-    _trackedHyperlinks.clear();
-
-    if (!keepTerminalReference) {
-      _terminal = null;
+  /// Clears the controller reference.
+  void reset({bool keepControllerReference = true}) {
+    if (!keepControllerReference) {
+      _controller = null;
     }
   }
 
-  /// Handles private OSC sequences emitted by the terminal.
+  /// Handles a private OSC sequence.
   ///
-  /// OSC 8 sequences are used for hyperlinks. Opening a hyperlink records the
-  /// current cursor position as the start anchor; closing it records the end
-  /// anchor so later taps can resolve back to the hidden URL.
+  /// Retained for API compatibility — Ghostty's VTE already parses OSC 8
+  /// internally, so this is a no-op. Remaining callers that still funnel
+  /// OSC sequences through the tracker continue to work unchanged.
   void handlePrivateOsc(String code, List<String> args) {
-    if (code != '8') {
-      return;
-    }
-
-    final terminal = _terminal;
-    if (terminal == null) {
-      return;
-    }
-
-    _pruneDetachedHyperlinks();
-
-    final nextUri = _parseHyperlinkUri(args);
-    if (nextUri == null) {
-      _closePendingHyperlink(terminal);
-      return;
-    }
-
-    _closePendingHyperlink(terminal);
-    _pendingHyperlink = _PendingTerminalHyperlink(
-      uri: nextUri,
-      startAnchor: terminal.buffer.createAnchorFromCursor(),
-    );
+    // OSC 8 is handled natively by the Ghostty terminal.
   }
 
-  /// Resolves the hyperlink at [offset], if one is currently tracked there.
+  /// Resolves the hyperlink at [offset], if the cell at that row/column is
+  /// linked by an active OSC 8 hyperlink.
   String? resolveLinkAt(CellOffset offset) {
-    final terminal = _terminal;
-    if (terminal == null) {
+    final controller = _controller;
+    if (controller == null) {
       return null;
     }
-
-    _pruneDetachedHyperlinks();
-
-    final activeHyperlink = _pendingHyperlink;
-    if (activeHyperlink != null &&
-        _containsOffset(
-          start: activeHyperlink.startAnchor.offset,
-          end: _currentCursorOffset(terminal),
-          target: offset,
-        )) {
-      return activeHyperlink.uri.toString();
-    }
-
-    for (final hyperlink in _trackedHyperlinks.reversed) {
-      if (hyperlink.contains(offset)) {
-        return hyperlink.uri.toString();
-      }
-    }
-
-    return null;
+    final snapshot = controller.snapshot;
+    return snapshot.hyperlinkAt(
+      GhosttyTerminalCellPosition(row: offset.y, col: offset.x),
+    );
   }
 
   /// Number of fully tracked hyperlinks currently retained in memory.
+  ///
+  /// Ghostty tracks hyperlinks inside its own snapshot, so this value is
+  /// reported as zero; retained for test-only access compatibility.
   @visibleForTesting
-  int get trackedHyperlinkCount => _trackedHyperlinks.length;
-
-  Uri? _parseHyperlinkUri(List<String> args) {
-    if (args.length < 2) {
-      return null;
-    }
-
-    final uriText = args.sublist(1).join(';');
-    if (uriText.isEmpty) {
-      return null;
-    }
-
-    return Uri.tryParse(uriText);
-  }
-
-  void _closePendingHyperlink(Terminal terminal) {
-    final pendingHyperlink = _pendingHyperlink;
-    if (pendingHyperlink == null) {
-      return;
-    }
-
-    final endAnchor = terminal.buffer.createAnchorFromCursor();
-    final hyperlink = _TrackedTerminalHyperlink(
-      uri: pendingHyperlink.uri,
-      startAnchor: pendingHyperlink.startAnchor,
-      endAnchor: endAnchor,
-    );
-
-    if (hyperlink.isEmpty) {
-      hyperlink.dispose();
-    } else {
-      _trackedHyperlinks.add(hyperlink);
-    }
-
-    _pendingHyperlink = null;
-  }
-
-  void _pruneDetachedHyperlinks() {
-    _trackedHyperlinks.removeWhere((hyperlink) {
-      if (hyperlink.attached) {
-        return false;
-      }
-      hyperlink.dispose();
-      return true;
-    });
-  }
-
-  CellOffset _currentCursorOffset(Terminal terminal) =>
-      CellOffset(terminal.buffer.cursorX, terminal.buffer.absoluteCursorY);
-}
-
-class _PendingTerminalHyperlink {
-  _PendingTerminalHyperlink({required this.uri, required this.startAnchor});
-
-  final Uri uri;
-  final CellAnchor startAnchor;
-
-  void dispose() {
-    startAnchor.dispose();
-  }
-}
-
-class _TrackedTerminalHyperlink {
-  _TrackedTerminalHyperlink({
-    required this.uri,
-    required this.startAnchor,
-    required this.endAnchor,
-  });
-
-  final Uri uri;
-  final CellAnchor startAnchor;
-  final CellAnchor endAnchor;
-
-  bool get attached => startAnchor.attached && endAnchor.attached;
-
-  bool get isEmpty {
-    if (!attached) {
-      return true;
-    }
-
-    return _compareOffsets(startAnchor.offset, endAnchor.offset) >= 0;
-  }
-
-  bool contains(CellOffset offset) {
-    if (!attached) {
-      return false;
-    }
-
-    return _containsOffset(
-      start: startAnchor.offset,
-      end: endAnchor.offset,
-      target: offset,
-    );
-  }
-
-  void dispose() {
-    startAnchor.dispose();
-    endAnchor.dispose();
-  }
-}
-
-bool _containsOffset({
-  required CellOffset start,
-  required CellOffset end,
-  required CellOffset target,
-}) => _compareOffsets(start, target) <= 0 && _compareOffsets(target, end) < 0;
-
-int _compareOffsets(CellOffset a, CellOffset b) {
-  if (a.y != b.y) {
-    return a.y.compareTo(b.y);
-  }
-  return a.x.compareTo(b.x);
+  int get trackedHyperlinkCount => 0;
 }
