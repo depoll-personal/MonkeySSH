@@ -1202,7 +1202,10 @@ class SshSession {
     };
     terminalHyperlinkTracker.attach(controller);
     _oscStreamParser = OscStreamParser(
-      onBytes: controller.appendOutputBytes,
+      onBytes: (bytes) {
+        controller.appendOutputBytes(bytes);
+        terminalHyperlinkTracker.observeBytes(bytes);
+      },
       onOsc: _handlePrivateOsc,
     );
     _refreshTerminalPreview();
