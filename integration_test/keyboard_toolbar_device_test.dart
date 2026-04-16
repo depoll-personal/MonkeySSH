@@ -1,14 +1,37 @@
-@Tags(['xterm-legacy'])
-library;
-
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ghostty_vte_flutter/ghostty_vte_flutter.dart';
+import 'package:integration_test/integration_test.dart';
+import 'package:monkeyssh/presentation/widgets/keyboard_toolbar.dart';
 
 void main() {
-  test(
-    'legacy xterm-based test suite skipped during ghostty_vte migration',
-    () {},
-    skip:
-        'See ghostty_vte_flutter migration PR; xterm-backed coverage will be '
-        'rewritten against the new controller/snapshot APIs.',
+  IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+
+  testWidgets(
+    'preserves Ctrl modifier state across toolbar rebuilds for system keyboard input',
+    (tester) async {
+      final terminal = GhosttyTerminalController();
+      final controller = KeyboardToolbarController();
+      addTearDown(controller.dispose);
+
+      Widget buildToolbar() => MaterialApp(
+        home: Scaffold(
+          body: KeyboardToolbar(terminal: terminal, controller: controller),
+        ),
+      );
+
+      await tester.pumpWidget(buildToolbar());
+
+      await tester.tap(find.text('Ctrl'));
+      await tester.pump();
+
+      expect(controller.isCtrlActive, isTrue);
+
+      await tester.pumpWidget(buildToolbar());
+      await tester.pump();
+
+      expect(controller.applySystemKeyboardModifiers('b'), '\u0002');
+      expect(controller.isCtrlActive, isFalse);
+    },
   );
 }
