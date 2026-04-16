@@ -155,6 +155,7 @@ class TerminalTextInputHandler extends StatefulWidget {
     this.resolveTerminalKeyModifiers,
     this.consumeTerminalKeyModifiers,
     this.hasActiveToolbarModifier,
+    this.applyInputModifiers,
     this.readOnly = false,
     this.tapToShowKeyboard = true,
     super.key,
@@ -205,6 +206,13 @@ class TerminalTextInputHandler extends StatefulWidget {
   /// than visible text. In that case the IME buffer is cleared after sending
   /// the input so that stale suggestions don't accumulate from non-text input.
   final ValueGetter<bool>? hasActiveToolbarModifier;
+
+  /// Transforms inserted text before it is forwarded to the terminal.
+  ///
+  /// Called for soft-keyboard / IME-sourced text; used to apply toolbar
+  /// Ctrl/Alt modifiers to typed characters (e.g. 'a' becomes 0x01 when Ctrl
+  /// is toggled) and to normalize a bare '\n' Return to '\r'.
+  final String Function(String)? applyInputModifiers;
 
   /// Whether input should be suppressed.
   final bool readOnly;
@@ -885,7 +893,15 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
     final appendedText = delta.appendedText;
     if (appendedText.isNotEmpty) {
-      widget.terminal.write(appendedText);
+      final transform = widget.applyInputModifiers;
+      var toSend = appendedText;
+      if (transform != null) {
+        toSend = transform(appendedText);
+      } else if (appendedText == '\n') {
+        // Soft keyboards deliver a lone '\n' for Return, but SSH expects '\r'.
+        toSend = '\r';
+      }
+      widget.terminal.write(toSend);
     }
 
     _lastSentText = currentText;

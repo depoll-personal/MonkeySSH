@@ -2979,25 +2979,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       },
     );
 
-    _terminal.onOutput = (data) {
-      // On iOS/Android soft keyboards, Return sends a lone '\n' via
-      // textInput(), but SSH expects '\r'. The proper
-      // keyInput(TerminalKey.enter) path already produces '\r', so we
-      // only normalize single-'\n' to avoid rewriting legitimate LF
-      // characters in pasted or multi-char input.
-      var output = data == '\n' ? '\r' : data;
-
-      // Apply toolbar modifier state to system keyboard input.
-      // When the user toggles Ctrl on the toolbar then types on the system
-      // keyboard, we convert the character to the corresponding control code.
-      output = _toolbarController.applySystemKeyboardModifiers(output);
-
-      _shell?.write(utf8.encode(output));
-    };
-
-    _terminal.onResize = (width, height, pixelWidth, pixelHeight) {
-      _shell?.resizeTerminal(width, height);
-    };
+    // Soft-keyboard input & PTY resize are now routed through
+    // `GhosttyTerminalController`: `applyInputModifiers` (passed to the
+    // text-input handler) applies toolbar Ctrl/Alt modifiers and the bare-'\n'
+    // → '\r' normalization, while the SSH service registers the PTY resize
+    // callback via `attachExternalTransport`.
   }
 
   void _schedulePromptOutputImeResetCheck(String data) {
@@ -4709,6 +4695,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       consumeTerminalKeyModifiers: _toolbarController.consumeOneShot,
       hasActiveToolbarModifier: () =>
           _toolbarController.isCtrlActive || _toolbarController.isAltActive,
+      applyInputModifiers: (text) {
+        final normalized = text == '\n' ? '\r' : text;
+        return _toolbarController.applySystemKeyboardModifiers(normalized);
+      },
       readOnly: _showsNativeSelectionOverlay || overlayMessage != null,
       tapToShowKeyboard: tapToShowKeyboard,
       child: TerminalPinchZoomGestureHandler(

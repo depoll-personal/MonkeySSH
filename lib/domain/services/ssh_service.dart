@@ -1290,11 +1290,25 @@ class SshSession {
     _shellStderrController = StreamController<String>.broadcast();
     _shellDoneController = StreamController<void>.broadcast();
 
-    // Wire the controller's keystroke output back to the SSH shell stdin.
+    // Wire the controller's keystroke output back to the SSH shell stdin,
+    // and forward view-size changes to the remote PTY.
     terminal.attachExternalTransport(
       writeBytes: (bytes) {
         shell.write(Uint8List.fromList(bytes));
         return true;
+      },
+      onResize: (cols, rows, cellWidthPx, cellHeightPx) {
+        try {
+          shell.resizeTerminal(
+            cols,
+            rows,
+            cols * cellWidthPx,
+            rows * cellHeightPx,
+          );
+        } on Object catch (error, stackTrace) {
+          debugPrint('Failed to resize SSH PTY: $error');
+          debugPrint('$stackTrace');
+        }
       },
     );
 

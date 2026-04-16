@@ -1,13 +1,8 @@
 // Compatibility shim for the xterm → Ghostty VTE migration.
 //
-// Provides minimal stand-in types and helpers for the legacy xterm API
-// surface so existing call sites in terminal_screen.dart continue to
-// type-check while path-link / mouse-mode / buffer access is being
-// reimplemented against the Ghostty snapshot API.
-//
-// TODO(ghostty-migration): replace these stubs with real Ghostty-backed
-// equivalents or refactor call sites to use GhosttyTerminalController
-// snapshot APIs directly.
+// Provides stand-in types that mirror a small portion of the legacy xterm
+// API consumed by `terminal_screen.dart`, implemented on top of the
+// Ghostty VT engine exposed through [GhosttyTerminalController.terminal].
 
 import 'package:flutter/foundation.dart';
 import 'package:ghostty_vte_flutter/ghostty_vte_flutter.dart';
@@ -16,11 +11,9 @@ import 'cell_offset.dart';
 
 export 'cell_offset.dart';
 
-/// Stub for xterm's mouse-mode enum.
+/// Legacy xterm-compatible mouse-mode enum.
 ///
-/// Ghostty tracks mouse reporting via [GhosttyMouseTrackingMode]; until that
-/// is surfaced through the controller, we expose a simplified four-value
-/// enum that preserves the downstream switch statements.
+/// Derived from Ghostty's [VtMouseProtocolState.trackingMode].
 enum MouseMode {
   /// No mouse reporting.
   none,
@@ -44,103 +37,161 @@ extension MouseModeReportScroll on MouseMode {
   bool get reportScroll => this != MouseMode.none;
 }
 
-/// Stub for xterm's mouse report wire format.
+/// Legacy xterm-compatible mouse report wire format.
 enum MouseReportMode {
-  /// Default mouse report format.
+  /// Default (X10) mouse report format.
   normal,
+
+  /// UTF-8 mouse report format.
+  utf8,
 
   /// SGR extended report format.
   sgr,
+
+  /// urxvt mouse report format.
+  urxvt,
+
+  /// SGR pixel-coordinate report format.
+  sgrPixels,
 }
 
-/// Legacy stub replacement for xterm's [TerminalController].
+/// Mutable selection state shared between [MonkeyTerminalView] callbacks
+/// (via `onSelectionChanged`) and call sites in `terminal_screen.dart`.
 ///
-/// Ghostty renders its own selection overlay and does not expose selection
-/// state through the controller yet. Call sites use this class as a
-/// bookmark for the selection / clear-selection operations that need to
-/// migrate onto [GhosttyTerminalController] or [GhosttyTerminalView]
-/// callbacks.
-// TODO(ghostty-migration): replace with real selection state once Ghostty
-// surfaces it.
+/// Ghostty's view renders its own selection overlay internally; this
+/// controller caches the last reported selection as a [BufferRange] so the
+/// surrounding app UI (copy / context-menu logic) can reason about it.
 class LegacyTerminalSelectionController extends ChangeNotifier {
-  /// The current selection range. Always `null` for now.
-  BufferRange? get selection => null;
+  BufferRange? _selection;
 
-  /// No-op hook for xterm's `clearSelection` API.
-  void clearSelection() {}
+  /// The current selection range, or `null` when no selection is active.
+  BufferRange? get selection => _selection;
 
-  /// No-op hook for xterm's `setSelection` API.
-  void setSelection(BufferRange? range) {}
+  /// Clears any active selection.
+  void clearSelection() {
+    if (_selection == null) {
+      return;
+    }
+    _selection = null;
+    notifyListeners();
+  }
+
+  /// Replaces the current selection.
+  void setSelection(BufferRange? range) {
+    if (_selection == range) {
+      return;
+    }
+    _selection = range;
+    notifyListeners();
+  }
 }
 
-/// Convenience accessors for Ghostty that mirror xterm's [Terminal] API in
-/// the places touched by terminal_screen.dart.
-///
-/// Until feature-parity wrappers land, these return safe defaults. Callers
-/// are marked with `// TODO(ghostty-migration):` comments at the use site.
+/// Convenience accessors that mirror the subset of xterm's [Terminal] API
+/// used by `terminal_screen.dart`, implemented against the Ghostty VT engine.
 extension GhosttyTerminalCompat on GhosttyTerminalController {
   /// Whether the remote application has switched to the alternate screen.
-  ///
-  /// Stub: always returns `false`. Ghostty tracks this internally but does
-  /// not expose it via the public controller yet.
-  bool get isUsingAltBuffer => false;
+  bool get isUsingAltBuffer {
+    try {
+      return !terminal.isPrimaryScreen;
+    } on Object {
+      return false;
+    }
+  }
 
   /// Current mouse tracking mode reported to the remote application.
-  ///
-  /// Stub: always returns [MouseMode.none].
-  MouseMode get mouseMode => MouseMode.none;
+  MouseMode get mouseMode {
+    final state = _safeMouseProtocolState();
+    if (state == null || !state.enabled) {
+      return MouseMode.none;
+    }
+    switch (state.trackingMode) {
+      case GhosttyMouseTrackingMode.GHOSTTY_MOUSE_TRACKING_X10:
+        return MouseMode.clickOnly;
+      case GhosttyMouseTrackingMode.GHOSTTY_MOUSE_TRACKING_NORMAL:
+        return MouseMode.upDownScroll;
+      case GhosttyMouseTrackingMode.GHOSTTY_MOUSE_TRACKING_BUTTON:
+        return MouseMode.upDownScrollDrag;
+      case GhosttyMouseTrackingMode.GHOSTTY_MOUSE_TRACKING_ANY:
+        return MouseMode.upDownScrollMove;
+      case GhosttyMouseTrackingMode.GHOSTTY_MOUSE_TRACKING_NONE:
+      case null:
+        return MouseMode.none;
+    }
+  }
 
   /// Current mouse report format.
-  MouseReportMode get mouseReportMode => MouseReportMode.normal;
+  MouseReportMode get mouseReportMode {
+    final state = _safeMouseProtocolState();
+    if (state == null || !state.enabled) {
+      return MouseReportMode.normal;
+    }
+    switch (state.format) {
+      case GhosttyMouseFormat.GHOSTTY_MOUSE_FORMAT_SGR:
+        return MouseReportMode.sgr;
+      case GhosttyMouseFormat.GHOSTTY_MOUSE_FORMAT_UTF8:
+        return MouseReportMode.utf8;
+      case GhosttyMouseFormat.GHOSTTY_MOUSE_FORMAT_URXVT:
+        return MouseReportMode.urxvt;
+      case GhosttyMouseFormat.GHOSTTY_MOUSE_FORMAT_SGR_PIXELS:
+        return MouseReportMode.sgrPixels;
+      case GhosttyMouseFormat.GHOSTTY_MOUSE_FORMAT_X10:
+      case null:
+        return MouseReportMode.normal;
+    }
+  }
 
-  /// Legacy no-op retained for hit-test call sites during the migration.
-  // TODO(ghostty-migration): remove when path-link hit testing is migrated.
+  /// Viewport width in cells. Mirrors xterm's `terminal.viewWidth`.
   int get viewWidth => cols;
 
-  /// Legacy no-op retained for hit-test call sites during the migration.
+  /// Viewport height in rows. Mirrors xterm's `terminal.viewHeight`.
   int get viewHeight => rows;
 
-  /// Sends text as if the user typed it.
-  ///
-  /// Forwards to [GhosttyTerminalController.write].
+  /// Sends text as if the user typed it, forwarding to [write].
   void textInput(String text) {
     write(text);
   }
 
-  /// Whether focus-in/out reporting is active.
-  ///
-  /// Stub: always `false`. Focus events are not yet piped through Ghostty.
-  bool get reportFocusMode => false;
+  /// Whether focus-in/out reporting (DEC mode 1004) is enabled.
+  bool get reportFocusMode {
+    try {
+      return terminal.getMode(VtModes.focusEvent);
+    } on Object {
+      return false;
+    }
+  }
 
-  /// Whether bracketed paste is enabled in the remote application.
-  ///
-  /// Stub: always `false`.
-  bool get bracketedPasteMode => false;
+  /// Whether bracketed paste (DEC mode 2004) is enabled by the remote app.
+  bool get bracketedPasteMode {
+    try {
+      return terminal.getMode(VtModes.bracketedPaste);
+    } on Object {
+      return false;
+    }
+  }
 
-  /// Provides access to a buffer view that emulates xterm's buffer API.
+  /// Provides a read-only buffer view that emulates xterm's buffer API.
   LegacyBuffer get buffer => LegacyBuffer._(this);
-
-  /// Legacy setter for xterm's `onOutput` callback.
-  ///
-  /// Ghostty routes output via `attachExternalTransport`; this setter is a
-  /// no-op and retained only for call-site compatibility.
-  // ignore: avoid_setters_without_getters
-  set onOutput(void Function(String)? callback) {}
-
-  /// Legacy setter for xterm's `onResize` callback.
-  // ignore: avoid_setters_without_getters
-  set onResize(void Function(int, int, int, int)? callback) {}
 
   /// Pastes the provided text into the remote shell.
   ///
   /// Forwards to [GhosttyTerminalController.write]; Ghostty handles
-  /// bracketed-paste mode internally when enabled by the remote application.
+  /// bracketed-paste framing internally when enabled by the remote app.
   void paste(String text) {
     write(text);
   }
+
+  VtMouseProtocolState? _safeMouseProtocolState() {
+    try {
+      return terminal.mouseProtocolState;
+    } on Object {
+      return null;
+    }
+  }
 }
 
-/// Read-only buffer view that mimics a subset of xterm's `Buffer` API.
+/// Read-only buffer view that mimics a subset of xterm's `Buffer` API,
+/// implemented against [GhosttyTerminalController.snapshot] and the
+/// underlying [VtTerminal] for cursor/alt-screen information.
 class LegacyBuffer {
   const LegacyBuffer._(this._controller);
 
@@ -160,23 +211,74 @@ class LegacyBuffer {
 
   /// Returns the plain text spanning [range].
   ///
-  /// Stub: Ghostty does not expose range-based extraction via the
-  /// controller yet, so this returns an empty string and callers should
-  /// guard against that until a real implementation lands.
-  // TODO(ghostty-migration): implement range extraction via snapshot.
-  String getText(BufferRange range) => '';
+  /// Walks the controller's styled snapshot between the begin and end cell
+  /// offsets, concatenating line text and inserting newline separators
+  /// where the source lines were not soft-wrapped.
+  String getText(BufferRange range) {
+    final snapshot = _controller.snapshot;
+    final lines = snapshot.lines;
+    if (lines.isEmpty) {
+      return '';
+    }
+    final normalized = range.normalized;
+    final startY = normalized.begin.y.clamp(0, lines.length - 1);
+    final endY = normalized.end.y.clamp(0, lines.length - 1);
+    if (startY > endY) {
+      return '';
+    }
+    final buf = StringBuffer();
+    for (var y = startY; y <= endY; y++) {
+      final line = lines[y];
+      final text = line.text;
+      final isFirst = y == startY;
+      final isLast = y == endY;
+      final from = isFirst ? normalized.begin.x.clamp(0, text.length) : 0;
+      final to = isLast
+          ? normalized.end.x.clamp(from, text.length)
+          : text.length;
+      if (from < to) {
+        buf.write(text.substring(from, to));
+      }
+      if (!isLast && !line.wrapContinuation) {
+        buf.write('\n');
+      }
+    }
+    return buf.toString();
+  }
 
   /// Returns the line at absolute position [absY].
   BufferLine getLine(int absY) => lines[absY];
 
-  /// Stub cursor Y position (absolute).
-  int get absoluteCursorY => 0;
+  /// Cursor Y position in the scrollback-inclusive buffer.
+  int get absoluteCursorY {
+    try {
+      final snap = _controller.renderSnapshot;
+      if (snap != null && snap.cursor.row != null) {
+        return snap.cursor.row!;
+      }
+      return _controller.terminal.cursorY;
+    } on Object {
+      return 0;
+    }
+  }
 
-  /// Stub cursor X position.
-  int get cursorX => 0;
+  /// Cursor X position (column) in the current viewport.
+  int get cursorX {
+    try {
+      return _controller.terminal.cursorX;
+    } on Object {
+      return 0;
+    }
+  }
 
-  /// Stub cursor Y position (viewport relative).
-  int get cursorY => 0;
+  /// Cursor Y position (row) within the active viewport.
+  int get cursorY {
+    try {
+      return _controller.terminal.cursorY;
+    } on Object {
+      return 0;
+    }
+  }
 }
 
 /// Indexable view of buffer lines that preserves xterm's `buffer.lines[idx]`

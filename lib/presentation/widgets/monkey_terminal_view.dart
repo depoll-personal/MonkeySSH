@@ -231,47 +231,104 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
   }
 }
 
-/// Legacy-compatible hit-test surface exposed by [MonkeyTerminalViewState].
+/// Hit-test surface exposed by [MonkeyTerminalViewState].
 ///
-/// Kept as a stub to preserve the call-site API while path-link and other
-/// Ghostty-aware hit-testing is re-implemented against
-/// `GhosttyTerminalController.snapshot` and the renderer's metrics.
+/// Uses a [TextPainter] measurement of the configured monospace font to
+/// convert between local widget coordinates and terminal cell positions.
+/// The metrics intentionally match the defaults applied to
+/// [GhosttyTerminalView] (line-height multiplier of 1.2, single-width
+/// cells sized by 'M').
 class MonkeyTerminalRenderSurface {
   /// Creates a new [MonkeyTerminalRenderSurface] bound to [_state].
   MonkeyTerminalRenderSurface(this._state);
 
-  // ignore: unused_field
   final MonkeyTerminalViewState _state;
 
-  /// Approximate line height used by the legacy underline overlay.
-  double get lineHeight => 18;
+  Size _cachedCellSize = const Size(8, 18);
+  double _cachedCellSizeFor = 0;
+  String? _cachedCellSizeFontFamily;
 
-  /// Approximate cell size used by the legacy underline overlay.
-  Size get cellSize => const Size(8, 18);
+  /// Line height used by the legacy underline overlay.
+  double get lineHeight => cellSize.height;
 
-  /// Reported viewport size (post-layout). Always returns `Size.zero` under
-  /// the Ghostty migration stub; call sites should guard against that.
-  Size get size => Size.zero;
+  /// Cell size used by hit-testing logic.
+  Size get cellSize {
+    final fontSize = _state.widget.fontSize;
+    final fontFamily = _state.widget.fontFamily;
+    if (_cachedCellSizeFor != fontSize ||
+        _cachedCellSizeFontFamily != fontFamily) {
+      _cachedCellSize = _measureCell(fontSize, fontFamily);
+      _cachedCellSizeFor = fontSize;
+      _cachedCellSizeFontFamily = fontFamily;
+    }
+    return _cachedCellSize;
+  }
+
+  /// Reported viewport size of the underlying render object, if any.
+  Size get size {
+    final renderObject = _state.context.findRenderObject();
+    if (renderObject is RenderBox && renderObject.hasSize) {
+      return renderObject.size;
+    }
+    return Size.zero;
+  }
 
   /// Returns the Ghostty cell offset that contains [localPosition].
-  ///
-  /// The legacy implementation measured character metrics precisely; this
-  /// stub returns `CellOffset(0, 0)` so callers remain type-correct.
-  // TODO(ghostty-migration): reimplement against Ghostty render snapshot.
-  CellOffset getCellOffset(Offset localPosition) => const CellOffset(0, 0);
+  CellOffset getCellOffset(Offset localPosition) {
+    final cell = cellSize;
+    if (cell.width <= 0 || cell.height <= 0) {
+      return const CellOffset(0, 0);
+    }
+    final x = (localPosition.dx / cell.width).floor().clamp(
+      0,
+      _state.widget.controller.cols - 1,
+    );
+    final y = (localPosition.dy / cell.height).floor().clamp(
+      0,
+      _state.widget.controller.rows - 1,
+    );
+    return CellOffset(x, y);
+  }
 
   /// Returns the local origin of the cell at [offset].
-  ///
-  /// Stubbed — see [getCellOffset].
-  // TODO(ghostty-migration): reimplement against Ghostty render snapshot.
-  Offset getOffset(CellOffset offset) => Offset.zero;
+  Offset getOffset(CellOffset offset) {
+    final cell = cellSize;
+    return Offset(offset.x * cell.width, offset.y * cell.height);
+  }
 
   /// Converts a local offset to a global offset via the render surface.
-  Offset localToGlobal(Offset local, {RenderObject? ancestor}) => local;
+  Offset localToGlobal(Offset local, {RenderObject? ancestor}) {
+    final renderObject = _state.context.findRenderObject();
+    if (renderObject is RenderBox) {
+      return renderObject.localToGlobal(local, ancestor: ancestor);
+    }
+    return local;
+  }
 
   /// Converts a global offset to a local offset via the render surface.
-  ///
-  /// Stub: returns [global] unchanged.
-  // TODO(ghostty-migration): reimplement against Ghostty render snapshot.
-  Offset globalToLocal(Offset global, {RenderObject? ancestor}) => global;
+  Offset globalToLocal(Offset global, {RenderObject? ancestor}) {
+    final renderObject = _state.context.findRenderObject();
+    if (renderObject is RenderBox) {
+      return renderObject.globalToLocal(global, ancestor: ancestor);
+    }
+    return global;
+  }
+
+  Size _measureCell(double fontSize, String? fontFamily) {
+    final painter = TextPainter(
+      text: TextSpan(
+        text: 'M',
+        style: TextStyle(
+          fontSize: fontSize,
+          fontFamily: fontFamily,
+          height: 1.2,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    final height = painter.height;
+    final width = painter.width;
+    painter.dispose();
+    return Size(width <= 0 ? fontSize * 0.6 : width, height);
+  }
 }
