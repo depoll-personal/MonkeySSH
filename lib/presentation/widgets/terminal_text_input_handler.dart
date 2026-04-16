@@ -4,13 +4,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
-// xterm 4.0.0 does not expose keyToTerminalKey via a public API.
-// Pinned to xterm 4.0.0.
-// ignore: implementation_imports
-import 'package:xterm/src/ui/input_map.dart';
-import 'package:xterm/xterm.dart';
+import 'package:ghostty_vte_flutter/ghostty_vte_flutter.dart';
 
 import '../../domain/models/auto_connect_command.dart';
+import 'ghostty_key_input_map.dart';
 import 'terminal_key_input.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
@@ -163,8 +160,8 @@ class TerminalTextInputHandler extends StatefulWidget {
     super.key,
   });
 
-  /// The terminal to send input to.
-  final Terminal terminal;
+  /// The terminal controller to send input to.
+  final GhosttyTerminalController terminal;
 
   /// Focus node that controls keyboard visibility.
   final FocusNode focusNode;
@@ -382,7 +379,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   }
 
   void _trackHandledHardwareCursorKey(
-    TerminalKey key, {
+    GhosttyKey key, {
     required bool hasShortcutModifier,
   }) {
     if (hasShortcutModifier) {
@@ -391,20 +388,20 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
     final maxOffset = _textLengthInGraphemes(_lastSentText);
     switch (key) {
-      case TerminalKey.arrowLeft:
+      case GhosttyKey.GHOSTTY_KEY_ARROW_LEFT:
         _lastSentCursorOffset = _clampTextOffset(
           _lastSentCursorOffset - 1,
           maxOffset,
         );
         return;
-      case TerminalKey.arrowRight:
+      case GhosttyKey.GHOSTTY_KEY_ARROW_RIGHT:
         _lastSentCursorOffset = _clampTextOffset(
           _lastSentCursorOffset + 1,
           maxOffset,
         );
         return;
-      case TerminalKey.arrowUp:
-      case TerminalKey.arrowDown:
+      case GhosttyKey.GHOSTTY_KEY_ARROW_UP:
+      case GhosttyKey.GHOSTTY_KEY_ARROW_DOWN:
         if (_lastSentText.isNotEmpty || _lastSentCursorOffset != 0) {
           _resetCommittedInputState();
         }
@@ -433,16 +430,19 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       return KeyEventResult.ignored;
     }
 
-    final key = keyToTerminalKey(event.logicalKey);
+    final key = logicalKeyToGhosttyKey(event.logicalKey);
     if (key == null) {
       return KeyEventResult.ignored;
     }
 
-    final handled = widget.terminal.keyInput(
-      key,
-      ctrl: HardwareKeyboard.instance.isControlPressed,
-      alt: HardwareKeyboard.instance.isAltPressed,
-      shift: HardwareKeyboard.instance.isShiftPressed,
+    final handled = widget.terminal.sendKey(
+      key: key,
+      mods: ghosttyModifierMask(
+        control: HardwareKeyboard.instance.isControlPressed,
+        alt: HardwareKeyboard.instance.isAltPressed,
+        shift: HardwareKeyboard.instance.isShiftPressed,
+        meta: HardwareKeyboard.instance.isMetaPressed,
+      ),
     );
 
     if (handled) {
@@ -880,12 +880,12 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     final deletedCount = delta.deletedCount;
 
     for (var i = 0; i < deletedCount; i++) {
-      widget.terminal.keyInput(TerminalKey.backspace);
+      widget.terminal.sendKey(key: GhosttyKey.GHOSTTY_KEY_BACKSPACE);
     }
 
     final appendedText = delta.appendedText;
     if (appendedText.isNotEmpty) {
-      widget.terminal.textInput(appendedText);
+      widget.terminal.write(appendedText);
     }
 
     _lastSentText = currentText;
@@ -1361,11 +1361,11 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
 
     final key = clampedTargetOffset < currentOffset
-        ? TerminalKey.arrowLeft
-        : TerminalKey.arrowRight;
+        ? GhosttyKey.GHOSTTY_KEY_ARROW_LEFT
+        : GhosttyKey.GHOSTTY_KEY_ARROW_RIGHT;
     final moveCount = (clampedTargetOffset - currentOffset).abs();
     for (var index = 0; index < moveCount; index++) {
-      widget.terminal.keyInput(key);
+      widget.terminal.sendKey(key: key);
     }
     _lastSentCursorOffset = clampedTargetOffset;
   }
@@ -1750,10 +1750,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         _moveTerminalCursorTo(deletedCount);
         if (clearedBufferedInput) {
           for (var index = 0; index < deletedCount; index++) {
-            widget.terminal.keyInput(TerminalKey.backspace);
+            widget.terminal.sendKey(key: GhosttyKey.GHOSTTY_KEY_BACKSPACE);
           }
         } else {
-          widget.terminal.keyInput(TerminalKey.backspace);
+          widget.terminal.sendKey(key: GhosttyKey.GHOSTTY_KEY_BACKSPACE);
         }
         _sawImeComposition = false;
         _resetCommittedInputState();

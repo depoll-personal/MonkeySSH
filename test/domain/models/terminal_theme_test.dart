@@ -220,7 +220,7 @@ void main() {
         brightWhite: Color(0xFFFFFFFF),
       );
 
-      final xtermTheme = theme.toXtermTheme();
+      final xtermTheme = theme.toGhosttyBundle();
 
       expect(xtermTheme, isNotNull);
     });

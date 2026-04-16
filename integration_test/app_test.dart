@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -7,7 +9,7 @@ Finder _desktopNavItem(String label) => find.widgetWithText(InkWell, label);
 Future<void> _launchDesktopApp(WidgetTester tester) async {
   await tester.binding.setSurfaceSize(const Size(1400, 900));
   addTearDown(() => tester.binding.setSurfaceSize(null));
-  app.main();
+  unawaited(app.main());
   await tester.pumpAndSettle(const Duration(seconds: 3));
 }
 
