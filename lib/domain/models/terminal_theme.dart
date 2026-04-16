@@ -1,12 +1,45 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:xterm/xterm.dart';
+import 'package:ghostty_vte_flutter/ghostty_vte_flutter.dart';
+
+/// Bundle of theme colors consumed by the Ghostty-backed terminal view.
+///
+/// Produced from a [TerminalThemeData] and passed straight into
+/// [GhosttyTerminalView] via its per-prop colors (`backgroundColor`,
+/// `foregroundColor`, `cursorColor`, `selectionColor`, `palette`).
+@immutable
+class GhosttyThemeBundle {
+  /// Creates a new [GhosttyThemeBundle].
+  const GhosttyThemeBundle({
+    required this.foreground,
+    required this.background,
+    required this.cursor,
+    required this.selection,
+    required this.palette,
+  });
+
+  /// Default foreground (text) color.
+  final Color foreground;
+
+  /// Terminal background color.
+  final Color background;
+
+  /// Cursor color.
+  final Color cursor;
+
+  /// Selection highlight color.
+  final Color selection;
+
+  /// ANSI 16-color palette used by [GhosttyTerminalView].
+  final GhosttyTerminalPalette palette;
+}
 
 /// Data model for a terminal color theme.
 ///
 /// Contains all 16 ANSI colors plus special colors for cursor, selection,
-/// foreground, and background. Can be converted to xterm's [TerminalTheme].
+/// foreground, and background. Convert via [toGhosttyBundle] to apply to the
+/// Ghostty-backed terminal view.
 @immutable
 class TerminalThemeData {
   /// Creates a new [TerminalThemeData].
@@ -165,32 +198,32 @@ class TerminalThemeData {
   /// Foreground color for search hits.
   final Color? searchHitForeground;
 
-  /// Converts this theme data to xterm's [TerminalTheme].
-  TerminalTheme toXtermTheme() => TerminalTheme(
-    cursor: cursor,
-    selection: selection,
+  /// Converts this theme data to a [GhosttyThemeBundle] for the terminal view.
+  GhosttyThemeBundle toGhosttyBundle() => GhosttyThemeBundle(
     foreground: foreground,
     background: background,
-    black: black,
-    red: red,
-    green: green,
-    yellow: yellow,
-    blue: blue,
-    magenta: magenta,
-    cyan: cyan,
-    white: white,
-    brightBlack: brightBlack,
-    brightRed: brightRed,
-    brightGreen: brightGreen,
-    brightYellow: brightYellow,
-    brightBlue: brightBlue,
-    brightMagenta: brightMagenta,
-    brightCyan: brightCyan,
-    brightWhite: brightWhite,
-    searchHitBackground: searchHitBackground ?? const Color(0xFFFFDF5D),
-    searchHitBackgroundCurrent:
-        searchHitBackgroundCurrent ?? const Color(0xFFFF9632),
-    searchHitForeground: searchHitForeground ?? const Color(0xFF000000),
+    cursor: cursor,
+    selection: selection,
+    palette: GhosttyTerminalPalette(
+      ansi: <Color>[
+        black,
+        red,
+        green,
+        yellow,
+        blue,
+        magenta,
+        cyan,
+        white,
+        brightBlack,
+        brightRed,
+        brightGreen,
+        brightYellow,
+        brightBlue,
+        brightMagenta,
+        brightCyan,
+        brightWhite,
+      ],
+    ),
   );
 
   /// Creates a copy of this theme with the given fields replaced.

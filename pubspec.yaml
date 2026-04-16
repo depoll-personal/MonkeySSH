@@ -30,7 +30,7 @@ dependencies:
   dartssh2: ^2.15.0
   
   # Terminal
-  xterm: ^4.0.0
+  ghostty_vte_flutter: ^0.1.2+1
   
   # Syntax highlighting
   highlight: ^0.7.0
