@@ -5,16 +5,17 @@ import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ghostty_vte_flutter/ghostty_vte_flutter.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
+import 'package:monkeyssh/domain/models/terminal_compat.dart';
 import 'package:monkeyssh/domain/services/host_key_prompt_handler_provider.dart';
 import 'package:monkeyssh/domain/services/host_key_verification.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
-import 'package:xterm/xterm.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
 const _testHost = String.fromEnvironment('TEST_SSH_HOST');
@@ -209,8 +210,9 @@ Future<void> _focusTerminal(WidgetTester tester) async {
   await tester.pump();
 }
 
-Terminal _terminalFromView(WidgetTester tester) =>
-    tester.widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView)).terminal;
+GhosttyTerminalController _terminalFromView(WidgetTester tester) => tester
+    .widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView))
+    .controller;
 
 Future<void> _updateTerminalEditingValue(
   WidgetTester tester,
@@ -227,7 +229,7 @@ Future<void> _submitNewline(WidgetTester tester) async {
 
 Future<void> _runRemoteEchoCase(
   WidgetTester tester, {
-  required Terminal terminal,
+  required GhosttyTerminalController terminal,
   required String readyMarker,
   required String resultMarker,
   required Future<void> Function() input,
@@ -259,7 +261,7 @@ Future<void> _runRemoteEchoCase(
 
 Future<void> _waitForTerminalText(
   WidgetTester tester,
-  Terminal terminal,
+  GhosttyTerminalController terminal,
   String expected, {
   required String description,
   Duration timeout = const Duration(seconds: 20),
@@ -277,7 +279,7 @@ Future<void> _waitForTerminalText(
   );
 }
 
-String _terminalBufferText(Terminal terminal) {
+String _terminalBufferText(GhosttyTerminalController terminal) {
   final logicalLines = <StringBuffer>[];
 
   for (var index = 0; index < terminal.buffer.lines.length; index += 1) {

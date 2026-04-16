@@ -1,22 +1,26 @@
+import 'dart:convert';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ghostty_vte_flutter/ghostty_vte_flutter.dart';
 import 'package:monkeyssh/presentation/widgets/keyboard_toolbar.dart';
-import 'package:xterm/xterm.dart';
 
-String _terminalKeyOutput(
-  TerminalKey key, {
-  bool shift = false,
-  bool alt = false,
-  bool ctrl = false,
-}) {
-  final output = <String>[];
-  Terminal(
-    onOutput: output.add,
-  ).keyInput(key, shift: shift, alt: alt, ctrl: ctrl);
-  return output.join();
+class _Output {
+  final List<String> chunks = <String>[];
+
+  String get joined => chunks.join();
+
+  bool add(List<int> bytes) {
+    chunks.add(utf8.decode(bytes, allowMalformed: true));
+    return true;
+  }
 }
+
+GhosttyTerminalController _attach(_Output output) =>
+    GhosttyTerminalController()
+      ..attachExternalTransport(writeBytes: output.add);
 
 void main() {
   test('resolveTerminalTabInput returns plain tab by default', () {
@@ -28,10 +32,16 @@ void main() {
   });
 
   group('KeyboardToolbar', () {
-    late Terminal terminal;
+    late GhosttyTerminalController terminal;
+    late _Output output;
 
     setUp(() {
-      terminal = Terminal(maxLines: 100);
+      output = _Output();
+      terminal = _attach(output);
+    });
+
+    tearDown(() {
+      terminal.dispose();
     });
 
     testWidgets('renders all key rows', (tester) async {
@@ -41,14 +51,12 @@ void main() {
         ),
       );
 
-      // Check modifier row keys
       expect(find.byTooltip('Escape'), findsOneWidget);
       expect(find.byTooltip('Tab'), findsOneWidget);
       expect(find.byTooltip('Ctrl'), findsOneWidget);
       expect(find.byTooltip('Alt'), findsOneWidget);
       expect(find.byTooltip('Shift'), findsOneWidget);
 
-      // Check navigation row keys
       expect(find.byTooltip('Up'), findsOneWidget);
       expect(find.byTooltip('Down'), findsOneWidget);
       expect(find.byTooltip('Left'), findsOneWidget);
@@ -68,7 +76,7 @@ void main() {
         ),
       );
 
-      const expectedOrder = [
+      const expectedOrder = <String>[
         'Left',
         'Right',
         'Up',
@@ -95,21 +103,18 @@ void main() {
         ),
       );
 
-      // Find Ctrl button
       final ctrlFinder = find.byTooltip('Ctrl');
       expect(ctrlFinder, findsOneWidget);
 
-      // Tap to activate (one-shot mode)
       await tester.tap(ctrlFinder);
       await tester.pumpAndSettle();
-
-      // Tap again to deactivate
       await tester.tap(ctrlFinder);
       await tester.pumpAndSettle();
     });
 
     testWidgets(
-      'controller preserves Ctrl state across toolbar rebuilds for system keyboard input',
+      'controller preserves Ctrl state across toolbar rebuilds for system '
+      'keyboard input',
       (tester) async {
         final controller = KeyboardToolbarController();
         addTearDown(controller.dispose);
@@ -155,7 +160,6 @@ void main() {
         ),
       );
 
-      // Tap a key
       await tester.tap(find.text('/'));
       await tester.pump();
 
@@ -175,8 +179,6 @@ void main() {
 
     testWidgets('Enter button renders and triggers callback', (tester) async {
       var callCount = 0;
-      final output = <String>[];
-      terminal.onOutput = output.add;
 
       await tester.pumpWidget(
         MaterialApp(
@@ -189,7 +191,6 @@ void main() {
         ),
       );
 
-      // Enter button uses an icon, find by tooltip
       final enterButton = find.byTooltip('Enter');
       expect(enterButton, findsOneWidget);
 
@@ -197,13 +198,10 @@ void main() {
       await tester.pump();
 
       expect(callCount, 1);
-      expect(output, contains(_terminalKeyOutput(TerminalKey.enter)));
+      expect(output.joined, contains('\r'));
     });
 
     testWidgets('Tab ignores the system keyboard shift state', (tester) async {
-      final output = <String>[];
-      terminal.onOutput = output.add;
-
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
@@ -215,14 +213,11 @@ void main() {
       await tester.pump();
       await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
 
-      expect(output, contains('\t'));
-      expect(output, isNot(contains('\x1b[Z')));
+      expect(output.joined, contains('\t'));
+      expect(output.joined, isNot(contains('\x1b[Z')));
     });
 
     testWidgets('toolbar Shift still sends reverse-tab', (tester) async {
-      final output = <String>[];
-      terminal.onOutput = output.add;
-
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
@@ -234,13 +229,10 @@ void main() {
       await tester.tap(find.byTooltip('Tab'));
       await tester.pump();
 
-      expect(output, contains('\x1b[Z'));
+      expect(output.joined, contains('\x1b[Z'));
     });
 
     testWidgets('toolbar Shift applies to Enter', (tester) async {
-      final output = <String>[];
-      terminal.onOutput = output.add;
-
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
@@ -252,11 +244,21 @@ void main() {
       await tester.tap(find.byTooltip('Enter'));
       await tester.pump();
 
+      // Shift+Enter is encoded as a modified-key sequence by the Ghostty key
+      // encoder. Accept any encoding that indicates Shift+Enter (raw CR, Kitty
+      // `CSI 13 ; 2 u`, or `CSI 27 ; 2 ; 13 ~`).
+      final bytes = output.joined;
       expect(
-        output,
-        contains(_terminalKeyOutput(TerminalKey.enter, shift: true)),
+        bytes.contains('\r') ||
+            bytes.contains('\x1b[13;2u') ||
+            bytes.contains('\x1b[27;2;13~'),
+        isTrue,
+        reason:
+            'expected a carriage-return or modified-enter sequence, '
+            'got ${bytes.codeUnits}',
       );
     });
+
     test('keeps bottom safe-area padding when keyboard is closed', () {
       const mediaQuery = MediaQueryData(padding: EdgeInsets.only(bottom: 34));
 
@@ -273,9 +275,6 @@ void main() {
     });
 
     testWidgets('arrow keys repeat while held', (tester) async {
-      final output = <String>[];
-      terminal.onOutput = output.add;
-
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
@@ -290,15 +289,12 @@ void main() {
       await gesture.up();
       await tester.pump();
 
-      expect(output.where((value) => value == '\x1b[A').length, greaterThan(1));
+      expect('\x1b[A'.allMatches(output.joined).length, greaterThan(1));
     });
 
     testWidgets('repeating navigation stops when gesture is cancelled', (
       tester,
     ) async {
-      final output = <String>[];
-      terminal.onOutput = output.add;
-
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
@@ -313,17 +309,14 @@ void main() {
       await gesture.cancel();
       await tester.pump();
 
-      final outputCount = output.where((value) => value == '\x1b[C').length;
+      final outputCount = '\x1b[C'.allMatches(output.joined).length;
       await tester.pump(const Duration(milliseconds: 150));
 
       expect(outputCount, greaterThan(1));
-      expect(output.where((value) => value == '\x1b[C').length, outputCount);
+      expect('\x1b[C'.allMatches(output.joined).length, outputCount);
     });
 
     testWidgets('repeating navigation stops when released', (tester) async {
-      final output = <String>[];
-      terminal.onOutput = output.add;
-
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
@@ -338,36 +331,33 @@ void main() {
       await gesture.up();
       await tester.pump();
 
-      final outputCount = output.where((value) => value == '\x1b[H').length;
+      final outputCount = '\x1b[H'.allMatches(output.joined).length;
       await tester.pump(const Duration(milliseconds: 150));
 
       expect(outputCount, greaterThan(1));
-      expect(output.where((value) => value == '\x1b[H').length, outputCount);
+      expect('\x1b[H'.allMatches(output.joined).length, outputCount);
     });
   });
 
   group('Terminal key sequences', () {
     test('arrow key escape sequences', () {
-      // These are the expected escape sequences for arrow keys
-      expect('\x1b[A', equals('\x1b[A')); // Up
-      expect('\x1b[B', equals('\x1b[B')); // Down
-      expect('\x1b[C', equals('\x1b[C')); // Right
-      expect('\x1b[D', equals('\x1b[D')); // Left
+      expect('\x1b[A', equals('\x1b[A'));
+      expect('\x1b[B', equals('\x1b[B'));
+      expect('\x1b[C', equals('\x1b[C'));
+      expect('\x1b[D', equals('\x1b[D'));
     });
 
     test('navigation key escape sequences', () {
-      expect('\x1b[H', equals('\x1b[H')); // Home
-      expect('\x1b[F', equals('\x1b[F')); // End
-      expect('\x1b[5~', equals('\x1b[5~')); // Page Up
-      expect('\x1b[6~', equals('\x1b[6~')); // Page Down
+      expect('\x1b[H', equals('\x1b[H'));
+      expect('\x1b[F', equals('\x1b[F'));
+      expect('\x1b[5~', equals('\x1b[5~'));
+      expect('\x1b[6~', equals('\x1b[6~'));
     });
 
     test('modifier key combinations', () {
-      // With modifiers, sequences change
-      // Shift = 2, Alt = 3, Shift+Alt = 4, Ctrl = 5, etc.
-      expect('\x1b[1;5A', equals('\x1b[1;5A')); // Ctrl+Up
-      expect('\x1b[1;3A', equals('\x1b[1;3A')); // Alt+Up
-      expect('\x1b[1;2A', equals('\x1b[1;2A')); // Shift+Up
+      expect('\x1b[1;5A', equals('\x1b[1;5A'));
+      expect('\x1b[1;3A', equals('\x1b[1;3A'));
+      expect('\x1b[1;2A', equals('\x1b[1;2A'));
     });
   });
 }

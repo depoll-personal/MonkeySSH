@@ -1,15 +1,17 @@
 // ignore_for_file: public_member_api_docs
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ghostty_vte_flutter/ghostty_vte_flutter.dart';
 import 'package:monkeyssh/domain/models/auto_connect_command.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
+import 'package:monkeyssh/presentation/widgets/ghostty_key_input_map.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
-import 'package:xterm/xterm.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
 
@@ -42,7 +44,7 @@ typedef _SegmentSeed = ({
 
 typedef _TerminalHarness = ({
   List<String> terminalOutput,
-  Terminal terminal,
+  GhosttyTerminalController terminal,
   FocusNode focusNode,
   TerminalTextInputHandlerController controller,
 });
@@ -744,7 +746,7 @@ Future<_TerminalHarness> _pumpTerminalHarness(
   TerminalTextInputHandlerController? controller,
 }) async {
   final terminalOutput = <String>[];
-  final terminal = Terminal(onOutput: terminalOutput.add);
+  final terminal = _newTerminalCapturing(terminalOutput);
   final focusNode = FocusNode();
   final effectiveController =
       controller ?? TerminalTextInputHandlerController();
@@ -957,16 +959,38 @@ TextEditingValue _editingValue(
 );
 
 String _terminalKeyOutput(
-  TerminalKey key, {
+  GhosttyKey key, {
   bool shift = false,
   bool alt = false,
   bool ctrl = false,
 }) {
   final output = <String>[];
-  Terminal(
-    onOutput: output.add,
-  ).keyInput(key, shift: shift, alt: alt, ctrl: ctrl);
+  GhosttyTerminalController()
+    ..attachExternalTransport(
+      writeBytes: (b) {
+        output.add(utf8.decode(b, allowMalformed: true));
+        return true;
+      },
+    )
+    ..sendKey(
+      key: key,
+      mods: ghosttyModifierMask(shift: shift, alt: alt, control: ctrl),
+    );
   return output.join();
+}
+
+/// Creates a [GhosttyTerminalController] whose outbound bytes are decoded
+/// as UTF-8 and appended to [output] — a drop-in replacement for the legacy
+/// `Terminal(onOutput: output.add)` construction.
+GhosttyTerminalController _newTerminalCapturing(List<String> output) {
+  final controller = GhosttyTerminalController()
+    ..attachExternalTransport(
+      writeBytes: (bytes) {
+        output.add(utf8.decode(bytes, allowMalformed: true));
+        return true;
+      },
+    );
+  return controller;
 }
 
 int _normalizeOffsetToUserSpace(int offset, int prefixLength, int maxLength) {
@@ -1149,7 +1173,7 @@ Future<_ComparisonResult> _runTerminalSequence(
   WidgetTester tester,
   List<TextEditingValue> userValues,
 ) async {
-  final terminal = Terminal();
+  final terminal = GhosttyTerminalController();
   final focusNode = FocusNode();
 
   await tester.pumpWidget(
@@ -1219,7 +1243,7 @@ void main() {
       tester,
     ) async {
       final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
+      final terminal = _newTerminalCapturing(terminalOutput);
       final focusNode = FocusNode();
 
       await tester.pumpWidget(
@@ -1265,7 +1289,7 @@ void main() {
       tester,
     ) async {
       final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
+      final terminal = _newTerminalCapturing(terminalOutput);
       final focusNode = FocusNode();
 
       await tester.pumpWidget(
@@ -1295,7 +1319,7 @@ void main() {
       tester,
     ) async {
       final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
+      final terminal = _newTerminalCapturing(terminalOutput);
       final focusNode = FocusNode();
 
       await tester.pumpWidget(
@@ -1325,7 +1349,7 @@ void main() {
       tester,
     ) async {
       final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
+      final terminal = _newTerminalCapturing(terminalOutput);
       final focusNode = FocusNode();
 
       await tester.pumpWidget(
@@ -1363,7 +1387,7 @@ void main() {
       'preserves the swipe separator after an input reset when text already exists',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -1395,7 +1419,7 @@ void main() {
       'trims a swipe separator after an input reset when the current line is only a prompt marker',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
         final controller = TerminalTextInputHandlerController();
 
@@ -1432,7 +1456,7 @@ void main() {
       'external prompt output does not reconnect the IME client before keyboard input',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
         final controller = TerminalTextInputHandlerController();
 
@@ -1474,7 +1498,7 @@ void main() {
       'after keyboard input',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
         final controller = TerminalTextInputHandlerController();
 
@@ -1527,7 +1551,7 @@ void main() {
       'trims a duplicate swipe separator after an input reset when text already ends with whitespace',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -1559,7 +1583,7 @@ void main() {
       tester,
     ) async {
       final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
+      final terminal = _newTerminalCapturing(terminalOutput);
       final focusNode = FocusNode();
 
       await tester.pumpWidget(
@@ -1595,7 +1619,7 @@ void main() {
       tester,
     ) async {
       final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
+      final terminal = _newTerminalCapturing(terminalOutput);
       final focusNode = FocusNode();
 
       await tester.pumpWidget(
@@ -1625,7 +1649,7 @@ void main() {
       tester,
     ) async {
       final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
+      final terminal = _newTerminalCapturing(terminalOutput);
       final focusNode = FocusNode();
 
       await tester.pumpWidget(
@@ -1663,7 +1687,7 @@ void main() {
       'preserves a separator after typed input is fully backspaced away',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -1712,7 +1736,7 @@ void main() {
       'trims a leading swipe space after swipe input is fully backspaced away',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -1752,7 +1776,7 @@ void main() {
       'trims a leading suggestion space after input is fully backspaced away',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -1800,7 +1824,7 @@ void main() {
       tester,
     ) async {
       final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
+      final terminal = _newTerminalCapturing(terminalOutput);
       final focusNode = FocusNode();
 
       await tester.pumpWidget(
@@ -1856,7 +1880,7 @@ void main() {
       'forwards a terminal backspace when delete detection loses the marker with no buffered text',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -1885,7 +1909,7 @@ void main() {
 
         expect(
           terminalOutput.join(),
-          _terminalKeyOutput(TerminalKey.backspace),
+          _terminalKeyOutput(GhosttyKey.GHOSTTY_KEY_BACKSPACE),
         );
         expect(
           (tester.state(find.byType(TerminalTextInputHandler))
@@ -1905,7 +1929,7 @@ void main() {
       tester,
     ) async {
       final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
+      final terminal = _newTerminalCapturing(terminalOutput);
       final focusNode = FocusNode();
 
       await tester.pumpWidget(
@@ -1940,7 +1964,7 @@ void main() {
         terminalOutput.join(),
         List.filled(
           'hello'.length,
-          _terminalKeyOutput(TerminalKey.backspace),
+          _terminalKeyOutput(GhosttyKey.GHOSTTY_KEY_BACKSPACE),
         ).join(),
       );
       expect(
@@ -1965,7 +1989,7 @@ void main() {
 
     testWidgets('keeps IME replacement selections intact', (tester) async {
       final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
+      final terminal = _newTerminalCapturing(terminalOutput);
       final focusNode = FocusNode();
 
       await tester.pumpWidget(
@@ -2035,7 +2059,7 @@ void main() {
       'keeps the tracked cursor aligned after a hardware left arrow before IME insertion',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -2093,7 +2117,7 @@ void main() {
       'moves the terminal cursor when the IME caret moves without text changes',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -2129,7 +2153,10 @@ void main() {
 
         expect(
           terminalOutput.join(),
-          List.filled(5, _terminalKeyOutput(TerminalKey.arrowLeft)).join(),
+          List.filled(
+            5,
+            _terminalKeyOutput(GhosttyKey.GHOSTTY_KEY_ARROW_LEFT),
+          ).join(),
         );
         expect(
           _terminalStateFromEvents(
@@ -2148,7 +2175,7 @@ void main() {
       'resyncs the IME state when the caret moves within existing text',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -2198,7 +2225,7 @@ void main() {
       tester,
     ) async {
       final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
+      final terminal = _newTerminalCapturing(terminalOutput);
       final focusNode = FocusNode();
 
       await tester.pumpWidget(
@@ -2258,7 +2285,7 @@ void main() {
       'typing after a touch-driven caret move inserts from a fresh IME buffer',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -2317,7 +2344,7 @@ void main() {
       'resyncs the IME state when a replacement selection collapses to a different caret position',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -2362,7 +2389,10 @@ void main() {
 
         expect(
           terminalOutput.join(),
-          List.filled(3, _terminalKeyOutput(TerminalKey.arrowLeft)).join(),
+          List.filled(
+            3,
+            _terminalKeyOutput(GhosttyKey.GHOSTTY_KEY_ARROW_LEFT),
+          ).join(),
         );
         expect(
           tester.testTextInput.log.where(
@@ -2379,7 +2409,7 @@ void main() {
       'touch-driven caret moves clear the IME buffer after a replacement selection collapses elsewhere',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -2448,7 +2478,7 @@ void main() {
       'keeps the cursor aligned when a replacement is followed by a later move and backspace elsewhere',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -2520,7 +2550,7 @@ void main() {
       'keeps the cursor aligned when a replacement is followed by a later replacement elsewhere',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -2594,7 +2624,7 @@ void main() {
       'keeps the cursor aligned when replacement selection is followed by immediate backspace',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -2665,7 +2695,7 @@ void main() {
       'keeps the cursor aligned when a replacement selection includes a trailing space before backspace',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -2731,7 +2761,7 @@ void main() {
       'keeps the cursor aligned when deleting and then reinserting a replacement separator',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -2802,7 +2832,7 @@ void main() {
       'keeps the cursor aligned when whitespace-cluster replacement collapses two spaces before backspace',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -2865,7 +2895,7 @@ void main() {
       'keeps the cursor aligned across repeated non-collapsed replacements before backspace',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -2956,7 +2986,7 @@ void main() {
       'keeps the cursor aligned across repeated-word non-collapsed replacements before backspace',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -3044,7 +3074,7 @@ void main() {
       'keeps the cursor aligned when editing inside a triple-space cluster after an internal move',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -3107,7 +3137,7 @@ void main() {
       'keeps the cursor aligned after replacing a repeated word and then backspacing a later repeated match',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -3175,7 +3205,7 @@ void main() {
       'keeps the terminal cursor aligned at a space boundary before insertion',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -3228,7 +3258,7 @@ void main() {
       'inserts at a moved caret without rewriting the unchanged suffix',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -3266,7 +3296,7 @@ void main() {
 
         expect(
           terminalOutput.join(),
-          '${List.filled(3, _terminalKeyOutput(TerminalKey.arrowLeft)).join()}X',
+          '${List.filled(3, _terminalKeyOutput(GhosttyKey.GHOSTTY_KEY_ARROW_LEFT)).join()}X',
         );
         expect(
           _terminalStateFromEvents(
@@ -3285,7 +3315,7 @@ void main() {
       'inserts at the beginning of the line without rewriting the existing text',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -3323,7 +3353,7 @@ void main() {
 
         expect(
           terminalOutput.join(),
-          '${List.filled(5, _terminalKeyOutput(TerminalKey.arrowLeft)).join()}X',
+          '${List.filled(5, _terminalKeyOutput(GhosttyKey.GHOSTTY_KEY_ARROW_LEFT)).join()}X',
         );
         expect(
           _terminalStateFromEvents(
@@ -3342,7 +3372,7 @@ void main() {
       'deletes at a moved caret without rewriting the unchanged suffix',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -3380,8 +3410,11 @@ void main() {
 
         expect(
           terminalOutput.join(),
-          List.filled(3, _terminalKeyOutput(TerminalKey.arrowLeft)).join() +
-              _terminalKeyOutput(TerminalKey.backspace),
+          List.filled(
+                3,
+                _terminalKeyOutput(GhosttyKey.GHOSTTY_KEY_ARROW_LEFT),
+              ).join() +
+              _terminalKeyOutput(GhosttyKey.GHOSTTY_KEY_BACKSPACE),
         );
         expect(
           _terminalStateFromEvents(
@@ -3400,7 +3433,7 @@ void main() {
       'inserts an identical character at a moved caret without rewriting the unchanged suffix',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -3438,7 +3471,7 @@ void main() {
 
         expect(
           terminalOutput.join(),
-          '${List.filled(3, _terminalKeyOutput(TerminalKey.arrowLeft)).join()}a',
+          '${List.filled(3, _terminalKeyOutput(GhosttyKey.GHOSTTY_KEY_ARROW_LEFT)).join()}a',
         );
         expect(
           _terminalStateFromEvents(
@@ -3457,7 +3490,7 @@ void main() {
       'moves and inserts around an emoji using grapheme-aware cursor offsets',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -3495,7 +3528,7 @@ void main() {
 
         expect(
           terminalOutput.join(),
-          '${List.filled(2, _terminalKeyOutput(TerminalKey.arrowLeft)).join()}X',
+          '${List.filled(2, _terminalKeyOutput(GhosttyKey.GHOSTTY_KEY_ARROW_LEFT)).join()}X',
         );
         expect(
           _terminalStateFromEvents(
@@ -3514,7 +3547,7 @@ void main() {
       'deletes an identical character at a moved caret without rewriting the unchanged suffix',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -3552,8 +3585,8 @@ void main() {
 
         expect(
           terminalOutput.join(),
-          '${List.filled(3, _terminalKeyOutput(TerminalKey.arrowLeft)).join()}'
-          '${_terminalKeyOutput(TerminalKey.backspace)}',
+          '${List.filled(3, _terminalKeyOutput(GhosttyKey.GHOSTTY_KEY_ARROW_LEFT)).join()}'
+          '${_terminalKeyOutput(GhosttyKey.GHOSTTY_KEY_BACKSPACE)}',
         );
         expect(
           _terminalStateFromEvents(
@@ -3572,7 +3605,7 @@ void main() {
       'keeps the cursor aligned when inserting and then backspacing at a space boundary',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -3615,8 +3648,8 @@ void main() {
 
         expect(
           terminalOutput.join(),
-          '${List.filled(3, _terminalKeyOutput(TerminalKey.arrowLeft)).join()}'
-          'X${_terminalKeyOutput(TerminalKey.backspace)}',
+          '${List.filled(3, _terminalKeyOutput(GhosttyKey.GHOSTTY_KEY_ARROW_LEFT)).join()}'
+          'X${_terminalKeyOutput(GhosttyKey.GHOSTTY_KEY_BACKSPACE)}',
         );
         expect(
           _terminalStateFromEvents(
@@ -3635,7 +3668,7 @@ void main() {
       'keeps the cursor aligned when inserting and then backspacing between repeated spaces',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -3678,8 +3711,8 @@ void main() {
 
         expect(
           terminalOutput.join(),
-          '${List.filled(4, _terminalKeyOutput(TerminalKey.arrowLeft)).join()}'
-          'X${_terminalKeyOutput(TerminalKey.backspace)}',
+          '${List.filled(4, _terminalKeyOutput(GhosttyKey.GHOSTTY_KEY_ARROW_LEFT)).join()}'
+          'X${_terminalKeyOutput(GhosttyKey.GHOSTTY_KEY_BACKSPACE)}',
         );
         expect(
           _terminalStateFromEvents(
@@ -3698,7 +3731,7 @@ void main() {
       'replaces punctuation at a moved caret without rewriting the trailing word',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -3736,8 +3769,8 @@ void main() {
 
         expect(
           terminalOutput.join(),
-          '${List.filled(6, _terminalKeyOutput(TerminalKey.arrowLeft)).join()}'
-          '${_terminalKeyOutput(TerminalKey.backspace)};',
+          '${List.filled(6, _terminalKeyOutput(GhosttyKey.GHOSTTY_KEY_ARROW_LEFT)).join()}'
+          '${_terminalKeyOutput(GhosttyKey.GHOSTTY_KEY_BACKSPACE)};',
         );
         expect(
           _terminalStateFromEvents(
@@ -3756,7 +3789,7 @@ void main() {
       'keeps the cursor aligned when replacing punctuation and double-space clusters before backspace',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -3822,7 +3855,7 @@ void main() {
       'replaces the middle repeated word without touching the trailing match',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -3880,7 +3913,7 @@ void main() {
       'keeps the cursor aligned after replacing a repeated word and then backspacing',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -3928,8 +3961,8 @@ void main() {
 
         expect(
           terminalOutput.join(),
-          '${List.filled(3, _terminalKeyOutput(TerminalKey.arrowLeft)).join()}'
-          'ne${_terminalKeyOutput(TerminalKey.backspace)}',
+          '${List.filled(3, _terminalKeyOutput(GhosttyKey.GHOSTTY_KEY_ARROW_LEFT)).join()}'
+          'ne${_terminalKeyOutput(GhosttyKey.GHOSTTY_KEY_BACKSPACE)}',
         );
         expect(
           _terminalStateFromEvents(
@@ -3948,7 +3981,7 @@ void main() {
       'keeps the cursor aligned when a repeated-word replacement commits from composition before backspace',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -4022,7 +4055,7 @@ void main() {
       'keeps the cursor aligned when composition moves away before collapsing and a later backspace follows',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -4106,7 +4139,7 @@ void main() {
       'preserves replacement text after a later word delete drops part of the marker',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -4169,7 +4202,7 @@ void main() {
       'keeps the cursor aligned when an autocorrected word is punctuated and then backspaced',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -4237,7 +4270,7 @@ void main() {
       'keeps the cursor aligned when replacing across an emoji boundary and trailing space',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
         const initialText = 'go 👩🏽‍💻 now';
         const selectionStart = _deleteDetectionMarker.length + 'go '.length;
@@ -4305,7 +4338,7 @@ void main() {
       'keeps the cursor aligned when replacing the first word and trailing space at the buffer start',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
         const initialText = 'teh world';
         const selectionEnd = _deleteDetectionMarker.length + 'teh '.length;
@@ -4371,7 +4404,7 @@ void main() {
       'keeps the cursor aligned when replacing the last word and leading space at the buffer end',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
         const initialText = 'hello teh';
         const selectionStart = _deleteDetectionMarker.length + 'hello'.length;
@@ -4438,7 +4471,7 @@ void main() {
       'keeps the cursor aligned across repeated backspaces after an autocorrected repeated token',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -4506,7 +4539,7 @@ void main() {
       'suppresses the first follow-up newline action after a committed newline update',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -4546,7 +4579,10 @@ void main() {
 
         await performNewlineAction();
 
-        expect(terminalOutput.join(), _terminalKeyOutput(TerminalKey.enter));
+        expect(
+          terminalOutput.join(),
+          _terminalKeyOutput(GhosttyKey.GHOSTTY_KEY_ENTER),
+        );
 
         focusNode.dispose();
       },
@@ -4570,8 +4606,8 @@ void main() {
 
       expect(
         harness.terminalOutput.join(),
-        _terminalKeyOutput(TerminalKey.enter, shift: true) +
-            _terminalKeyOutput(TerminalKey.enter),
+        _terminalKeyOutput(GhosttyKey.GHOSTTY_KEY_ENTER, shift: true) +
+            _terminalKeyOutput(GhosttyKey.GHOSTTY_KEY_ENTER),
       );
 
       await _disposeTerminalHarness(tester, harness);
@@ -4581,7 +4617,7 @@ void main() {
       tester,
     ) async {
       final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
+      final terminal = _newTerminalCapturing(terminalOutput);
       final focusNode = FocusNode();
 
       await tester.pumpWidget(
@@ -4623,7 +4659,7 @@ void main() {
     testWidgets('notifies when soft-keyboard input is sent to the terminal', (
       tester,
     ) async {
-      final terminal = Terminal();
+      final terminal = GhosttyTerminalController();
       final focusNode = FocusNode();
       var callbackCount = 0;
 
@@ -4661,7 +4697,7 @@ void main() {
       'ignores a stale newline edit when the IME action arrives first',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
         var reviewCount = 0;
 
@@ -4724,7 +4760,7 @@ void main() {
       'accepts new text after swallowing an action-first newline commit',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
         var reviewCount = 0;
 
@@ -4784,7 +4820,7 @@ void main() {
     );
 
     testWidgets('opens the keyboard after a touch tap', (tester) async {
-      final terminal = Terminal();
+      final terminal = GhosttyTerminalController();
       final focusNode = FocusNode();
 
       await tester.pumpWidget(
@@ -4826,7 +4862,7 @@ void main() {
     testWidgets(
       'does not reopen the keyboard when the platform closes it while focused',
       (tester) async {
-        final terminal = Terminal();
+        final terminal = GhosttyTerminalController();
         final focusNode = FocusNode();
         addTearDown(focusNode.dispose);
 
@@ -4867,7 +4903,7 @@ void main() {
     testWidgets('does not open the keyboard after a touch drag', (
       tester,
     ) async {
-      final terminal = Terminal();
+      final terminal = GhosttyTerminalController();
       final focusNode = FocusNode();
 
       await tester.pumpWidget(
@@ -4913,7 +4949,7 @@ void main() {
     testWidgets('does not open the keyboard after a touch tap when read only', (
       tester,
     ) async {
-      final terminal = Terminal();
+      final terminal = GhosttyTerminalController();
       final focusNode = FocusNode();
 
       await tester.pumpWidget(
@@ -4952,7 +4988,7 @@ void main() {
       'does not open the keyboard after a touch tap when tapToShowKeyboard '
       'is false',
       (tester) async {
-        final terminal = Terminal();
+        final terminal = GhosttyTerminalController();
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -4990,7 +5026,7 @@ void main() {
 
     testWidgets('does not reopen the keyboard on focus restoration when '
         'tapToShowKeyboard is false', (tester) async {
-      final terminal = Terminal();
+      final terminal = GhosttyTerminalController();
       final focusNode = FocusNode();
       final outerFocusNode = FocusNode();
 
@@ -5047,7 +5083,7 @@ void main() {
     testWidgets(
       'requestKeyboard still shows keyboard when tapToShowKeyboard is false',
       (tester) async {
-        final terminal = Terminal();
+        final terminal = GhosttyTerminalController();
         final focusNode = FocusNode();
         final controller = TerminalTextInputHandlerController();
 
@@ -5083,7 +5119,7 @@ void main() {
     testWidgets('does not open the keyboard after a suppressed touch tap', (
       tester,
     ) async {
-      final terminal = Terminal();
+      final terminal = GhosttyTerminalController();
       final focusNode = FocusNode();
       final controller = TerminalTextInputHandlerController();
 
@@ -5133,7 +5169,7 @@ void main() {
     testWidgets(
       'does not open the keyboard after a multitouch gesture when the last finger stays still',
       (tester) async {
-        final terminal = Terminal();
+        final terminal = GhosttyTerminalController();
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -5188,7 +5224,7 @@ void main() {
       tester,
     ) async {
       final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
+      final terminal = _newTerminalCapturing(terminalOutput);
       final focusNode = FocusNode();
       final decision = Completer<bool>();
       final reviews = <TerminalCommandReview>[];
@@ -5245,7 +5281,7 @@ void main() {
       'reviews a suspicious committed IME payload after composition ends',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
         final decision = Completer<bool>();
         final reviews = <TerminalCommandReview>[];
@@ -5311,7 +5347,7 @@ void main() {
       tester,
     ) async {
       final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
+      final terminal = _newTerminalCapturing(terminalOutput);
       final focusNode = FocusNode();
       final decision = Completer<bool>();
       final reviews = <TerminalCommandReview>[];
@@ -5365,7 +5401,7 @@ void main() {
       'reviews a suspicious committed IME payload while keeping its selection',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
         final decision = Completer<bool>();
         final reviews = <TerminalCommandReview>[];
@@ -5451,7 +5487,7 @@ void main() {
       tester,
     ) async {
       final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
+      final terminal = _newTerminalCapturing(terminalOutput);
       final focusNode = FocusNode();
 
       await tester.pumpWidget(
@@ -5493,7 +5529,7 @@ void main() {
       'reviews IME insertions against the full terminal line context',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
         final reviews = <TerminalCommandReview>[];
 
@@ -5561,7 +5597,7 @@ void main() {
       'ignores stale review approvals when a newer editing value arrives',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
         final decision = Completer<bool>();
         final reviews = <TerminalCommandReview>[];
@@ -5630,7 +5666,7 @@ void main() {
       'ignores stale review approvals after an external IME buffer clear',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
         final controller = TerminalTextInputHandlerController();
         final decision = Completer<bool>();
@@ -5689,7 +5725,7 @@ void main() {
       'trims a swipe-leading space even when a composing update is overwritten in the review queue',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
         final decision = Completer<bool>();
 
@@ -5755,7 +5791,7 @@ void main() {
       'reviews IME insertions against terminal state after input resets',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
         final reviews = <TerminalCommandReview>[];
         var readOnly = false;
@@ -6210,7 +6246,7 @@ void main() {
       tester,
     ) async {
       final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
+      final terminal = _newTerminalCapturing(terminalOutput);
       final focusNode = FocusNode();
 
       await tester.pumpWidget(
@@ -6273,7 +6309,7 @@ void main() {
       tester,
     ) async {
       final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
+      final terminal = _newTerminalCapturing(terminalOutput);
       final focusNode = FocusNode();
 
       await tester.pumpWidget(
@@ -6320,7 +6356,7 @@ void main() {
       'clears the IME buffer after deleting a corrected contraction tail',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -6370,7 +6406,7 @@ void main() {
       'trims a leading swipe space after backspace-triggered IME buffer clear',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -6418,7 +6454,7 @@ void main() {
       'trims a leading suggestion space after backspace-triggered IME buffer clear',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -6465,7 +6501,7 @@ void main() {
       'preserves the shortened prefix when a delete-reset continuation resumes the same word with the live terminal prefix',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -6513,7 +6549,7 @@ void main() {
       'replaces a shortened first word after backspace without duplicating the prefix',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -6575,7 +6611,7 @@ void main() {
       'preserves a new separator when a trailing-backspace reset is followed by a same-initial unrelated committed word',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -6629,7 +6665,7 @@ void main() {
       'preserves the deleted suffix when a trailing-backspace reset resumes the same word and continues into the next word',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -6683,7 +6719,7 @@ void main() {
       'keeps the shortened prefix when later delete-reset words only share letters with the deleted suggestion',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -6746,7 +6782,7 @@ void main() {
       'drops a stale one-letter delete-reset fragment before the next word',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -6813,7 +6849,7 @@ void main() {
       'trims a leading IME separator during delete-reset replacement when the live terminal prefix is visible',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -6876,7 +6912,7 @@ void main() {
       'preserves a manual separator when replacing a swiped word after backspacing into it',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -6940,7 +6976,7 @@ void main() {
       'preserves an IME separator when replacing a swiped word after backspacing into it',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -6996,7 +7032,7 @@ void main() {
       'does not force-resync the IME during replacement after deleting a later word',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -7066,7 +7102,7 @@ void main() {
       tester,
     ) async {
       final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
+      final terminal = _newTerminalCapturing(terminalOutput);
       final focusNode = FocusNode();
 
       await tester.pumpWidget(
@@ -7110,7 +7146,7 @@ void main() {
       tester,
     ) async {
       final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
+      final terminal = _newTerminalCapturing(terminalOutput);
       final focusNode = FocusNode();
       var modifierActive = false;
 
@@ -7165,7 +7201,7 @@ void main() {
       'controller clears the IME buffer after external terminal actions',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
         final controller = TerminalTextInputHandlerController();
 
@@ -7211,7 +7247,7 @@ void main() {
       'resets IME after second character of a two-part chord (tmux Ctrl+b, c)',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
         var modifierActive = false;
         var fakeNow = DateTime(2026);
@@ -7296,7 +7332,7 @@ void main() {
       'typing copilot after tmux Ctrl+b, c keeps the leading c when space is pressed',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
         final controller = TerminalTextInputHandlerController();
         var modifierActive = false;
@@ -7364,7 +7400,7 @@ void main() {
       'preserves an intentional space inserted inside the first token',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
         final controller = TerminalTextInputHandlerController();
 
@@ -7418,7 +7454,7 @@ void main() {
       'preserves leading indentation when a split token is normalized',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
         final controller = TerminalTextInputHandlerController();
         var modifierActive = false;
@@ -7491,7 +7527,7 @@ void main() {
       'does not reset after modifier chord when follow-up arrives after timeout',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
         var modifierActive = false;
         var fakeNow = DateTime(2026);
@@ -7560,7 +7596,7 @@ void main() {
       tester,
     ) async {
       final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
+      final terminal = _newTerminalCapturing(terminalOutput);
       final focusNode = FocusNode();
 
       await tester.pumpWidget(

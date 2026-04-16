@@ -12,11 +12,12 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:ghostty_vte_flutter/ghostty_vte_flutter.dart'
+    hide GhosttyTerminalWidget;
 import 'package:go_router/go_router.dart';
 import 'package:pasteboard/pasteboard.dart';
 import 'package:path/path.dart' as path;
 import 'package:url_launcher/url_launcher.dart';
-import 'package:xterm/xterm.dart' hide TerminalThemes;
 
 import '../../app/routes.dart';
 import '../../data/database/database.dart';
@@ -26,6 +27,7 @@ import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/monetization.dart';
+import '../../domain/models/terminal_compat.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
@@ -2172,8 +2174,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   static const _promptOutputImeResetDebounce = Duration(milliseconds: 75);
   final _terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
 
-  late Terminal _terminal;
-  late final TerminalController _terminalController;
+  late GhosttyTerminalController _terminal;
+  late final LegacyTerminalSelectionController _terminalController;
   late final ScrollController _terminalScrollController;
   late final ScrollController _nativeSelectionScrollController;
   late final TextEditingController _nativeSelectionController;
@@ -2371,8 +2373,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       (previous, next) =>
           unawaited(_applySharedClipboardSetting(enabled: next)),
     );
-    _terminal = Terminal(maxLines: 10000);
-    _terminalController = TerminalController();
+    _terminal = GhosttyTerminalController();
+    _terminalController = LegacyTerminalSelectionController()
+      ..addListener(_onSelectionChanged);
     _terminalScrollController = ScrollController()
       ..addListener(_handleTerminalScroll);
     _nativeSelectionScrollController = ScrollController()
@@ -2381,7 +2384,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _isUsingAltBuffer = _terminal.isUsingAltBuffer;
     _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
     _terminal.addListener(_onTerminalStateChanged);
-    _terminalController.addListener(_onSelectionChanged);
     _terminalFocusNode = FocusNode();
     // Defer connection to avoid modifying provider state during widget build
     Future.microtask(_loadHostAndConnect);
@@ -2977,25 +2979,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       },
     );
 
-    _terminal.onOutput = (data) {
-      // On iOS/Android soft keyboards, Return sends a lone '\n' via
-      // textInput(), but SSH expects '\r'. The proper
-      // keyInput(TerminalKey.enter) path already produces '\r', so we
-      // only normalize single-'\n' to avoid rewriting legitimate LF
-      // characters in pasted or multi-char input.
-      var output = data == '\n' ? '\r' : data;
-
-      // Apply toolbar modifier state to system keyboard input.
-      // When the user toggles Ctrl on the toolbar then types on the system
-      // keyboard, we convert the character to the corresponding control code.
-      output = _toolbarController.applySystemKeyboardModifiers(output);
-
-      _shell?.write(utf8.encode(output));
-    };
-
-    _terminal.onResize = (width, height, pixelWidth, pixelHeight) {
-      _shell?.resizeTerminal(width, height);
-    };
+    // Soft-keyboard input & PTY resize are now routed through
+    // `GhosttyTerminalController`: `applyInputModifiers` (passed to the
+    // text-input handler) applies toolbar Ctrl/Alt modifiers and the bare-'\n'
+    // → '\r' normalization, while the SSH service registers the PTY resize
+    // callback via `attachExternalTransport`.
   }
 
   void _schedulePromptOutputImeResetCheck(String data) {
@@ -4500,9 +4488,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final tapToShowKeyboard = ref.watch(tapToShowKeyboardNotifierProvider);
 
     Widget terminalView = MonkeyTerminalView(
-      key: _terminalViewKey,
       _terminal,
-      controller: _terminalController,
+      key: _terminalViewKey,
       scrollController: _terminalScrollController,
       resolveLinkTap: _resolveTerminalLinkTap,
       onLinkTapDown:
@@ -4510,10 +4497,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onLinkTap: _handleTerminalLinkTap,
       onDoubleTapDown: isMobile ? _handleTerminalDoubleTapDown : null,
       focusNode: isMobile ? null : _terminalFocusNode,
-      theme: terminalTheme.toXtermTheme(),
-      textStyle: terminalTextStyle,
+      themeBundle: terminalTheme.toGhosttyBundle(),
       padding: terminalViewportPadding,
-      deleteDetection: !isMobile,
       autofocus: !isMobile,
       hardwareKeyboardOnly: isMobile,
       // Let alt-buffer apps keep raw wheel events when they explicitly enable
@@ -4710,6 +4695,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       consumeTerminalKeyModifiers: _toolbarController.consumeOneShot,
       hasActiveToolbarModifier: () =>
           _toolbarController.isCtrlActive || _toolbarController.isAltActive,
+      applyInputModifiers: (text) {
+        final normalized = text == '\n' ? '\r' : text;
+        return _toolbarController.applySystemKeyboardModifiers(normalized);
+      },
       readOnly: _showsNativeSelectionOverlay || overlayMessage != null,
       tapToShowKeyboard: tapToShowKeyboard,
       child: TerminalPinchZoomGestureHandler(
@@ -4765,16 +4754,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return TerminalStyle.fromTextStyle(textStyle);
   }
 
-  TextStyle _getNativeSelectionTextStyle(TerminalStyle terminalTextStyle) =>
-      terminalTextStyle
-          .toTextStyle(color: Colors.transparent)
-          .copyWith(
-            letterSpacing: 0,
-            fontFeatures: const [
-              FontFeature.disable('liga'),
-              FontFeature.disable('calt'),
-            ],
-          );
+  TextStyle _getNativeSelectionTextStyle(TerminalStyle terminalTextStyle) {
+    final base =
+        terminalTextStyle.toTextStyle() as TextStyle? ??
+        const TextStyle(color: Colors.transparent);
+    return base.copyWith(
+      color: Colors.transparent,
+      letterSpacing: 0,
+      fontFeatures: const [
+        FontFeature.disable('liga'),
+        FontFeature.disable('calt'),
+      ],
+    );
+  }
 
   Size? _measureTerminalPathUnderlineTextSize(String text) {
     if (text.isEmpty) {

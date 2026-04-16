@@ -490,6 +490,22 @@ packages:
     description: flutter
     source: sdk
     version: "0.0.0"
+  ghostty_vte:
+    dependency: transitive
+    description:
+      name: ghostty_vte
+      sha256: dda542dc6c71359896fb8d546ac1a972b004530bcb23f444a955ccff4824633f
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.1.2"
+  ghostty_vte_flutter:
+    dependency: "direct main"
+    description:
+      name: ghostty_vte_flutter
+      sha256: f2bfd31442eb07625d87b0f8334236aab11267bca2e31d973cf1d33cd0b0ca4d
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.1.2+1"
   glob:
     dependency: transitive
     description:
@@ -791,6 +807,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.17.6"
+  native_toolchain_rust:
+    dependency: transitive
+    description:
+      name: native_toolchain_rust
+      sha256: e53ef1025e2c190333ec61f638513c890c1becf11222e27b115b03bac369c6be
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.0.3"
   node_preamble:
     dependency: transitive
     description:
@@ -951,6 +975,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.5.2"
+  portable_pty:
+    dependency: transitive
+    description:
+      name: portable_pty
+      sha256: "80986cf67b611e436d46d3a9e0a6febc49516fceb34dcd75e91892b1ec129981"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.0.4"
   posix:
     dependency: transitive
     description:
@@ -983,14 +1015,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.5.0"
-  quiver:
-    dependency: transitive
-    description:
-      name: quiver
-      sha256: ea0b925899e64ecdfbf9c7becb60d5b50e706ade44a85b2363be2a22d88117d2
-      url: "https://pub.dev"
-    source: hosted
-    version: "3.2.2"
   recase:
     dependency: transitive
     description:
@@ -1236,6 +1260,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.11.0"
+  toml:
+    dependency: transitive
+    description:
+      name: toml
+      sha256: "35a35f782228656a2af31e8c73d1353cc4ef3d683fd68af1111b44631879c05e"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.18.0"
   typed_data:
     dependency: transitive
     description:
@@ -1428,14 +1460,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "6.6.1"
-  xterm:
-    dependency: "direct main"
-    description:
-      name: xterm
-      sha256: "168dfedca77cba33fdb6f52e2cd001e9fde216e398e89335c19b524bb22da3a2"
-      url: "https://pub.dev"
-    source: hosted
-    version: "4.0.0"
   yaml:
     dependency: transitive
     description:
@@ -1444,14 +1468,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.1.3"
-  zmodem:
-    dependency: transitive
-    description:
-      name: zmodem
-      sha256: "3b7e5b29f3a7d8aee472029b05165a68438eff2f3f7766edf13daba1e297adbf"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.0.6"
 sdks:
   dart: ">=3.10.7 <4.0.0"
   flutter: ">=3.38.4"

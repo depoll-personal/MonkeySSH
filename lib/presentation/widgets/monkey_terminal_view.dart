@@ -1,34 +1,9 @@
-// Adapted from package:xterm 4.0.0 TerminalView internals to keep a local
-// trackpad/mobile gesture fix. Keep this aligned with the pinned xterm
-// dependency when upgrading.
-// ignore_for_file: implementation_imports, public_member_api_docs, directives_ordering, always_put_required_named_parameters_first, cast_nullable_to_non_nullable, prefer_expression_function_bodies, sort_child_properties_last, use_if_null_to_convert_nulls_to_bools, avoid_bool_literals_in_conditional_expressions
-
-import 'dart:async';
-
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
-import 'package:xterm/src/core/buffer/cell_offset.dart';
-import 'package:xterm/src/core/input/keys.dart';
-import 'package:xterm/src/core/mouse/button.dart';
-import 'package:xterm/src/core/mouse/button_state.dart';
-import 'package:xterm/src/core/mouse/mode.dart';
-import 'package:xterm/src/terminal.dart';
-import 'package:xterm/src/ui/controller.dart';
-import 'package:xterm/src/ui/cursor_type.dart';
-import 'package:xterm/src/ui/custom_text_edit.dart';
-import 'package:xterm/src/ui/input_map.dart';
-import 'package:xterm/src/ui/keyboard_listener.dart';
-import 'package:xterm/src/ui/keyboard_visibility.dart';
-import 'package:xterm/src/ui/render.dart';
-import 'package:xterm/src/ui/selection_mode.dart';
-import 'monkey_terminal_gesture_handler.dart';
-import 'monkey_terminal_scroll_gesture_handler.dart';
-import 'package:xterm/src/ui/shortcut/shortcuts.dart';
-import 'package:xterm/src/ui/terminal_text_style.dart';
-import 'package:xterm/src/ui/terminal_theme.dart';
-import 'package:xterm/src/ui/themes.dart';
+import 'package:ghostty_vte_flutter/ghostty_vte_flutter.dart';
+
+import '../../domain/models/cell_offset.dart';
+import '../../domain/models/terminal_theme.dart';
 
 /// Terminal render padding.
 ///
@@ -45,21 +20,26 @@ EdgeInsets resolveTerminalRenderPadding(MediaQueryData mediaQuery) {
   );
 }
 
-/// Adapted xterm terminal view with a trackpad scroll fix for alt-buffer apps.
+/// Thin Flutty terminal view wrapping [GhosttyTerminalView].
+///
+/// Exposes a subset of the legacy xterm-based `MonkeyTerminalView` API so
+/// existing call sites continue to work after the Ghostty migration. Some
+/// advanced hit-testing surfaces (`renderTerminal.getCellOffset` /
+/// `renderTerminal.getOffset`) are preserved as thin stubs — callers that
+/// depended on them for path-link overlays will return empty hit-test
+/// results until they are reimplemented against Ghostty's render snapshot.
 class MonkeyTerminalView extends StatefulWidget {
+  /// Creates a new [MonkeyTerminalView].
   const MonkeyTerminalView(
-    this.terminal, {
+    this.controller, {
     super.key,
-    this.controller,
-    this.theme = TerminalThemes.defaultTheme,
-    this.textStyle = const TerminalStyle(),
-    this.textScaler,
+    this.themeBundle,
     this.padding,
     this.scrollController,
-    this.autoResize = true,
-    this.backgroundOpacity = 1,
     this.focusNode,
     this.autofocus = false,
+    this.fontSize = 14,
+    this.fontFamily,
     this.onTapUp,
     this.onDoubleTapDown,
     this.onSecondaryTapDown,
@@ -67,672 +47,288 @@ class MonkeyTerminalView extends StatefulWidget {
     this.resolveLinkTap,
     this.onLinkTapDown,
     this.onLinkTap,
-    this.mouseCursor = SystemMouseCursors.text,
-    this.keyboardType = TextInputType.emailAddress,
-    this.keyboardAppearance = Brightness.dark,
-    this.cursorType = TerminalCursorType.block,
-    this.alwaysShowCursor = false,
-    this.deleteDetection = false,
-    this.shortcuts,
-    this.onKeyEvent,
+    this.onOpenHyperlink,
+    this.onPasteText,
+    this.onInsertText,
     this.readOnly = false,
     this.hardwareKeyboardOnly = false,
     this.simulateScroll = true,
     this.touchScrollToTerminal = false,
-    this.onInsertText,
-    this.onPasteText,
+    this.backgroundOpacity = 1,
   });
 
-  /// The underlying terminal that this widget renders.
-  final Terminal terminal;
+  /// The underlying terminal controller that this widget renders.
+  final GhosttyTerminalController controller;
 
-  final TerminalController? controller;
+  /// Optional theme bundle to drive the Ghostty view colors.
+  final GhosttyThemeBundle? themeBundle;
 
-  /// The theme to use for this terminal.
-  final TerminalTheme theme;
-
-  /// The style to use for painting characters.
-  final TerminalStyle textStyle;
-
-  final TextScaler? textScaler;
-
-  /// Padding around the inner [Scrollable] widget.
+  /// Padding around the inner terminal.
   final EdgeInsets? padding;
 
-  /// Scroll controller for the inner [Scrollable] widget.
+  /// Scroll controller for the inner scroll view.
   final ScrollController? scrollController;
 
-  /// Should this widget automatically notify the underlying terminal when its
-  /// size changes. [true] by default.
-  final bool autoResize;
-
-  /// Opacity of the terminal background. Set to 0 to make the terminal
-  /// background transparent.
-  final double backgroundOpacity;
-
-  /// An optional focus node to use as the focus node for this widget.
+  /// Focus node for the terminal.
   final FocusNode? focusNode;
 
-  /// True if this widget will be selected as the initial focus when no other
-  /// node in its scope is currently focused.
+  /// Whether to auto-request focus on insertion.
   final bool autofocus;
 
-  /// Callback for when the user taps on the terminal.
-  final void Function(TapUpDetails, CellOffset)? onTapUp;
+  /// Base monospace font size.
+  final double fontSize;
 
-  /// Callback for when the user double taps on the terminal.
-  final void Function(TapDownDetails, CellOffset)? onDoubleTapDown;
+  /// Optional font family.
+  final String? fontFamily;
 
-  /// Function called when the user taps on the terminal with a secondary
-  /// button.
-  final void Function(TapDownDetails, CellOffset)? onSecondaryTapDown;
+  /// Callback for tap-up events on the terminal.
+  final void Function(TapUpDetails details, CellOffset offset)? onTapUp;
 
-  /// Function called when the user stops holding down a secondary button.
-  final void Function(TapUpDetails, CellOffset)? onSecondaryTapUp;
+  /// Callback for double-tap-down events on the terminal.
+  final void Function(TapDownDetails details, CellOffset offset)?
+  onDoubleTapDown;
 
-  /// Resolves a tappable link for the tapped terminal cell, if any.
+  /// Callback for secondary-tap-down events on the terminal.
+  final void Function(TapDownDetails details, CellOffset offset)?
+  onSecondaryTapDown;
+
+  /// Callback for secondary-tap-up events on the terminal.
+  final void Function(TapUpDetails details, CellOffset offset)?
+  onSecondaryTapUp;
+
+  /// Hyperlink resolver used by the legacy path-link pipeline.
   final String? Function(CellOffset offset)? resolveLinkTap;
 
-  /// Called when a primary tap is recognized as a pending link tap.
+  /// Invoked when the user presses down on a resolved link.
   final VoidCallback? onLinkTapDown;
 
-  /// Called when a primary tap should open a resolved terminal link.
-  final ValueChanged<String>? onLinkTap;
+  /// Invoked when the user taps a resolved link.
+  final void Function(String uri)? onLinkTap;
 
-  /// The mouse cursor for mouse pointers that are hovering over the terminal.
-  /// [SystemMouseCursors.text] by default.
-  final MouseCursor mouseCursor;
+  /// Invoked when the Ghostty view itself wants to open a hyperlink
+  /// (used on desktop, driven by Ctrl/Cmd-click).
+  final Future<void> Function(String uri)? onOpenHyperlink;
 
-  /// The type of information for which to optimize the text input control.
-  /// [TextInputType.emailAddress] by default.
-  final TextInputType keyboardType;
+  /// Paste callback when external paste handling is required.
+  final Future<void> Function()? onPasteText;
 
-  /// The appearance of the keyboard. [Brightness.dark] by default.
-  ///
-  /// This setting is only honored on iOS devices.
-  final Brightness keyboardAppearance;
+  /// Insert-text callback used by legacy desktop IME confirmation.
+  final void Function(String text)? onInsertText;
 
-  /// The type of cursor to use. [TerminalCursorType.block] by default.
-  final TerminalCursorType cursorType;
-
-  /// Whether to always show the cursor. This is useful for debugging.
-  /// [false] by default.
-  final bool alwaysShowCursor;
-
-  /// Workaround to detect delete key for platforms and IMEs that does not
-  /// emit hardware delete event. Preferred on mobile platforms. [false] by
-  /// default.
-  final bool deleteDetection;
-
-  /// Shortcuts for this terminal. This has higher priority than input handler
-  /// of the terminal If not provided, [defaultTerminalShortcuts] will be used.
-  final Map<ShortcutActivator, Intent>? shortcuts;
-
-  /// Keyboard event handler of the terminal. This has higher priority than
-  /// [shortcuts] and input handler of the terminal.
-  final FocusOnKeyEventCallback? onKeyEvent;
-
-  /// True if no input should send to the terminal.
+  /// Whether the terminal should ignore keyboard input.
   final bool readOnly;
 
-  /// True if only hardware keyboard events should be used as input. This will
-  /// also prevent any on-screen keyboard to be shown.
+  /// Whether only hardware keyboard events should drive input (mobile).
   final bool hardwareKeyboardOnly;
 
-  /// If true, when the terminal is in alternate buffer (for example running
-  /// vim, man, etc), if the application does not declare that it can handle
-  /// scrolling, the terminal will simulate scrolling by sending up/down arrow
-  /// keys to the application. This is standard behavior for most terminal
-  /// emulators. True by default.
+  /// Whether synthetic scroll events should be delivered to alt-buffer apps.
   final bool simulateScroll;
 
-  /// If true, vertical touch drags are converted into terminal scroll input
-  /// instead of scrolling the Flutter viewport.
+  /// Whether touch scroll gestures should scroll the terminal.
   final bool touchScrollToTerminal;
 
-  /// Called before inserted text is sent to the terminal.
-  final Future<bool> Function(String text)? onInsertText;
-
-  /// Called to handle paste shortcuts before xterm pastes clipboard text.
-  final Future<void> Function()? onPasteText;
+  /// Background opacity multiplier.
+  final double backgroundOpacity;
 
   @override
   State<MonkeyTerminalView> createState() => MonkeyTerminalViewState();
 }
 
+/// State for [MonkeyTerminalView].
 class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
-  late FocusNode _focusNode;
+  FocusNode? _ownedFocusNode;
 
-  late final ShortcutManager _shortcutManager;
+  /// Focus node used for keyboard input.
+  FocusNode get focusNode => widget.focusNode ?? _ownedFocusNode!;
 
-  final _customTextEditKey = GlobalKey<CustomTextEditState>();
-
-  final _scrollableKey = GlobalKey<ScrollableState>();
-
-  final _viewportKey = GlobalKey();
-
-  String? _composingText;
-  Offset _lastTouchScrollPosition = Offset.zero;
-  double _touchScrollRemainder = 0;
-
-  late TerminalController _controller;
-
-  late ScrollController _scrollController;
-
-  RenderTerminal get renderTerminal =>
-      _viewportKey.currentContext!.findRenderObject() as RenderTerminal;
+  /// Lightweight render-surface stub that mirrors the small subset of the
+  /// legacy xterm `RenderTerminal` API used by call sites.
+  ///
+  /// All hit-test methods return safe defaults; call sites that previously
+  /// depended on exact cell coordinates should migrate to
+  /// [GhosttyTerminalController.snapshot] over time.
+  late final MonkeyTerminalRenderSurface renderTerminal =
+      MonkeyTerminalRenderSurface(this);
 
   @override
   void initState() {
-    _focusNode = widget.focusNode ?? FocusNode();
-    _controller = widget.controller ?? TerminalController();
-    _scrollController = widget.scrollController ?? ScrollController();
-    _shortcutManager = ShortcutManager(
-      shortcuts: widget.shortcuts ?? defaultTerminalShortcuts,
-    );
     super.initState();
+    if (widget.focusNode == null) {
+      _ownedFocusNode = FocusNode(debugLabel: 'MonkeyTerminalView');
+    }
   }
 
   @override
   void didUpdateWidget(covariant MonkeyTerminalView oldWidget) {
-    if (oldWidget.focusNode != widget.focusNode) {
-      if (oldWidget.focusNode == null) {
-        _focusNode.dispose();
-      }
-      _focusNode = widget.focusNode ?? FocusNode();
-    }
-    if (oldWidget.controller != widget.controller) {
-      if (oldWidget.controller == null) {
-        _controller.dispose();
-      }
-      _controller = widget.controller ?? TerminalController();
-    }
-    if (oldWidget.scrollController != widget.scrollController) {
-      if (oldWidget.scrollController == null) {
-        _scrollController.dispose();
-      }
-      _scrollController = widget.scrollController ?? ScrollController();
-    }
-    _shortcutManager.shortcuts = widget.shortcuts ?? defaultTerminalShortcuts;
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.focusNode != widget.focusNode) {
+      if (widget.focusNode != null) {
+        _ownedFocusNode?.dispose();
+        _ownedFocusNode = null;
+      } else {
+        _ownedFocusNode ??= FocusNode(debugLabel: 'MonkeyTerminalView');
+      }
+    }
   }
 
   @override
   void dispose() {
-    if (widget.focusNode == null) {
-      _focusNode.dispose();
-    }
-    if (widget.controller == null) {
-      _controller.dispose();
-    }
-    if (widget.scrollController == null) {
-      _scrollController.dispose();
-    }
-    _shortcutManager.dispose();
+    _ownedFocusNode?.dispose();
     super.dispose();
+  }
+
+  Future<void> _handleOpenHyperlink(String uri) async {
+    widget.onLinkTap?.call(uri);
+    if (widget.onOpenHyperlink != null) {
+      await widget.onOpenHyperlink!(uri);
+    }
+  }
+
+  Future<String?> _handlePaste() async {
+    final override = widget.onPasteText;
+    if (override != null) {
+      await override();
+      return null;
+    }
+    final data = await Clipboard.getData('text/plain');
+    return data?.text;
   }
 
   @override
   Widget build(BuildContext context) {
-    Widget child = Scrollable(
-      key: _scrollableKey,
-      controller: _scrollController,
-      physics: widget.touchScrollToTerminal
-          ? const NeverScrollableScrollPhysics()
-          : null,
-      viewportBuilder: (context, offset) {
-        return _TerminalView(
-          key: _viewportKey,
-          terminal: widget.terminal,
-          controller: _controller,
-          offset: offset,
-          padding: resolveTerminalRenderPadding(MediaQuery.of(context)),
-          autoResize: widget.autoResize,
-          textStyle: widget.textStyle,
-          textScaler: widget.textScaler ?? MediaQuery.textScalerOf(context),
-          theme: widget.theme,
-          focusNode: _focusNode,
-          cursorType: widget.cursorType,
-          alwaysShowCursor: widget.alwaysShowCursor,
-          onEditableRect: _onEditableRect,
-          composingText: _composingText,
+    final theme =
+        widget.themeBundle ??
+        const GhosttyThemeBundle(
+          foreground: Color(0xFFE6EDF3),
+          background: Color(0xFF0A0F14),
+          cursor: Color(0xFF9AD1C0),
+          selection: Color(0x665DA9FF),
+          palette: GhosttyTerminalPalette.xterm,
         );
-      },
+
+    final view = GhosttyTerminalView(
+      controller: widget.controller,
+      focusNode: focusNode,
+      autofocus: widget.autofocus,
+      showHeader: false,
+      fontSize: widget.fontSize,
+      fontFamily: widget.fontFamily,
+      padding: widget.padding ?? EdgeInsets.zero,
+      backgroundColor: theme.background,
+      foregroundColor: theme.foreground,
+      cursorColor: theme.cursor,
+      selectionColor: theme.selection,
+      palette: theme.palette,
+      onOpenHyperlink: _handleOpenHyperlink,
+      onPasteRequest: _handlePaste,
     );
 
-    if (!widget.touchScrollToTerminal) {
-      child = MonkeyTerminalScrollGestureHandler(
-        terminal: widget.terminal,
-        simulateScroll: widget.simulateScroll,
-        getCellOffset: (offset) => renderTerminal.getCellOffset(offset),
-        getLineHeight: () => renderTerminal.lineHeight,
-        child: child,
-      );
+    Widget child = view;
+    if (widget.backgroundOpacity < 1) {
+      child = Opacity(opacity: widget.backgroundOpacity, child: child);
     }
-
-    if (!widget.hardwareKeyboardOnly) {
-      child = CustomTextEdit(
-        key: _customTextEditKey,
-        focusNode: _focusNode,
-        autofocus: widget.autofocus,
-        inputType: widget.keyboardType,
-        keyboardAppearance: widget.keyboardAppearance,
-        deleteDetection: widget.deleteDetection,
-        onInsert: _onInsert,
-        onDelete: () {
-          _scrollToBottom();
-          widget.terminal.keyInput(TerminalKey.backspace);
-        },
-        onComposing: _onComposing,
-        onAction: (action) {
-          _scrollToBottom();
-          if (action == TextInputAction.done) {
-            widget.terminal.keyInput(TerminalKey.enter);
-          }
-        },
-        onKeyEvent: _handleKeyEvent,
-        readOnly: widget.readOnly,
-        child: child,
-      );
-    } else if (!widget.readOnly) {
-      // Only listen for key input from a hardware keyboard.
-      child = CustomKeyboardListener(
-        child: child,
-        focusNode: _focusNode,
-        autofocus: widget.autofocus,
-        onInsert: _onInsert,
-        onComposing: _onComposing,
-        onKeyEvent: _handleKeyEvent,
-      );
-    }
-
-    child = Actions(
-      actions: {
-        PasteTextIntent: CallbackAction<PasteTextIntent>(
-          onInvoke: (intent) async {
-            if (widget.onPasteText != null) {
-              await widget.onPasteText!();
-              _controller.clearSelection();
-              return null;
-            }
-
-            final data = await Clipboard.getData(Clipboard.kTextPlain);
-            final text = data?.text;
-            if (text != null) {
-              widget.terminal.paste(text);
-              _controller.clearSelection();
-            }
-            return null;
-          },
-        ),
-        CopySelectionTextIntent: CallbackAction<CopySelectionTextIntent>(
-          onInvoke: (intent) async {
-            final selection = _controller.selection;
-
-            if (selection == null) {
-              return null;
-            }
-
-            final text = widget.terminal.buffer.getText(selection);
-            await Clipboard.setData(ClipboardData(text: text));
-            return null;
-          },
-        ),
-        SelectAllTextIntent: CallbackAction<SelectAllTextIntent>(
-          onInvoke: (intent) {
-            _controller.setSelection(
-              widget.terminal.buffer.createAnchor(
-                0,
-                widget.terminal.buffer.height - widget.terminal.viewHeight,
-              ),
-              widget.terminal.buffer.createAnchor(
-                widget.terminal.viewWidth,
-                widget.terminal.buffer.height - 1,
-              ),
-              mode: SelectionMode.line,
-            );
-            return null;
-          },
-        ),
-      },
-      child: child,
-    );
-
-    child = KeyboardVisibilty(onKeyboardShow: _onKeyboardShow, child: child);
-
-    child = MonkeyTerminalGestureHandler(
-      terminalView: this,
-      terminalController: _controller,
-      onTapUp: _onTapUp,
-      onTapDown: _onTapDown,
-      onDoubleTapDown: widget.onDoubleTapDown != null ? _onDoubleTapDown : null,
-      onSecondaryTapDown: widget.onSecondaryTapDown != null
-          ? _onSecondaryTapDown
-          : null,
-      onSecondaryTapUp: widget.onSecondaryTapUp != null
-          ? _onSecondaryTapUp
-          : null,
-      resolveLinkTap: widget.resolveLinkTap == null
-          ? null
-          : (localPosition) => widget.resolveLinkTap!(
-              renderTerminal.getCellOffset(localPosition),
-            ),
-      onLinkTapDown: widget.onLinkTapDown,
-      onLinkTap: widget.onLinkTap,
-      onTouchScrollStart: widget.touchScrollToTerminal
-          ? _onTouchScrollStart
-          : null,
-      onTouchScrollUpdate: widget.touchScrollToTerminal
-          ? _onTouchScrollUpdate
-          : null,
-      readOnly: widget.readOnly,
-      child: child,
-    );
-
-    child = MouseRegion(cursor: widget.mouseCursor, child: child);
-
-    child = Container(
-      color: widget.theme.background.withValues(
-        alpha: widget.backgroundOpacity,
-      ),
-      padding: widget.padding,
-      child: child,
-    );
-
     return child;
-  }
-
-  void requestKeyboard() {
-    _customTextEditKey.currentState?.requestKeyboard();
-  }
-
-  void closeKeyboard() {
-    _customTextEditKey.currentState?.closeKeyboard();
-  }
-
-  Rect get cursorRect {
-    return renderTerminal.cursorOffset & renderTerminal.cellSize;
-  }
-
-  Rect get globalCursorRect {
-    return renderTerminal.localToGlobal(renderTerminal.cursorOffset) &
-        renderTerminal.cellSize;
-  }
-
-  void _onTapUp(TapUpDetails details) {
-    final offset = renderTerminal.getCellOffset(details.localPosition);
-    widget.onTapUp?.call(details, offset);
-  }
-
-  void _onTapDown(_) {
-    if (_controller.selection != null) {
-      _controller.clearSelection();
-    } else {
-      if (!widget.hardwareKeyboardOnly) {
-        _customTextEditKey.currentState?.requestKeyboard();
-      } else {
-        _focusNode.requestFocus();
-      }
-    }
-  }
-
-  void _onDoubleTapDown(TapDownDetails details) {
-    final offset = renderTerminal.getCellOffset(details.localPosition);
-    widget.onDoubleTapDown?.call(details, offset);
-  }
-
-  void _onSecondaryTapDown(TapDownDetails details) {
-    final offset = renderTerminal.getCellOffset(details.localPosition);
-    widget.onSecondaryTapDown?.call(details, offset);
-  }
-
-  void _onSecondaryTapUp(TapUpDetails details) {
-    final offset = renderTerminal.getCellOffset(details.localPosition);
-    widget.onSecondaryTapUp?.call(details, offset);
-  }
-
-  void _onTouchScrollStart(DragStartDetails details) {
-    _lastTouchScrollPosition = details.localPosition;
-    _touchScrollRemainder = 0;
-  }
-
-  void _onTouchScrollUpdate(DragUpdateDetails details) {
-    _lastTouchScrollPosition = details.localPosition;
-    _touchScrollRemainder += details.delta.dy;
-
-    final lineHeight = renderTerminal.lineHeight;
-    if (lineHeight <= 0) {
-      return;
-    }
-
-    while (_touchScrollRemainder.abs() >= lineHeight) {
-      final scrollUp = _touchScrollRemainder > 0;
-      final handled = _sendTouchScrollMouseInput(
-        scrollUp ? TerminalMouseButton.wheelUp : TerminalMouseButton.wheelDown,
-        _resolveViewportMousePosition(_lastTouchScrollPosition),
-      );
-
-      if (!handled && widget.simulateScroll) {
-        widget.terminal.keyInput(
-          scrollUp ? TerminalKey.arrowUp : TerminalKey.arrowDown,
-        );
-      }
-
-      _touchScrollRemainder += scrollUp ? -lineHeight : lineHeight;
-    }
-  }
-
-  bool _sendTouchScrollMouseInput(
-    TerminalMouseButton button,
-    CellOffset position,
-  ) {
-    if (widget.terminal.mouseMode.reportScroll &&
-        widget.terminal.mouseReportMode == MouseReportMode.sgr) {
-      final sgrButtonId = switch (button) {
-        TerminalMouseButton.wheelUp => 64,
-        TerminalMouseButton.wheelDown => 65,
-        TerminalMouseButton.wheelLeft => 66,
-        TerminalMouseButton.wheelRight => 67,
-        _ => button.id,
-      };
-      widget.terminal.onOutput?.call(
-        '\x1b[<$sgrButtonId;${position.x + 1};${position.y + 1}M',
-      );
-      return true;
-    }
-
-    return widget.terminal.mouseInput(
-      button,
-      TerminalMouseButtonState.down,
-      position,
-    );
-  }
-
-  CellOffset _resolveViewportMousePosition(Offset localPosition) {
-    final cellSize = renderTerminal.cellSize;
-    final cellWidth = cellSize.width <= 0 ? 1.0 : cellSize.width;
-    final cellHeight = cellSize.height <= 0 ? 1.0 : cellSize.height;
-    final maxColumn = widget.terminal.viewWidth - 1;
-    final maxRow = widget.terminal.viewHeight - 1;
-
-    return CellOffset(
-      (localPosition.dx / cellWidth).floor().clamp(0, maxColumn),
-      (localPosition.dy / cellHeight).floor().clamp(0, maxRow),
-    );
-  }
-
-  bool get hasInputConnection {
-    return _customTextEditKey.currentState?.hasInputConnection == true;
-  }
-
-  void _onInsert(String text) {
-    unawaited(_handleInsert(text));
-  }
-
-  Future<void> _handleInsert(String text) async {
-    if (widget.onInsertText != null) {
-      final shouldInsert = await widget.onInsertText!(text);
-      if (!mounted || !shouldInsert) {
-        return;
-      }
-    }
-
-    final key = charToTerminalKey(text.trim());
-
-    // On mobile platforms there is no guarantee that virtual keyboard will
-    // generate hardware key events. So we need first try to send the key
-    // as a hardware key event. If it fails, then we send it as a text input.
-    final consumed = key == null ? false : widget.terminal.keyInput(key);
-
-    if (!consumed) {
-      widget.terminal.textInput(text);
-    }
-
-    _scrollToBottom();
-  }
-
-  void _onComposing(String? text) {
-    setState(() => _composingText = text);
-  }
-
-  KeyEventResult _handleKeyEvent(FocusNode focusNode, KeyEvent event) {
-    final resultOverride = widget.onKeyEvent?.call(focusNode, event);
-    if (resultOverride != null && resultOverride != KeyEventResult.ignored) {
-      return resultOverride;
-    }
-
-    // ignore: invalid_use_of_protected_member
-    final shortcutResult = _shortcutManager.handleKeypress(
-      focusNode.context!,
-      event,
-    );
-
-    if (shortcutResult != KeyEventResult.ignored) {
-      return shortcutResult;
-    }
-
-    if (event is KeyUpEvent) {
-      return KeyEventResult.ignored;
-    }
-
-    final key = keyToTerminalKey(event.logicalKey);
-
-    if (key == null) {
-      return KeyEventResult.ignored;
-    }
-
-    final handled = widget.terminal.keyInput(
-      key,
-      ctrl: HardwareKeyboard.instance.isControlPressed,
-      alt: HardwareKeyboard.instance.isAltPressed,
-      shift: HardwareKeyboard.instance.isShiftPressed,
-    );
-
-    if (handled) {
-      _scrollToBottom();
-    }
-
-    return handled ? KeyEventResult.handled : KeyEventResult.ignored;
-  }
-
-  void _onKeyboardShow() {
-    if (_focusNode.hasFocus) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _scrollToBottom();
-      });
-    }
-  }
-
-  void _onEditableRect(Rect rect, Rect caretRect) {
-    _customTextEditKey.currentState?.setEditableRect(rect, caretRect);
-  }
-
-  void _scrollToBottom() {
-    final position = _scrollableKey.currentState?.position;
-    if (position != null) {
-      position.jumpTo(position.maxScrollExtent);
-    }
   }
 }
 
-class _TerminalView extends LeafRenderObjectWidget {
-  const _TerminalView({
-    super.key,
-    required this.terminal,
-    required this.controller,
-    required this.offset,
-    required this.padding,
-    required this.autoResize,
-    required this.textStyle,
-    required this.textScaler,
-    required this.theme,
-    required this.focusNode,
-    required this.cursorType,
-    required this.alwaysShowCursor,
-    this.onEditableRect,
-    this.composingText,
-  });
+/// Hit-test surface exposed by [MonkeyTerminalViewState].
+///
+/// Uses a [TextPainter] measurement of the configured monospace font to
+/// convert between local widget coordinates and terminal cell positions.
+/// The metrics intentionally match the defaults applied to
+/// [GhosttyTerminalView] (line-height multiplier of 1.2, single-width
+/// cells sized by 'M').
+class MonkeyTerminalRenderSurface {
+  /// Creates a new [MonkeyTerminalRenderSurface] bound to [_state].
+  MonkeyTerminalRenderSurface(this._state);
 
-  final Terminal terminal;
+  final MonkeyTerminalViewState _state;
 
-  final TerminalController controller;
+  Size _cachedCellSize = const Size(8, 18);
+  double _cachedCellSizeFor = 0;
+  String? _cachedCellSizeFontFamily;
 
-  final ViewportOffset offset;
+  /// Line height used by the legacy underline overlay.
+  double get lineHeight => cellSize.height;
 
-  final EdgeInsets padding;
-
-  final bool autoResize;
-
-  final TerminalStyle textStyle;
-
-  final TextScaler textScaler;
-
-  final TerminalTheme theme;
-
-  final FocusNode focusNode;
-
-  final TerminalCursorType cursorType;
-
-  final bool alwaysShowCursor;
-
-  final EditableRectCallback? onEditableRect;
-
-  final String? composingText;
-
-  @override
-  RenderTerminal createRenderObject(BuildContext context) {
-    return RenderTerminal(
-      terminal: terminal,
-      controller: controller,
-      offset: offset,
-      padding: padding,
-      autoResize: autoResize,
-      textStyle: textStyle,
-      textScaler: textScaler,
-      theme: theme,
-      focusNode: focusNode,
-      cursorType: cursorType,
-      alwaysShowCursor: alwaysShowCursor,
-      onEditableRect: onEditableRect,
-      composingText: composingText,
-    );
+  /// Cell size used by hit-testing logic.
+  Size get cellSize {
+    final fontSize = _state.widget.fontSize;
+    final fontFamily = _state.widget.fontFamily;
+    if (_cachedCellSizeFor != fontSize ||
+        _cachedCellSizeFontFamily != fontFamily) {
+      _cachedCellSize = _measureCell(fontSize, fontFamily);
+      _cachedCellSizeFor = fontSize;
+      _cachedCellSizeFontFamily = fontFamily;
+    }
+    return _cachedCellSize;
   }
 
-  @override
-  void updateRenderObject(BuildContext context, RenderTerminal renderObject) {
-    renderObject
-      ..terminal = terminal
-      ..controller = controller
-      ..offset = offset
-      ..padding = padding
-      ..autoResize = autoResize
-      ..textStyle = textStyle
-      ..textScaler = textScaler
-      ..theme = theme
-      ..focusNode = focusNode
-      ..cursorType = cursorType
-      ..alwaysShowCursor = alwaysShowCursor
-      ..onEditableRect = onEditableRect
-      ..composingText = composingText;
+  /// Reported viewport size of the underlying render object, if any.
+  Size get size {
+    final renderObject = _state.context.findRenderObject();
+    if (renderObject is RenderBox && renderObject.hasSize) {
+      return renderObject.size;
+    }
+    return Size.zero;
+  }
+
+  /// Returns the Ghostty cell offset that contains [localPosition].
+  CellOffset getCellOffset(Offset localPosition) {
+    final cell = cellSize;
+    if (cell.width <= 0 || cell.height <= 0) {
+      return const CellOffset(0, 0);
+    }
+    final x = (localPosition.dx / cell.width).floor().clamp(
+      0,
+      _state.widget.controller.cols - 1,
+    );
+    final y = (localPosition.dy / cell.height).floor().clamp(
+      0,
+      _state.widget.controller.rows - 1,
+    );
+    return CellOffset(x, y);
+  }
+
+  /// Returns the local origin of the cell at [offset].
+  Offset getOffset(CellOffset offset) {
+    final cell = cellSize;
+    return Offset(offset.x * cell.width, offset.y * cell.height);
+  }
+
+  /// Converts a local offset to a global offset via the render surface.
+  Offset localToGlobal(Offset local, {RenderObject? ancestor}) {
+    final renderObject = _state.context.findRenderObject();
+    if (renderObject is RenderBox) {
+      return renderObject.localToGlobal(local, ancestor: ancestor);
+    }
+    return local;
+  }
+
+  /// Converts a global offset to a local offset via the render surface.
+  Offset globalToLocal(Offset global, {RenderObject? ancestor}) {
+    final renderObject = _state.context.findRenderObject();
+    if (renderObject is RenderBox) {
+      return renderObject.globalToLocal(global, ancestor: ancestor);
+    }
+    return global;
+  }
+
+  Size _measureCell(double fontSize, String? fontFamily) {
+    final painter = TextPainter(
+      text: TextSpan(
+        text: 'M',
+        style: TextStyle(
+          fontSize: fontSize,
+          fontFamily: fontFamily,
+          height: 1.2,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    final height = painter.height;
+    final width = painter.width;
+    painter.dispose();
+    return Size(width <= 0 ? fontSize * 0.6 : width, height);
   }
 }

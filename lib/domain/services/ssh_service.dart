@@ -6,7 +6,7 @@ import 'dart:typed_data';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:xterm/xterm.dart';
+import 'package:ghostty_vte_flutter/ghostty_vte_flutter.dart';
 
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
@@ -16,6 +16,7 @@ import 'background_ssh_service.dart';
 import 'clipboard_sharing_service.dart';
 import 'host_key_prompt_handler_provider.dart';
 import 'host_key_verification.dart';
+import 'osc_stream_parser.dart';
 import 'terminal_hyperlink_tracker.dart';
 
 /// Connection state for an SSH session.
@@ -1111,16 +1112,20 @@ class SshSession {
   StreamController<String>? _shellStdoutController;
   StreamController<String>? _shellStderrController;
   StreamController<void>? _shellDoneController;
-  StreamSubscription<String>? _shellStdoutSubscription;
-  StreamSubscription<String>? _shellStderrSubscription;
+  StreamSubscription<List<int>>? _shellStdoutSubscription;
+  StreamSubscription<List<int>>? _shellStderrSubscription;
   StreamSubscription<void>? _shellDoneSubscription;
   Timer? _previewRefreshTimer;
 
   /// Persistent terminal that survives screen rebuilds.
-  Terminal? _terminal;
+  GhosttyTerminalController? _terminal;
 
   /// Tracks OSC 8 hyperlinks rendered in the persistent terminal.
   final terminalHyperlinkTracker = TerminalHyperlinkTracker();
+
+  /// OSC byte-stream parser that extracts OSC 7/52/133 before forwarding
+  /// the remaining bytes into the Ghostty VT engine.
+  OscStreamParser? _oscStreamParser;
 
   final _previewListeners = <VoidCallback>{};
   final _metadataListeners = <VoidCallback>{};
@@ -1131,8 +1136,9 @@ class SshSession {
   TerminalShellStatus? _shellStatus;
   int? _lastExitCode;
 
-  /// The persistent terminal for this session. Created on first shell open.
-  Terminal? get terminal => _terminal;
+  /// The persistent terminal controller for this session. Created on first
+  /// shell open.
+  GhosttyTerminalController? get terminal => _terminal;
 
   /// A plain-text preview of the latest terminal content.
   String? get terminalPreview => _terminalPreview;
@@ -1181,16 +1187,29 @@ class SshSession {
     terminalThemeLightId = themeId;
   }
 
-  /// Ensure a [Terminal] exists and is wired to the shell streams.
-  Terminal getOrCreateTerminal({int maxLines = 10000}) {
-    _terminal ??= Terminal(maxLines: maxLines);
-    _terminal!
-      ..onTitleChange = _handleWindowTitleChange
-      ..onIconChange = _handleIconNameChange;
-    terminalHyperlinkTracker.attach(_terminal!);
-    _terminal!.onPrivateOSC = _handlePrivateOsc;
+  /// Ensure a [GhosttyTerminalController] exists and is wired to the shell
+  /// streams.
+  GhosttyTerminalController getOrCreateTerminal({int maxLines = 10000}) {
+    if (_terminal != null) {
+      terminalHyperlinkTracker.attach(_terminal!);
+      _refreshTerminalPreview();
+      return _terminal!;
+    }
+    final controller = GhosttyTerminalController(maxLines: maxLines);
+    _terminal = controller;
+    controller.onTitleChangedData = () {
+      _handleWindowTitleChange(controller.title);
+    };
+    terminalHyperlinkTracker.attach(controller);
+    _oscStreamParser = OscStreamParser(
+      onBytes: (bytes) {
+        controller.appendOutputBytes(bytes);
+        terminalHyperlinkTracker.observeBytes(bytes);
+      },
+      onOsc: _handlePrivateOsc,
+    );
     _refreshTerminalPreview();
-    return _terminal!;
+    return controller;
   }
 
   /// Active port forward tunnels.
@@ -1252,7 +1271,8 @@ class SshSession {
     _shellDoneController = null;
     _shell?.close();
     _shell = null;
-    terminalHyperlinkTracker.reset(keepTerminalReference: false);
+    terminalHyperlinkTracker.reset(keepControllerReference: false);
+    _oscStreamParser = null;
     _iconName = null;
     _workingDirectory = null;
     _shellStatus = null;
@@ -1273,31 +1293,43 @@ class SshSession {
     _shellStderrController = StreamController<String>.broadcast();
     _shellDoneController = StreamController<void>.broadcast();
 
-    _shellStdoutSubscription = shell.stdout
-        .cast<List<int>>()
-        .transform(utf8.decoder)
-        .listen((data) {
-          terminal.write(data);
-          _scheduleTerminalPreviewRefresh();
-          _shellStdoutController!.add(data);
-        }, onError: _shellStdoutController!.addError);
-    _shellStderrSubscription = shell.stderr
-        .cast<List<int>>()
-        .transform(utf8.decoder)
-        .listen((data) {
-          terminal.write(data);
-          _scheduleTerminalPreviewRefresh();
-          _shellStderrController!.add(data);
-        }, onError: _shellStderrController!.addError);
+    // Wire the controller's keystroke output back to the SSH shell stdin,
+    // and forward view-size changes to the remote PTY.
+    terminal.attachExternalTransport(
+      writeBytes: (bytes) {
+        shell.write(Uint8List.fromList(bytes));
+        return true;
+      },
+      onResize: (cols, rows, cellWidthPx, cellHeightPx) {
+        try {
+          shell.resizeTerminal(
+            cols,
+            rows,
+            cols * cellWidthPx,
+            rows * cellHeightPx,
+          );
+        } on Object catch (error, stackTrace) {
+          debugPrint('Failed to resize SSH PTY: $error');
+          debugPrint('$stackTrace');
+        }
+      },
+    );
+
+    _shellStdoutSubscription = shell.stdout.cast<List<int>>().listen((bytes) {
+      _oscStreamParser?.feed(bytes);
+      _scheduleTerminalPreviewRefresh();
+      _shellStdoutController!.add(utf8.decode(bytes, allowMalformed: true));
+    }, onError: _shellStdoutController!.addError);
+    _shellStderrSubscription = shell.stderr.cast<List<int>>().listen((bytes) {
+      _oscStreamParser?.feed(bytes);
+      _scheduleTerminalPreviewRefresh();
+      _shellStderrController!.add(utf8.decode(bytes, allowMalformed: true));
+    }, onError: _shellStderrController!.addError);
     _shellDoneSubscription = shell.done.asStream().listen(
       (_) => _shellDoneController!.add(null),
       onError: _shellDoneController!.addError,
     );
 
-    // Wire terminal keyboard output → shell stdin (persistent).
-    terminal.onOutput = (data) {
-      shell.write(utf8.encode(data));
-    };
     _refreshTerminalPreview();
   }
 
@@ -1342,6 +1374,11 @@ class SshSession {
 
   void _handlePrivateOsc(String code, List<String> args) {
     terminalHyperlinkTracker.handlePrivateOsc(code, args);
+
+    if (code == '1' && args.isNotEmpty) {
+      _handleIconNameChange(args.join(';'));
+      return;
+    }
 
     if (code == '7') {
       final nextWorkingDirectory = parseTerminalWorkingDirectoryUri(args);
@@ -1394,21 +1431,24 @@ class SshSession {
 
   /// Builds a compact plain-text preview from the terminal scrollback.
   static String? buildTerminalPreview(
-    Terminal terminal, {
+    GhosttyTerminalController terminal, {
     int maxLines = _previewLineCount,
     int maxChars = _previewMaxChars,
   }) {
     final effectiveMaxLines = maxLines < 1 ? 1 : maxLines;
     final effectiveMaxChars = maxChars < 1 ? 1 : maxChars;
+    final snapshot = terminal.snapshot;
+    final snapshotLines = snapshot.lines;
     final previewLines = <String>[];
     final currentSegments = <String>[];
 
     for (
-      var index = terminal.lines.length - 1;
+      var index = snapshotLines.length - 1;
       index >= 0 && previewLines.length < effectiveMaxLines;
       index--
     ) {
-      final rawLine = terminal.lines[index].getText();
+      final line = snapshotLines[index];
+      final rawLine = line.text;
       final cleanedLine = _sanitizePreviewFragment(rawLine);
 
       if (cleanedLine.isEmpty) {
@@ -1420,7 +1460,7 @@ class SshSession {
       }
 
       currentSegments.add(cleanedLine);
-      if (!terminal.lines[index].isWrapped) {
+      if (!line.wrapContinuation) {
         previewLines.insert(0, currentSegments.reversed.join());
         currentSegments.clear();
       }

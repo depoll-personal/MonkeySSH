@@ -2,10 +2,11 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ghostty_vte_flutter/ghostty_vte_flutter.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:monkeyssh/domain/models/terminal_compat.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
-import 'package:xterm/xterm.dart';
 
 const _absolutePath = '/var/log/app.log';
 const _tildePath = '~/.ssh/config';
@@ -29,12 +30,12 @@ class _TerminalPathLinkHarnessState extends State<_TerminalPathLinkHarness> {
   final _terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
   final _openedLinks = ValueNotifier<List<String>>(<String>[]);
   final _verifiedRelativePaths = <String>{_relativePath};
-  late final Terminal _terminal;
+  late final GhosttyTerminalController _terminal;
 
   @override
   void initState() {
     super.initState();
-    _terminal = Terminal(maxLines: 200)
+    _terminal = GhosttyTerminalController(maxLines: 200)
       ..write('Absolute $_absolutePath\r\n')
       ..write('Tilde $_tildePath\r\n')
       ..write('Relative $_relativePath\r\n')

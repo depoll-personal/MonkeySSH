@@ -6,10 +6,11 @@ import 'dart:io';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ghostty_vte_flutter/ghostty_vte_flutter.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:monkeyssh/domain/models/terminal_compat.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_pinch_zoom_gesture_handler.dart';
-import 'package:xterm/xterm.dart';
 
 const _tmuxSessionName = 'flutty-touch-scroll';
 const _sshPort = String.fromEnvironment('FLUTTY_SCROLL_SSH_PORT');
@@ -109,7 +110,7 @@ Future<void> _waitForLocalCondition(
 class _TerminalHarness extends StatelessWidget {
   const _TerminalHarness({required this.terminal});
 
-  final Terminal terminal;
+  final GhosttyTerminalController terminal;
 
   @override
   Widget build(BuildContext context) => MaterialApp(
@@ -144,7 +145,7 @@ void main() {
     final shell = await client.shell(
       pty: const SSHPtyConfig(width: 120, height: 40),
     );
-    final terminal = Terminal(maxLines: 10000);
+    final terminal = GhosttyTerminalController(maxLines: 10000);
     final emittedOutput = <String>[];
 
     final stdoutSubscription = shell.stdout
@@ -156,12 +157,20 @@ void main() {
         .transform(utf8.decoder)
         .listen(terminal.write);
 
-    terminal
-      ..onOutput = (data) {
+    terminal.attachExternalTransport(
+      writeBytes: (bytes) {
+        final data = utf8.decode(bytes, allowMalformed: true);
         emittedOutput.add(data);
         shell.write(utf8.encode(data == '\n' ? '\r' : data));
-      }
-      ..onResize = shell.resizeTerminal;
+        return true;
+      },
+    );
+    // NOTE: GhosttyTerminalController has no `onResize` setter; the new
+    // controller surfaces resize via `setViewport` / controller APIs.
+    // Shell PTY size is managed externally in the ported flow.
+    // ignore: unused_element_parameter
+    // ignore: unnecessary_statements
+    shell.resizeTerminal;
 
     addTearDown(() async {
       await stdoutSubscription.cancel();

@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ghostty_vte_flutter/ghostty_vte_flutter.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:monkeyssh/presentation/widgets/keyboard_toolbar.dart';
-import 'package:xterm/xterm.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -10,7 +10,7 @@ void main() {
   testWidgets(
     'preserves Ctrl modifier state across toolbar rebuilds for system keyboard input',
     (tester) async {
-      final terminal = Terminal();
+      final terminal = GhosttyTerminalController();
       final controller = KeyboardToolbarController();
       addTearDown(controller.dispose);
 

@@ -1,10 +1,12 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show TextInputClient;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ghostty_vte_flutter/ghostty_vte_flutter.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:monkeyssh/domain/models/auto_connect_command.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
-import 'package:xterm/xterm.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
 
@@ -82,7 +84,7 @@ void main() {
       tester,
     ) async {
       final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
+      final terminal = _newTerminalCapturing(terminalOutput);
       final focusNode = FocusNode();
 
       await tester.pumpWidget(
@@ -118,7 +120,7 @@ void main() {
       tester,
     ) async {
       final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
+      final terminal = _newTerminalCapturing(terminalOutput);
       final focusNode = FocusNode();
 
       await tester.pumpWidget(
@@ -170,7 +172,7 @@ void main() {
       'preserves the separator when swipe typing resumes after an input reset',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -217,7 +219,7 @@ void main() {
       'trims the swipe separator after an input reset when the current line is only a prompt marker',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
         final controller = TerminalTextInputHandlerController();
 
@@ -254,7 +256,7 @@ void main() {
       'does not duplicate the separator when swipe typing resumes after an input reset',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -301,7 +303,7 @@ void main() {
       'does not prepend whitespace when a suggestion commits after the buffer is cleared',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -350,7 +352,7 @@ void main() {
       'does not prepend whitespace when a suggestion replaces a shortened first word',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -412,7 +414,7 @@ void main() {
       'touch-driven caret moves clear the IME buffer after a replacement selection collapses elsewhere',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -488,7 +490,7 @@ void main() {
       'preserves the shortened prefix when a delete-reset continuation resumes the same word with the live terminal prefix',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -542,7 +544,7 @@ void main() {
       'preserves the deleted suffix when a trailing-backspace reset resumes the same word and continues into the next word',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -605,7 +607,7 @@ void main() {
       'keeps the shortened prefix when later delete-reset words only share letters with the deleted suggestion',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -671,7 +673,7 @@ void main() {
       'trims a leading IME separator during delete-reset replacement when the live terminal prefix is visible',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -734,7 +736,7 @@ void main() {
       'preserves a new separator when a trailing-backspace reset is followed by a same-initial unrelated committed word',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -797,7 +799,7 @@ void main() {
       'preserves a manual separator when replacing a swiped word after backspacing into it',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -861,7 +863,7 @@ void main() {
       'preserves an IME separator when replacing a swiped word after backspacing into it',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -917,7 +919,7 @@ void main() {
       'does not force-resync the IME during replacement after deleting a later word',
       (tester) async {
         final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
+        final terminal = _newTerminalCapturing(terminalOutput);
         final focusNode = FocusNode();
 
         await tester.pumpWidget(
@@ -987,7 +989,7 @@ void main() {
       tester,
     ) async {
       final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
+      final terminal = _newTerminalCapturing(terminalOutput);
       final focusNode = FocusNode();
       final reviews = <TerminalCommandReview>[];
 
@@ -1031,4 +1033,18 @@ void main() {
       focusNode.dispose();
     });
   });
+}
+
+/// Creates a [GhosttyTerminalController] whose outbound bytes are decoded
+/// as UTF-8 and appended to [output] — a drop-in replacement for the legacy
+/// xterm `Terminal(onOutput: output.add)` construction.
+GhosttyTerminalController _newTerminalCapturing(List<String> output) {
+  final controller = GhosttyTerminalController()
+    ..attachExternalTransport(
+      writeBytes: (bytes) {
+        output.add(utf8.decode(bytes, allowMalformed: true));
+        return true;
+      },
+    );
+  return controller;
 }

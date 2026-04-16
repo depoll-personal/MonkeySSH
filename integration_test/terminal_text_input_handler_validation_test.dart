@@ -1,9 +1,11 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show TextInputClient;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ghostty_vte_flutter/ghostty_vte_flutter.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
-import 'package:xterm/xterm.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
 
@@ -231,7 +233,7 @@ Future<_ValidationResult> _runCase(
   _ValidationCase testCase,
 ) async {
   final terminalOutput = <String>[];
-  final terminal = Terminal(onOutput: terminalOutput.add);
+  final terminal = _newTerminalCapturing(terminalOutput);
   final focusNode = FocusNode();
 
   await tester.pumpWidget(
@@ -290,7 +292,7 @@ class _SummaryScreen extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Terminal text input validation summary',
+                    'GhosttyTerminalController text input validation summary',
                     style: Theme.of(context).textTheme.headlineSmall,
                   ),
                   const SizedBox(height: 16),
@@ -1418,4 +1420,18 @@ Future<void> _runShorterPrefixReplacementCase(WidgetTester tester) async {
     ),
   );
   await tester.pump();
+}
+
+/// Creates a [GhosttyTerminalController] whose outbound bytes are decoded
+/// as UTF-8 and appended to [output] — a drop-in replacement for the legacy
+/// xterm `Terminal(onOutput: output.add)` construction.
+GhosttyTerminalController _newTerminalCapturing(List<String> output) {
+  final controller = GhosttyTerminalController()
+    ..attachExternalTransport(
+      writeBytes: (bytes) {
+        output.add(utf8.decode(bytes, allowMalformed: true));
+        return true;
+      },
+    );
+  return controller;
 }

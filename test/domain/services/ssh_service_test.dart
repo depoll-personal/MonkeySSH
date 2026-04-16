@@ -11,6 +11,7 @@ import 'package:drift/native.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ghostty_vte_flutter/ghostty_vte_flutter.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
@@ -20,7 +21,6 @@ import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/services/background_ssh_service.dart';
 import 'package:monkeyssh/domain/services/host_key_verification.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
-import 'package:xterm/xterm.dart';
 
 const _backgroundSshChannel = MethodChannel(
   'xyz.depollsoft.monkeyssh/ssh_service',
@@ -533,9 +533,18 @@ void main() {
   });
 
   group('SshSession terminal previews', () {
+    GhosttyTerminalController buildController(List<String> chunks) {
+      final c = GhosttyTerminalController(maxLines: 100);
+      for (final chunk in chunks) {
+        c.appendOutputBytes(utf8.encode(chunk));
+      }
+      return c;
+    }
+
     test('builds preview from the latest non-empty lines', () {
-      final terminal = Terminal(maxLines: 100)
-        ..write('first line\r\nsecond line\r\n\r\nthird line');
+      final terminal = buildController(<String>[
+        'first line\r\nsecond line\r\n\r\nthird line',
+      ]);
 
       final preview = SshSession.buildTerminalPreview(terminal, maxLines: 2);
 
@@ -543,9 +552,10 @@ void main() {
     });
 
     test('sanitizes control characters and truncates long previews', () {
-      final terminal = Terminal(maxLines: 100)
-        ..write('prompt> \u0007hello world\r\n')
-        ..write(List<String>.filled(80, 'x').join());
+      final terminal = buildController(<String>[
+        'prompt> \u0007hello world\r\n',
+        List<String>.filled(80, 'x').join(),
+      ]);
 
       final preview = SshSession.buildTerminalPreview(terminal, maxChars: 40);
 
@@ -556,7 +566,7 @@ void main() {
     });
 
     test('clamps invalid preview limits to safe minimums', () {
-      final terminal = Terminal(maxLines: 100)..write('alpha\r\nbeta');
+      final terminal = buildController(<String>['alpha\r\nbeta']);
 
       expect(
         SshSession.buildTerminalPreview(terminal, maxLines: 0, maxChars: 4),

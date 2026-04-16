@@ -3,8 +3,8 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/domain/models/cell_offset.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
-import 'package:xterm/xterm.dart';
 
 void main() {
   group('trimTerminalSelectionText', () {

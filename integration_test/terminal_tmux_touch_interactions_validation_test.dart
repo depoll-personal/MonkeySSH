@@ -1,12 +1,15 @@
 // ignore_for_file: public_member_api_docs
 
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ghostty_vte_flutter/ghostty_vte_flutter.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:monkeyssh/domain/models/terminal_compat.dart';
 import 'package:monkeyssh/domain/services/terminal_hyperlink_tracker.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
-import 'package:xterm/xterm.dart';
 
 const _terminalLink = 'https://github.com/features/copilot';
 const _hiddenTerminalLink = 'https://github.com/orgs/community/discussions/1';
@@ -23,8 +26,8 @@ class _TerminalTouchInteractionsHarness extends StatefulWidget {
 class _TerminalTouchInteractionsHarnessState
     extends State<_TerminalTouchInteractionsHarness> {
   final _terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
-  late final Terminal _terminal;
-  late final TerminalController _terminalController;
+  late final GhosttyTerminalController _terminal;
+  late final LegacyTerminalSelectionController _terminalController;
   final _openedLinks = ValueNotifier<List<String>>(<String>[]);
   final _emittedOutput = <String>[];
   final _hyperlinkTracker = TerminalHyperlinkTracker();
@@ -49,11 +52,15 @@ class _TerminalTouchInteractionsHarnessState
   @override
   void initState() {
     super.initState();
-    _terminal = Terminal(maxLines: 200)
-      ..setMouseMode(MouseMode.upDownScroll)
-      ..setMouseReportMode(MouseReportMode.sgr)
-      ..onPrivateOSC = _hyperlinkTracker.handlePrivateOsc
-      ..onOutput = _emittedOutput.add;
+    _terminal = GhosttyTerminalController(maxLines: 200)
+      ..appendOutputBytes(utf8.encode('\u001b[?1000h'))
+      ..appendOutputBytes(utf8.encode('\u001b[?1006h'))
+      ..attachExternalTransport(
+        writeBytes: (b) {
+          _emittedOutput.add(utf8.decode(b, allowMalformed: true));
+          return true;
+        },
+      );
     _hyperlinkTracker.attach(_terminal);
     _terminal
       ..write('Copilot $_terminalLink\r\n')
@@ -62,7 +69,8 @@ class _TerminalTouchInteractionsHarnessState
         '$_hiddenTerminalLabel'
         '\u001b]8;;\u0007',
       );
-    _terminalController = TerminalController()..addListener(_handleSelection);
+    _terminalController = LegacyTerminalSelectionController()
+      ..addListener(_handleSelection);
   }
 
   @override
@@ -135,7 +143,6 @@ class _TerminalTouchInteractionsHarnessState
               child: MonkeyTerminalView(
                 key: _terminalViewKey,
                 _terminal,
-                controller: _terminalController,
                 hardwareKeyboardOnly: true,
                 touchScrollToTerminal: true,
                 resolveLinkTap: _resolveLinkTap,
