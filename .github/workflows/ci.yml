@@ -322,7 +322,19 @@ jobs:
         # doesn't match Windows' "AppData\Local\Pub\Cache" pub cache path,
         # causing it to skip the prebuilt download and attempt a source
         # build that needs Ghostty's Zig source tree (not present).
-        run: dart run ghostty_vte:setup
+        # We pre-stage the prebuilt in .prebuilt/<platform>/ so the
+        # hook's tier-2 lookup wins before tier-3.
+        shell: pwsh
+        run: |
+          $tag = 'ghostty_vte-v0.1.1'
+          $platform = 'windows-x64'
+          $tarball = "vte-$platform.tar.gz"
+          $url = "https://github.com/kingwill101/dart_terminal/releases/download/$tag/$tarball"
+          $dest = ".prebuilt/$platform"
+          New-Item -ItemType Directory -Path $dest -Force | Out-Null
+          Invoke-WebRequest -Uri $url -OutFile vte.tar.gz
+          tar -xzf vte.tar.gz -C $dest
+          Get-ChildItem $dest
 
       - name: Build Windows
         run: flutter build windows --release --no-tree-shake-icons -v
