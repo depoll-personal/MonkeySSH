@@ -60,11 +60,11 @@ on:
         type: boolean
         default: false
         description: 'Whether to build an unsigned Android release bundle artifact'
-      build-ios-unsigned-ipa:
+      build-ios-adhoc-ipa:
         required: false
         type: boolean
         default: false
-        description: 'Whether to package an unsigned iOS IPA artifact'
+        description: 'Whether to build an ad hoc signed iOS IPA artifact'
       run-android-deploy:
         required: false
         type: boolean
@@ -115,11 +115,11 @@ on:
         type: string
         default: ''
         description: 'Artifact name for a reusable iOS IPA'
-      ios-reuse-ipa-is-unsigned:
+      ios-reuse-ipa-needs-resign:
         required: false
         type: boolean
         default: false
-        description: 'Whether the reusable iOS IPA must be signed in this workflow'
+        description: 'Whether the reusable iOS IPA must be re-signed in this workflow'
       ios-reuse-source-sha:
         required: false
         type: string
@@ -173,7 +173,6 @@ on:
 permissions:
   actions: read
   contents: read
-  issues: write
 
 jobs:
   build-android:
@@ -223,7 +222,7 @@ jobs:
           fi
 
       - name: Checkout requested source ref for Android build
-        if: inputs.source-ref != '' && inputs.android-reuse-aab-artifact-name == ''
+        if: inputs.source-ref != '' && (inputs.android-reuse-aab-artifact-name == '' || inputs.android-reuse-apk-artifact-name == '')
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
@@ -231,13 +230,13 @@ jobs:
           fetch-depth: 1
 
       - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5
-        if: inputs.android-reuse-aab-artifact-name == '' || (inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-is-unsigned)
+        if: inputs.android-reuse-aab-artifact-name == '' || inputs.android-reuse-apk-artifact-name == '' || (inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-is-unsigned)
         with:
           distribution: 'temurin'
           java-version: '17'
 
       - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
-        if: inputs.android-reuse-aab-artifact-name == ''
+        if: inputs.android-reuse-aab-artifact-name == '' || inputs.android-reuse-apk-artifact-name == ''
         with:
           path: |
             ~/.gradle/caches
@@ -246,18 +245,18 @@ jobs:
           restore-keys: gradle-${{ runner.os }}-
 
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
-        if: inputs.android-reuse-aab-artifact-name == ''
+        if: inputs.android-reuse-aab-artifact-name == '' || inputs.android-reuse-apk-artifact-name == ''
         with:
           flutter-version: '3.x'
           channel: 'stable'
           cache: true
 
       - name: Install dependencies
-        if: inputs.android-reuse-aab-artifact-name == ''
+        if: inputs.android-reuse-aab-artifact-name == '' || inputs.android-reuse-apk-artifact-name == ''
         run: flutter pub get
 
       - name: Validate Android signing secrets
-        if: inputs.deploy-android-to != 'none' && (inputs.android-reuse-aab-artifact-name == '' || inputs.android-reuse-aab-is-unsigned)
+        if: inputs.deploy-android-to != 'none' && (inputs.android-reuse-aab-artifact-name == '' || inputs.android-reuse-apk-artifact-name == '' || inputs.android-reuse-aab-is-unsigned)
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
@@ -282,7 +281,7 @@ jobs:
           fi
 
       - name: Decode keystore
-        if: inputs.deploy-android-to != 'none' && (inputs.android-reuse-aab-artifact-name == '' || inputs.android-reuse-aab-is-unsigned)
+        if: inputs.deploy-android-to != 'none' && (inputs.android-reuse-aab-artifact-name == '' || inputs.android-reuse-apk-artifact-name == '' || inputs.android-reuse-aab-is-unsigned)
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
@@ -290,7 +289,7 @@ jobs:
           echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/upload-keystore.jks
 
       - name: Create key.properties
-        if: inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name == ''
+        if: inputs.deploy-android-to != 'none' && (inputs.android-reuse-aab-artifact-name == '' || inputs.android-reuse-apk-artifact-name == '')
         env:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
@@ -330,12 +329,23 @@ jobs:
             --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE"
 
       - name: Build debug APK
-        if: inputs.deploy-android-to == 'none'
+        if: inputs.deploy-android-to == 'none' && inputs.android-reuse-apk-artifact-name == ''
         run: |
           flutter build apk \
             --flavor ${{ inputs.flavor }} \
             --debug \
             --no-tree-shake-icons \
+            --build-name=${{ inputs.build-name }} \
+            --build-number=${{ inputs.build-number }} \
+            --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
+            --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE"
+
+      - name: Build release APK
+        if: inputs.deploy-android-to != 'none' && inputs.android-reuse-apk-artifact-name == ''
+        run: |
+          flutter build apk \
+            --flavor ${{ inputs.flavor }} \
+            --release \
             --build-name=${{ inputs.build-name }} \
             --build-number=${{ inputs.build-number }} \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
@@ -399,13 +409,39 @@ jobs:
           name: android-unsigned-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
           path: build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab
 
+      - name: Prepare APK artifact
+        id: prepare-apk-artifact
+        env:
+          TARGET_APK_NAME: android-apk-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}.apk
+        run: |
+          SOURCE_APK_PATH=$(find build/app/outputs/flutter-apk -maxdepth 1 -name '*.apk' -print -quit)
+          if [ -z "$SOURCE_APK_PATH" ]; then
+            echo "Expected an APK under build/app/outputs/flutter-apk, but none was found."
+            find build/app/outputs/flutter-apk -maxdepth 4 -print || true
+            exit 1
+          fi
+
+          SOURCE_APK_PATH="$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$SOURCE_APK_PATH")"
+          TARGET_APK_PATH="$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "build/app/outputs/flutter-apk/$TARGET_APK_NAME")"
+          if [ "$SOURCE_APK_PATH" != "$TARGET_APK_PATH" ]; then
+            cp "$SOURCE_APK_PATH" "$TARGET_APK_PATH"
+          fi
+
+          echo "artifact-path=$TARGET_APK_PATH" >> "$GITHUB_OUTPUT"
+
       - name: Upload APK artifact
         id: upload-apk
-        if: inputs.deploy-android-to == 'none'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          path: ${{ steps.prepare-apk-artifact.outputs.artifact-path }}
+          archive: false
+
+      - name: Upload ZIP-wrapped APK artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: android-apk-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
-          path: build/app/outputs/flutter-apk/app-${{ inputs.flavor }}-debug.apk
+          path: ${{ steps.prepare-apk-artifact.outputs.artifact-path }}
+          compression-level: 0
 
       - name: Fetch PR commits
         if: inputs.pr-number != ''
@@ -575,7 +611,7 @@ jobs:
         run: flutter pub get
 
       - name: Setup code signing
-        if: inputs.deploy-ios-to != 'none' && (inputs.ios-reuse-ipa-artifact-name == '' || inputs.ios-reuse-ipa-is-unsigned)
+        if: (inputs.deploy-ios-to != 'none' || inputs.build-ios-adhoc-ipa) && (inputs.ios-reuse-ipa-artifact-name == '' || inputs.ios-reuse-ipa-needs-resign)
         env:
           MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
@@ -586,11 +622,12 @@ jobs:
           BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
         run: |
           cd ios
-          if [ "${{ inputs.flavor }}" = "private" ]; then
-            bundle exec fastlane setup_signing app_identifier:xyz.depollsoft.monkeyssh.private
-          else
-            bundle exec fastlane setup_signing app_identifier:xyz.depollsoft.monkeyssh
+          SCHEME="${{ inputs.flavor == 'private' && 'Private' || 'Production' }}"
+          DISTRIBUTION_TYPE='appstore'
+          if [ "${{ inputs.build-ios-adhoc-ipa }}" = 'true' ] && [ "${{ inputs.deploy-ios-to }}" = 'none' ]; then
+            DISTRIBUTION_TYPE='adhoc'
           fi
+          bundle exec fastlane setup_signing scheme:"$SCHEME" distribution_type:"$DISTRIBUTION_TYPE"
 
       - name: Build iOS
         if: inputs.ios-reuse-ipa-artifact-name == ''
@@ -611,65 +648,52 @@ jobs:
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
             --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE"
 
-      - name: Package unsigned IPA
-        if: inputs.build-ios-unsigned-ipa && inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
+      - name: Package source IPA
+        if: inputs.build-ios-adhoc-ipa && inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
+        run: bash scripts/package_unsigned_ipa.sh
+
+      - name: Sign ad hoc IPA
+        if: inputs.build-ios-adhoc-ipa && inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
+        env:
+          MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
+          BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
         run: |
-          APP_PATH=$(find build/ios/iphoneos -maxdepth 1 -name '*.app' -type d -print -quit)
-          if [ -z "$APP_PATH" ]; then
-            echo 'Expected a built .app bundle under build/ios/iphoneos, but none was found.'
-            ls -la build/ios/iphoneos || true
+          cd ios
+          SCHEME="${{ inputs.flavor == 'private' && 'Private' || 'Production' }}"
+          SOURCE_IPA_PATH="$(python3 -c 'import os; print(os.path.abspath("../build/ios/ipa/Runner-unsigned.ipa"))')"
+          ADHOC_IPA_PATH="$(python3 -c 'import os; print(os.path.abspath("../build/ios/ipa/Runner-adhoc.ipa"))')"
+          bundle exec fastlane resign_ipa \
+            scheme:"$SCHEME" \
+            distribution_type:adhoc \
+            source_ipa_path:"$SOURCE_IPA_PATH" \
+            output_ipa_path:"$ADHOC_IPA_PATH"
+          rm -f ../build/ios/ipa/Runner-unsigned.ipa
+
+      - name: Prepare ad hoc IPA artifact
+        id: prepare-adhoc-ipa-artifact
+        if: inputs.build-ios-adhoc-ipa && inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
+        env:
+          TARGET_IPA_NAME: ios-adhoc-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}.ipa
+        run: |
+          SOURCE_IPA_PATH=$(find build/ios/ipa -maxdepth 1 -name '*.ipa' -print -quit)
+          if [ -z "$SOURCE_IPA_PATH" ]; then
+            echo "Expected an IPA under build/ios/ipa, but none was found."
+            find build/ios/ipa -maxdepth 4 -print || true
             exit 1
           fi
-          APP_BUNDLE_NAME=$(basename "$APP_PATH")
 
-          bundle_executable_path() {
-            local bundle_path="$1"
-            local info_plist="$bundle_path/Info.plist"
-            if [ ! -f "$info_plist" ]; then
-              echo "Expected Info.plist at $info_plist" >&2
-              return 1
-            fi
-
-            /usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$info_plist"
-          }
-
-          add_swift_scan_args() {
-            local bundle_path="$1"
-            local executable_name
-            executable_name=$(bundle_executable_path "$bundle_path")
-            SWIFT_SCAN_ARGS+=("--scan-executable" "$bundle_path/$executable_name")
-
-            if [ -d "$bundle_path/Frameworks" ]; then
-              SWIFT_SCAN_ARGS+=("--scan-folder" "$bundle_path/Frameworks")
-            fi
-          }
-
-          rm -rf build/ios/unsigned
-          mkdir -p build/ios/unsigned/Payload build/ios/ipa
-          ditto "$APP_PATH" "build/ios/unsigned/Payload/$APP_BUNDLE_NAME"
-
-          SWIFT_SUPPORT_DIR=build/ios/unsigned/SwiftSupport/iphoneos
-          mkdir -p "$SWIFT_SUPPORT_DIR"
-          declare -a SWIFT_SCAN_ARGS=()
-          add_swift_scan_args "build/ios/unsigned/Payload/$APP_BUNDLE_NAME"
-          if [ -d "build/ios/unsigned/Payload/$APP_BUNDLE_NAME/PlugIns" ]; then
-            while IFS= read -r -d '' APPEX_PATH; do
-              add_swift_scan_args "$APPEX_PATH"
-            done < <(find "build/ios/unsigned/Payload/$APP_BUNDLE_NAME/PlugIns" -mindepth 1 -maxdepth 1 -name '*.appex' -type d -print0)
-          fi
-          xcrun swift-stdlib-tool --copy --platform iphoneos --destination "$SWIFT_SUPPORT_DIR" "${SWIFT_SCAN_ARGS[@]}"
-          if ! find "$SWIFT_SUPPORT_DIR" -type f | grep -q .; then
-            rm -rf build/ios/unsigned/SwiftSupport
+          SOURCE_IPA_PATH="$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$SOURCE_IPA_PATH")"
+          TARGET_IPA_PATH="$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "build/ios/ipa/$TARGET_IPA_NAME")"
+          if [ "$SOURCE_IPA_PATH" != "$TARGET_IPA_PATH" ]; then
+            cp "$SOURCE_IPA_PATH" "$TARGET_IPA_PATH"
           fi
 
-          (
-            cd build/ios/unsigned
-            ZIP_INPUTS=(Payload)
-            if [ -d SwiftSupport ]; then
-              ZIP_INPUTS+=(SwiftSupport)
-            fi
-            zip -qry ../ipa/Runner-unsigned.ipa "${ZIP_INPUTS[@]}"
-          )
+          echo "artifact-path=$TARGET_IPA_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Download reusable IPA artifact
         if: inputs.ios-reuse-ipa-artifact-name != ''
@@ -728,6 +752,7 @@ jobs:
           SCRIPT
 
       - name: Archive, sign & deploy via Fastlane
+        id: prepare-deploy-ipa
         if: inputs.deploy-ios-to != 'none'
         env:
           MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
@@ -755,15 +780,16 @@ jobs:
             REUSED_IPA_PATH="$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$REUSED_IPA_PATH")"
           fi
 
-          if [ "${{ inputs.ios-reuse-ipa-is-unsigned }}" = 'true' ]; then
+          if [ "${{ inputs.ios-reuse-ipa-needs-resign }}" = 'true' ]; then
             if [ -z "$REUSED_IPA_PATH" ]; then
-              echo "ios-reuse-ipa-is-unsigned requires a reusable IPA artifact to be downloaded first."
+              echo "ios-reuse-ipa-needs-resign requires a reusable IPA artifact to be downloaded first."
               exit 1
             fi
             SIGNED_IPA_PATH="$(python3 -c 'import os; print(os.path.abspath("../build/ios/ipa/resigned-${{ inputs.flavor }}.ipa"))')"
             bundle exec fastlane resign_ipa \
               scheme:"$SCHEME" \
-              unsigned_ipa_path:"$REUSED_IPA_PATH" \
+              distribution_type:appstore \
+              source_ipa_path:"$REUSED_IPA_PATH" \
               output_ipa_path:"$SIGNED_IPA_PATH"
             REUSED_IPA_PATH="$SIGNED_IPA_PATH"
           fi
@@ -778,19 +804,37 @@ jobs:
             bundle exec fastlane build_ipa scheme:"$SCHEME"
           fi
 
-      - name: Upload signed IPA artifact
-        if: inputs.deploy-ios-to != 'none' && inputs.ios-reuse-ipa-artifact-name == ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: ios-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
-          path: build/ios/ipa/*.ipa
+          FINAL_IPA_PATH="$REUSED_IPA_PATH"
+          if [ -z "$FINAL_IPA_PATH" ]; then
+            FINAL_IPA_PATH=$(find ../build/ios/ipa -maxdepth 1 -name '*.ipa' -print -quit)
+            if [ -z "$FINAL_IPA_PATH" ]; then
+              echo "Expected a signed IPA artifact after Fastlane completed."
+              find ../build/ios/ipa -maxdepth 4 -print || true
+              exit 1
+            fi
+          fi
 
-      - name: Upload unsigned IPA artifact
-        if: inputs.build-ios-unsigned-ipa && inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
+          FINAL_IPA_PATH="$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$FINAL_IPA_PATH")"
+          ARTIFACT_IPA_PATH="$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "../build/ios/ipa/ios-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}.ipa")"
+          if [ "$FINAL_IPA_PATH" != "$ARTIFACT_IPA_PATH" ]; then
+            cp "$FINAL_IPA_PATH" "$ARTIFACT_IPA_PATH"
+            FINAL_IPA_PATH="$ARTIFACT_IPA_PATH"
+          fi
+          echo "artifact-path=$FINAL_IPA_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Upload signed IPA artifact
+        if: inputs.deploy-ios-to != 'none'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ios-unsigned-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
-          path: build/ios/ipa/Runner-unsigned.ipa
+          path: ${{ steps.prepare-deploy-ipa.outputs.artifact-path }}
+          archive: false
+
+      - name: Upload ad hoc IPA artifact
+        if: inputs.build-ios-adhoc-ipa && inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          path: ${{ steps.prepare-adhoc-ipa-artifact.outputs.artifact-path }}
+          archive: false
 
   deploy-status-summary:
     name: Summarize Deploy Status
@@ -873,6 +917,9 @@ jobs:
     needs: [build-android]
     if: always() && inputs.update-pr-deploy-comment && inputs.pr-number != '' && inputs.build-android && inputs.run-android-deploy && inputs.deploy-android-to != 'none'
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
     steps:
       - name: Update Android status row
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -935,6 +982,9 @@ jobs:
     needs: [build-ios]
     if: always() && inputs.update-pr-deploy-comment && inputs.pr-number != '' && inputs.build-ios && inputs.run-ios-deploy && inputs.deploy-ios-to != 'none'
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
     steps:
       - name: Update iOS status row
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
