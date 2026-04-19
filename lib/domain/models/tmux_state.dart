@@ -361,6 +361,9 @@ bool _isAsciiLetterOrDigit(int rune) =>
 
 // ── tmux command helpers ──────────────────────────────────────────────────
 
+/// tmux command fragment that enables tmux's built-in status bar.
+const tmuxEnableStatusBarCommand = r'\; set status on';
+
 /// tmux command fragment that disables tmux's built-in status bar.
 const tmuxDisableStatusBarCommand = r'\; set status off';
 

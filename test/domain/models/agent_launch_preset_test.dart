@@ -29,7 +29,7 @@ void main() {
       expect(
         buildAgentLaunchCommand(preset),
         'tmux new-session -A -s \'nightly review\' -c '
-        '"\$HOME/src/app" \'codex --yes-always\'',
+        '"\$HOME/src/app" \'codex --yes-always\' \\; set status on',
       );
     });
 
@@ -65,7 +65,7 @@ void main() {
       expect(
         buildAgentLaunchCommand(preset),
         "tmux new-session -A -s 'oc-session' -c "
-        '"\$HOME/work" \'opencode\'',
+        '"\$HOME/work" \'opencode\' \\; set status on',
       );
     });
 

@@ -147,12 +147,15 @@ String buildAgentLaunchCommand(AgentLaunchPreset preset) {
   final tmuxSessionName = preset.tmuxSessionName?.trim();
   final workingDirectory = preset.workingDirectory?.trim();
   if (tmuxSessionName != null && tmuxSessionName.isNotEmpty) {
+    final statusBarCommand = preset.tmuxDisableStatusBar
+        ? tmuxDisableStatusBarCommand
+        : tmuxEnableStatusBarCommand;
     final commandParts = <String>[
       'tmux new-session -A -s ${_quoteShellArgument(tmuxSessionName)}',
       if (workingDirectory != null && workingDirectory.isNotEmpty)
         '-c ${_quoteShellPath(workingDirectory)}',
       _quoteShellArgument(baseCommand),
-      if (preset.tmuxDisableStatusBar) tmuxDisableStatusBarCommand,
+      statusBarCommand,
     ];
     return commandParts.join(' ');
   }

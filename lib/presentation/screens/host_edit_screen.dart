@@ -42,6 +42,9 @@ extension _HostStartupModePresentation on _HostStartupMode {
 final _tmuxDisableStatusBarPattern = RegExp(
   r'(^|\s)\\;\s*set\s+status\s+off(?=\s|$)',
 );
+final _tmuxStatusBarPattern = RegExp(
+  r'(^|\s)\\;\s*set\s+status\s+(?:on|off)(?=\s|$)',
+);
 
 bool _hasTmuxDisableStatusBarCommand(String? extraFlags) {
   final normalized = extraFlags?.trim();
@@ -51,13 +54,13 @@ bool _hasTmuxDisableStatusBarCommand(String? extraFlags) {
   return _tmuxDisableStatusBarPattern.hasMatch(normalized);
 }
 
-String _stripTmuxDisableStatusBarCommand(String? extraFlags) {
+String _stripTmuxStatusBarCommand(String? extraFlags) {
   final normalized = extraFlags?.trim();
   if (normalized == null || normalized.isEmpty) {
     return '';
   }
   return normalized
-      .replaceAll(_tmuxDisableStatusBarPattern, ' ')
+      .replaceAll(_tmuxStatusBarPattern, ' ')
       .replaceAll(RegExp(r'\s{2,}'), ' ')
       .trim();
 }
@@ -66,17 +69,14 @@ String? _resolveTmuxExtraFlags({
   required String extraFlags,
   required bool disableStatusBar,
 }) {
-  final normalized = extraFlags.trim();
-  if (!disableStatusBar) {
-    return normalized.isEmpty ? null : normalized;
-  }
+  final normalized = _stripTmuxStatusBarCommand(extraFlags);
+  final statusBarCommand = disableStatusBar
+      ? tmuxDisableStatusBarCommand
+      : tmuxEnableStatusBarCommand;
   if (normalized.isEmpty) {
-    return tmuxDisableStatusBarCommand;
+    return statusBarCommand;
   }
-  if (_hasTmuxDisableStatusBarCommand(normalized)) {
-    return normalized;
-  }
-  return '$normalized $tmuxDisableStatusBarCommand';
+  return '$normalized $statusBarCommand';
 }
 
 /// Screen for adding or editing a host.
@@ -182,7 +182,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       _selectedFontFamily = host.terminalFontFamily;
       _tmuxSessionController.text = host.tmuxSessionName ?? '';
       _tmuxWorkingDirectoryController.text = host.tmuxWorkingDirectory ?? '';
-      _tmuxExtraFlagsController.text = _stripTmuxDisableStatusBarCommand(
+      _tmuxExtraFlagsController.text = _stripTmuxStatusBarCommand(
         tmuxExtraFlags,
       );
       _autoConnectCommandController.text = host.autoConnectCommand ?? '';
