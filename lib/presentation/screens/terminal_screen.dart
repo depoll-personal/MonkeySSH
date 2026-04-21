@@ -307,6 +307,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   double _dragOffset = 0;
   int _sessionFetchLimit = _initialSessionFetchLimit;
   StreamSubscription<void>? _windowChangeSubscription;
+  StreamSubscription<DiscoveredSessionsResult>? _sessionDiscoverySubscription;
   late AnimationController _bounceController;
   late Animation<double> _bounceAnimation;
   bool _loadingWindows = false;
@@ -342,6 +343,8 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       return;
     }
     _windowChangeSubscription?.cancel();
+    unawaited(_sessionDiscoverySubscription?.cancel());
+    _sessionDiscoverySubscription = null;
     _subscribeToWindowChanges();
     _loadWindows();
   }
@@ -349,6 +352,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   @override
   void dispose() {
     _windowChangeSubscription?.cancel();
+    unawaited(_sessionDiscoverySubscription?.cancel());
     for (final windowIndex in _seenAlertWindows) {
       _clearAlertNotification(windowIndex);
     }
@@ -431,28 +435,62 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     setState(() {
       _isLoadingSessions = true;
       _sessionLoadError = null;
+      _canLoadMoreSessions = false;
     });
 
     try {
       final discovery = widget.ref.read(agentSessionDiscoveryServiceProvider);
       final activeWindow = _windows?.where((w) => w.isActive).firstOrNull;
-      final result = await discovery.discoverSessions(
-        widget.session,
-        workingDirectory: activeWindow?.currentPath,
-        maxPerTool: _sessionFetchLimit,
-      );
-      if (!mounted) return;
-      setState(() {
-        _recentSessions = result.sessions;
-        _sessionLoadError = result.failureMessage;
-        if (_expandedSessionTools.isEmpty && result.sessions.isNotEmpty) {
-          _expandedSessionTools.add(result.sessions.first.toolName);
-        }
-        _canLoadMoreSessions =
-            result.sessions.length > previousCount &&
-            _hasSessionGroupAtLimit(result.sessions);
-        _isLoadingSessions = false;
-      });
+      await _sessionDiscoverySubscription?.cancel();
+      DiscoveredSessionsResult? latestResult;
+      late final StreamSubscription<DiscoveredSessionsResult> subscription;
+      subscription = discovery
+          .discoverSessionsStream(
+            widget.session,
+            workingDirectory: activeWindow?.currentPath,
+            maxPerTool: _sessionFetchLimit,
+          )
+          .listen(
+            (result) {
+              latestResult = result;
+              if (!mounted) return;
+              setState(() {
+                _recentSessions = result.sessions;
+                _sessionLoadError = result.failureMessage;
+                if (_expandedSessionTools.isEmpty &&
+                    result.sessions.isNotEmpty) {
+                  _expandedSessionTools.add(result.sessions.first.toolName);
+                }
+              });
+            },
+            onError: (error, stackTrace) {
+              if (!mounted) return;
+              setState(() {
+                _recentSessions = const [];
+                _sessionLoadError = 'Could not load recent AI sessions.';
+                _canLoadMoreSessions = false;
+                _isLoadingSessions = false;
+              });
+              if (identical(_sessionDiscoverySubscription, subscription)) {
+                _sessionDiscoverySubscription = null;
+              }
+            },
+            onDone: () {
+              if (!mounted) return;
+              final result = latestResult;
+              setState(() {
+                _canLoadMoreSessions =
+                    result != null &&
+                    result.sessions.length > previousCount &&
+                    _hasSessionGroupAtLimit(result.sessions);
+                _isLoadingSessions = false;
+              });
+              if (identical(_sessionDiscoverySubscription, subscription)) {
+                _sessionDiscoverySubscription = null;
+              }
+            },
+          );
+      _sessionDiscoverySubscription = subscription;
     } on Exception {
       if (!mounted) return;
       setState(() {

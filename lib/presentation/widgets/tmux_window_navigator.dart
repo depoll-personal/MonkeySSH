@@ -115,6 +115,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   Future<Set<AgentLaunchTool>>? _installedToolsFuture;
   final Set<String> _expandedSessionTools = <String>{};
   StreamSubscription<void>? _windowChangeSubscription;
+  StreamSubscription<DiscoveredSessionsResult>? _sessionDiscoverySubscription;
   bool _isLoadingWindows = true;
   bool _isLoadingSessions = false;
   bool _showRecentSessions = false;
@@ -143,7 +144,8 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
 
   @override
   void dispose() {
-    _windowChangeSubscription?.cancel();
+    unawaited(_windowChangeSubscription?.cancel());
+    unawaited(_sessionDiscoverySubscription?.cancel());
     super.dispose();
   }
 
@@ -188,20 +190,48 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
     try {
       // Get working directory from the active window if available.
       final activeWindow = _windows?.where((w) => w.isActive).firstOrNull;
-      final result = await _discovery.discoverSessions(
-        widget.session,
-        workingDirectory: activeWindow?.currentPath,
-        maxPerTool: _maxSessionsPerTool,
-      );
-      if (!mounted) return;
-      setState(() {
-        _recentSessions = result.sessions;
-        _sessionLoadError = result.failureMessage;
-        if (_expandedSessionTools.isEmpty && result.sessions.isNotEmpty) {
-          _expandedSessionTools.add(result.sessions.first.toolName);
-        }
-        _isLoadingSessions = false;
-      });
+      await _sessionDiscoverySubscription?.cancel();
+      late final StreamSubscription<DiscoveredSessionsResult> subscription;
+      subscription = _discovery
+          .discoverSessionsStream(
+            widget.session,
+            workingDirectory: activeWindow?.currentPath,
+            maxPerTool: _maxSessionsPerTool,
+          )
+          .listen(
+            (result) {
+              if (!mounted) return;
+              setState(() {
+                _recentSessions = result.sessions;
+                _sessionLoadError = result.failureMessage;
+                if (_expandedSessionTools.isEmpty &&
+                    result.sessions.isNotEmpty) {
+                  _expandedSessionTools.add(result.sessions.first.toolName);
+                }
+              });
+            },
+            onError: (error, stackTrace) {
+              if (!mounted) return;
+              setState(() {
+                _recentSessions = const [];
+                _sessionLoadError = 'Could not load recent AI sessions.';
+                _isLoadingSessions = false;
+              });
+              if (identical(_sessionDiscoverySubscription, subscription)) {
+                _sessionDiscoverySubscription = null;
+              }
+            },
+            onDone: () {
+              if (!mounted) return;
+              setState(() {
+                _isLoadingSessions = false;
+              });
+              if (identical(_sessionDiscoverySubscription, subscription)) {
+                _sessionDiscoverySubscription = null;
+              }
+            },
+          );
+      _sessionDiscoverySubscription = subscription;
     } on Exception {
       if (!mounted) return;
       setState(() {
@@ -472,7 +502,8 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
           },
         ),
         if (_showRecentSessions) ...[
-          if (_isLoadingSessions)
+          if (_isLoadingSessions &&
+              (_recentSessions == null || _recentSessions!.isEmpty))
             const Padding(
               padding: EdgeInsets.all(16),
               child: Center(
@@ -522,6 +553,17 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
             ...groupedSessions.entries.map(
               (entry) => _buildSessionGroup(theme, entry.key, entry.value),
             ),
+            if (_isLoadingSessions)
+              const Padding(
+                padding: EdgeInsets.all(16),
+                child: Center(
+                  child: SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator.adaptive(strokeWidth: 2),
+                  ),
+                ),
+              ),
           ],
         ],
       ],

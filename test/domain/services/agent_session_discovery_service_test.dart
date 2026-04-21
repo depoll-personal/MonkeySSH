@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
@@ -218,6 +220,62 @@ cwd: /tmp/demo
       expect(metadata.isSubagent, isTrue);
       expect(metadata.summary, 'can i rename this session?');
       expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
+    });
+  });
+
+  group('parseRemoteFileSnapshotLine', () {
+    test('decodes snapshot content and modification time', () {
+      final encoded = base64.encode(
+        utf8.encode('summary: Fix slow providers\n'),
+      );
+      final parsed = parseRemoteFileSnapshotLine(
+        '/tmp/workspace.yaml\x1f1713744000\x1f$encoded',
+      );
+
+      expect(parsed, isNotNull);
+      expect(parsed!.path, '/tmp/workspace.yaml');
+      expect(parsed.content, 'summary: Fix slow providers\n');
+      expect(
+        parsed.modifiedAt,
+        DateTime.fromMillisecondsSinceEpoch(1713744000 * 1000),
+      );
+    });
+
+    test('returns null for malformed snapshot rows', () {
+      expect(parseRemoteFileSnapshotLine('bad-row'), isNull);
+      expect(parseRemoteFileSnapshotLine('/tmp/demo\x1f123\x1f%%%'), isNull);
+    });
+  });
+
+  group('prioritizeGeminiSessionFilePaths', () {
+    test('prefers files in the active project before sibling histories', () {
+      final prioritized = prioritizeGeminiSessionFilePaths(
+        const [
+          '/Users/demo/.gemini/tmp/other/chats/session-1.json',
+          '/Users/demo/.gemini/tmp/flutty/chats/session-2.json',
+          '/Users/demo/.gemini/tmp/flutty/chats/session-3.json',
+        ],
+        activeWorkingDirectory: '/Users/depoll/Code/flutty',
+        preferredCount: 2,
+      );
+
+      expect(prioritized, [
+        '/Users/demo/.gemini/tmp/flutty/chats/session-2.json',
+        '/Users/demo/.gemini/tmp/flutty/chats/session-3.json',
+      ]);
+    });
+
+    test('keeps original order when there is no active directory', () {
+      expect(
+        prioritizeGeminiSessionFilePaths(const [
+          '/tmp/one/chats/session-1.json',
+          '/tmp/two/chats/session-2.json',
+        ]),
+        const [
+          '/tmp/one/chats/session-1.json',
+          '/tmp/two/chats/session-2.json',
+        ],
+      );
     });
   });
 }

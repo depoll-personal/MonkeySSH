@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -18,6 +19,8 @@ const _genericSessionSummaries = <String>{
 const _profileSourcingPrefix =
     '{ . ~/.profile; . ~/.bash_profile; . ~/.zprofile; } '
     '>/dev/null 2>&1; ';
+const _remoteSnapshotFieldSeparator = '\x1f';
+const _remoteSnapshotBatchSize = 8;
 
 /// Filters noisy discovered sessions and fills in a better display summary
 /// when the tool only exposes a working directory.
@@ -349,6 +352,98 @@ parseGeminiSessionMetadata(
   );
 }
 
+/// Parses a single batched remote file snapshot record.
+///
+/// This exists primarily for tests that exercise the remote snapshot transport
+/// without requiring a live SSH session.
+@visibleForTesting
+({String path, String content, DateTime? modifiedAt})?
+parseRemoteFileSnapshotLine(String line) {
+  final trimmed = line.trimRight();
+  if (trimmed.isEmpty) return null;
+  final parts = trimmed.split(_remoteSnapshotFieldSeparator);
+  if (parts.length < 3) return null;
+
+  final path = parts[0].trim();
+  if (path.isEmpty) return null;
+
+  final rawModifiedAt = parts[1].trim();
+  final modifiedAtEpoch = int.tryParse(rawModifiedAt);
+  final rawContent = parts[2].trim();
+
+  try {
+    final decodedContent = utf8.decode(
+      base64.decode(rawContent),
+      allowMalformed: true,
+    );
+    return (
+      path: path,
+      content: decodedContent,
+      modifiedAt: modifiedAtEpoch == null || modifiedAtEpoch <= 0
+          ? null
+          : DateTime.fromMillisecondsSinceEpoch(
+              modifiedAtEpoch > 9999999999
+                  ? modifiedAtEpoch
+                  : modifiedAtEpoch * 1000,
+            ),
+    );
+  } on FormatException {
+    return null;
+  }
+}
+
+/// Prioritizes Gemini session files that appear to belong to the active
+/// project before scanning sibling-project history.
+@visibleForTesting
+List<String> prioritizeGeminiSessionFilePaths(
+  Iterable<String> sessionPaths, {
+  String? activeWorkingDirectory,
+  int? preferredCount,
+}) {
+  final normalizedPaths = sessionPaths
+      .map((path) => path.trim())
+      .where((path) => path.isNotEmpty)
+      .toList(growable: false);
+  if (normalizedPaths.isEmpty) return const [];
+
+  final activeProjectName =
+      activeWorkingDirectory != null && activeWorkingDirectory.trim().isNotEmpty
+      ? _pathLastSegment(activeWorkingDirectory)
+      : null;
+  if (activeProjectName == null || activeProjectName.isEmpty) {
+    return normalizedPaths;
+  }
+
+  final matching = <String>[];
+  final unknown = <String>[];
+  final otherProjects = <String>[];
+  for (final path in normalizedPaths) {
+    final pathParts = path.split('/');
+    final chatsIndex = pathParts.indexOf('chats');
+    final projectName = chatsIndex > 0 ? pathParts[chatsIndex - 1].trim() : '';
+    if (projectName.isEmpty) {
+      unknown.add(path);
+      continue;
+    }
+    if (projectName == activeProjectName) {
+      matching.add(path);
+      continue;
+    }
+    otherProjects.add(path);
+  }
+
+  final targetCount = preferredCount != null && preferredCount > 0
+      ? preferredCount
+      : normalizedPaths.length;
+  final prioritized = <String>[...matching, ...unknown];
+  if (prioritized.length >= targetCount || otherProjects.isEmpty) {
+    return prioritized.take(targetCount).toList(growable: false);
+  }
+
+  prioritized.addAll(otherProjects.take(targetCount - prioritized.length));
+  return prioritized;
+}
+
 /// Discovers recent AI coding tool sessions on remote hosts by scanning
 /// known session storage locations.
 ///
@@ -377,67 +472,95 @@ class AgentSessionDiscoveryService {
     String? workingDirectory,
     int maxPerTool = 12,
   }) async {
-    final results = await Future.wait([
-      _discoverClaudeSessions(session, workingDirectory, maxPerTool),
-      _discoverCodexSessions(session, maxPerTool),
-      _discoverCopilotSessions(session, maxPerTool),
-      _discoverGeminiSessions(session, workingDirectory, maxPerTool),
-      _discoverOpenCodeSessions(session, maxPerTool),
-    ]);
-
-    final all = results
-        .expand((result) => result.sessions)
-        .map(
-          (info) => normalizeDiscoveredSessionInfo(
-            info,
-            activeWorkingDirectory: workingDirectory,
-          ),
-        )
-        .whereType<ToolSessionInfo>()
-        .toList();
-
-    // Filter to sessions matching the working directory if provided.
-    if (workingDirectory != null && workingDirectory.isNotEmpty) {
-      final filtered = _limitDiscoveredSessionsPerTool(
-        all
-            .where(
-              (s) => _matchesWorkingDirectory(
-                workingDirectory,
-                s.workingDirectory,
-              ),
-            )
-            .toList(),
-        maxPerTool,
-      );
-      // Return filtered results if any match; otherwise return all so the UI
-      // still has a fallback when the remote tool doesn't persist directory
-      // metadata for its sessions.
-      if (filtered.isNotEmpty) {
-        return DiscoveredSessionsResult(
-          sessions: filtered,
-          failedTools: results
-              .where(
-                (r) => shouldSurfaceDiscoveryFailure(
-                  hadError: r.hadError,
-                  loadedSessionCount: r.sessions.length,
-                ),
-              )
-              .map((r) => r.toolName),
-        );
-      }
-    }
-
-    return DiscoveredSessionsResult(
-      sessions: _limitDiscoveredSessionsPerTool(all, maxPerTool),
-      failedTools: results
-          .where(
-            (r) => shouldSurfaceDiscoveryFailure(
-              hadError: r.hadError,
-              loadedSessionCount: r.sessions.length,
-            ),
-          )
-          .map((r) => r.toolName),
+    final tasks = _startToolDiscovery(
+      session,
+      workingDirectory: workingDirectory,
+      maxPerTool: maxPerTool,
     );
+    final results = await Future.wait(tasks.map((task) => task.future));
+    return _buildDiscoveredSessionsResult(
+      results,
+      workingDirectory: workingDirectory,
+      maxPerTool: maxPerTool,
+    );
+  }
+
+  /// Streams cumulative discovery results as each provider completes.
+  ///
+  /// The final emitted value matches [discoverSessions], while intermediate
+  /// values surface any providers that have already completed so the UI can
+  /// render partial results without waiting for the slowest tool.
+  Stream<DiscoveredSessionsResult> discoverSessionsStream(
+    SshSession session, {
+    String? workingDirectory,
+    int maxPerTool = 12,
+  }) {
+    late final StreamController<DiscoveredSessionsResult> controller;
+    var cancelled = false;
+    controller = StreamController<DiscoveredSessionsResult>(
+      onListen: () {
+        final tasks = _startToolDiscovery(
+          session,
+          workingDirectory: workingDirectory,
+          maxPerTool: maxPerTool,
+        );
+        final completed = List<_ToolDiscoveryResult?>.filled(
+          tasks.length,
+          null,
+        );
+
+        for (final indexedTask in tasks.indexed) {
+          final index = indexedTask.$1;
+          final task = indexedTask.$2;
+          task.future.then(
+            (result) {
+              if (cancelled || controller.isClosed) {
+                return;
+              }
+              completed[index] = result;
+              final loadedResults = completed.whereType<_ToolDiscoveryResult>();
+              final isComplete = loadedResults.length == tasks.length;
+              controller.add(
+                _buildDiscoveredSessionsResult(
+                  loadedResults,
+                  workingDirectory: workingDirectory,
+                  maxPerTool: maxPerTool,
+                  includeFailures: isComplete,
+                  allowWorkingDirectoryFallback: isComplete,
+                ),
+              );
+              if (isComplete && !controller.isClosed) {
+                unawaited(controller.close());
+              }
+            },
+            onError: (error, stackTrace) {
+              if (cancelled || controller.isClosed) {
+                return;
+              }
+              completed[index] = _ToolDiscoveryResult.failure(task.toolName);
+              final loadedResults = completed.whereType<_ToolDiscoveryResult>();
+              final isComplete = loadedResults.length == tasks.length;
+              controller.add(
+                _buildDiscoveredSessionsResult(
+                  loadedResults,
+                  workingDirectory: workingDirectory,
+                  maxPerTool: maxPerTool,
+                  includeFailures: isComplete,
+                  allowWorkingDirectoryFallback: isComplete,
+                ),
+              );
+              if (isComplete && !controller.isClosed) {
+                unawaited(controller.close());
+              }
+            },
+          );
+        }
+      },
+      onCancel: () {
+        cancelled = true;
+      },
+    );
+    return controller.stream;
   }
 
   /// Builds the shell command to resume a specific session.
@@ -462,6 +585,102 @@ class AgentSessionDiscoveryService {
       return 'cd ${_shellQuote(dir)} && $resume';
     }
     return resume;
+  }
+
+  List<_ToolDiscoveryTask> _startToolDiscovery(
+    SshSession session, {
+    String? workingDirectory,
+    int maxPerTool = 12,
+  }) => [
+    _ToolDiscoveryTask(
+      toolName: 'Claude Code',
+      future: _discoverClaudeSessions(session, workingDirectory, maxPerTool),
+    ),
+    _ToolDiscoveryTask(
+      toolName: 'Codex',
+      future: _discoverCodexSessions(session, maxPerTool),
+    ),
+    _ToolDiscoveryTask(
+      toolName: 'Copilot CLI',
+      future: _discoverCopilotSessions(session, maxPerTool),
+    ),
+    _ToolDiscoveryTask(
+      toolName: 'Gemini CLI',
+      future: _discoverGeminiSessions(session, workingDirectory, maxPerTool),
+    ),
+    _ToolDiscoveryTask(
+      toolName: 'OpenCode',
+      future: _discoverOpenCodeSessions(session, maxPerTool),
+    ),
+  ];
+
+  DiscoveredSessionsResult _buildDiscoveredSessionsResult(
+    Iterable<_ToolDiscoveryResult> results, {
+    String? workingDirectory,
+    int maxPerTool = 12,
+    bool includeFailures = true,
+    bool allowWorkingDirectoryFallback = true,
+  }) {
+    final resultList = results.toList(growable: false);
+    final all = resultList
+        .expand((result) => result.sessions)
+        .map(
+          (info) => normalizeDiscoveredSessionInfo(
+            info,
+            activeWorkingDirectory: workingDirectory,
+          ),
+        )
+        .whereType<ToolSessionInfo>()
+        .toList();
+
+    if (workingDirectory != null && workingDirectory.isNotEmpty) {
+      final filtered = _limitDiscoveredSessionsPerTool(
+        all
+            .where(
+              (session) => _matchesWorkingDirectory(
+                workingDirectory,
+                session.workingDirectory,
+              ),
+            )
+            .toList(),
+        maxPerTool,
+      );
+      if (filtered.isNotEmpty || !allowWorkingDirectoryFallback) {
+        return DiscoveredSessionsResult(
+          sessions: filtered,
+          failedTools: _visibleDiscoveryFailures(
+            resultList,
+            includeFailures: includeFailures,
+          ),
+        );
+      }
+    }
+
+    return DiscoveredSessionsResult(
+      sessions: _limitDiscoveredSessionsPerTool(all, maxPerTool),
+      failedTools: _visibleDiscoveryFailures(
+        resultList,
+        includeFailures: includeFailures,
+      ),
+    );
+  }
+
+  Set<String> _visibleDiscoveryFailures(
+    Iterable<_ToolDiscoveryResult> results, {
+    required bool includeFailures,
+  }) {
+    if (!includeFailures) {
+      return const <String>{};
+    }
+    return results
+        .where(
+          (result) => shouldSurfaceDiscoveryFailure(
+            hadError: result.hadError,
+            loadedSessionCount: result.sessions.length,
+          ),
+        )
+        .map((result) => result.toolName)
+        .toSet();
   }
 
   // ── Claude Code ────────────────────────────────────────────────────────
@@ -502,6 +721,10 @@ class AgentSessionDiscoveryService {
       }
 
       final sessionFilesById = await _findClaudeSessionFiles(session, seenIds);
+      final metadataByPath = await _readClaudeSessionMetadataBatch(
+        session,
+        sessionFilesById.values,
+      );
       final sessions = <ToolSessionInfo>[];
       for (final decoded in historyEntries) {
         try {
@@ -520,18 +743,12 @@ class AgentSessionDiscoveryService {
           String? summary;
           final sessionFilePath = sessionFilesById[sessionId] ?? '';
           if (sessionFilePath.isNotEmpty) {
-            lastActive ??= await _readModificationTime(
-              session,
-              sessionFilePath,
-            );
-            final metadata = await _readClaudeSessionMetadata(
-              session,
-              sessionFilePath,
-            );
+            final metadata = metadataByPath[sessionFilePath];
+            lastActive ??= metadata?.modifiedAt;
             summary = _firstNonEmpty([
-              metadata.customTitle,
-              metadata.agentName,
-              metadata.lastPrompt,
+              metadata?.customTitle,
+              metadata?.agentName,
+              metadata?.lastPrompt,
             ]);
           }
 
@@ -583,12 +800,20 @@ class AgentSessionDiscoveryService {
       }
 
       final sessionIndex = await _readCodexSessionIndex(session, scanLimit);
+      final rolloutPaths = output
+          .trim()
+          .split('\n')
+          .map((line) => line.trim())
+          .where((line) => line.isNotEmpty)
+          .toList(growable: false);
+      final rolloutSnapshots = await _readRemoteFileSnapshots(
+        session,
+        rolloutPaths.map((path) => _RemoteFileReadRequest.headLines(path, 80)),
+      );
       final sessions = <ToolSessionInfo>[];
       var hadError = sessionIndex.hadError;
 
-      for (final line in output.trim().split('\n')) {
-        if (line.trim().isEmpty) continue;
-        final filePath = line.trim();
+      for (final filePath in rolloutPaths) {
         final fileName = filePath.split('/').last.replaceAll('.jsonl', '');
         final threadId = _extractCodexThreadId(fileName);
         final threadInfo = threadId != null
@@ -600,10 +825,7 @@ class AgentSessionDiscoveryService {
         var lastActive = threadInfo?.updatedAt;
 
         try {
-          final rolloutHead = await _exec(
-            session,
-            'sed -n \'1,80p\' ${_shellQuote(filePath)} 2>/dev/null',
-          );
+          final rolloutHead = rolloutSnapshots[filePath]?.content ?? '';
           final metadata = parseCodexRolloutMetadata(rolloutHead);
           if (rolloutHead.trim().isNotEmpty && !metadata.parsedAny) {
             hadError = true;
@@ -615,7 +837,7 @@ class AgentSessionDiscoveryService {
           hadError = true;
         }
 
-        lastActive ??= await _readModificationTime(session, filePath);
+        lastActive ??= rolloutSnapshots[filePath]?.modifiedAt;
 
         sessions.add(
           ToolSessionInfo(
@@ -697,42 +919,70 @@ class AgentSessionDiscoveryService {
           .map((line) => line.trim())
           .where((line) => line.isNotEmpty)
           .toList(growable: false);
+      final workspaceSnapshots = await _readRemoteFileSnapshots(
+        session,
+        workspacePaths.map(
+          (workspacePath) =>
+              _RemoteFileReadRequest.headBytes(workspacePath, 16 * 1024),
+        ),
+      );
 
       var hadError = false;
-      final sessions = await Future.wait(
-        workspacePaths.map((workspacePath) async {
-          final dirPath = workspacePath.replaceFirst(
-            RegExp(r'/workspace\.yaml$'),
-            '/',
-          );
-          final dirName = dirPath.split('/').where((s) => s.isNotEmpty).last;
-          DateTime? lastActive;
+      final planHeadPaths = <String>[];
+      final sessionDrafts =
+          <
+            ({
+              String sessionId,
+              String planPath,
+              String? workingDirectory,
+              DateTime? lastActive,
+              String? summary,
+            })
+          >[];
+      for (final workspacePath in workspacePaths) {
+        final dirPath = workspacePath.replaceFirst(
+          RegExp(r'/workspace\.yaml$'),
+          '/',
+        );
+        final dirName = dirPath.split('/').where((s) => s.isNotEmpty).last;
+        final snapshot = workspaceSnapshots[workspacePath];
+        final yaml = snapshot?.content ?? '';
 
-          String? summary;
-          String? workingDirectory;
-          try {
-            final yaml = await _exec(
-              session,
-              'cat ${_shellQuote(workspacePath)} 2>/dev/null',
-            );
-            if (yaml.trim().isNotEmpty) {
-              final metadata = parseCopilotWorkspaceYamlMetadata(yaml);
-              summary = metadata.summary;
-              workingDirectory = metadata.workingDirectory;
-              lastActive = metadata.updatedAt;
-            }
-          } on Object {
-            hadError = true;
-          }
+        String? summary;
+        String? workingDirectory;
+        DateTime? lastActive;
+        if (yaml.trim().isNotEmpty) {
+          final metadata = parseCopilotWorkspaceYamlMetadata(yaml);
+          summary = metadata.summary;
+          workingDirectory = metadata.workingDirectory;
+          lastActive = metadata.updatedAt;
+        } else if (snapshot == null) {
+          hadError = true;
+        }
+        lastActive ??= snapshot?.modifiedAt;
 
-          lastActive ??= await _readModificationTime(session, workspacePath);
+        final planPath = '${dirPath}plan.md';
+        if (summary == null || summary.isEmpty) {
+          planHeadPaths.add(planPath);
+        }
+        sessionDrafts.add((
+          sessionId: dirName,
+          planPath: planPath,
+          workingDirectory: workingDirectory,
+          lastActive: lastActive,
+          summary: summary,
+        ));
+      }
 
-          if (summary == null || summary.isEmpty) {
-            try {
-              final planHead = await _exec(
-                session,
-                'head -3 ${_shellQuote('${dirPath}plan.md')} 2>/dev/null',
-              );
+      final planSnapshots = await _readRemoteFileSnapshots(
+        session,
+        planHeadPaths.map((path) => _RemoteFileReadRequest.headLines(path, 3)),
+      );
+      final sessions = sessionDrafts
+          .map((draft) {
+            var summary = draft.summary;
+            if (summary == null || summary.isEmpty) {
+              final planHead = planSnapshots[draft.planPath]?.content ?? '';
               if (planHead.trim().isNotEmpty) {
                 for (final planLine in planHead.trim().split('\n')) {
                   final cleaned = planLine
@@ -744,20 +994,17 @@ class AgentSessionDiscoveryService {
                   }
                 }
               }
-            } on Object {
-              hadError = true;
             }
-          }
 
-          return ToolSessionInfo(
-            toolName: 'Copilot CLI',
-            sessionId: dirName,
-            workingDirectory: workingDirectory,
-            lastActive: lastActive,
-            summary: summary ?? _truncateId(dirName),
-          );
-        }),
-      );
+            return ToolSessionInfo(
+              toolName: 'Copilot CLI',
+              sessionId: draft.sessionId,
+              workingDirectory: draft.workingDirectory,
+              lastActive: draft.lastActive,
+              summary: summary ?? _truncateId(draft.sessionId),
+            );
+          })
+          .toList(growable: false);
       return _ToolDiscoveryResult.success(
         'Copilot CLI',
         sessions,
@@ -859,10 +1106,21 @@ class AgentSessionDiscoveryService {
         .map((line) => line.trim())
         .where((line) => line.isNotEmpty)
         .toList(growable: false);
+    final prioritizedSessionPaths = prioritizeGeminiSessionFilePaths(
+      sessionPaths,
+      activeWorkingDirectory: workingDirectory,
+      preferredCount: max * 2,
+    );
+    final sessionSnapshots = await _readRemoteFileSnapshots(
+      session,
+      prioritizedSessionPaths.map(
+        (filePath) => _RemoteFileReadRequest.headBytes(filePath, 32 * 1024),
+      ),
+    );
 
     var hadError = false;
     final sessions = await Future.wait(
-      sessionPaths.map((filePath) async {
+      prioritizedSessionPaths.map((filePath) async {
         final fileName = filePath
             .split('/')
             .last
@@ -884,10 +1142,7 @@ class AgentSessionDiscoveryService {
         DateTime? lastActive;
         String? sessionId = fileName;
         try {
-          final sessionRecord = await _exec(
-            session,
-            'cat ${_shellQuote(filePath)} 2>/dev/null',
-          );
+          final sessionRecord = sessionSnapshots[filePath]?.content ?? '';
           final metadata = parseGeminiSessionMetadata(
             sessionRecord,
             activeWorkingDirectory: workingDirectory,
@@ -910,7 +1165,7 @@ class AgentSessionDiscoveryService {
           return null;
         }
 
-        lastActive ??= await _readModificationTime(session, filePath);
+        lastActive ??= sessionSnapshots[filePath]?.modifiedAt;
 
         return ToolSessionInfo(
           toolName: 'Gemini CLI',
@@ -1095,39 +1350,141 @@ class AgentSessionDiscoveryService {
     return filesById;
   }
 
-  Future<DateTime?> _readModificationTime(
+  Future<Map<String, _RemoteFileSnapshot>> _readRemoteFileSnapshots(
     SshSession session,
-    String path,
+    Iterable<_RemoteFileReadRequest> requests,
   ) async {
-    try {
+    final uniqueRequests = <String, _RemoteFileReadRequest>{};
+    for (final request in requests) {
+      final path = request.path.trim();
+      if (path.isEmpty || uniqueRequests.containsKey(path)) {
+        continue;
+      }
+      uniqueRequests[path] = request;
+    }
+    if (uniqueRequests.isEmpty) {
+      return const <String, _RemoteFileSnapshot>{};
+    }
+
+    final snapshots = <String, _RemoteFileSnapshot>{};
+    for (final chunk in _chunked(
+      uniqueRequests.values.toList(growable: false),
+      _remoteSnapshotBatchSize,
+    )) {
       final output = await _exec(
         session,
-        '(stat -c %Y ${_shellQuote(path)} 2>/dev/null || '
-        'stat -f %m ${_shellQuote(path)} 2>/dev/null) | head -1',
+        _buildRemoteFileSnapshotCommand(chunk),
       );
-      final epoch = int.tryParse(output.trim());
-      if (epoch == null || epoch <= 0) return null;
-      return _dateTimeFromEpoch(epoch);
-    } on Object {
-      return null;
+      for (final line in output.split('\n')) {
+        final parsed = parseRemoteFileSnapshotLine(line);
+        if (parsed == null) continue;
+        snapshots[parsed.path] = _RemoteFileSnapshot(
+          path: parsed.path,
+          content: parsed.content,
+          modifiedAt: parsed.modifiedAt,
+        );
+      }
     }
+    return snapshots;
   }
 
-  Future<({String customTitle, String agentName, String lastPrompt})>
-  _readClaudeSessionMetadata(SshSession session, String path) async {
-    final output = await _exec(
-      session,
-      'awk '
-      '${_shellQuote(r'''
+  String _buildRemoteFileSnapshotCommand(
+    List<_RemoteFileReadRequest> requests,
+  ) {
+    final reads = requests
+        .map((request) {
+          final readCommand = switch (request.mode) {
+            _RemoteFileReadMode.headBytes =>
+              '"\$HEAD_BIN" -c ${request.limit} ${_shellQuote(request.path)}',
+            _RemoteFileReadMode.headLines =>
+              '"\$HEAD_BIN" -n ${request.limit} ${_shellQuote(request.path)}',
+          };
+          return '''
+if [ -f ${_shellQuote(request.path)} ]; then
+  __mtime=\$( ( "\$STAT_BIN" -c %Y ${_shellQuote(request.path)} 2>/dev/null || "\$STAT_BIN" -f %m ${_shellQuote(request.path)} 2>/dev/null ) | "\$HEAD_BIN" -n 1 )
+  __content=\$($readCommand 2>/dev/null | "\$BASE64_BIN" | "\$TR_BIN" -d '\n')
+  printf '%s$_remoteSnapshotFieldSeparator%s$_remoteSnapshotFieldSeparator%s\n' ${_shellQuote(request.path)} "\$__mtime" "\$__content"
+fi
+''';
+        })
+        .join(';');
+    return '''
+STAT_BIN=\$(command -v stat 2>/dev/null || printf /usr/bin/stat)
+HEAD_BIN=\$(command -v head 2>/dev/null || printf /usr/bin/head)
+BASE64_BIN=\$(command -v base64 2>/dev/null || printf /usr/bin/base64)
+TR_BIN=\$(command -v tr 2>/dev/null || printf /usr/bin/tr)
+$reads
+''';
+  }
+
+  Future<Map<String, _ClaudeSessionMetadataSnapshot>>
+  _readClaudeSessionMetadataBatch(
+    SshSession session,
+    Iterable<String> paths,
+  ) async {
+    final normalizedPaths = paths
+        .map((path) => path.trim())
+        .where((path) => path.isNotEmpty)
+        .toSet()
+        .toList(growable: false);
+    if (normalizedPaths.isEmpty) {
+      return const <String, _ClaudeSessionMetadataSnapshot>{};
+    }
+
+    final metadataByPath = <String, _ClaudeSessionMetadataSnapshot>{};
+    for (final chunk in _chunked(normalizedPaths, _remoteSnapshotBatchSize)) {
+      final output = await _exec(
+        session,
+        _buildClaudeMetadataBatchCommand(chunk),
+      );
+      for (final line in output.split('\n')) {
+        final parsed = parseRemoteFileSnapshotLine(line);
+        if (parsed == null) continue;
+        final metadata = _parseClaudeMetadataSnapshot(parsed.content);
+        metadataByPath[parsed.path] = _ClaudeSessionMetadataSnapshot(
+          modifiedAt: parsed.modifiedAt,
+          customTitle: metadata.customTitle,
+          agentName: metadata.agentName,
+          lastPrompt: metadata.lastPrompt,
+        );
+      }
+    }
+    return metadataByPath;
+  }
+
+  String _buildClaudeMetadataBatchCommand(List<String> paths) {
+    final awkScript = _shellQuote(r'''
 match($0, /"customTitle":"([^"]*)"/, value) { customTitle = value[1] }
 match($0, /"agentName":"([^"]*)"/, value) { agentName = value[1] }
 match($0, /"lastPrompt":"([^"]*)"/, value) { lastPrompt = value[1] }
 END {
   printf "customTitle=%s\nagentName=%s\nlastPrompt=%s\n", customTitle, agentName, lastPrompt
 }
-''')} '
-      '${_shellQuote(path)} 2>/dev/null',
-    );
+''');
+    final reads = paths
+        .map(
+          (path) =>
+              '''
+if [ -f ${_shellQuote(path)} ]; then
+  __mtime=\$( ( "\$STAT_BIN" -c %Y ${_shellQuote(path)} 2>/dev/null || "\$STAT_BIN" -f %m ${_shellQuote(path)} 2>/dev/null ) | "\$HEAD_BIN" -n 1 )
+  __content=\$("\$AWK_BIN" $awkScript ${_shellQuote(path)} 2>/dev/null | "\$BASE64_BIN" | "\$TR_BIN" -d '\n')
+  printf '%s$_remoteSnapshotFieldSeparator%s$_remoteSnapshotFieldSeparator%s\n' ${_shellQuote(path)} "\$__mtime" "\$__content"
+fi
+''',
+        )
+        .join(';');
+    return '''
+STAT_BIN=\$(command -v stat 2>/dev/null || printf /usr/bin/stat)
+HEAD_BIN=\$(command -v head 2>/dev/null || printf /usr/bin/head)
+AWK_BIN=\$(command -v awk 2>/dev/null || printf /usr/bin/awk)
+BASE64_BIN=\$(command -v base64 2>/dev/null || printf /usr/bin/base64)
+TR_BIN=\$(command -v tr 2>/dev/null || printf /usr/bin/tr)
+$reads
+''';
+  }
+
+  ({String customTitle, String agentName, String lastPrompt})
+  _parseClaudeMetadataSnapshot(String output) {
     var customTitle = '';
     var agentName = '';
     var lastPrompt = '';
@@ -1152,6 +1509,15 @@ END {
       agentName: agentName,
       lastPrompt: lastPrompt,
     );
+  }
+
+  Iterable<List<T>> _chunked<T>(List<T> values, int chunkSize) sync* {
+    for (var start = 0; start < values.length; start += chunkSize) {
+      final end = start + chunkSize < values.length
+          ? start + chunkSize
+          : values.length;
+      yield values.sublist(start, end);
+    }
   }
 
   DateTime _dateTimeFromEpoch(int epoch) => DateTime.fromMillisecondsSinceEpoch(
@@ -1217,6 +1583,13 @@ class _ToolDiscoveryResult {
   final bool hadError;
 }
 
+class _ToolDiscoveryTask {
+  const _ToolDiscoveryTask({required this.toolName, required this.future});
+
+  final String toolName;
+  final Future<_ToolDiscoveryResult> future;
+}
+
 class _CodexSessionIndexResult {
   const _CodexSessionIndexResult({
     required this.entries,
@@ -1232,6 +1605,46 @@ class _CodexSessionIndexEntry {
 
   final String? threadName;
   final DateTime? updatedAt;
+}
+
+enum _RemoteFileReadMode { headBytes, headLines }
+
+class _RemoteFileReadRequest {
+  const _RemoteFileReadRequest.headBytes(this.path, this.limit)
+    : mode = _RemoteFileReadMode.headBytes;
+
+  const _RemoteFileReadRequest.headLines(this.path, this.limit)
+    : mode = _RemoteFileReadMode.headLines;
+
+  final String path;
+  final int limit;
+  final _RemoteFileReadMode mode;
+}
+
+class _RemoteFileSnapshot {
+  const _RemoteFileSnapshot({
+    required this.path,
+    required this.content,
+    this.modifiedAt,
+  });
+
+  final String path;
+  final String content;
+  final DateTime? modifiedAt;
+}
+
+class _ClaudeSessionMetadataSnapshot {
+  const _ClaudeSessionMetadataSnapshot({
+    this.modifiedAt,
+    this.customTitle = '',
+    this.agentName = '',
+    this.lastPrompt = '',
+  });
+
+  final DateTime? modifiedAt;
+  final String customTitle;
+  final String agentName;
+  final String lastPrompt;
 }
 
 Map<String, dynamic>? _tryDecodeJsonObject(String raw) {

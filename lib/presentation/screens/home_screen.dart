@@ -2357,6 +2357,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   int _sessionFetchLimit = _initialSessionFetchLimit;
   bool _restoredUiState = false;
   StreamSubscription<void>? _windowChangeSubscription;
+  StreamSubscription<DiscoveredSessionsResult>? _sessionDiscoverySubscription;
   bool _loadingWindows = false;
   bool _pendingWindowReload = false;
 
@@ -2369,6 +2370,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   @override
   void dispose() {
     unawaited(_windowChangeSubscription?.cancel());
+    unawaited(_sessionDiscoverySubscription?.cancel());
     super.dispose();
   }
 
@@ -2788,6 +2790,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     setState(() {
       _isLoadingSessions = true;
       _sessionLoadError = null;
+      _canLoadMoreSessions = false;
     });
 
     final session = ref
@@ -2809,24 +2812,59 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       // Scope sessions to the active tmux window's working directory
       // so results match the current project context.
       final activeWindow = _windows?.where((w) => w.isActive).firstOrNull;
-      final result = await discovery.discoverSessions(
-        session,
-        workingDirectory: activeWindow?.currentPath,
-        maxPerTool: _sessionFetchLimit,
-      );
-      if (!mounted) return;
-      setState(() {
-        _recentSessions = result.sessions;
-        _sessionLoadError = result.failureMessage;
-        if (_expandedSessionTools.isEmpty && result.sessions.isNotEmpty) {
-          _expandedSessionTools.add(result.sessions.first.toolName);
-        }
-        _canLoadMoreSessions =
-            result.sessions.length > previousCount &&
-            _hasSessionGroupAtLimit(result.sessions);
-        _isLoadingSessions = false;
-      });
-      _persistUiState();
+      await _sessionDiscoverySubscription?.cancel();
+      DiscoveredSessionsResult? latestResult;
+      late final StreamSubscription<DiscoveredSessionsResult> subscription;
+      subscription = discovery
+          .discoverSessionsStream(
+            session,
+            workingDirectory: activeWindow?.currentPath,
+            maxPerTool: _sessionFetchLimit,
+          )
+          .listen(
+            (result) {
+              latestResult = result;
+              if (!mounted) return;
+              setState(() {
+                _recentSessions = result.sessions;
+                _sessionLoadError = result.failureMessage;
+                if (_expandedSessionTools.isEmpty &&
+                    result.sessions.isNotEmpty) {
+                  _expandedSessionTools.add(result.sessions.first.toolName);
+                }
+              });
+              _persistUiState();
+            },
+            onError: (error, stackTrace) {
+              if (!mounted) return;
+              setState(() {
+                _recentSessions = const [];
+                _sessionLoadError = 'Could not load recent AI sessions.';
+                _canLoadMoreSessions = false;
+                _isLoadingSessions = false;
+              });
+              if (identical(_sessionDiscoverySubscription, subscription)) {
+                _sessionDiscoverySubscription = null;
+              }
+              _persistUiState();
+            },
+            onDone: () {
+              if (!mounted) return;
+              final result = latestResult;
+              setState(() {
+                _canLoadMoreSessions =
+                    result != null &&
+                    result.sessions.length > previousCount &&
+                    _hasSessionGroupAtLimit(result.sessions);
+                _isLoadingSessions = false;
+              });
+              if (identical(_sessionDiscoverySubscription, subscription)) {
+                _sessionDiscoverySubscription = null;
+              }
+              _persistUiState();
+            },
+          );
+      _sessionDiscoverySubscription = subscription;
     } on Exception {
       if (!mounted) return;
       setState(() {
