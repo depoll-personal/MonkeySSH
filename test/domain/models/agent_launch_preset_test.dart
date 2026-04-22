@@ -21,10 +21,6 @@ void main() {
         buildAgentToolCommand(AgentLaunchTool.geminiCli, startInYoloMode: true),
         'gemini --yolo',
       );
-      expect(
-        buildAgentToolCommand(AgentLaunchTool.aider, startInYoloMode: true),
-        'aider --yes-always',
-      );
     });
 
     test('leaves unsupported tools unchanged in yolo mode', () {
@@ -283,7 +279,6 @@ void main() {
 
     test('supportsYoloMode is only true for supported tools', () {
       expect(AgentLaunchTool.claudeCode.supportsYoloMode, isTrue);
-      expect(AgentLaunchTool.aider.supportsYoloMode, isTrue);
       expect(AgentLaunchTool.codex.supportsYoloMode, isTrue);
       expect(AgentLaunchTool.geminiCli.supportsYoloMode, isTrue);
       expect(AgentLaunchTool.copilotCli.supportsYoloMode, isFalse);

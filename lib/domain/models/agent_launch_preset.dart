@@ -8,9 +8,6 @@ enum AgentLaunchTool {
   /// GitHub Copilot CLI.
   copilotCli,
 
-  /// Aider.
-  aider,
-
   /// OpenAI Codex CLI.
   codex,
 
@@ -27,7 +24,6 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
   String get label => switch (this) {
     AgentLaunchTool.claudeCode => 'Claude Code',
     AgentLaunchTool.copilotCli => 'Copilot CLI',
-    AgentLaunchTool.aider => 'Aider',
     AgentLaunchTool.codex => 'Codex',
     AgentLaunchTool.openCode => 'OpenCode',
     AgentLaunchTool.geminiCli => 'Gemini CLI',
@@ -37,7 +33,6 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
   String get commandName => switch (this) {
     AgentLaunchTool.claudeCode => 'claude',
     AgentLaunchTool.copilotCli => 'copilot',
-    AgentLaunchTool.aider => 'aider',
     AgentLaunchTool.codex => 'codex',
     AgentLaunchTool.openCode => 'opencode',
     AgentLaunchTool.geminiCli => 'gemini',
@@ -47,7 +42,6 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
   bool get supportsResume => switch (this) {
     AgentLaunchTool.claudeCode => true,
     AgentLaunchTool.copilotCli => true,
-    AgentLaunchTool.aider => true,
     AgentLaunchTool.codex => true,
     AgentLaunchTool.openCode => true,
     AgentLaunchTool.geminiCli => true,
@@ -58,7 +52,6 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
   String? get discoveredSessionToolName => switch (this) {
     AgentLaunchTool.claudeCode => 'Claude Code',
     AgentLaunchTool.copilotCli => 'Copilot CLI',
-    AgentLaunchTool.aider => null,
     AgentLaunchTool.codex => 'Codex',
     AgentLaunchTool.openCode => 'OpenCode',
     AgentLaunchTool.geminiCli => 'Gemini CLI',
@@ -71,7 +64,6 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
   String? get yoloArgument => switch (this) {
     AgentLaunchTool.claudeCode => '--dangerously-skip-permissions',
     AgentLaunchTool.copilotCli => null,
-    AgentLaunchTool.aider => '--yes-always',
     AgentLaunchTool.codex => '--approval-mode never',
     AgentLaunchTool.openCode => null,
     AgentLaunchTool.geminiCli => '--yolo',
@@ -95,10 +87,7 @@ class AgentLaunchPreset {
     final rawTool = _readTrimmedString(json['tool']);
     final tool = AgentLaunchTool.values.firstWhere(
       (value) => value.name == rawTool,
-      orElse: () => switch (rawTool) {
-        'aider' => AgentLaunchTool.aider,
-        _ => AgentLaunchTool.claudeCode,
-      },
+      orElse: () => AgentLaunchTool.claudeCode,
     );
     return AgentLaunchPreset(
       tool: tool,
