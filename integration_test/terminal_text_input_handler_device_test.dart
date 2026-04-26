@@ -84,6 +84,12 @@ Future<void> _hideKeyboardAndWait(WidgetTester tester) async {
       return;
     }
   }
+
+  final context = tester.element(find.byType(TerminalTextInputHandler));
+  fail(
+    'Timed out waiting for the keyboard to hide. '
+    'viewInsets.bottom was ${View.of(context).viewInsets.bottom}.',
+  );
 }
 
 TextEditingValue _editingValue(
@@ -1093,6 +1099,7 @@ void main() {
     testWidgets(
       'blocks soft-keyboard backspace key events so swipe replacement stays correct',
       (tester) async {
+        addTearDown(tester.view.resetViewInsets);
         final terminalOutput = <String>[];
         final terminal = Terminal(onOutput: terminalOutput.add);
         final focusNode = FocusNode();
@@ -1111,6 +1118,8 @@ void main() {
         );
 
         focusNode.requestFocus();
+        await tester.pump();
+        tester.view.viewInsets = const FakeViewPadding(bottom: 300);
         await tester.pump();
 
         tester.testTextInput.updateEditingValue(
@@ -1153,6 +1162,9 @@ void main() {
 
         expect(_terminalTextFromEvents(terminalOutput), 'thistle ');
 
+        tester.view.viewInsets = FakeViewPadding.zero;
+        await tester.pump();
+
         focusNode.dispose();
       },
     );
@@ -1180,12 +1192,12 @@ void main() {
 
         focusNode.requestFocus();
         await tester.pump();
-        await _hideKeyboardAndWait(tester);
 
         tester.testTextInput.updateEditingValue(
           _editingValue('hello', selectionOffset: 'hello'.length),
         );
         await tester.pump();
+        await _hideKeyboardAndWait(tester);
 
         await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
         await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);

@@ -4661,7 +4661,10 @@ void main() {
     testWidgets(
       'blocks soft-keyboard backspace key events so swipe replacement stays correct',
       (tester) async {
+        addTearDown(tester.view.resetViewInsets);
         final harness = await _pumpTerminalHarness(tester);
+        tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+        await tester.pump();
 
         tester.testTextInput.updateEditingValue(
           _editingValue('this ', selectionOffset: 'this '.length),
@@ -4703,6 +4706,9 @@ void main() {
 
         expect(_terminalTextFromEvents(harness.terminalOutput), 'thistle ');
 
+        tester.view.viewInsets = FakeViewPadding.zero;
+        await tester.pump();
+
         await _disposeTerminalHarness(tester, harness);
       },
     );
@@ -4710,7 +4716,10 @@ void main() {
     testWidgets(
       'lets committed IME deletion handle backspace alone while the soft keyboard is shown',
       (tester) async {
+        addTearDown(tester.view.resetViewInsets);
         final harness = await _pumpTerminalHarness(tester);
+        tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+        await tester.pump();
 
         tester.testTextInput.updateEditingValue(
           _editingValue('hello', selectionOffset: 'hello'.length),
@@ -4750,6 +4759,9 @@ void main() {
           (text: 'heXlo', cursorOffset: 'heX'.length),
         );
 
+        tester.view.viewInsets = FakeViewPadding.zero;
+        await tester.pump();
+
         await _disposeTerminalHarness(tester, harness);
       },
     );
@@ -4761,6 +4773,26 @@ void main() {
           tester,
           tapToShowKeyboard: false,
         );
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('hello', selectionOffset: 'hello'.length),
+        );
+        await tester.pump();
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(harness.terminalOutput), 'hell');
+
+        await _disposeTerminalHarness(tester, harness);
+      },
+    );
+
+    testWidgets(
+      'allows hardware-key backspace when a show request has no keyboard inset',
+      (tester) async {
+        final harness = await _pumpTerminalHarness(tester);
 
         tester.testTextInput.updateEditingValue(
           _editingValue('hello', selectionOffset: 'hello'.length),
