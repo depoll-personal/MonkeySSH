@@ -224,7 +224,7 @@ class TerminalTextInputHandler extends StatefulWidget {
 }
 
 class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
-    with TextInputClient {
+    with TextInputClient, WidgetsBindingObserver {
   TextInputConnection? _connection;
   final Set<int> _activeTouchPointers = <int>{};
   final Map<int, Offset> _touchPointerDownPositions = <int, Offset>{};
@@ -233,6 +233,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   bool _skipNextTouchKeyboardRequest = false;
   bool _sawImeComposition = false;
   bool _softKeyboardShown = false;
+  bool _sawSoftKeyboardInset = false;
   bool _isProcessingEditingValue = false;
   bool _lastProcessedUserSelectionWasValid = false;
   bool _lastProcessedSelectionWasCollapsed = true;
@@ -255,6 +256,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     widget.focusNode.addListener(_onFocusChange);
     widget.controller?._attach(this);
   }
@@ -281,11 +283,27 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   void dispose() {
     widget.controller?._detach(this);
     widget.focusNode.removeListener(_onFocusChange);
+    WidgetsBinding.instance.removeObserver(this);
     _activeTouchPointers.clear();
     _touchPointerDownPositions.clear();
     _touchPointersMovedBeyondTapSlop.clear();
     _closeInputConnectionIfNeeded();
     super.dispose();
+  }
+
+  @override
+  void didChangeMetrics() {
+    super.didChangeMetrics();
+    if (!mounted || !hasInputConnection) {
+      return;
+    }
+    if (View.of(context).viewInsets.bottom > 0) {
+      _softKeyboardShown = true;
+      _sawSoftKeyboardInset = true;
+    } else if (_sawSoftKeyboardInset) {
+      _softKeyboardShown = false;
+      _sawSoftKeyboardInset = false;
+    }
   }
 
   @override
@@ -584,6 +602,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       if (show) {
         _connection!.show();
         _softKeyboardShown = true;
+        _sawSoftKeyboardInset |= View.of(context).viewInsets.bottom > 0;
       }
     } else {
       final config = TextInputConfiguration(
@@ -601,7 +620,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       );
 
       _connection = TextInput.attach(this, config);
-      _softKeyboardShown = show;
+      final hasVisibleKeyboardInset = View.of(context).viewInsets.bottom > 0;
+      _softKeyboardShown = show || hasVisibleKeyboardInset;
+      _sawSoftKeyboardInset = hasVisibleKeyboardInset;
       if (show) _connection!.show();
       _invalidatePendingEditingUpdates();
       _sawImeComposition = false;
@@ -627,6 +648,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _connection!.close();
       _connection = null;
       _softKeyboardShown = false;
+      _sawSoftKeyboardInset = false;
     }
     _invalidatePendingEditingUpdates();
     _sawImeComposition = false;
@@ -2049,6 +2071,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   void connectionClosed() {
     _connection = null;
     _softKeyboardShown = false;
+    _sawSoftKeyboardInset = false;
     _invalidatePendingEditingUpdates();
     _sawImeComposition = false;
     _hasPendingPromptOutputImeReset = false;

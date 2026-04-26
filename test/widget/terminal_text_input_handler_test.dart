@@ -4696,6 +4696,34 @@ void main() {
       },
     );
 
+    testWidgets(
+      'allows hardware-key backspace after the platform hides the soft keyboard without closing the input connection',
+      (tester) async {
+        addTearDown(tester.view.resetViewInsets);
+        final harness = await _pumpTerminalHarness(tester);
+
+        tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('hello', selectionOffset: 'hello'.length),
+        );
+        await tester.pump();
+
+        tester.testTextInput.hide();
+        tester.view.viewInsets = FakeViewPadding.zero;
+        await tester.pump();
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(harness.terminalOutput), 'hell');
+
+        await _disposeTerminalHarness(tester, harness);
+      },
+    );
+
     testWidgets('keeps ctrl combos working while IME composition is active', (
       tester,
     ) async {

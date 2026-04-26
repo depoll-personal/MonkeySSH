@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show LogicalKeyboardKey, TextInputClient;
+import 'package:flutter/services.dart'
+    show LogicalKeyboardKey, SystemChannels, TextInputClient;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:monkeyssh/domain/models/auto_connect_command.dart';
@@ -72,6 +73,17 @@ Future<void> _commitSwipeText(WidgetTester tester, String text) async {
 String _terminalTextFromEvents(Iterable<String> events) {
   final state = _terminalStateFromEvents(events);
   return state.text;
+}
+
+Future<void> _hideKeyboardAndWait(WidgetTester tester) async {
+  await SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+  for (var i = 0; i < 20; i += 1) {
+    await tester.pump(const Duration(milliseconds: 100));
+    final context = tester.element(find.byType(TerminalTextInputHandler));
+    if (View.of(context).viewInsets.bottom == 0) {
+      return;
+    }
+  }
 }
 
 TextEditingValue _editingValue(
@@ -1131,6 +1143,7 @@ void main() {
 
         focusNode.requestFocus();
         await tester.pump();
+        await _hideKeyboardAndWait(tester);
 
         tester.testTextInput.updateEditingValue(
           _editingValue('hello', selectionOffset: 'hello'.length),
