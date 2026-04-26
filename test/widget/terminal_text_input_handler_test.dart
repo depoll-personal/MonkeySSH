@@ -4577,6 +4577,125 @@ void main() {
       await _disposeTerminalHarness(tester, harness);
     });
 
+    testWidgets(
+      'blocks soft-keyboard backspace key events so swipe replacement stays correct',
+      (tester) async {
+        final harness = await _pumpTerminalHarness(tester);
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('this ', selectionOffset: 'this '.length),
+        );
+        await tester.pump();
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(harness.terminalOutput), 'this ');
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '${_deleteDetectionMarker}this',
+            selection: TextSelection.collapsed(offset: 6),
+            composing: TextRange(start: 2, end: 6),
+          ),
+        );
+        await tester.pump();
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '${_deleteDetectionMarker}thi',
+            selection: TextSelection.collapsed(offset: 5),
+            composing: TextRange(start: 2, end: 5),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('thistle ', selectionOffset: 'thistle '.length),
+        );
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(harness.terminalOutput), 'thistle ');
+
+        await _disposeTerminalHarness(tester, harness);
+      },
+    );
+
+    testWidgets(
+      'lets committed IME deletion handle backspace alone while the soft keyboard is shown',
+      (tester) async {
+        final harness = await _pumpTerminalHarness(tester);
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('hello', selectionOffset: 'hello'.length),
+        );
+        await tester.pump();
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.arrowLeft);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.arrowLeft);
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.arrowLeft);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.arrowLeft);
+        await tester.pump();
+
+        harness.terminalOutput.clear();
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
+        await tester.pump();
+
+        expect(harness.terminalOutput, isEmpty);
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('helo', selectionOffset: 'he'.length),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('heXlo', selectionOffset: 'heX'.length),
+        );
+        await tester.pump();
+
+        expect(
+          _terminalStateFromEvents(
+            harness.terminalOutput,
+            initialText: 'hello',
+            initialCursorOffset: 'hel'.length,
+          ),
+          (text: 'heXlo', cursorOffset: 'heX'.length),
+        );
+
+        await _disposeTerminalHarness(tester, harness);
+      },
+    );
+
+    testWidgets(
+      'allows hardware-key backspace when the input connection is attached but the soft keyboard is hidden',
+      (tester) async {
+        final harness = await _pumpTerminalHarness(
+          tester,
+          tapToShowKeyboard: false,
+        );
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('hello', selectionOffset: 'hello'.length),
+        );
+        await tester.pump();
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(harness.terminalOutput), 'hell');
+
+        await _disposeTerminalHarness(tester, harness);
+      },
+    );
+
     testWidgets('keeps ctrl combos working while IME composition is active', (
       tester,
     ) async {

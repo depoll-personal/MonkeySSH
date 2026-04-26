@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show TextInputClient;
+import 'package:flutter/services.dart' show LogicalKeyboardKey, TextInputClient;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:monkeyssh/domain/models/auto_connect_command.dart';
@@ -73,6 +73,16 @@ String _terminalTextFromEvents(Iterable<String> events) {
   final state = _terminalStateFromEvents(events);
   return state.text;
 }
+
+TextEditingValue _editingValue(
+  String userText, {
+  required int selectionOffset,
+}) => TextEditingValue(
+  text: '$_deleteDetectionMarker$userText',
+  selection: TextSelection.collapsed(
+    offset: _deleteDetectionMarker.length + selectionOffset,
+  ),
+);
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -1030,5 +1040,111 @@ void main() {
 
       focusNode.dispose();
     });
+
+    testWidgets(
+      'blocks soft-keyboard backspace key events so swipe replacement stays correct',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('this ', selectionOffset: 'this '.length),
+        );
+        await tester.pump();
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), 'this ');
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '${_deleteDetectionMarker}this',
+            selection: TextSelection.collapsed(offset: 6),
+            composing: TextRange(start: 2, end: 6),
+          ),
+        );
+        await tester.pump();
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '${_deleteDetectionMarker}thi',
+            selection: TextSelection.collapsed(offset: 5),
+            composing: TextRange(start: 2, end: 5),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('thistle ', selectionOffset: 'thistle '.length),
+        );
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), 'thistle ');
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'allows hardware-key backspace when the input connection is attached but the soft keyboard is hidden',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                tapToShowKeyboard: false,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('hello', selectionOffset: 'hello'.length),
+        );
+        await tester.pump();
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), 'hell');
+
+        focusNode.dispose();
+      },
+    );
   });
 }

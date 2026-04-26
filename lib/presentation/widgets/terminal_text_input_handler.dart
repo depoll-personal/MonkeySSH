@@ -232,6 +232,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   bool _touchSequenceHadMultiplePointers = false;
   bool _skipNextTouchKeyboardRequest = false;
   bool _sawImeComposition = false;
+  bool _softKeyboardShown = false;
   bool _isProcessingEditingValue = false;
   bool _lastProcessedUserSelectionWasValid = false;
   bool _lastProcessedSelectionWasCollapsed = true;
@@ -438,6 +439,12 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       return KeyEventResult.ignored;
     }
 
+    if (_softKeyboardShown &&
+        !hasShortcutModifier &&
+        (key == TerminalKey.backspace || key == TerminalKey.delete)) {
+      return KeyEventResult.skipRemainingHandlers;
+    }
+
     final handled = widget.terminal.keyInput(
       key,
       ctrl: HardwareKeyboard.instance.isControlPressed,
@@ -574,7 +581,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (!_shouldCreateInputConnection) return;
 
     if (hasInputConnection) {
-      if (show) _connection!.show();
+      if (show) {
+        _connection!.show();
+        _softKeyboardShown = true;
+      }
     } else {
       final config = TextInputConfiguration(
         // Keep these explicit because terminal IME behavior is central here.
@@ -591,6 +601,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       );
 
       _connection = TextInput.attach(this, config);
+      _softKeyboardShown = show;
       if (show) _connection!.show();
       _invalidatePendingEditingUpdates();
       _sawImeComposition = false;
@@ -615,6 +626,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (_connection != null && _connection!.attached) {
       _connection!.close();
       _connection = null;
+      _softKeyboardShown = false;
     }
     _invalidatePendingEditingUpdates();
     _sawImeComposition = false;
@@ -2036,6 +2048,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   @override
   void connectionClosed() {
     _connection = null;
+    _softKeyboardShown = false;
     _invalidatePendingEditingUpdates();
     _sawImeComposition = false;
     _hasPendingPromptOutputImeReset = false;
