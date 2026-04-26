@@ -31,6 +31,7 @@ import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
+import '../../domain/services/diagnostics_log_service.dart';
 import '../../domain/services/host_cli_launch_preferences_service.dart';
 import '../../domain/services/local_notification_service.dart';
 import '../../domain/services/monetization_service.dart';
@@ -58,6 +59,13 @@ bool _isPromptReturnWhitespaceCodeUnit(int codeUnit) =>
     codeUnit == 0x09 ||
     codeUnit == 0x0A ||
     codeUnit == 0x0D;
+
+const _redactStoreScreenshotIdentities = bool.fromEnvironment(
+  'STORE_SCREENSHOT_REDACT_IDENTITIES',
+);
+const _hideStoreScreenshotKeyboardToolbar = bool.fromEnvironment(
+  'STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR',
+);
 
 bool _isPromptReturnAsciiLetterOrDigit(int codeUnit) =>
     (codeUnit >= 0x30 && codeUnit <= 0x39) ||
@@ -358,6 +366,7 @@ const _maxVerifiedTerminalPathCacheEntries = 128;
 const _terminalPathTouchHorizontalPadding = 10.0;
 const _terminalPathTouchVerticalPadding = 8.0;
 const _selectionActionsBottomPadding = 12.0;
+const _terminalSelectionNearbySearchColumns = 4;
 const _maxTerminalFilePathVerificationCandidates = 12;
 const _terminalFilePathVerificationExtensions = <String>[
   'properties',
@@ -421,10 +430,13 @@ class _TmuxExpandableBar extends StatefulWidget {
     required this.session,
     required this.tmuxSessionName,
     required this.availableHeight,
+    required this.recoveryGeneration,
     required this.isProUser,
     required this.startClisInYoloMode,
+    required this.initiallyExpanded,
     required this.ref,
     required this.onAction,
+    required this.onExpandedChanged,
     this.scopeWorkingDirectory,
     this.onWindowLoadStalled,
     super.key,
@@ -439,17 +451,26 @@ class _TmuxExpandableBar extends StatefulWidget {
   /// The available terminal height the bar can expand into.
   final double availableHeight;
 
+  /// Forces state recovery when tmux window loading stalls.
+  final int recoveryGeneration;
+
   /// Whether the user has Pro access.
   final bool isProUser;
 
   /// Whether supported coding CLIs should launch in YOLO mode for this host.
   final bool startClisInYoloMode;
 
+  /// Whether the tmux window list should start expanded.
+  final bool initiallyExpanded;
+
   /// Riverpod ref.
   final WidgetRef ref;
 
   /// Callback for navigator actions.
   final Future<void> Function(TmuxNavigatorAction) onAction;
+
+  /// Called when the expanded/collapsed state changes.
+  final ValueChanged<bool> onExpandedChanged;
 
   final Future<void> Function(SshSession session, String sessionName)?
   onWindowLoadStalled;
@@ -476,7 +497,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   List<TmuxWindow>? _windows;
   AgentLaunchTool? _preferredLaunchTool;
   final Set<int> _seenAlertWindows = <int>{};
-  bool _expanded = false;
+  late bool _expanded;
   bool _isLoading = true;
   bool _showSessions = false;
   bool _hasInitializedSessionProviders = false;
@@ -508,6 +529,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   @override
   void initState() {
     super.initState();
+    _expanded = widget.initiallyExpanded;
     _bounceController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 600),
@@ -530,15 +552,29 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   void didUpdateWidget(covariant _TmuxExpandableBar oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.session.connectionId == widget.session.connectionId &&
-        oldWidget.tmuxSessionName == widget.tmuxSessionName) {
+        oldWidget.tmuxSessionName == widget.tmuxSessionName &&
+        oldWidget.recoveryGeneration == widget.recoveryGeneration) {
       return;
     }
+    final wasExpanded = _expanded;
     _clearPendingSelectedWindow(notify: false);
     _resetWindowReloadRecovery();
+    _clearSeenAlertNotifications(oldWidget.session, oldWidget.tmuxSessionName);
     setState(() {
       _windows = null;
       _isLoading = true;
+      _expanded = false;
+      _showSessions = false;
+      _hasInitializedSessionProviders = false;
+      _dragOffset = 0;
     });
+    if (wasExpanded) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          widget.onExpandedChanged(false);
+        }
+      });
+    }
     unawaited(_windowChangeSubscription?.cancel());
     _subscribeToWindowChanges();
     unawaited(_loadPreferredLaunchTool());
@@ -550,9 +586,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     _clearPendingSelectedWindow(notify: false);
     _resetWindowReloadRecovery();
     unawaited(_windowChangeSubscription?.cancel());
-    for (final windowIndex in _seenAlertWindows) {
-      _clearAlertNotification(windowIndex);
-    }
+    _clearSeenAlertNotifications(widget.session, widget.tmuxSessionName);
     _bounceController.dispose();
     super.dispose();
   }
@@ -574,6 +608,14 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
 
   void _subscribeToWindowChanges() {
     final generation = ++_windowEventGeneration;
+    DiagnosticsLogService.instance.info(
+      'tmux.ui',
+      'bar_subscribe',
+      fields: {
+        'connectionId': widget.session.connectionId,
+        'generation': generation,
+      },
+    );
     _windowChangeSubscription = _tmux
         .watchWindowChanges(widget.session, widget.tmuxSessionName)
         .listen((event) => _handleWindowChangeEvent(event, generation));
@@ -583,17 +625,38 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     if (!mounted) return;
     if (generation != _windowEventGeneration) return;
     if (event is TmuxWindowReloadEvent) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.ui',
+        'bar_reload_event',
+        fields: {
+          'connectionId': widget.session.connectionId,
+          'generation': generation,
+        },
+      );
       _loadWindows();
       return;
     }
     final currentWindows = _windows;
     if (currentWindows == null) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.ui',
+        'bar_snapshot_without_state',
+        fields: {'connectionId': widget.session.connectionId},
+      );
       _loadWindows();
       return;
     }
     _windowReloadGeneration += 1;
     _resetWindowReloadRecovery();
     final windows = applyTmuxWindowChangeEvent(currentWindows, event);
+    DiagnosticsLogService.instance.debug(
+      'tmux.ui',
+      'bar_snapshot_applied',
+      fields: {
+        'connectionId': widget.session.connectionId,
+        'windowCount': windows.length,
+      },
+    );
     _applyWindows(windows);
     if (widget.isProUser) {
       unawaited(_prefetchPreferredSessionProvider(windows: windows));
@@ -691,6 +754,15 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     }
     final delay = resolveTmuxWindowReloadRetryDelay(_windowRetryAttempts);
     _windowRetryAttempts += 1;
+    DiagnosticsLogService.instance.warning(
+      'tmux.ui',
+      'bar_retry_scheduled',
+      fields: {
+        'connectionId': widget.session.connectionId,
+        'attempt': _windowRetryAttempts,
+        'delayMs': delay.inMilliseconds,
+      },
+    );
     _windowRetryTimer = Timer(delay, () {
       _windowRetryTimer = null;
       if (mounted) {
@@ -707,10 +779,27 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       return;
     }
     _windowReloadRecoveryRequested = true;
+    DiagnosticsLogService.instance.warning(
+      'tmux.ui',
+      'bar_recovery_requested',
+      fields: {'connectionId': widget.session.connectionId},
+    );
     final onWindowLoadStalled = widget.onWindowLoadStalled;
     if (onWindowLoadStalled != null) {
       unawaited(onWindowLoadStalled(widget.session, widget.tmuxSessionName));
     }
+  }
+
+  bool collapseIfExpanded() {
+    if (!_expanded) {
+      return false;
+    }
+    setState(() {
+      _expanded = false;
+      _dragOffset = 0;
+    });
+    widget.onExpandedChanged(false);
+    return true;
   }
 
   String? _resolveRecentSessionScopeWorkingDirectory([
@@ -743,10 +832,23 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   Future<void> _loadWindows() async {
     if (_loadingWindows) {
       _pendingWindowReload = true;
+      DiagnosticsLogService.instance.debug(
+        'tmux.ui',
+        'bar_reload_queued',
+        fields: {'connectionId': widget.session.connectionId},
+      );
       return;
     }
     _loadingWindows = true;
     final reloadGeneration = ++_windowReloadGeneration;
+    DiagnosticsLogService.instance.debug(
+      'tmux.ui',
+      'bar_reload_start',
+      fields: {
+        'connectionId': widget.session.connectionId,
+        'generation': reloadGeneration,
+      },
+    );
     try {
       final reloadedWindows = await _tmux.listWindows(
         widget.session,
@@ -760,6 +862,16 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       } else {
         _resetWindowReloadRecovery();
       }
+      DiagnosticsLogService.instance.info(
+        'tmux.ui',
+        'bar_reload_result',
+        fields: {
+          'connectionId': widget.session.connectionId,
+          'generation': reloadGeneration,
+          'windowCount': reloadedWindows.length,
+          'consecutiveEmptyReloads': _consecutiveEmptyWindowReloads,
+        },
+      );
       final windows = resolveTmuxReloadedWindows(
         shouldPreserveTmuxWindowSnapshotOnEmptyReload(
               _windows,
@@ -770,13 +882,25 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         reloadedWindows,
       );
       if (windows == null) {
+        DiagnosticsLogService.instance.warning(
+          'tmux.ui',
+          'bar_reload_preserved_previous',
+          fields: {
+            'connectionId': widget.session.connectionId,
+            'generation': reloadGeneration,
+          },
+        );
         final shouldRecover = _shouldRequestWindowReloadRecovery;
         _scheduleWindowRetry();
         if (shouldRecover) {
+          final wasExpanded = _expanded;
           setState(() {
             _expanded = false;
             _isLoading = false;
           });
+          if (wasExpanded) {
+            widget.onExpandedChanged(false);
+          }
           _requestWindowReloadRecovery();
         } else if (_windows != null || !_isLoading) {
           setState(() {
@@ -795,7 +919,16 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       if (widget.isProUser) {
         unawaited(_prefetchPreferredSessionProvider(windows: windows));
       }
-    } on Object {
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.ui',
+        'bar_reload_failed',
+        fields: {
+          'connectionId': widget.session.connectionId,
+          'generation': reloadGeneration,
+          'errorType': error.runtimeType,
+        },
+      );
       if (!mounted) return;
       final shouldRecover = _shouldRequestWindowReloadRecovery;
       _scheduleWindowRetry();
@@ -804,10 +937,14 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           setState(() => _isLoading = false);
         }
       } else if (shouldRecover) {
+        final wasExpanded = _expanded;
         setState(() {
           _expanded = false;
           _isLoading = false;
         });
+        if (wasExpanded) {
+          widget.onExpandedChanged(false);
+        }
         _requestWindowReloadRecovery();
       } else {
         setState(() => _isLoading = true);
@@ -824,7 +961,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   void _resumeSession(ToolSessionInfo info) {
     final discovery = widget.ref.read(agentSessionDiscoveryServiceProvider);
     final command = discovery.buildResumeCommand(info);
+    final wasExpanded = _expanded;
     setState(() => _expanded = false);
+    if (wasExpanded) {
+      widget.onExpandedChanged(false);
+    }
     widget.onAction(
       TmuxResumeSessionAction(command, workingDirectory: info.workingDirectory),
     );
@@ -847,11 +988,15 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     _resumeSession(selected);
   }
 
-  int _tmuxAlertNotificationId(int windowIndex) =>
+  int _tmuxAlertNotificationId(
+    SshSession session,
+    String tmuxSessionName,
+    int windowIndex,
+  ) =>
       Object.hash(
-        widget.session.hostId,
-        widget.session.connectionId,
-        widget.tmuxSessionName,
+        session.hostId,
+        session.connectionId,
+        tmuxSessionName,
         windowIndex,
       ) &
       0x7fffffff;
@@ -865,7 +1010,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       widget.ref
           .read(localNotificationServiceProvider)
           .showTmuxAlert(
-            notificationId: _tmuxAlertNotificationId(window.index),
+            notificationId: _tmuxAlertNotificationId(
+              widget.session,
+              widget.tmuxSessionName,
+              window.index,
+            ),
             title: title,
             body: body,
             payload: TmuxAlertNotificationPayload(
@@ -882,8 +1031,38 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     unawaited(
       widget.ref
           .read(localNotificationServiceProvider)
-          .clearTmuxAlert(_tmuxAlertNotificationId(windowIndex)),
+          .clearTmuxAlert(
+            _tmuxAlertNotificationId(
+              widget.session,
+              widget.tmuxSessionName,
+              windowIndex,
+            ),
+          ),
     );
+  }
+
+  void _clearAlertNotificationFor(
+    SshSession session,
+    String tmuxSessionName,
+    int windowIndex,
+  ) {
+    unawaited(
+      widget.ref
+          .read(localNotificationServiceProvider)
+          .clearTmuxAlert(
+            _tmuxAlertNotificationId(session, tmuxSessionName, windowIndex),
+          ),
+    );
+  }
+
+  void _clearSeenAlertNotifications(
+    SshSession session,
+    String tmuxSessionName,
+  ) {
+    for (final windowIndex in _seenAlertWindows) {
+      _clearAlertNotificationFor(session, tmuxSessionName, windowIndex);
+    }
+    _seenAlertWindows.clear();
   }
 
   void _onVerticalDragUpdate(DragUpdateDetails details) {
@@ -905,6 +1084,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       }
       _dragOffset = 0;
     });
+    if (shouldExpand) {
+      widget.onExpandedChanged(true);
+    } else if (shouldCollapse) {
+      widget.onExpandedChanged(false);
+    }
     if (shouldExpand) _loadWindows();
   }
 
@@ -996,6 +1180,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           onTap: () {
             final wasExpanded = _expanded;
             setState(() => _expanded = !_expanded);
+            widget.onExpandedChanged(!wasExpanded);
             // Refresh window list when expanding to get current active state.
             if (!wasExpanded) {
               _loadWindows();
@@ -1096,7 +1281,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             ),
             title: const Text('New Window'),
             onTap: () {
+              final wasExpanded = _expanded;
               setState(() => _expanded = false);
+              if (wasExpanded) {
+                widget.onExpandedChanged(false);
+              }
               final installedToolsFuture = _tmux.detectInstalledAgentTools(
                 widget.session,
               );
@@ -1274,7 +1463,17 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
 
   Widget _buildWindowTile(ThemeData theme, TmuxWindow window) {
     final isActive = window.isActive;
-    final secondaryTitle = window.secondaryTitle;
+    final title = _redactStoreScreenshotIdentities
+        ? switch (window.name.trim()) {
+            'claude' || 'claude-code' => 'Claude Code Workspace',
+            'copilot' => 'Mobile Copilot Workspace',
+            final name when name.isNotEmpty => name,
+            _ => window.displayTitle,
+          }
+        : window.displayTitle;
+    final secondaryTitle = _redactStoreScreenshotIdentities
+        ? null
+        : window.secondaryTitle;
     final iconColor = isActive
         ? theme.colorScheme.primary
         : theme.colorScheme.onSurfaceVariant;
@@ -1321,7 +1520,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              window.displayTitle,
+              title,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: isActive
@@ -1373,12 +1572,19 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         ],
       ),
       onTap: isActive
-          ? () => setState(() => _expanded = false)
+          ? () {
+              final wasExpanded = _expanded;
+              setState(() => _expanded = false);
+              if (wasExpanded) {
+                widget.onExpandedChanged(false);
+              }
+            }
           : () {
               setState(() {
                 _pendingSelectedWindowIndex = window.index;
                 _expanded = false;
               });
+              widget.onExpandedChanged(false);
               _startPendingSelectionTimer(window.index);
               unawaited(widget.onAction(TmuxSwitchWindowAction(window.index)));
             },
@@ -2569,6 +2775,154 @@ bool shouldShowNativeSelectionOverlay({
 bool hasActiveNativeOverlaySelection(TextSelection selection) =>
     selection.isValid && !selection.isCollapsed;
 
+/// Resolves the terminal range to select for a touch long-press.
+///
+/// xterm's word selection returns null on separators and blank cells. Mobile
+/// touch selection should still start when the finger lands on punctuation in a
+/// path/URL or slightly misses a word, so this falls back to separator runs and
+/// nearby selectable cells on the same row.
+@visibleForTesting
+BufferRange? resolveNativeTouchSelectionRange({
+  required Buffer buffer,
+  required CellOffset cellOffset,
+  int nearbySearchColumns = _terminalSelectionNearbySearchColumns,
+}) {
+  if (buffer.height <= 0 || buffer.viewWidth <= 0) {
+    return null;
+  }
+
+  final row = cellOffset.y.clamp(0, buffer.height - 1);
+  final column = cellOffset.x.clamp(0, buffer.viewWidth - 1);
+  final exactOffset = CellOffset(column, row);
+  final exactSeparatorRange = _resolveTerminalSeparatorSelectionRange(
+    buffer: buffer,
+    row: row,
+    column: column,
+  );
+  if (exactSeparatorRange != null) {
+    return exactSeparatorRange;
+  }
+
+  if (!_isTerminalSelectionBlank(buffer, row, column)) {
+    final exactWordRange = buffer.getWordBoundary(exactOffset);
+    if (exactWordRange != null) {
+      return exactWordRange;
+    }
+  }
+
+  final searchLimit = nearbySearchColumns.clamp(0, buffer.viewWidth);
+  for (var distance = 1; distance <= searchLimit; distance++) {
+    final leftColumn = column - distance;
+    if (leftColumn >= 0) {
+      final leftRange = _resolveNativeTouchSelectionRangeAtColumn(
+        buffer: buffer,
+        row: row,
+        column: leftColumn,
+      );
+      if (leftRange != null) {
+        return leftRange;
+      }
+    }
+
+    final rightColumn = column + distance;
+    if (rightColumn < buffer.viewWidth) {
+      final rightRange = _resolveNativeTouchSelectionRangeAtColumn(
+        buffer: buffer,
+        row: row,
+        column: rightColumn,
+      );
+      if (rightRange != null) {
+        return rightRange;
+      }
+    }
+  }
+
+  return null;
+}
+
+BufferRange? _resolveNativeTouchSelectionRangeAtColumn({
+  required Buffer buffer,
+  required int row,
+  required int column,
+}) {
+  final separatorRange = _resolveTerminalSeparatorSelectionRange(
+    buffer: buffer,
+    row: row,
+    column: column,
+  );
+  if (separatorRange != null) {
+    return separatorRange;
+  }
+  if (_isTerminalSelectionBlank(buffer, row, column)) {
+    return null;
+  }
+  final offset = CellOffset(column, row);
+  return buffer.getWordBoundary(offset);
+}
+
+BufferRangeLine? _resolveTerminalSeparatorSelectionRange({
+  required Buffer buffer,
+  required int row,
+  required int column,
+}) {
+  if (!_isTerminalSelectableSeparator(buffer, row, column)) {
+    return null;
+  }
+
+  var start = column;
+  while (start > 0 && _isTerminalSelectableSeparator(buffer, row, start - 1)) {
+    start--;
+  }
+
+  var end = column + 1;
+  while (end < buffer.viewWidth &&
+      _isTerminalSelectableSeparator(buffer, row, end)) {
+    end++;
+  }
+
+  return BufferRangeLine(CellOffset(start, row), CellOffset(end, row));
+}
+
+bool _isTerminalSelectableSeparator(Buffer buffer, int row, int column) {
+  if (_isTerminalSelectionBlank(buffer, row, column)) {
+    return false;
+  }
+  final separators = buffer.wordSeparators ?? Buffer.defaultWordSeparators;
+  return separators.contains(buffer.lines[row].getCodePoint(column));
+}
+
+bool _isTerminalSelectionBlank(Buffer buffer, int row, int column) {
+  final codePoint = buffer.lines[row].getCodePoint(column);
+  return codePoint == 0 || codePoint == 0x20 || codePoint == 0x09;
+}
+
+/// Builds native selection context menu items with paste routed to the terminal.
+@visibleForTesting
+List<ContextMenuButtonItem> buildNativeSelectionContextMenuButtonItems({
+  required List<ContextMenuButtonItem> defaultItems,
+  required VoidCallback onPaste,
+}) {
+  var hasPaste = false;
+  final buttonItems = <ContextMenuButtonItem>[];
+  for (final item in defaultItems) {
+    if (item.type == ContextMenuButtonType.paste) {
+      hasPaste = true;
+      buttonItems.add(item.copyWith(onPressed: onPaste));
+    } else {
+      buttonItems.add(item);
+    }
+  }
+  if (!hasPaste) {
+    buttonItems.add(
+      ContextMenuButtonItem(
+        type: ContextMenuButtonType.paste,
+        onPressed: onPaste,
+      ),
+    );
+  }
+  return buttonItems;
+}
+
 /// Whether terminal tap links should be resolved for the current overlay state.
 @visibleForTesting
 bool shouldResolveTerminalTapLinks({
@@ -2685,6 +3039,7 @@ class TerminalScreen extends ConsumerStatefulWidget {
     this.connectionId,
     this.initialTmuxSessionName,
     this.initialTmuxWindowIndex,
+    this.initiallyExpandTmuxWindows = false,
     super.key,
   });
 
@@ -2699,6 +3054,9 @@ class TerminalScreen extends ConsumerStatefulWidget {
 
   /// Optional tmux window to focus after opening the terminal.
   final int? initialTmuxWindowIndex;
+
+  /// Whether the tmux window selector should start expanded.
+  final bool initiallyExpandTmuxWindows;
 
   @override
   ConsumerState<TerminalScreen> createState() => _TerminalScreenState();
@@ -2720,6 +3078,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   static const _remoteClipboardSyncInterval = Duration(seconds: 1);
   static const _promptOutputImeResetDebounce = Duration(milliseconds: 75);
   final _terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
+  final _tmuxBarKey = GlobalKey<_TmuxExpandableBarState>();
 
   late Terminal _terminal;
   late final TerminalController _terminalController;
@@ -2735,7 +3094,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   StreamSubscription<String>? _shellStdoutSubscription;
   bool _isConnecting = true;
   String? _error;
-  bool _showKeyboardToolbar = true;
+  bool _showKeyboardToolbar = !_hideStoreScreenshotKeyboardToolbar;
   bool _isUsingAltBuffer = false;
   bool _terminalReportsMouseWheel = false;
   bool _hasTerminalSelection = false;
@@ -2765,6 +3124,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _tmuxSessionName;
   _InitialTmuxWindowTarget? _pendingInitialTmuxWindowTarget;
   bool _showTmuxBar = true;
+  bool _isTmuxBarExpanded = false;
   String? _tmuxLaunchWorkingDirectory;
   String? _tmuxWorkingDirectory;
   int _tmuxDetectionGeneration = 0;
@@ -3098,14 +3458,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   Future<String?> _readSystemClipboardText() async {
     try {
-      if (_isAndroidPlatform) {
-        return Pasteboard.text;
-      }
       final data = await Clipboard.getData(Clipboard.kTextPlain);
-      return data?.text;
+      if (data?.text != null) {
+        return data!.text;
+      }
     } on PlatformException {
-      return null;
+      if (!_isAndroidPlatform) {
+        return null;
+      }
     }
+
+    if (_isAndroidPlatform) {
+      try {
+        return await Pasteboard.text;
+      } on PlatformException {
+        return null;
+      }
+    }
+
+    return null;
   }
 
   Future<void> _syncLocalClipboardToRemote(SshSession session) async {
@@ -3593,6 +3964,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           height: _terminal.viewHeight,
         ),
       );
+      DiagnosticsLogService.instance.info(
+        'terminal',
+        'shell_opened',
+        fields: {'connectionId': session.connectionId, 'reusedTerminal': false},
+      );
 
       _wireTerminalCallbacks(session);
       await _applySharedClipboardSetting(
@@ -3620,6 +3996,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       // command launches a tmux session.
       unawaited(_detectTmux(session));
     } on Object catch (e) {
+      DiagnosticsLogService.instance.error(
+        'terminal',
+        'shell_open_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': e.runtimeType,
+        },
+      );
       if (!mounted) return;
       setState(() {
         _isConnecting = false;
@@ -3632,6 +4016,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void _wireTerminalCallbacks(SshSession session) {
     // Listen for shell close events.
     _doneSubscription = session.shellDoneStream.listen((_) {
+      DiagnosticsLogService.instance.warning(
+        'terminal',
+        'shell_done_stream',
+        fields: {'connectionId': session.connectionId},
+      );
       if (mounted) {
         _handleShellClosed();
       }
@@ -3641,6 +4030,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onError: (Object error, StackTrace stackTrace) {
         debugPrint('Terminal stdout stream error: $error');
         debugPrint('$stackTrace');
+        DiagnosticsLogService.instance.error(
+          'terminal',
+          'stdout_listener_error',
+          fields: {
+            'connectionId': session.connectionId,
+            'errorType': error.runtimeType,
+          },
+        );
       },
     );
 
@@ -3952,6 +4349,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _tmuxDetectionGeneration += 1;
     _isTmuxActive = false;
     _tmuxSessionName = null;
+    _isTmuxBarExpanded = false;
     _tmuxLaunchWorkingDirectory = null;
     _tmuxWorkingDirectory = null;
   }
@@ -4016,6 +4414,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         final active = candidateSessionName != null
             ? await tmux.hasSession(session, candidateSessionName)
             : await tmux.isTmuxActive(session);
+        DiagnosticsLogService.instance.debug(
+          'tmux.ui',
+          'detection_attempt',
+          fields: {
+            'connectionId': session.connectionId,
+            'active': active,
+            'hasCandidate': candidateSessionName != null,
+          },
+        );
         if (!mounted ||
             _connectionId != capturedConnectionId ||
             detectionGeneration != _tmuxDetectionGeneration) {
@@ -4033,6 +4440,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           return;
         }
         if (sessionName == null) {
+          DiagnosticsLogService.instance.debug(
+            'tmux.ui',
+            'detection_no_session_name',
+            fields: {'connectionId': session.connectionId},
+          );
           continue;
         }
 
@@ -4048,6 +4460,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           return;
         }
         if (windows.isEmpty) {
+          DiagnosticsLogService.instance.debug(
+            'tmux.ui',
+            'detection_empty_windows',
+            fields: {'connectionId': session.connectionId},
+          );
           continue;
         }
 
@@ -4074,6 +4491,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _tmuxLaunchWorkingDirectory = tmuxLaunchCwd;
           _tmuxWorkingDirectory = tmuxCwd;
         });
+        DiagnosticsLogService.instance.info(
+          'tmux.ui',
+          'detection_success',
+          fields: {
+            'connectionId': session.connectionId,
+            'windowCount': windows.length,
+          },
+        );
         await _activateInitialTmuxWindowIfNeeded(session, sessionName, windows);
         return;
       }
@@ -4087,7 +4512,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (!preserveExistingTmuxState) {
         setState(_clearTmuxState);
       }
-    } on Object {
+      DiagnosticsLogService.instance.info(
+        'tmux.ui',
+        'detection_inactive',
+        fields: {'connectionId': session.connectionId},
+      );
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.ui',
+        'detection_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
       if (!mounted ||
           _connectionId != capturedConnectionId ||
           detectionGeneration != _tmuxDetectionGeneration) {
@@ -4196,6 +4634,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     ),
                   ),
                 ),
+                if (showTmux && _isTmuxBarExpanded)
+                  Positioned.fill(
+                    child: Listener(
+                      key: const ValueKey('tmux-terminal-dismiss-region'),
+                      behavior: HitTestBehavior.opaque,
+                      onPointerDown: (_) => _collapseTmuxBarIfExpanded(),
+                      child: const SizedBox.expand(),
+                    ),
+                  ),
                 if (showTmux || animatedBottomPadding > 0)
                   Positioned(
                     left: tmuxBarSafeInsets.left,
@@ -4237,16 +4684,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
 
     return _TmuxExpandableBar(
-      key: ValueKey<Object>(
-        Object.hash(connectionId, _tmuxSessionName, _tmuxBarRecoveryGeneration),
-      ),
+      key: _tmuxBarKey,
       session: session,
       tmuxSessionName: _tmuxSessionName!,
       availableHeight: availableHeight,
+      recoveryGeneration: _tmuxBarRecoveryGeneration,
       isProUser: isProUser,
       startClisInYoloMode: _startClisInYoloMode,
+      initiallyExpanded: widget.initiallyExpandTmuxWindows,
       ref: ref,
       onAction: _handleTmuxAction,
+      onExpandedChanged: _handleTmuxBarExpandedChanged,
       onWindowLoadStalled: _recoverTmuxWindowPanel,
       scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(
         liveTerminalWorkingDirectory: _liveWorkingDirectoryPath,
@@ -4256,6 +4704,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
+  void _handleTmuxBarExpandedChanged(bool expanded) {
+    if (_isTmuxBarExpanded == expanded || !mounted) {
+      return;
+    }
+    setState(() => _isTmuxBarExpanded = expanded);
+  }
+
+  bool _collapseTmuxBarIfExpanded() {
+    if (!_isTmuxBarExpanded) {
+      return false;
+    }
+    final collapsed = _tmuxBarKey.currentState?.collapseIfExpanded() ?? false;
+    if (!collapsed && mounted) {
+      setState(() => _isTmuxBarExpanded = false);
+    }
+    return true;
+  }
+
   /// Handles an action from the draggable tmux panel.
   Future<void> _handleTmuxAction(TmuxNavigatorAction action) async {
     final connectionId = _connectionId;
@@ -4263,6 +4729,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final session = _sessionsNotifier?.getSession(connectionId);
     if (session == null) return;
 
+    DiagnosticsLogService.instance.info(
+      'tmux.ui',
+      'navigator_action',
+      fields: {
+        'connectionId': connectionId,
+        'action': diagnosticTmuxNavigatorActionKind(action),
+      },
+    );
     await _performTmuxNavigatorAction(session, action);
   }
 
@@ -4345,6 +4819,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           await _closeTmuxWindow(session, windowIndex);
       }
     } on Exception catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.ui',
+        'navigator_action_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'action': diagnosticTmuxNavigatorActionKind(action),
+          'errorType': error.runtimeType,
+        },
+      );
       _showTmuxActionFailure(error);
     }
   }
@@ -4443,6 +4926,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       sessionName,
     );
     if (!mounted || hasForegroundClient) {
+      DiagnosticsLogService.instance.info(
+        'tmux.ui',
+        'reattach_not_needed',
+        fields: {
+          'connectionId': session.connectionId,
+          'hasForegroundClient': hasForegroundClient,
+        },
+      );
       return;
     }
 
@@ -4457,6 +4948,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             'while a command is still running.',
           ),
         ),
+      );
+      DiagnosticsLogService.instance.warning(
+        'tmux.ui',
+        'reattach_skipped_command_running',
+        fields: {'connectionId': session.connectionId},
       );
       return;
     }
@@ -4473,6 +4969,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       extraFlags: host?.tmuxExtraFlags,
     );
     shell.write(utf8.encode(formatAutoConnectCommandForShell(reattachCommand)));
+    DiagnosticsLogService.instance.info(
+      'tmux.ui',
+      'reattach_command_sent',
+      fields: {'connectionId': session.connectionId},
+    );
   }
 
   void _handleTrackedConnectionStateChange(
@@ -4776,9 +5277,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       isConnecting: _isConnecting,
     );
     final connectionIdentity = formatTerminalConnectionIdentity(
-      username: _host?.username,
-      hostname: _host?.hostname,
-      port: _host?.port,
+      username: _redactStoreScreenshotIdentities ? 'store' : _host?.username,
+      hostname: _redactStoreScreenshotIdentities
+          ? 'local-demo'
+          : _host?.hostname,
+      port: _redactStoreScreenshotIdentities ? null : _host?.port,
       connectionId: _connectionId,
     );
     final titleSubtitleSegments = <String>[];
@@ -4794,297 +5297,306 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final titleSubtitle = titleSubtitleSegments.join(' • ');
     final statusChips = _buildTerminalStatusChips(theme);
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Flexible(
-                  child: Text(
-                    _host?.label ?? 'Terminal',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+    return PopScope(
+      canPop: !_isTmuxBarExpanded,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) {
+          return;
+        }
+        _collapseTmuxBarIfExpanded();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Flexible(
+                    child: Text(
+                      _host?.label ?? 'Terminal',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  _TerminalConnectionStatusIcon(
+                    label: connectionLabel,
+                    state: connectionState,
+                    isConnecting: _isConnecting,
+                  ),
+                ],
+              ),
+              if (titleSubtitle.isNotEmpty)
+                Text(
+                  titleSubtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
                   ),
                 ),
-                const SizedBox(width: 6),
-                _TerminalConnectionStatusIcon(
-                  label: connectionLabel,
-                  state: connectionState,
-                  isConnecting: _isConnecting,
-                ),
-              ],
-            ),
-            if (titleSubtitle.isNotEmpty)
-              Text(
-                titleSubtitle,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.labelSmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-          ],
-        ),
-        bottom: !_showsTerminalMetadata || statusChips.isEmpty
-            ? null
-            : PreferredSize(
-                preferredSize: const Size.fromHeight(40),
-                child: Container(
-                  alignment: Alignment.centerLeft,
-                  width: double.infinity,
-                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: statusChips
-                          .map(
-                            (chip) => Padding(
-                              padding: const EdgeInsets.only(right: 8),
-                              child: chip,
-                            ),
-                          )
-                          .toList(growable: false),
+            ],
+          ),
+          bottom: !_showsTerminalMetadata || statusChips.isEmpty
+              ? null
+              : PreferredSize(
+                  preferredSize: const Size.fromHeight(40),
+                  child: Container(
+                    alignment: Alignment.centerLeft,
+                    width: double.infinity,
+                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: statusChips
+                            .map(
+                              (chip) => Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: chip,
+                              ),
+                            )
+                            .toList(growable: false),
+                      ),
                     ),
                   ),
                 ),
+          actions: [
+            if (_isTmuxActive &&
+                !_showTmuxBar &&
+                connectionState == SshConnectionState.connected)
+              IconButton(
+                icon: const Icon(Icons.window_outlined),
+                onPressed: _connectionId == null ? null : _openTmuxNavigator,
+                tooltip: 'tmux windows',
               ),
-        actions: [
-          if (_isTmuxActive &&
-              !_showTmuxBar &&
-              connectionState == SshConnectionState.connected)
             IconButton(
-              icon: const Icon(Icons.window_outlined),
-              onPressed: _connectionId == null ? null : _openTmuxNavigator,
-              tooltip: 'tmux windows',
+              icon: const Icon(Icons.folder_outlined),
+              onPressed:
+                  _connectionId == null ||
+                      connectionState != SshConnectionState.connected
+                  ? null
+                  : _openConnectionFileBrowser,
+              tooltip: 'Browse files',
             ),
-          IconButton(
-            icon: const Icon(Icons.folder_outlined),
-            onPressed:
-                _connectionId == null ||
-                    connectionState != SshConnectionState.connected
-                ? null
-                : _openConnectionFileBrowser,
-            tooltip: 'Browse files',
-          ),
-          if (isMobile)
+            if (isMobile)
+              IconButton(
+                icon: Icon(
+                  systemKeyboardVisible
+                      ? Icons.keyboard_hide
+                      : Icons.keyboard_alt_outlined,
+                ),
+                onPressed: () => _toggleSystemKeyboard(systemKeyboardVisible),
+                tooltip: systemKeyboardVisible
+                    ? 'Hide system keyboard'
+                    : 'Show system keyboard',
+              ),
             IconButton(
-              icon: Icon(
-                systemKeyboardVisible
-                    ? Icons.keyboard_hide
-                    : Icons.keyboard_alt_outlined,
+              icon: _ExtraKeysToggleKeycap(
+                key: ValueKey<String>(
+                  _showKeyboardToolbar
+                      ? 'extra-keys-toggle-active'
+                      : 'extra-keys-toggle-inactive',
+                ),
+                isActive: _showKeyboardToolbar,
               ),
-              onPressed: () => _toggleSystemKeyboard(systemKeyboardVisible),
-              tooltip: systemKeyboardVisible
-                  ? 'Hide system keyboard'
-                  : 'Show system keyboard',
+              onPressed: () =>
+                  setState(() => _showKeyboardToolbar = !_showKeyboardToolbar),
+              tooltip: _showKeyboardToolbar
+                  ? 'Hide extra keys'
+                  : 'Show extra keys',
             ),
-          IconButton(
-            icon: _ExtraKeysToggleKeycap(
-              key: ValueKey<String>(
-                _showKeyboardToolbar
-                    ? 'extra-keys-toggle-active'
-                    : 'extra-keys-toggle-inactive',
-              ),
-              isActive: _showKeyboardToolbar,
-            ),
-            onPressed: () =>
-                setState(() => _showKeyboardToolbar = !_showKeyboardToolbar),
-            tooltip: _showKeyboardToolbar
-                ? 'Hide extra keys'
-                : 'Show extra keys',
-          ),
-          PopupMenuButton<String>(
-            onSelected: _handleMenuAction,
-            itemBuilder: (context) => [
-              const PopupMenuItem(
-                value: 'snippets',
-                child: Row(
-                  children: [
-                    Icon(Icons.code_rounded, size: 20),
-                    SizedBox(width: 12),
-                    Text('Snippets'),
-                  ],
-                ),
-              ),
-              const PopupMenuItem(
-                value: 'change_theme',
-                child: Row(
-                  children: [
-                    Icon(Icons.palette_outlined, size: 20),
-                    SizedBox(width: 12),
-                    Text('Change Theme'),
-                  ],
-                ),
-              ),
-              if (statusChips.isNotEmpty)
-                PopupMenuItem(
-                  value: 'toggle_terminal_info',
-                  child: Row(
-                    children: [
-                      Icon(
-                        _showsTerminalMetadata
-                            ? Icons.info_outlined
-                            : Icons.info_outline_rounded,
-                        size: 20,
-                      ),
-                      const SizedBox(width: 12),
-                      Text(
-                        _showsTerminalMetadata
-                            ? 'Hide Terminal Info'
-                            : 'Show Terminal Info',
-                      ),
-                    ],
-                  ),
-                ),
-              if (_isTmuxActive)
-                PopupMenuItem(
-                  value: 'toggle_tmux_bar',
-                  child: Row(
-                    children: [
-                      Icon(
-                        _showTmuxBar
-                            ? Icons.window_outlined
-                            : Icons.window_rounded,
-                        size: 20,
-                      ),
-                      const SizedBox(width: 12),
-                      Text(_showTmuxBar ? 'Hide tmux Bar' : 'Show tmux Bar'),
-                    ],
-                  ),
-                ),
-              if (isMobile)
-                CheckedPopupMenuItem(
-                  value: 'toggle_tap_keyboard',
-                  checked: ref.read(tapToShowKeyboardNotifierProvider),
-                  child: const Text('Tap to Show Keyboard'),
-                ),
-              const PopupMenuDivider(),
-              if (!isMobile)
-                PopupMenuItem(
-                  value: 'native_select',
-                  child: Row(
-                    children: [
-                      Icon(
-                        _isNativeSelectionMode
-                            ? Icons.deselect_rounded
-                            : Icons.select_all_rounded,
-                        size: 20,
-                      ),
-                      const SizedBox(width: 12),
-                      Text(
-                        _isNativeSelectionMode
-                            ? 'Exit Native Selection'
-                            : 'Native Selection',
-                      ),
-                    ],
-                  ),
-                ),
-              if (_workingDirectoryPath != null)
+            PopupMenuButton<String>(
+              onSelected: _handleMenuAction,
+              itemBuilder: (context) => [
                 const PopupMenuItem(
-                  value: 'copy_working_directory',
+                  value: 'snippets',
                   child: Row(
                     children: [
-                      Icon(Icons.folder_copy_outlined, size: 20),
+                      Icon(Icons.code_rounded, size: 20),
                       SizedBox(width: 12),
-                      Text('Copy Current Directory'),
+                      Text('Snippets'),
                     ],
                   ),
                 ),
-              const PopupMenuItem(
-                value: 'copy',
-                child: Row(
-                  children: [
-                    Icon(Icons.copy_rounded, size: 20),
-                    SizedBox(width: 12),
-                    Text('Copy'),
-                  ],
+                const PopupMenuItem(
+                  value: 'change_theme',
+                  child: Row(
+                    children: [
+                      Icon(Icons.palette_outlined, size: 20),
+                      SizedBox(width: 12),
+                      Text('Change Theme'),
+                    ],
+                  ),
                 ),
-              ),
-              const PopupMenuItem(
-                value: 'paste',
-                child: Row(
-                  children: [
-                    Icon(Icons.paste_rounded, size: 20),
-                    SizedBox(width: 12),
-                    Text('Paste'),
-                  ],
+                if (statusChips.isNotEmpty)
+                  PopupMenuItem(
+                    value: 'toggle_terminal_info',
+                    child: Row(
+                      children: [
+                        Icon(
+                          _showsTerminalMetadata
+                              ? Icons.info_outlined
+                              : Icons.info_outline_rounded,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 12),
+                        Text(
+                          _showsTerminalMetadata
+                              ? 'Hide Terminal Info'
+                              : 'Show Terminal Info',
+                        ),
+                      ],
+                    ),
+                  ),
+                if (_isTmuxActive)
+                  PopupMenuItem(
+                    value: 'toggle_tmux_bar',
+                    child: Row(
+                      children: [
+                        Icon(
+                          _showTmuxBar
+                              ? Icons.window_outlined
+                              : Icons.window_rounded,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 12),
+                        Text(_showTmuxBar ? 'Hide tmux Bar' : 'Show tmux Bar'),
+                      ],
+                    ),
+                  ),
+                if (isMobile)
+                  CheckedPopupMenuItem(
+                    value: 'toggle_tap_keyboard',
+                    checked: ref.read(tapToShowKeyboardNotifierProvider),
+                    child: const Text('Tap to Show Keyboard'),
+                  ),
+                const PopupMenuDivider(),
+                if (!isMobile)
+                  PopupMenuItem(
+                    value: 'native_select',
+                    child: Row(
+                      children: [
+                        Icon(
+                          _isNativeSelectionMode
+                              ? Icons.deselect_rounded
+                              : Icons.select_all_rounded,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 12),
+                        Text(
+                          _isNativeSelectionMode
+                              ? 'Exit Native Selection'
+                              : 'Native Selection',
+                        ),
+                      ],
+                    ),
+                  ),
+                if (_workingDirectoryPath != null)
+                  const PopupMenuItem(
+                    value: 'copy_working_directory',
+                    child: Row(
+                      children: [
+                        Icon(Icons.folder_copy_outlined, size: 20),
+                        SizedBox(width: 12),
+                        Text('Copy Current Directory'),
+                      ],
+                    ),
+                  ),
+                const PopupMenuItem(
+                  value: 'copy',
+                  child: Row(
+                    children: [
+                      Icon(Icons.copy_rounded, size: 20),
+                      SizedBox(width: 12),
+                      Text('Copy'),
+                    ],
+                  ),
                 ),
-              ),
-              const PopupMenuItem(
-                value: 'paste_image',
-                child: Row(
-                  children: [
-                    Icon(Icons.image_outlined, size: 20),
-                    SizedBox(width: 12),
-                    Text('Paste Images'),
-                  ],
+                const PopupMenuItem(
+                  value: 'paste',
+                  child: Row(
+                    children: [
+                      Icon(Icons.paste_rounded, size: 20),
+                      SizedBox(width: 12),
+                      Text('Paste'),
+                    ],
+                  ),
                 ),
-              ),
-              const PopupMenuItem(
-                value: 'paste_file',
-                child: Row(
-                  children: [
-                    Icon(Icons.attach_file_rounded, size: 20),
-                    SizedBox(width: 12),
-                    Text('Paste Files'),
-                  ],
+                const PopupMenuItem(
+                  value: 'paste_image',
+                  child: Row(
+                    children: [
+                      Icon(Icons.image_outlined, size: 20),
+                      SizedBox(width: 12),
+                      Text('Paste Images'),
+                    ],
+                  ),
                 ),
-              ),
-              const PopupMenuDivider(),
-              const PopupMenuItem(
-                value: 'disconnect',
-                child: Row(
-                  children: [
-                    Icon(Icons.link_off_rounded, size: 20),
-                    SizedBox(width: 12),
-                    Text('Disconnect'),
-                  ],
+                const PopupMenuItem(
+                  value: 'paste_file',
+                  child: Row(
+                    children: [
+                      Icon(Icons.attach_file_rounded, size: 20),
+                      SizedBox(width: 12),
+                      Text('Paste Files'),
+                    ],
+                  ),
                 ),
-              ),
-            ],
-          ),
-        ],
-      ),
-      body: Builder(
-        builder: (bodyContext) {
-          final showsKeyboardToolbar =
-              _showKeyboardToolbar &&
-              !showsDisconnectedOverlay &&
-              (!_isNativeSelectionMode || _isMobilePlatform);
-          final terminalArea = _buildTerminalWithTmuxBar(
-            terminalTheme,
-            isMobile,
-            theme,
-            connectionState,
-          );
-          return Column(
-            children: [
-              Expanded(
-                // The KeyboardToolbar below already absorbs the bottom
-                // safe-area inset via its own SafeArea, so strip it here to
-                // prevent the tmux bar from floating above the toolbar.
-                child: showsKeyboardToolbar
-                    ? MediaQuery.removePadding(
-                        context: bodyContext,
-                        removeBottom: true,
-                        child: terminalArea,
-                      )
-                    : terminalArea,
-              ),
-              if (showsKeyboardToolbar)
-                KeyboardToolbar(
-                  controller: _toolbarController,
-                  terminal: _terminal,
-                  onKeyPressed: _handleKeyboardToolbarKeyPressed,
-                  terminalFocusNode: _terminalFocusNode,
+                const PopupMenuDivider(),
+                const PopupMenuItem(
+                  value: 'disconnect',
+                  child: Row(
+                    children: [
+                      Icon(Icons.link_off_rounded, size: 20),
+                      SizedBox(width: 12),
+                      Text('Disconnect'),
+                    ],
+                  ),
                 ),
-            ],
-          );
-        },
+              ],
+            ),
+          ],
+        ),
+        body: Builder(
+          builder: (bodyContext) {
+            final showsKeyboardToolbar =
+                _showKeyboardToolbar &&
+                !showsDisconnectedOverlay &&
+                (!_isNativeSelectionMode || _isMobilePlatform);
+            final terminalArea = _buildTerminalWithTmuxBar(
+              terminalTheme,
+              isMobile,
+              theme,
+              connectionState,
+            );
+            return Column(
+              children: [
+                Expanded(
+                  // The KeyboardToolbar below already absorbs the bottom
+                  // safe-area inset via its own SafeArea, so strip it here to
+                  // prevent the tmux bar from floating above the toolbar.
+                  child: showsKeyboardToolbar
+                      ? MediaQuery.removePadding(
+                          context: bodyContext,
+                          removeBottom: true,
+                          child: terminalArea,
+                        )
+                      : terminalArea,
+                ),
+                if (showsKeyboardToolbar)
+                  KeyboardToolbar(
+                    controller: _toolbarController,
+                    terminal: _terminal,
+                    onKeyPressed: _handleKeyboardToolbarKeyPressed,
+                    terminalFocusNode: _terminalFocusNode,
+                  ),
+              ],
+            );
+          },
+        ),
       ),
     );
   }
@@ -5704,6 +6216,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               showCursor: false,
               cursorColor: Colors.transparent,
               enableInteractiveSelection: true,
+              contextMenuBuilder: _buildNativeSelectionContextMenu,
               scrollController: _nativeSelectionScrollController,
               expands: true,
               maxLines: null,
@@ -5735,6 +6248,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           child: child,
         ),
       ),
+    ),
+  );
+
+  Widget _buildNativeSelectionContextMenu(
+    BuildContext context,
+    EditableTextState editableTextState,
+  ) => AdaptiveTextSelectionToolbar.buttonItems(
+    anchors: editableTextState.contextMenuAnchors,
+    buttonItems: buildNativeSelectionContextMenuButtonItems(
+      defaultItems: editableTextState.contextMenuButtonItems,
+      onPaste: () {
+        editableTextState.hideToolbar();
+        unawaited(_pasteClipboard());
+      },
     ),
   );
 
@@ -5821,7 +6348,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         setState(() => _showsTerminalMetadata = !_showsTerminalMetadata);
         break;
       case 'toggle_tmux_bar':
-        setState(() => _showTmuxBar = !_showTmuxBar);
+        final shouldShowTmuxBar = !_showTmuxBar;
+        if (!shouldShowTmuxBar) {
+          _collapseTmuxBarIfExpanded();
+        }
+        setState(() => _showTmuxBar = shouldShowTmuxBar);
         break;
       case 'toggle_tap_keyboard':
         final notifier = ref.read(tapToShowKeyboardNotifierProvider.notifier);
@@ -6111,14 +6642,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     CellOffset cellOffset, {
     required bool revealOverlayInTouchScrollMode,
   }) {
-    final wordRange = _terminal.buffer.getWordBoundary(cellOffset);
-    if (wordRange == null) {
+    final selectionRange = resolveNativeTouchSelectionRange(
+      buffer: _terminal.buffer,
+      cellOffset: cellOffset,
+    );
+    if (selectionRange == null) {
       return null;
     }
 
     final snapshot = _buildNativeSelectionSnapshotData();
     final selection = _bufferRangeToTextSelection(
-      wordRange,
+      selectionRange,
       viewWidth: snapshot.viewWidth,
       lineCount: snapshot.lineCount,
       lineStarts: snapshot.lineStarts,
@@ -7590,7 +8124,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         }
       }
 
-      final text = await Pasteboard.text;
+      final text = await _readSystemClipboardText();
       if (text == null || text.isEmpty) {
         _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
         _showClipboardMessage('Clipboard is empty');

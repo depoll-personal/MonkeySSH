@@ -108,6 +108,66 @@ void main() {
     registerFallbackValue(MonetizationFeature.autoConnectAutomation);
   });
 
+  group('terminal native selection helpers', () {
+    test('starts selection on separator characters', () {
+      final terminal = Terminal(maxLines: 100)..write('foo/bar');
+
+      final range = resolveNativeTouchSelectionRange(
+        buffer: terminal.buffer,
+        cellOffset: const CellOffset(3, 0),
+      );
+
+      expect(range, isNotNull);
+      expect(range!.begin, const CellOffset(3, 0));
+      expect(range.end, const CellOffset(4, 0));
+    });
+
+    test('starts selection when a touch lands near a word', () {
+      final terminal = Terminal(maxLines: 100)..write('alpha  beta');
+
+      final range = resolveNativeTouchSelectionRange(
+        buffer: terminal.buffer,
+        cellOffset: const CellOffset(6, 0),
+      );
+
+      expect(range, isNotNull);
+      expect(range!.begin, const CellOffset(7, 0));
+      expect(range.end, const CellOffset(11, 0));
+    });
+
+    test('ignores trailing blanks that are not near selectable text', () {
+      final terminal = Terminal(maxLines: 100)..write('alpha');
+
+      final range = resolveNativeTouchSelectionRange(
+        buffer: terminal.buffer,
+        cellOffset: const CellOffset(20, 0),
+      );
+
+      expect(range, isNull);
+    });
+
+    test('adds paste action to the native overlay context menu', () {
+      var didPaste = false;
+
+      final items = buildNativeSelectionContextMenuButtonItems(
+        defaultItems: const [
+          ContextMenuButtonItem(
+            type: ContextMenuButtonType.copy,
+            onPressed: null,
+          ),
+        ],
+        onPaste: () => didPaste = true,
+      );
+
+      final pasteItem = items.singleWhere(
+        (item) => item.type == ContextMenuButtonType.paste,
+      );
+      pasteItem.onPressed!();
+
+      expect(didPaste, isTrue);
+    });
+  });
+
   group('TerminalScreen mobile IME wiring', () {
     late AppDatabase db;
     late _MockHostRepository hostRepository;
@@ -207,8 +267,61 @@ void main() {
       await tester.pump();
     }
 
+    Future<void> pumpTmuxScreen(
+      WidgetTester tester,
+      _MockTmuxService tmuxService,
+    ) async {
+      const tmuxSessionName = 'work';
+      const windows = <TmuxWindow>[
+        TmuxWindow(index: 0, name: 'shell', isActive: true),
+        TmuxWindow(index: 1, name: 'agent', isActive: false),
+      ];
+
+      when(
+        () => tmuxService.hasSession(session, tmuxSessionName),
+      ).thenAnswer((_) async => true);
+      when(
+        () => tmuxService.listWindows(session, tmuxSessionName),
+      ).thenAnswer((_) async => windows);
+      when(
+        () => tmuxService.watchWindowChanges(session, tmuxSessionName),
+      ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+      when(
+        () => tmuxService.detectInstalledAgentTools(session),
+      ).thenAnswer((_) async => const <AgentLaunchTool>{});
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(db),
+            hostRepositoryProvider.overrideWithValue(hostRepository),
+            monetizationServiceProvider.overrideWithValue(monetizationService),
+            monetizationStateProvider.overrideWith(
+              (ref) => Stream.value(_proMonetizationState),
+            ),
+            sharedClipboardProvider.overrideWith((ref) async => false),
+            activeSessionsProvider.overrideWith(
+              () => _TestActiveSessionsNotifier(session),
+            ),
+            tmuxServiceProvider.overrideWithValue(tmuxService),
+          ],
+          child: MaterialApp(
+            home: TerminalScreen(
+              hostId: host.id,
+              connectionId: session.connectionId,
+              initialTmuxSessionName: tmuxSessionName,
+            ),
+          ),
+        ),
+      );
+
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+
     testWidgets(
-      'initial tmux target selects the alerted window on the source connection',
+      'initial tmux target selects the alerted window and can start expanded',
       (tester) async {
         final tmuxService = _MockTmuxService();
         const tmuxSessionName = 'alerts';
@@ -260,6 +373,7 @@ void main() {
                 connectionId: session.connectionId,
                 initialTmuxSessionName: tmuxSessionName,
                 initialTmuxWindowIndex: targetWindowIndex,
+                initiallyExpandTmuxWindows: true,
               ),
             ),
           ),
@@ -276,8 +390,86 @@ void main() {
             targetWindowIndex,
           ),
         ).called(1);
+        expect(find.text('shell'), findsOneWidget);
+        expect(find.text('agent'), findsOneWidget);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'touching the terminal dismisses the expanded tmux bar',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        await pumpTmuxScreen(tester, tmuxService);
+
+        await tester.tap(find.byKey(const ValueKey('tmux-handle-bar')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 350));
+
+        final dismissRegion = find.byKey(
+          const ValueKey('tmux-terminal-dismiss-region'),
+        );
+        expect(dismissRegion, findsOneWidget);
+
+        await tester.tapAt(const Offset(20, 120));
+        await tester.pump();
+
+        expect(dismissRegion, findsNothing);
+        expect(find.byType(TerminalScreen), findsOneWidget);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'Android back dismisses the expanded tmux bar before leaving the terminal',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        await pumpTmuxScreen(tester, tmuxService);
+
+        await tester.tap(find.byKey(const ValueKey('tmux-handle-bar')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 350));
+
+        final dismissRegion = find.byKey(
+          const ValueKey('tmux-terminal-dismiss-region'),
+        );
+        expect(dismissRegion, findsOneWidget);
+
+        await tester.binding.handlePopRoute();
+        await tester.pump();
+
+        expect(dismissRegion, findsNothing);
+        expect(find.byType(TerminalScreen), findsOneWidget);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'hiding the expanded tmux bar restores normal back handling',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        await pumpTmuxScreen(tester, tmuxService);
+
+        await tester.tap(find.byKey(const ValueKey('tmux-handle-bar')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 350));
+
+        final popScope = find.byWidgetPredicate((widget) => widget is PopScope);
+        final dismissRegion = find.byKey(
+          const ValueKey('tmux-terminal-dismiss-region'),
+        );
+        expect(dismissRegion, findsOneWidget);
+        expect(tester.widget<PopScope<Object?>>(popScope).canPop, isFalse);
+
+        await tester.tap(find.byType(PopupMenuButton<String>));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Hide tmux Bar'));
+        await tester.pumpAndSettle();
+
+        expect(dismissRegion, findsNothing);
+        expect(tester.widget<PopScope<Object?>>(popScope).canPop, isTrue);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
 
     testWidgets(
