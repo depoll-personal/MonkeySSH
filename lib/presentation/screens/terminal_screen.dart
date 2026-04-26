@@ -4220,6 +4220,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  bool _showsTmuxBarForState(SshConnectionState connectionState) =>
+      _isTmuxActive &&
+      _showTmuxBar &&
+      connectionState == SshConnectionState.connected;
+
   String? _resolveStoredAutoConnectCommand(Host? host) {
     if (host == null) {
       return null;
@@ -4253,10 +4258,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     ThemeData theme,
     SshConnectionState connectionState,
   ) {
-    final showTmux =
-        _isTmuxActive &&
-        _showTmuxBar &&
-        connectionState == SshConnectionState.connected;
+    final showTmux = _showsTmuxBarForState(connectionState);
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -4922,9 +4924,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     final titleSubtitle = titleSubtitleSegments.join(' • ');
     final statusChips = _buildTerminalStatusChips(theme);
+    final isTmuxBarDismissible =
+        _isTmuxBarExpanded && _showsTmuxBarForState(connectionState);
 
     return PopScope(
-      canPop: !_isTmuxBarExpanded,
+      canPop: !isTmuxBarDismissible,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) {
           return;

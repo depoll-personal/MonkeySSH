@@ -348,7 +348,9 @@ void main() {
         );
         expect(dismissRegion, findsOneWidget);
 
-        await tester.tapAt(const Offset(20, 120));
+        final dismissPoint =
+            tester.getTopLeft(dismissRegion) + const Offset(8, 8);
+        await tester.tapAt(dismissPoint);
         await tester.pump();
 
         expect(dismissRegion, findsNothing);
