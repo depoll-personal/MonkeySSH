@@ -252,6 +252,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   int _pendingEnterActionSuppressions = 0;
   int _latestEditingValueRevision = 0;
   TextEditingValue? _queuedEditingValue;
+  bool _hasSentTerminalInput = false;
 
   @override
   void initState() {
@@ -834,7 +835,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     );
     if ((_sawImeComposition ||
             _trimLeadingSuggestionSpaceAfterDelete ||
-            _trimLeadingSwipeSpaceAfterBufferClear) &&
+            _trimLeadingSwipeSpaceAfterBufferClear ||
+            _shouldTrimFirstCommittedWordSpace(sanitizedText)) &&
         sanitizedText.startsWith(' ') &&
         !sanitizedText.startsWith('  ') &&
         sanitizedText.trimLeft().isNotEmpty &&
@@ -842,6 +844,23 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       return sanitizedText.substring(1);
     }
     return sanitizedText;
+  }
+
+  bool _shouldTrimFirstCommittedWordSpace(String text) =>
+      _lastSentText.isEmpty &&
+      _lastSentCursorOffset == 0 &&
+      _isFirstTerminalInputOrFreshPromptContext() &&
+      text.startsWith(' ') &&
+      !text.startsWith('  ') &&
+      text.trimLeft().isNotEmpty;
+
+  bool _isFirstTerminalInputOrFreshPromptContext() {
+    final textBeforeCursor = widget.resolveTextBeforeCursor?.call();
+    if (textBeforeCursor == null) {
+      return !_hasSentTerminalInput;
+    }
+    return _currentLineLooksLikePromptPrefix(textBeforeCursor) ||
+        _endsWithPromptWhitespace(textBeforeCursor);
   }
 
   bool _shouldTrimLeadingSwipeSpace() {
@@ -854,17 +873,25 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       return true;
     }
 
-    final trailingCodeUnit = textBeforeCursor.codeUnitAt(
-      textBeforeCursor.length - 1,
-    );
-    if (trailingCodeUnit == 0x20 ||
-        trailingCodeUnit == 0x09 ||
-        trailingCodeUnit == 0x0A ||
-        trailingCodeUnit == 0x0D) {
+    if (_endsWithPromptWhitespace(textBeforeCursor)) {
       return true;
     }
 
     return _currentLineLooksLikePromptPrefix(textBeforeCursor);
+  }
+
+  bool _endsWithPromptWhitespace(String textBeforeCursor) {
+    if (textBeforeCursor.isEmpty) {
+      return true;
+    }
+
+    final trailingCodeUnit = textBeforeCursor.codeUnitAt(
+      textBeforeCursor.length - 1,
+    );
+    return trailingCodeUnit == 0x20 ||
+        trailingCodeUnit == 0x09 ||
+        trailingCodeUnit == 0x0A ||
+        trailingCodeUnit == 0x0D;
   }
 
   bool _currentLineLooksLikePromptPrefix(String textBeforeCursor) {
@@ -920,6 +947,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     final appendedText = delta.appendedText;
     if (appendedText.isNotEmpty) {
       widget.terminal.textInput(appendedText);
+    }
+
+    if (deletedCount > 0 || appendedText.isNotEmpty) {
+      _hasSentTerminalInput = true;
     }
 
     _lastSentText = currentText;
