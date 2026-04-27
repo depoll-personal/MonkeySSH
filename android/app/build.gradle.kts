@@ -124,5 +124,5 @@ flutter {
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
-    implementation("eu.simonbinder:sqlite3-native-library:3.51.1")
+    implementation("eu.simonbinder:sqlite3-native-library:3.52.0")
 }
