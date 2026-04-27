@@ -56,7 +56,12 @@ jobs:
       build-codename: ${{ needs.compute-version.outputs.build-codename }}
       enable-diagnostics: true
       flavor: private
-      deploy-ios-to: testflight
+      # Main can receive many app changes in a day; uploading each one to
+      # TestFlight exhausts App Store Connect's daily upload quota and makes the
+      # whole workflow fail. Keep the iOS build artifact for validation, and
+      # reserve TestFlight uploads for explicit deploy workflows.
+      deploy-ios-to: none
+      build-ios-unsigned-ipa: true
       deploy-android-to: internal
     secrets:
       ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
