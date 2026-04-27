@@ -969,6 +969,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                 ),
               )
               .toList(growable: false),
+          selectedItemBuilder: (context) => AgentLaunchTool.values
+              .map((tool) => Text(tool.label))
+              .toList(growable: false),
           onChanged: hasAgentPresetAccess
               ? (value) {
                   if (value == null) {
@@ -1759,6 +1762,16 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         );
       }
 
+      if (!mounted) {
+        return;
+      }
+      final confirmed = await showTransferPayloadImportConfirmationDialog(
+        context: context,
+        payload: payload,
+      );
+      if (!mounted || !confirmed) {
+        return;
+      }
       final importedHost = await transferService.importHostPayload(payload);
       ref.invalidate(allHostsProvider);
       if (!mounted) {

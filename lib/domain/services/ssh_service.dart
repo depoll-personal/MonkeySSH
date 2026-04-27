@@ -1205,6 +1205,34 @@ class _PreparedHostKeySocket {
   final HostKeySource hostKeySource;
 }
 
+Map<String, Object?> _diagnosticSshExecErrorFields(Object error) => {
+  'errorType': error.runtimeType,
+  if (error is SSHChannelOpenError) ...{
+    'channelOpenCode': error.code,
+    'reason': _diagnosticSshChannelOpenReason(error.description),
+  },
+};
+
+String _diagnosticSshChannelOpenReason(String description) {
+  final normalized = description.toLowerCase();
+  if (normalized.contains('administratively prohibited')) {
+    return 'administratively_prohibited';
+  }
+  if (normalized.contains('resource shortage')) {
+    return 'resource_shortage';
+  }
+  if (normalized.contains('connect failed')) {
+    return 'connect_failed';
+  }
+  if (normalized.contains('unknown channel type')) {
+    return 'unknown_channel_type';
+  }
+  if (normalized.contains('open failed')) {
+    return 'open_failed';
+  }
+  return 'channel_open_failed';
+}
+
 String _diagnosticSshResultErrorKind(String? error) {
   if (error == null || error.isEmpty) {
     return 'unknown';
@@ -1447,6 +1475,7 @@ class SshSession {
     this.terminalThemeDarkId,
     this.terminalFontSize,
     this.clipboardSharingEnabled = false,
+    this.localClipboardReadEnabled = false,
   }) : createdAt = DateTime.now();
 
   static const _previewRefreshInterval = Duration(milliseconds: 150);
@@ -1482,6 +1511,9 @@ class SshSession {
 
   /// Whether OSC 52 clipboard sharing is enabled for this session.
   bool clipboardSharingEnabled;
+
+  /// Whether the remote side may read the local clipboard.
+  bool localClipboardReadEnabled;
 
   /// When the session was created.
   final DateTime createdAt;
@@ -1960,7 +1992,7 @@ class SshSession {
 
     unawaited(
       _clipboardSharingService
-          .handleOsc52(args)
+          .handleOsc52(args, allowLocalClipboardRead: localClipboardReadEnabled)
           .then((response) {
             if (response != null && _shell != null) {
               _shell!.write(utf8.encode(response));
@@ -2074,7 +2106,7 @@ class SshSession {
           'connectionId': connectionId,
           'commandKind': _diagnosticSshCommandKind(command),
           'pty': pty != null,
-          'errorType': error.runtimeType,
+          ..._diagnosticSshExecErrorFields(error),
         },
       );
       rethrow;
@@ -2770,9 +2802,14 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   }
 
   /// Update clipboard sharing on all active sessions.
-  void updateClipboardSharing({required bool enabled}) {
+  void updateClipboardSharing({
+    required bool enabled,
+    required bool allowLocalClipboardRead,
+  }) {
     for (final session in _sshService.allSessions) {
-      session.clipboardSharingEnabled = enabled;
+      session
+        ..clipboardSharingEnabled = enabled
+        ..localClipboardReadEnabled = allowLocalClipboardRead;
     }
   }
 
