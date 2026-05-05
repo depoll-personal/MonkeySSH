@@ -90,6 +90,10 @@ void main() {
 
       expect(liveSchemeService.loadedSchemeIds, [_remoteScheme.id]);
       expect(previewedThemes.single.id, _remoteTheme.id);
+      expect(
+        find.widgetWithText(ThemePreviewCard, _remoteScheme.name),
+        findsNothing,
+      );
     });
 
     testWidgets('dialog stays above keyboard and confirms previewed theme', (

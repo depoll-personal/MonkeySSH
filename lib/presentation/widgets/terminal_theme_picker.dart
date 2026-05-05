@@ -382,6 +382,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
               schemes: remoteSchemes,
               importingSchemeId: _importingSchemeId,
               previewingScheme: _previewingScheme,
+              showPreviewCard: !widget.previewOnTap,
               onSchemePreviewed: _previewLiveScheme,
               onSchemeSelected: _importLiveScheme,
             );
@@ -550,6 +551,7 @@ class _LiveThemePreviewGrid extends StatelessWidget {
     required this.schemes,
     required this.importingSchemeId,
     required this.previewingScheme,
+    required this.showPreviewCard,
     required this.onSchemePreviewed,
     required this.onSchemeSelected,
   });
@@ -557,6 +559,7 @@ class _LiveThemePreviewGrid extends StatelessWidget {
   final List<ItermColorSchemeMetadata> schemes;
   final String? importingSchemeId;
   final ItermColorSchemeMetadata? previewingScheme;
+  final bool showPreviewCard;
   final ValueChanged<ItermColorSchemeMetadata> onSchemePreviewed;
   final ValueChanged<ItermColorSchemeMetadata> onSchemeSelected;
 
@@ -574,7 +577,7 @@ class _LiveThemePreviewGrid extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (activePreview != null) ...[
+        if (showPreviewCard && activePreview != null) ...[
           SizedBox(
             height: 168,
             child: _LiveThemePreviewCard(
