@@ -66,6 +66,11 @@ void main() {
       expect(parseAgentVersion('opencode version v1.2.3'), '1.2.3');
       expect(parseAgentVersion('github-copilot/0.0.371'), '0.0.371');
       expect(parseAgentVersion('codex-cli 0.98.0-alpha.3'), '0.98.0-alpha.3');
+      expect(parseAgentVersion('GitHub Copilot CLI 1.0.84-3.'), '1.0.84-3');
+      expect(
+        parseAgentVersion('\x1b[32mV1.2.3-beta.10+build.4\x1b[0m'),
+        '1.2.3-beta.10+build.4',
+      );
       expect(parseAgentVersion('no version here'), isNull);
     });
   });
@@ -80,6 +85,13 @@ void main() {
     test('orders prereleases before stable versions', () {
       expect(compareAgentVersions('1.0.0-beta.2', '1.0.0'), lessThan(0));
       expect(compareAgentVersions('v1.0.0', '1.0.0'), 0);
+      expect(
+        compareAgentVersions('1.0.0-beta.9', '1.0.0-beta.10'),
+        lessThan(0),
+      );
+      expect(compareAgentVersions('1.0.0-1', '1.0.0-alpha'), lessThan(0));
+      expect(compareAgentVersions('1.0.0-beta', '1.0.0-beta.1'), lessThan(0));
+      expect(compareAgentVersions('1.0.0+one', '1.0.0+two'), 0);
     });
   });
 
@@ -180,7 +192,9 @@ void main() {
                   '__monkeyssh_agent_runtime_end__\n',
                 );
               }
-              final currentPackage = script.contains("npm view '$package'");
+              final currentPackage = script
+                  .replaceAll("''", "'")
+                  .contains("npm view '$package'");
               return _execOutput(
                 '__monkeyssh_agent_runtime__=cli:pi\n'
                 '__monkeyssh_agent_source__=npm global\n'
@@ -210,6 +224,312 @@ void main() {
       }
     }
   });
+
+  group('consistent update detection', () {
+    for (final windows in [false, true]) {
+      for (final mode in ['inspect', 'refresh', 'background']) {
+        test('all runtimes detect updates, $mode, windows=$windows', () async {
+          final client = _MockSshClient();
+          final discovery = _MockDiscovery();
+          final session = _remoteSession(client);
+          when(() => client.remoteVersion).thenReturn(
+            windows ? 'SSH-2.0-OpenSSH_for_Windows_9.5' : 'SSH-2.0-OpenSSH_9.9',
+          );
+          when(() => discovery.invalidateSession(session)).thenReturn(null);
+          when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+            invocation,
+          ) async {
+            final command = invocation.positionalArguments.first as String;
+            final script = windows
+                ? _decodePowerShellCommand(command)
+                : command;
+            final output = StringBuffer();
+            final probe = script.contains('__monkeyssh_agent_path__');
+            for (final definition in agentRuntimeDefinitions) {
+              if (!probe && !script.contains(definition.id)) continue;
+              output.writeln('__monkeyssh_agent_runtime__=${definition.id}');
+              if (probe) {
+                output.writeln(
+                  '__monkeyssh_agent_path__=/bin/${definition.executableNames.first}',
+                );
+                if (definition.kind == AgentRuntimeKind.cli) {
+                  output.writeln('__monkeyssh_agent_version__=1.0.0');
+                }
+              } else {
+                output
+                  ..writeln('__monkeyssh_agent_source__=npm global')
+                  ..writeln('__monkeyssh_agent_installed__=1.0.0')
+                  ..writeln('__monkeyssh_agent_latest__=1.1.0');
+              }
+              output.writeln('__monkeyssh_agent_runtime_end__');
+            }
+            // Single probes do not have runtime delimiters in their command.
+            if (probe && mode == 'inspect') {
+              return _execOutput('__monkeyssh_agent_path__=/bin/agent\n');
+            }
+            return _execOutput(output.toString());
+          });
+          final service = _unlockedManagementService(discovery);
+          final runtimes = switch (mode) {
+            'inspect' => [
+              for (final definition in agentRuntimeDefinitions)
+                await service.inspect(session, definition),
+            ],
+            'refresh' => await service.refreshAll(session),
+            _ => await service.checkForUpdates(session),
+          };
+          expect(runtimes, hasLength(agentRuntimeDefinitions.length));
+          for (final runtime in runtimes) {
+            expect(
+              runtime.status,
+              AgentRuntimeStatus.updateAvailable,
+              reason: runtime.definition.id,
+            );
+            expect(
+              runtime.installedVersion,
+              '1.0.0',
+              reason: runtime.definition.id,
+            );
+            expect(
+              runtime.latestVersion,
+              '1.1.0',
+              reason: runtime.definition.id,
+            );
+          }
+          if (mode != 'inspect') {
+            final cached = await service.checkForUpdates(session);
+            expect(
+              cached.map((runtime) => runtime.definition.id),
+              agentRuntimeDefinitions.map((definition) => definition.id),
+            );
+          }
+        });
+      }
+    }
+
+    test(
+      'shared adapters use the same package and release source as their CLI',
+      () {
+        for (final adapter in agentAcpRuntimeDefinitions.where(
+          (d) => d.sharesCliInstallation,
+        )) {
+          final cli = agentCliRuntimeDefinitions.singleWhere(
+            (d) => d.tool == adapter.tool,
+          );
+          expect(adapter.packageName, cli.packageName, reason: adapter.id);
+          expect(adapter.registry, cli.registry, reason: adapter.id);
+          expect(
+            adapter.executableNames,
+            cli.executableNames,
+            reason: adapter.id,
+          );
+        }
+      },
+    );
+  });
+
+  test(
+    'POSIX metadata reads all registries and official releases without launching adapters',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'monkeyssh-metadata-test-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final bin = Directory('${root.path}/bin')..createSync();
+      final npmPackages = agentRuntimeDefinitions
+          .where((d) => d.registry == AgentPackageRegistry.npm)
+          .map((d) => d.packageName!)
+          .toSet();
+      final npm = File('${bin.path}/npm')
+        ..writeAsStringSync(
+          '#!/bin/sh\ncase "\$1" in\n'
+          'list) cat <<\'PACKAGES\'\n${npmPackages.map((p) => "├── $p@1.0.0").join('\n')}\nPACKAGES\n;;\n'
+          'view) echo 1.1.0;;\n*) exit 1;;\nesac\n',
+        );
+      final pipx = File('${bin.path}/pipx')
+        ..writeAsStringSync('#!/bin/sh\necho "hermes-agent 0.19.0"\n');
+      final brew = File('${bin.path}/brew')
+        ..writeAsStringSync('#!/bin/sh\nexit 1\n');
+      final curl = File('${bin.path}/curl')
+        ..writeAsStringSync(r'''
+#!/bin/sh
+case "$*" in
+  *cursor.com/install*) echo 'DOWNLOAD_URL="https://downloads.cursor.com/lab/2026.09.08-6caf4ff/linux/arm64/agent-cli-package.tar.gz"';;
+  *antigravity*/manifests/*) echo '{"version":"1.1.28","url":"https://example.test/1.1.28"}';;
+  *hermes_cli/__init__.py*) printf '__version__ = "0.21.1"\n__release_date__ = "2026.9.7"\n';;
+  *x.ai/cli/stable*) echo '1.0.24';;
+  *registry.npmjs.org/*/latest*) echo '{"version":"1.2.0"}';;
+  *) exit 1;;
+esac
+''');
+      await Process.run('chmod', [
+        '+x',
+        npm.path,
+        pipx.path,
+        brew.path,
+        curl.path,
+      ]);
+      final script = File('${root.path}/metadata.sh')
+        ..writeAsStringSync(
+          buildAgentMetadataProbeCommand(
+            agentRuntimeDefinitions,
+            windows: false,
+          ),
+        );
+      for (final shell in [
+        'bash',
+        if (File('/bin/zsh').existsSync()) '/bin/zsh',
+      ]) {
+        final result = await Process.run(
+          shell,
+          [script.path],
+          environment: {'HOME': root.path, 'PATH': '${bin.path}:/usr/bin:/bin'},
+          includeParentEnvironment: false,
+        );
+        expect(result.exitCode, 0, reason: '${result.stderr}');
+        final snapshots = parseAgentMetadataProbeOutput(
+          result.stdout as String,
+        );
+        expect(snapshots, hasLength(agentRuntimeDefinitions.length));
+        for (final definition in agentRuntimeDefinitions.where(
+          (d) => d.registry == AgentPackageRegistry.npm,
+        )) {
+          expect(
+            snapshots[definition.id]?.installedVersionOutput,
+            '1.0.0',
+            reason: definition.id,
+          );
+          expect(
+            snapshots[definition.id]?.latestVersionOutput,
+            '1.1.0',
+            reason: definition.id,
+          );
+        }
+        for (final entry in {
+          'cli:cursor': '2026.09.08-6caf4ff',
+          'cli:antigravity': '1.1.28',
+          'cli:hermes': '0.21.1',
+          'cli:grok': '1.0.24',
+        }.entries) {
+          expect(
+            parseAgentVersion(snapshots[entry.key]?.latestVersionOutput ?? ''),
+            entry.value,
+            reason: '$shell: ${entry.key}',
+          );
+        }
+      }
+      // A native or Bun installation may have no usable npm command.
+      npm.writeAsStringSync('#!/bin/sh\nexit 1\n');
+      final fallback = await Process.run(
+        'bash',
+        [script.path],
+        environment: {'HOME': root.path, 'PATH': '${bin.path}:/usr/bin:/bin'},
+        includeParentEnvironment: false,
+      );
+      final fallbackSnapshots = parseAgentMetadataProbeOutput(
+        fallback.stdout as String,
+      );
+      for (final definition in agentRuntimeDefinitions.where(
+        (d) => d.registry == AgentPackageRegistry.npm,
+      )) {
+        expect(
+          parseAgentVersion(
+            fallbackSnapshots[definition.id]?.latestVersionOutput ?? '',
+          ),
+          '1.2.0',
+          reason: definition.id,
+        );
+      }
+      // Offline HTTP must not invent a latest version from an error response.
+      curl.writeAsStringSync('#!/bin/sh\nexit 22\n');
+      final offline = await Process.run(
+        'bash',
+        [script.path],
+        environment: {'HOME': root.path, 'PATH': '${bin.path}:/usr/bin:/bin'},
+        includeParentEnvironment: false,
+      );
+      final offlineSnapshots = parseAgentMetadataProbeOutput(
+        offline.stdout as String,
+      );
+      expect(offlineSnapshots, hasLength(agentRuntimeDefinitions.length));
+      for (final snapshot in offlineSnapshots.values) {
+        expect(snapshot.latestVersionOutput, isNull);
+      }
+    },
+  );
+
+  test(
+    'reads ACP package versions without starting servers and handles a locked Cursor keychain',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'monkeyssh-adapter-version-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final bin = Directory('${root.path}/bin')..createSync();
+      final node = await Process.run('which', ['node']);
+      expect(
+        node.exitCode,
+        0,
+        reason: 'Node is required to validate npm launcher metadata',
+      );
+      Link('${bin.path}/node').createSync((node.stdout as String).trim());
+      final definitions = [
+        ...agentStandaloneAcpRuntimeDefinitions,
+        agentCliRuntimeDefinitions.singleWhere((d) => d.id == 'cli:cursor'),
+      ];
+      final sentinel = File('${root.path}/adapter-started');
+      for (final definition in agentStandaloneAcpRuntimeDefinitions) {
+        final package = Directory(
+          '${root.path}/packages/${definition.packageName}',
+        )..createSync(recursive: true);
+        File('${package.path}/package.json').writeAsStringSync(
+          jsonEncode({'name': definition.packageName, 'version': '1.2.3'}),
+        );
+        final dist = Directory('${package.path}/dist')..createSync();
+        final launcher = File('${dist.path}/index.js')
+          ..writeAsStringSync('#!/bin/sh\ntouch "${sentinel.path}"\n');
+        await Process.run('chmod', ['+x', launcher.path]);
+        Link(
+          '${bin.path}/${definition.executableNames.first}',
+        ).createSync(launcher.path);
+      }
+      final cursorDir = Directory(
+        '${root.path}/.local/share/cursor-agent/versions/2026.09.02-c22c1a3',
+      )..createSync(recursive: true);
+      final cursor = File('${cursorDir.path}/cursor-agent')
+        ..writeAsStringSync(
+          '#!/bin/sh\necho "login keychain is locked" >&2\nexit 1\n',
+        );
+      await Process.run('chmod', ['+x', cursor.path]);
+      Link('${bin.path}/cursor-agent').createSync(cursor.path);
+      final probe = File('${root.path}/probe.sh')
+        ..writeAsStringSync(
+          buildAgentBatchProbeCommand(definitions, windows: false),
+        );
+      for (final shell in [
+        'bash',
+        if (File('/bin/zsh').existsSync()) '/bin/zsh',
+      ]) {
+        final result = await Process.run(
+          shell,
+          [probe.path],
+          environment: {'HOME': root.path, 'PATH': '${bin.path}:/usr/bin:/bin'},
+          includeParentEnvironment: false,
+        );
+        expect(result.exitCode, 0, reason: '${result.stderr}');
+        final snapshots = parseAgentBatchProbeOutput(result.stdout as String);
+        for (final definition in agentStandaloneAcpRuntimeDefinitions) {
+          expect(
+            snapshots[definition.id]?.versionOutput,
+            '1.2.3',
+            reason: '$shell: ${definition.id}',
+          );
+        }
+        expect(snapshots['cli:cursor']?.versionOutput, '2026.09.02-c22c1a3');
+        expect(sentinel.existsSync(), isFalse);
+      }
+    },
+  );
 
   group('buildAgentInstallCommand', () {
     test('builds npm install and update commands for POSIX and Windows', () {
@@ -437,7 +757,7 @@ void main() {
         invocation,
       ) async {
         final command = invocation.positionalArguments.first as String;
-        if (command.contains('command -v')) {
+        if (command.contains('__monkeyssh_agent_path__')) {
           return _execOutput(
             '__monkeyssh_agent_path__=/usr/local/bin/claude\n',
           );
@@ -612,42 +932,38 @@ void main() {
       verifyNever(() => client.execute(any(), pty: any(named: 'pty')));
     });
 
-    test('automatic update checks include CLIs only', () async {
-      final client = _MockSshClient();
-      final discovery = _MockDiscovery();
-      final session = _remoteSession(client);
-      when(() => client.remoteVersion).thenReturn('SSH-2.0-OpenSSH_9.9');
-      var executeCount = 0;
-      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
-        _,
-      ) async {
-        executeCount += 1;
-        final output = StringBuffer();
-        for (final definition in agentCliRuntimeDefinitions) {
-          output
-            ..writeln('__monkeyssh_agent_runtime__=${definition.id}')
-            ..writeln('__monkeyssh_agent_runtime_end__');
-        }
-        return _execOutput(output.toString());
-      });
+    test(
+      'automatic update checks include CLIs and standalone adapters',
+      () async {
+        final client = _MockSshClient();
+        final discovery = _MockDiscovery();
+        final session = _remoteSession(client);
+        when(() => client.remoteVersion).thenReturn('SSH-2.0-OpenSSH_9.9');
+        var executeCount = 0;
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+          _,
+        ) async {
+          executeCount += 1;
+          final output = StringBuffer();
+          for (final definition in agentCliRuntimeDefinitions) {
+            output
+              ..writeln('__monkeyssh_agent_runtime__=${definition.id}')
+              ..writeln('__monkeyssh_agent_runtime_end__');
+          }
+          return _execOutput(output.toString());
+        });
 
-      final runtimes = await _unlockedManagementService(
-        discovery,
-      ).checkForUpdates(session);
+        final runtimes = await _unlockedManagementService(
+          discovery,
+        ).checkForUpdates(session);
 
-      expect(runtimes, hasLength(agentCliRuntimeDefinitions.length));
-      expect(
-        runtimes,
-        everyElement(
-          isA<AgentRuntimeInfo>().having(
-            (runtime) => runtime.definition.kind,
-            'kind',
-            AgentRuntimeKind.cli,
-          ),
-        ),
-      );
-      expect(executeCount, 1);
-    });
+        expect(
+          runtimes.map((runtime) => runtime.definition.id),
+          agentRuntimeDefinitions.map((definition) => definition.id),
+        );
+        expect(executeCount, 1);
+      },
+    );
 
     test('refresh probes all runtimes through one SSH channel', () async {
       final client = _MockSshClient();
@@ -911,6 +1227,7 @@ void main() {
         expect(runtimes.first.installedVersion, '2.0.0');
         expect(runtimes.first.status, AgentRuntimeStatus.installed);
       },
+      timeout: const Timeout(Duration(seconds: 45)),
     );
 
     test('registry failure does not hide the installed version', () async {
@@ -1020,6 +1337,16 @@ void main() {
       expect(snapshots['cli:claude']?.detectionSource, 'npm global');
       expect(snapshots['cli:claude']?.installedVersionOutput, '2.0.0');
       expect(snapshots['cli:claude']?.latestVersionOutput, '2.1.3');
+    });
+
+    test('retains metadata from an interrupted final block', () {
+      final snapshots = parseAgentMetadataProbeOutput(
+        '__monkeyssh_agent_runtime__=acp:codex\n'
+        '__monkeyssh_agent_source__=npm global\n'
+        '__monkeyssh_agent_installed__=1.6.2\n',
+      );
+      expect(snapshots['acp:codex']?.installedVersionOutput, '1.6.2');
+      expect(snapshots['acp:codex']?.latestVersionOutput, isNull);
     });
 
     test('generated POSIX scripts pass bash syntax validation', () async {
@@ -1143,14 +1470,19 @@ void main() {
       }
     });
 
-    test('does not query latest versions for ACP adapters', () {
-      final command = buildAgentMetadataProbeCommand([
-        agentAcpRuntimeDefinitions[1],
-      ], windows: false);
-
-      expect(command, isNot(contains('npm view')));
-      expect(command, contains('npm list -g'));
-    });
+    for (final windows in [false, true]) {
+      test('queries every standalone ACP package, windows=$windows', () {
+        for (final definition in agentStandaloneAcpRuntimeDefinitions) {
+          final command = buildAgentMetadataProbeCommand([
+            definition,
+          ], windows: windows);
+          final script = windows ? _decodePowerShellCommand(command) : command;
+          expect(script, contains('npm view'));
+          expect(script, contains(definition.packageName));
+          expect(script, contains('npm list -g'));
+        }
+      });
+    }
 
     test('builds one POSIX script containing every requested runtime', () {
       final command = buildAgentBatchProbeCommand(
@@ -1181,6 +1513,113 @@ void main() {
       expect(command.replaceAll(r"'\''", "'"), contains("'--version'"));
     });
 
+    test(
+      'Windows probe timeouts terminate descendants and handle cleanup failures',
+      () async {
+        final script = _decodePowerShellCommand(
+          buildAgentBatchProbeCommand([], windows: true),
+        );
+        final root = await Directory.systemTemp.createTemp(
+          'monkeyssh-probe-cleanup-',
+        );
+        addTearDown(() => root.delete(recursive: true));
+        final fixture = File('${root.path}/cleanup.ps1')
+          ..writeAsStringSync(
+            script +
+                r'''
+$ErrorActionPreference = 'Stop';
+function New-Object([string]$TypeName) {
+  if ($TypeName -ne 'System.Diagnostics.Process') { throw "Unexpected type: $TypeName" };
+  $process = [pscustomobject]@{
+    Id = 12345;
+    HasExited = $false;
+    ExitCode = 0;
+    StartInfo = [pscustomobject]@{
+      FileName = ''; Arguments = ''; UseShellExecute = $true;
+      CreateNoWindow = $false; RedirectStandardOutput = $false;
+      RedirectStandardError = $false;
+    };
+    StandardOutput = [pscustomobject]@{};
+    StandardError = [pscustomobject]@{};
+  };
+  $process.StandardOutput | Add-Member ScriptMethod ReadToEndAsync { [pscustomobject]@{Result = '1.2.3'} };
+  $process.StandardError | Add-Member ScriptMethod ReadToEndAsync { [pscustomobject]@{Result = ''} };
+  $process | Add-Member ScriptMethod Start { return $true };
+  $process | Add-Member ScriptMethod WaitForExit {
+    param($timeout)
+    if ($timeout -ne 5000) { throw 'Unexpected timeout' };
+    return $script:scenario -eq 'completed';
+  };
+  $process | Add-Member ScriptMethod Kill {
+    $script:events.Add('kill');
+    if ($script:scenario -eq 'exit-race') { throw 'Process already exited' };
+    $this.HasExited = $true;
+  };
+  $process | Add-Member ScriptMethod Dispose { $script:events.Add('dispose') };
+  $script:probeProcess = $process;
+  return $process;
+}
+function taskkill.exe {
+  if (($args -join ' ') -ne '/PID 12345 /T /F') { throw 'Expected forceful tree cleanup for the probe PID' };
+  $script:events.Add('tree');
+  if ($script:scenario -eq 'unavailable') { throw 'taskkill unavailable' };
+  if ($script:scenario -eq 'tree-success') { $script:probeProcess.HasExited = $true };
+  $global:LASTEXITCODE = if ($script:probeProcess.HasExited) { 0 } else { 1 };
+  'taskkill output must not become a version';
+}
+foreach ($scenario in @('tree-success', 'tree-failure', 'unavailable', 'exit-race', 'completed')) {
+  $script:scenario = $scenario;
+  $script:events = [System.Collections.Generic.List[string]]::new();
+  $output = Invoke-AgentProbe 'unused';
+  $expected = if ($scenario -eq 'completed') { 'dispose' }
+    elseif ($scenario -eq 'tree-success') { 'tree,dispose' }
+    else { 'tree,kill,dispose' };
+  if (($script:events -join ',') -ne $expected) {
+    throw "${scenario}: expected $expected, got $script:events";
+  };
+  if ($scenario -eq 'completed') {
+    if ($output -ne '1.2.3') { throw 'Successful version output was lost' };
+  } elseif ($null -ne $output) { throw 'A timed-out probe returned output' };
+  Write-Output "${scenario}: passed";
+}
+''',
+          );
+        final ProcessResult result;
+        try {
+          result = await Process.run(
+            Platform.isWindows ? 'powershell.exe' : 'pwsh',
+            [
+              '-NoProfile',
+              '-NonInteractive',
+              '-ExecutionPolicy',
+              'Bypass',
+              '-File',
+              fixture.path,
+            ],
+          ).timeout(const Duration(seconds: 20));
+        } on ProcessException {
+          markTestSkipped(
+            'PowerShell is required to execute the Windows probe cleanup regression',
+          );
+          return;
+        }
+        expect(
+          result.exitCode,
+          0,
+          reason: '${result.stdout}\n${result.stderr}',
+        );
+        for (final scenario in [
+          'tree-success',
+          'tree-failure',
+          'unavailable',
+          'exit-race',
+          'completed',
+        ]) {
+          expect(result.stdout, contains('$scenario: passed'));
+        }
+      },
+    );
+
     test('uses Get-Command and one-line markers on Windows', () {
       final command = buildAgentProbeCommand(
         agentCliRuntimeDefinitions.first,
@@ -1193,7 +1632,9 @@ void main() {
         script,
         contains(r"'__monkeyssh_agent_path__=' + $__flCommand.Source"),
       );
-      expect(script, isNot(contains(r'$__flVersion=')));
+      expect(script, contains('Invoke-AgentProbe'));
+      expect(script, contains('__monkeyssh_agent_version__='));
+      expect(script, contains('WaitForExit(5000)'));
     });
   });
 }
