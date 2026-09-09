@@ -14135,9 +14135,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         connectionState == SshConnectionState.connected &&
         activeSession != null &&
         (_agentUpdateRuntimes[activeSession]?.any(
-              (runtime) =>
-                  runtime.definition.kind == AgentRuntimeKind.cli &&
-                  runtime.hasUpdate,
+              (runtime) => runtime.hasUpdate,
             ) ??
             false);
     final showsNativeAgent =

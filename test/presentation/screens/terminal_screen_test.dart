@@ -2305,9 +2305,13 @@ void main() {
       expect(secondOffset, lessThan(firstOffset));
     });
 
-    for (final updateAgents in [false, true]) {
+    for (final (updateAgents, adapters) in [
+      (false, false),
+      (true, false),
+      (true, true),
+    ]) {
       testWidgets(
-        'agent update dots route to manager and survive resume, updated=$updateAgents',
+        'agent update dots route to manager and survive resume, updated=$updateAgents, adapters=$adapters',
         (tester) async {
           tester.view.physicalSize = const Size(390, 844);
           tester.view.devicePixelRatio = 1;
@@ -2328,7 +2332,11 @@ void main() {
             () => tmuxService.prefetchInstalledAgentTools(any()),
           ).thenAnswer((_) async {});
           var runtimes = [
-            for (final definition in agentCliRuntimeDefinitions.take(2))
+            for (final definition
+                in (adapters
+                        ? agentStandaloneAcpRuntimeDefinitions
+                        : agentCliRuntimeDefinitions)
+                    .take(2))
               AgentRuntimeInfo(
                 definition: definition,
                 status: AgentRuntimeStatus.updateAvailable,

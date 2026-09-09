@@ -30,6 +30,98 @@ __fl_agent_version() {
   fi
 }
 ''';
+// Isolate native commands so a hung executable cannot block the remaining rows.
+const _windowsVersionRunner = r'''
+function ConvertTo-AgentLiteral([string]$Value) {
+  return "'" + [regex]::Replace($Value, '[\u0027\u2018\u2019\u201a\u201b]', '$0$0') + "'";
+}
+function Invoke-AgentProbe([string]$Script) {
+  $process = New-Object System.Diagnostics.Process;
+  $process.StartInfo.FileName = 'powershell.exe';
+  $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Script));
+  $process.StartInfo.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ' + $encoded;
+  $process.StartInfo.UseShellExecute = $false;
+  $process.StartInfo.CreateNoWindow = $true;
+  $process.StartInfo.RedirectStandardOutput = $true;
+  $process.StartInfo.RedirectStandardError = $true;
+  try {
+    if (!$process.Start()) { return };
+    $stdout = $process.StandardOutput.ReadToEndAsync();
+    $stderr = $process.StandardError.ReadToEndAsync();
+    if (!$process.WaitForExit(5000)) { $process.Kill(); return };
+    if ($process.ExitCode -eq 0) { $stdout.Result };
+  } finally { $process.Dispose() };
+}
+''';
+
+// ACP executables may start a protocol server even with --version. Read the
+// package behind their launcher instead, including Bun and custom npm prefixes.
+const _agentPackageVersionScript = '''
+const fs = require('fs');
+const path = require('path');
+let dir = path.dirname(fs.realpathSync(process.argv[1]));
+const name = process.argv[2];
+while (true) {
+  for (const root of [dir, path.join(dir, 'node_modules', name)]) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+      if (pkg.name === name && typeof pkg.version === 'string') {
+        console.log(pkg.version);
+        process.exit(0);
+      }
+    } catch {}
+  }
+  if (path.dirname(dir) === dir) break;
+  dir = path.dirname(dir);
+}
+''';
+
+// Read official release metadata as data. Never execute downloaded installers.
+({String url, String pattern})? _officialVersionLookup(
+  AgentRuntimeDefinition definition,
+) => switch (definition.tool) {
+  AgentLaunchTool.cursorAgent => (
+    url: 'https://cursor.com/install',
+    pattern: r'https://downloads\.cursor\.com/lab/[0-9][0-9A-Za-z.+-]*',
+  ),
+  AgentLaunchTool.antigravity when definition.kind == AgentRuntimeKind.cli => (
+    url:
+        'https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/',
+    pattern: '"version"[[:space:]]*:[[:space:]]*"[^"]+"',
+  ),
+  AgentLaunchTool.hermes => (
+    url:
+        'https://raw.githubusercontent.com/NousResearch/hermes-agent/main/hermes_cli/__init__.py',
+    pattern: '__version__[[:space:]]*=[[:space:]]*"[^"]+"',
+  ),
+  AgentLaunchTool.grokBuild => (
+    url: 'https://x.ai/cli/stable',
+    pattern: r'^[0-9]+\.[0-9]+\.[0-9]+[-+0-9A-Za-z.]*',
+  ),
+  _ => null,
+};
+
+({String url, String pattern})? _fallbackVersionLookup(
+  AgentRuntimeDefinition definition,
+) =>
+    _officialVersionLookup(definition) ??
+    (definition.registry == AgentPackageRegistry.npm &&
+            definition.packageName != null
+        ? (
+            url:
+                'https://registry.npmjs.org/${Uri.encodeComponent(definition.packageName!)}/latest',
+            pattern: '"version"[[:space:]]*:[[:space:]]*"[^"]+"',
+          )
+        : null);
+
+// Cursor's version command can fail while the login keychain is locked. Its
+// official installer puts the release version in the launcher's symlink target.
+const _posixCursorVersionFallback = r'''
+if [ -z "$version_output" ]; then
+  version_output=$(readlink "$resolved" 2>/dev/null | sed -nE 's@.*/cursor-agent/versions/([^/]+)/.*@\1@p')
+fi;
+''';
+
 const _profilePrefix =
     r'export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$HOME/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$HOME/homebrew/bin:$HOME/homebrew/sbin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; '
     r'__fl_profile_path=$( set +e; . ~/.profile >/dev/null 2>&1 || true; . ~/.bash_profile >/dev/null 2>&1 || true; . ~/.zprofile >/dev/null 2>&1 || true; if [ "${SHELL##*/}" = zsh ]; then . ~/.zshrc >/dev/null 2>&1 || true; elif [ "${SHELL##*/}" = bash ]; then . ~/.bashrc >/dev/null 2>&1 || true; fi; printf "%s" "$PATH" ) || true; '
@@ -257,8 +349,8 @@ final agentRuntimeDefinitions = List<AgentRuntimeDefinition>.unmodifiable([
 /// Extracts a normalized version from common CLI output.
 String? parseAgentVersion(String output) {
   final match = RegExp(
-    r'(?<![A-Za-z0-9])v?(\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z.-]+)?)',
-  ).firstMatch(output);
+    r'(?<![A-Za-z0-9.])[vV]?(\d+(?:\.\d+){1,3}(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)',
+  ).firstMatch(output.replaceAll(RegExp(r'\x1b\[[0-?]*[ -/]*[@-~]'), ''));
   return match?.group(1);
 }
 
@@ -289,7 +381,20 @@ int compareAgentVersions(String left, String right) {
   if (a.pre == b.pre) return 0;
   if (a.pre == null) return 1;
   if (b.pre == null) return -1;
-  return a.pre!.compareTo(b.pre!);
+  final aParts = a.pre!.split('.');
+  final bParts = b.pre!.split('.');
+  for (var index = 0; index < aParts.length && index < bParts.length; index++) {
+    final av = aParts[index];
+    final bv = bParts[index];
+    if (av == bv) continue;
+    final an = int.tryParse(av);
+    final bn = int.tryParse(bv);
+    if (an != null && bn != null) return an.compareTo(bn);
+    if (an != null) return -1;
+    if (bn != null) return 1;
+    return av.compareTo(bv);
+  }
+  return aParts.length.compareTo(bParts.length);
 }
 
 // Repair the package behind the detected launcher, not a different npm prefix.
@@ -452,16 +557,13 @@ class AgentManagementService {
     if (existing != null) return existing;
 
     late final Future<List<AgentRuntimeInfo>> check;
-    check =
-        _inspectAll(
-          session,
-          priority: SshExecPriority.low,
-          includeAdapters: false,
-        ).whenComplete(() {
-          if (identical(_inFlightUpdateChecks[session.connectionId], check)) {
-            _inFlightUpdateChecks.remove(session.connectionId);
-          }
-        });
+    check = _inspectAll(session, priority: SshExecPriority.low).whenComplete(
+      () {
+        if (identical(_inFlightUpdateChecks[session.connectionId], check)) {
+          _inFlightUpdateChecks.remove(session.connectionId);
+        }
+      },
+    );
     _inFlightUpdateChecks[session.connectionId] = check;
     return check;
   }
@@ -499,7 +601,9 @@ class AgentManagementService {
           windows: session.remoteIsWindows,
         ),
         priority: priority,
-        timeout: const Duration(seconds: 8),
+        timeout: Duration(
+          seconds: session.remoteIsWindows ? 8 + definitions.length * 6 : 8,
+        ),
       );
     } on Object catch (error) {
       final failed = [
@@ -530,7 +634,7 @@ class AgentManagementService {
             windows: session.remoteIsWindows,
           ),
           priority: priority,
-          timeout: const Duration(seconds: 10),
+          timeout: Duration(seconds: 20 + installedDefinitions.length * 10),
           keepPartialOutputOnTimeout: true,
         );
         metadata = parseAgentMetadataProbeOutput(metadataOutput.output);
@@ -621,7 +725,7 @@ class AgentManagementService {
               definition,
             ], windows: session.remoteIsWindows),
             priority: priority,
-            timeout: const Duration(seconds: 10),
+            timeout: const Duration(seconds: 30),
             keepPartialOutputOnTimeout: true,
           );
           metadata = parseAgentMetadataProbeOutput(
@@ -684,9 +788,7 @@ class AgentManagementService {
         ? 'npx on demand'
         : _detectionSourceFromPath(path);
     installed ??= parseAgentVersion(metadata?.installedVersionOutput ?? '');
-    var latest = definition.kind == AgentRuntimeKind.cli
-        ? parseAgentVersion(metadata?.latestVersionOutput ?? '')
-        : null;
+    var latest = parseAgentVersion(metadata?.latestVersionOutput ?? '');
     if (!metadataWasBatched) {
       try {
         source = await _detectInstallationSource(
@@ -1006,9 +1108,21 @@ Map<String, AgentMetadataSnapshot> parseAgentMetadataProbeOutput(
   String? source;
   String? installed;
   String? latest;
+  void save() {
+    if (id == null) return;
+    snapshots[id] = AgentMetadataSnapshot(
+      detectionSource: source == null || source.isEmpty ? null : source,
+      installedVersionOutput: installed == null || installed.isEmpty
+          ? null
+          : installed,
+      latestVersionOutput: latest == null || latest.isEmpty ? null : latest,
+    );
+  }
+
   for (final rawLine in const LineSplitter().convert(output)) {
     final line = rawLine.trim();
     if (line.startsWith(_runtimeMarker)) {
+      save();
       id = line.substring(_runtimeMarker.length);
       source = null;
       installed = null;
@@ -1020,16 +1134,11 @@ Map<String, AgentMetadataSnapshot> parseAgentMetadataProbeOutput(
     } else if (id != null && line.startsWith(_latestMarker)) {
       latest = line.substring(_latestMarker.length).trim();
     } else if (id != null && line == _runtimeEndMarker) {
-      snapshots[id] = AgentMetadataSnapshot(
-        detectionSource: source == null || source.isEmpty ? null : source,
-        installedVersionOutput: installed == null || installed.isEmpty
-            ? null
-            : installed,
-        latestVersionOutput: latest == null || latest.isEmpty ? null : latest,
-      );
+      save();
       id = null;
     }
   }
+  save();
   return snapshots;
 }
 
@@ -1078,7 +1187,9 @@ String buildAgentBatchProbeCommand(
   required bool windows,
 }) {
   if (windows) {
-    final body = StringBuffer(powerShellProfilePathPreamble);
+    final body = StringBuffer(
+      '$powerShellProfilePathPreamble$_windowsVersionRunner',
+    );
     for (final definition in definitions) {
       body
         ..write(
@@ -1088,7 +1199,9 @@ String buildAgentBatchProbeCommand(
         ..write(_buildWindowsProbeBody(definition))
         ..write(
           r'[void]$__flOut.AppendLine('
-          '${powerShellSingleQuote(_runtimeEndMarker)});',
+          '${powerShellSingleQuote(_runtimeEndMarker)});'
+          '$powerShellUtf8OutputEpilogue'
+          r'[void]$__flOut.Clear();',
         );
     }
     return buildWindowsPowerShellCommand(
@@ -1127,13 +1240,14 @@ String buildAgentMetadataProbeCommand(
   required bool windows,
 }) {
   if (windows) {
-    final body = StringBuffer(powerShellProfilePathPreamble)
-      ..write(
-        r'$__flNpmGlobal=((& npm list -g --depth=0 2>$null | ForEach-Object {$_.ToString()}) -join "`n");',
-      )
-      ..write(
-        r'$__flPipxGlobal=((& pipx list --short 2>$null | ForEach-Object {$_.ToString()}) -join "`n");',
-      );
+    final body =
+        StringBuffer('$powerShellProfilePathPreamble$_windowsVersionRunner')
+          ..write(
+            r"$__flNpmGlobal = Invoke-AgentProbe '& npm list -g --depth=0 2>$null';",
+          )
+          ..write(
+            r"$__flPipxGlobal = Invoke-AgentProbe '& pipx list --short 2>$null';",
+          );
     for (final definition in definitions) {
       final package = definition.packageName;
       body
@@ -1151,9 +1265,9 @@ String buildAgentMetadataProbeCommand(
           '[void]\$__flOut.AppendLine(${powerShellSingleQuote('$_sourceMarker npm global')});'
           r'$__flInstalled=$__flLine.Substring($__flLine.IndexOf($__flNeedle)+$__flNeedle.Length).Split(" ")[0]};',
         );
-        if (definition.kind == AgentRuntimeKind.cli) {
+        if (_officialVersionLookup(definition) == null) {
           body.write(
-            '\$__flLatest=(& npm view ${powerShellSingleQuote(package)} version --fetch-retries=0 --fetch-timeout=2500 2>\$null | Select-Object -First 1);',
+            '\$__flLatest=Invoke-AgentProbe ${powerShellSingleQuote('& npm view ${powerShellSingleQuote(package)} version --fetch-retries=0 --fetch-timeout=2500 2>\$null; exit \$LASTEXITCODE')};',
           );
         }
       } else if (package != null &&
@@ -1166,11 +1280,30 @@ String buildAgentMetadataProbeCommand(
           '[void]\$__flOut.AppendLine(${powerShellSingleQuote('$_sourceMarker pipx')});'
           r'$__flInstalled=($__flLine.Trim() -split "\s+")[1]};',
         );
-        if (definition.kind == AgentRuntimeKind.cli) {
+        if (_officialVersionLookup(definition) == null) {
           body.write(
-            '\$__flLatest=(& py -m pip index versions ${powerShellSingleQuote(package)} 2>\$null | Select-Object -First 1);',
+            '\$__flLatest=Invoke-AgentProbe ${powerShellSingleQuote('& py -m pip index versions ${powerShellSingleQuote(package)} --retries 0 --timeout 3 2>\$null; exit \$LASTEXITCODE')};',
           );
         }
+      }
+      final official = _fallbackVersionLookup(definition);
+      if (official != null) {
+        final pattern = official.pattern.replaceAll('[[:space:]]', r'\s');
+        var uri = powerShellSingleQuote(official.url);
+        if (definition.tool == AgentLaunchTool.antigravity &&
+            definition.kind == AgentRuntimeKind.cli) {
+          body.write(
+            r'$__flArch = $env:PROCESSOR_ARCHITECTURE.ToLower();'
+            r'if($env:PROCESSOR_ARCHITEW6432){$__flArch = $env:PROCESSOR_ARCHITEW6432.ToLower()};',
+          );
+          uri = "($uri + 'windows_' + \$__flArch + '.json')";
+        }
+        body.write(
+          'if([string]::IsNullOrWhiteSpace(\$__flLatest)){try{'
+          '\$__flRelease=(Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 -Uri $uri -ErrorAction Stop).Content;'
+          'if(\$__flRelease -match ${powerShellSingleQuote(pattern)}){\$__flLatest=\$Matches[0]}'
+          '}catch{}};',
+        );
       }
       body
         ..write(
@@ -1183,7 +1316,9 @@ String buildAgentMetadataProbeCommand(
         )
         ..write(
           r'[void]$__flOut.AppendLine('
-          '${powerShellSingleQuote(_runtimeEndMarker)});',
+          '${powerShellSingleQuote(_runtimeEndMarker)});'
+          '$powerShellUtf8OutputEpilogue'
+          r'[void]$__flOut.Clear();',
         );
     }
     return buildWindowsPowerShellCommand(
@@ -1191,10 +1326,16 @@ String buildAgentMetadataProbeCommand(
     );
   }
 
-  final command = StringBuffer(_profilePrefix)
-    ..write(r'__fl_npm_global=$(npm list -g --depth=0 2>/dev/null || true); ')
-    ..write(r'__fl_pipx_global=$(pipx list --short 2>/dev/null || true); ')
-    ..write(r'__fl_brew_global=$(brew list --versions 2>/dev/null || true); ');
+  final command = StringBuffer('$_profilePrefix\n$_posixVersionRunner')
+    ..write(
+      r'__fl_npm_global=$(__fl_agent_version npm list -g --depth=0 2>/dev/null || true); ',
+    )
+    ..write(
+      r'__fl_pipx_global=$(__fl_agent_version pipx list --short 2>/dev/null || true); ',
+    )
+    ..write(
+      r'__fl_brew_global=$(__fl_agent_version brew list --versions 2>/dev/null || true); ',
+    );
   for (final definition in definitions) {
     final package = definition.packageName;
     final formula = definition.homebrewFormula;
@@ -1224,9 +1365,9 @@ String buildAgentMetadataProbeCommand(
         '__fl_installed=\u0024{__fl_installed%% *}; '
         'fi; fi; ',
       );
-      if (definition.kind == AgentRuntimeKind.cli) {
+      if (_officialVersionLookup(definition) == null) {
         command.write(
-          '__fl_latest=\$(npm view ${_shellQuote(package)} version '
+          '__fl_latest=\$(__fl_agent_version npm view ${_shellQuote(package)} version '
           '--fetch-retries=0 --fetch-timeout=2500 2>/dev/null | head -n 1); ',
         );
       }
@@ -1241,11 +1382,30 @@ String buildAgentMetadataProbeCommand(
         '__fl_installed=\$(printf ${_shellQuote(r'%s\n')} "\$__fl_line" | awk ${_shellQuote('{print \u00242}')}); '
         'fi; fi; ',
       );
-      if (definition.kind == AgentRuntimeKind.cli) {
+      if (_officialVersionLookup(definition) == null) {
         command.write(
-          '__fl_latest=\$(python3 -m pip index versions ${_shellQuote(package)} 2>/dev/null | head -n 1); ',
+          '__fl_latest=\$(__fl_agent_version python3 -m pip index versions ${_shellQuote(package)} 2>/dev/null | head -n 1); ',
         );
       }
+    }
+    final official = _fallbackVersionLookup(definition);
+    if (official != null) {
+      var uri = _shellQuote(official.url);
+      if (definition.tool == AgentLaunchTool.antigravity &&
+          definition.kind == AgentRuntimeKind.cli) {
+        command.write(
+          r'__fl_os=$(uname -s | tr "[:upper:]" "[:lower:]"); '
+          r'__fl_arch=$(uname -m); '
+          r'case "$__fl_arch" in x86_64) __fl_arch=amd64;; aarch64) __fl_arch=arm64;; esac; '
+          r'__fl_platform="$__fl_os"_"$__fl_arch"; '
+          r'if [ "$__fl_os" = linux ] && ldd --version 2>&1 | grep -qi musl; then __fl_platform="${__fl_platform}_musl"; fi; ',
+        );
+        uri = '$uri"\$__fl_platform.json"';
+      }
+      command.write(
+        'if [ -z "\$__fl_latest" ]; then __fl_latest=\$(curl -fsSL --max-time 5 $uri 2>/dev/null | '
+        'grep -Eo ${_shellQuote(official.pattern)} | head -n 1); fi; ',
+      );
     }
     command
       ..write(
@@ -1270,7 +1430,7 @@ String buildAgentProbeCommand(
   if (windows) {
     return buildWindowsPowerShellCommand(
       powerShellUtf8OutputScript(
-        '$powerShellProfilePathPreamble${_buildWindowsProbeBody(definition)}',
+        '$powerShellProfilePathPreamble$_windowsVersionRunner${_buildWindowsProbeBody(definition)}',
       ),
     );
   }
@@ -1288,6 +1448,17 @@ String _buildWindowsProbeBody(AgentRuntimeDefinition definition) {
     r'$__flCommand=Get-Command $__flName -ErrorAction SilentlyContinue | Select-Object -First 1;',
     r'if($null -eq $__flCommand){continue};',
     '[void]\$__flOut.AppendLine(${powerShellSingleQuote(_pathMarker)} + \$__flCommand.Source);',
+    if (definition.kind == AgentRuntimeKind.cli) ...[
+      r'''$__flScript = '& ' + (ConvertTo-AgentLiteral $__flCommand.Source) + ' ' ''',
+      '+ ${powerShellSingleQuote(definition.versionArguments.map(powerShellSingleQuote).join(' '))} + ${powerShellSingleQuote(r'; exit $LASTEXITCODE')};',
+      r'$__flVersion = Invoke-AgentProbe $__flScript;',
+      'if(\$__flVersion){[void]\$__flOut.AppendLine(${powerShellSingleQuote(_versionMarker)} + ((\$__flVersion -split "`r?`n" | Select-Object -First 4) -join " "))};',
+    ] else if (definition.packageName != null &&
+        definition.registry == AgentPackageRegistry.npm) ...[
+      '''\$__flScript = ${powerShellSingleQuote('& node -e ${powerShellSingleQuote(_agentPackageVersionScript)} ')} + (ConvertTo-AgentLiteral \$__flCommand.Source) + ${powerShellSingleQuote(' ${powerShellSingleQuote(definition.packageName!)}; exit \$LASTEXITCODE')};''',
+      r'$__flVersion = Invoke-AgentProbe $__flScript;',
+      'if(\$__flVersion){[void]\$__flOut.AppendLine(${powerShellSingleQuote(_versionMarker)} + \$__flVersion.Trim())};',
+    ],
     'break}',
   ].join();
 }
@@ -1307,8 +1478,13 @@ String _buildPosixProbeBody(AgentRuntimeDefinition definition) {
             'printf ${_shellQuote('$_repairMarker\n')}; '
             'fi; '
             'rm -f "\$__fl_version_file"; '
+            '${definition.tool == AgentLaunchTool.cursorAgent ? _posixCursorVersionFallback : ''}'
             'printf ${_shellQuote('$_versionMarker%s\\n')} "\$version_output"; '
             'fi; '
+      : definition.packageName != null &&
+            definition.registry == AgentPackageRegistry.npm
+      ? 'version_output=\$(__fl_agent_version node -e ${_shellQuote(_agentPackageVersionScript)} "\$resolved" ${_shellQuote(definition.packageName!)} 2>/dev/null); '
+            'printf ${_shellQuote('$_versionMarker%s\\n')} "\$version_output"; '
       : '';
   return 'for candidate in $candidates; do '
       r'resolved=$(command -v "$candidate" 2>/dev/null || true); '
