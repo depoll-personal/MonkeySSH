@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart' show mapEquals;
 import 'package:flutter/material.dart';
 import 'package:xterm/xterm.dart';
@@ -53,13 +51,6 @@ String buildTerminalThemeDefaultColorReports(TerminalThemeData theme) => [
   buildTerminalThemeOscResponse(theme: theme, code: '10', args: const ['?']),
   buildTerminalThemeOscResponse(theme: theme, code: '11', args: const ['?']),
 ].whereType<String>().join();
-
-/// Builds an unsolicited default background color report.
-///
-/// Theme-aware TUIs listen for OSC 11 responses when deciding whether their
-/// default theme should switch between light and dark.
-String buildTerminalThemeBackgroundColorReport(TerminalThemeData theme) =>
-    buildTerminalThemeOscResponse(theme: theme, code: '11', args: const ['?'])!;
 
 /// Builds an xterm-compatible response for terminal theme OSC color queries.
 ///
@@ -379,12 +370,6 @@ class TerminalThemeData {
         searchHitForeground: json['searchHitForeground'] != null
             ? Color(json['searchHitForeground'] as int)
             : null,
-      );
-
-  /// Creates a theme from a JSON string.
-  factory TerminalThemeData.fromJsonString(String jsonString) =>
-      TerminalThemeData.fromJson(
-        jsonDecode(jsonString) as Map<String, dynamic>,
       );
 
   /// Safely creates a theme from decoded JSON, or null when invalid.

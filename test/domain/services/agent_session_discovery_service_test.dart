@@ -956,71 +956,40 @@ cwd: /tmp/demo
       expect(metadata.summary, 'Updated session name');
     });
 
-    test('extracts working directory from nested folderUri', () {
-      final metadata = parseAntigravitySessionMetadata('''
+    for (final (name, uri, expectedPath) in [
+      (
+        'extracts working directory from nested folderUri',
+        'file:///Users/depoll/Code/flutty',
+        '/Users/depoll/Code/flutty',
+      ),
+      (
+        'decodes percent-encoded folderUri paths',
+        'file:///Users/depoll/My%20Code/flutty',
+        '/Users/depoll/My Code/flutty',
+      ),
+      (
+        'maps Windows drive-letter folderUri to a backslash path',
+        'file:///C:/Users/demo/My%20Repo',
+        r'C:\Users\demo\My Repo',
+      ),
+    ]) {
+      test(name, () {
+        final metadata = parseAntigravitySessionMetadata('''
 {
   "id": "e4adef4c-bdaf-4dcb-9e81-ae9107f2ecf3",
   "name": "Untitled",
   "projectResources": {
     "resources": [
-      {
-        "gitFolder": {
-          "folderUri": "file:///Users/depoll/Code/flutty",
-          "allowWrite": true
-        }
-      }
+      {"gitFolder": {"folderUri": "$uri", "allowWrite": true}}
     ]
   }
 }
 ''');
 
-      expect(metadata.parsedAny, isTrue);
-      expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
-    });
-
-    test('decodes percent-encoded folderUri paths', () {
-      final metadata = parseAntigravitySessionMetadata('''
-{
-  "id": "e4adef4c-bdaf-4dcb-9e81-ae9107f2ecf3",
-  "name": "Untitled",
-  "projectResources": {
-    "resources": [
-      {
-        "gitFolder": {
-          "folderUri": "file:///Users/depoll/My%20Code/flutty",
-          "allowWrite": true
-        }
-      }
-    ]
-  }
-}
-''');
-
-      expect(metadata.parsedAny, isTrue);
-      expect(metadata.workingDirectory, '/Users/depoll/My Code/flutty');
-    });
-
-    test('maps Windows drive-letter folderUri to a backslash path', () {
-      final metadata = parseAntigravitySessionMetadata('''
-{
-  "id": "e4adef4c-bdaf-4dcb-9e81-ae9107f2ecf3",
-  "name": "Untitled",
-  "projectResources": {
-    "resources": [
-      {
-        "gitFolder": {
-          "folderUri": "file:///C:/Users/demo/My%20Repo",
-          "allowWrite": true
-        }
-      }
-    ]
-  }
-}
-''');
-
-      expect(metadata.parsedAny, isTrue);
-      expect(metadata.workingDirectory, r'C:\Users\demo\My Repo');
-    });
+        expect(metadata.parsedAny, isTrue);
+        expect(metadata.workingDirectory, expectedPath);
+      });
+    }
 
     test('falls back to name when it is an absolute path', () {
       final metadata = parseAntigravitySessionMetadata('''
@@ -2932,6 +2901,79 @@ HEAD b
         await discovery.discoverSessionsStream(session).drain<void>();
 
         expect(commands.length, greaterThan(firstCommandCount));
+      },
+    );
+
+    test(
+      'invalidating one host preserves another host’s in-flight caches',
+      () async {
+        final clients = [_MockSshClient(), _MockSshClient()];
+        final probeStarted = [Completer<void>(), Completer<void>()];
+        final finishProbes = Completer<void>();
+        final commandCounts = [0, 0];
+        final worktreeCounts = [0, 0];
+        for (var index = 0; index < clients.length; index++) {
+          when(() => clients[index].execute(any())).thenAnswer((
+            invocation,
+          ) async {
+            commandCounts[index]++;
+            final command = invocation.positionalArguments.first as String;
+            if (command.contains('worktree list --porcelain')) {
+              worktreeCounts[index]++;
+              if (!probeStarted[index].isCompleted) {
+                probeStarted[index].complete();
+                await finishProbes.future;
+              }
+              return _buildExecSession(
+                stdout: 'root=/project\nworktree /project\n',
+              );
+            }
+            return _buildExecSession();
+          });
+        }
+        final sessions = [
+          _buildDiscoverySession(clients[0]),
+          SshSession(
+            connectionId: 2,
+            hostId: 2,
+            client: clients[1],
+            config: const SshConnectionConfig(
+              hostname: 'other.example.com',
+              port: 22,
+              username: 'demo',
+            ),
+          ),
+        ];
+        final discovery = AgentSessionDiscoveryService();
+        final loads = [
+          for (final session in sessions)
+            discovery.discoverSessions(
+              session,
+              workingDirectory: '/project',
+              toolName: 'OpenCode',
+            ),
+        ];
+        await Future.wait(probeStarted.map((started) => started.future));
+        discovery.invalidateSession(sessions[0]);
+        finishProbes.complete();
+        await Future.wait(loads);
+
+        final cachedCommandCount = commandCounts[1];
+        await discovery.discoverSessions(
+          sessions[1],
+          workingDirectory: '/project',
+          toolName: 'OpenCode',
+        );
+        expect(commandCounts[1], cachedCommandCount);
+        for (final session in sessions) {
+          await discovery.discoverSessions(
+            session,
+            workingDirectory: '/project',
+            toolName: 'OpenCode',
+            maxPerTool: 24,
+          );
+        }
+        expect(worktreeCounts, [2, 1]);
       },
     );
 

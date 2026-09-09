@@ -67,7 +67,7 @@ build_fingerprint() {
   {
     printf 'toolchain=%s\n' "$GO_TOOLCHAIN"
     find "$REMOTE_DIR" -type f \
-      \( -name '*.go' -o -name 'go.mod' -o -name 'go.sum' \
+      \( \( -name '*.go' ! -name '*_test.go' \) -o -name 'go.mod' -o -name 'go.sum' \
       -o -name 'monkeymux-version.sh' -o -path '*/conpty/*' \) \
       -print | LC_ALL=C sort | while IFS= read -r input; do
       printf '%s  %s\n' \

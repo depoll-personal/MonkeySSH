@@ -207,9 +207,9 @@ void main() {
     },
   );
 
-  test(
-    'interactive collector subscribes before writing and closes once',
-    () async {
+  for (final stdinCloseHangs in [false, true]) {
+    test('interactive collector subscribes before writing and closes once '
+        '(stdin close hangs: $stdinCloseHangs)', () async {
       final client = _MockSshClient();
       final session = _buildShellCompletionSession(
         client,
@@ -235,6 +235,7 @@ void main() {
       when(input.close).thenAnswer((_) async {
         await output.close();
         done.complete();
+        if (stdinCloseHangs) await Completer<void>().future;
       });
       final history = _MockSshExecSession();
       when(() => history.stdout).thenAnswer((_) => const Stream.empty());
@@ -256,15 +257,24 @@ void main() {
         wordIndex: 1,
         workingDirectory: '/repo',
       );
-      final suggestions = await ShellCompletionService().complete(
-        session,
-        invocation,
+      final service = ShellCompletionService(
+        interactiveZshTimeout: const Duration(milliseconds: 10),
       );
-      expect(suggestions.single.label, 'tool éclair');
+      final results = await Future.wait([
+        service.complete(session, invocation),
+        service.complete(session, invocation),
+      ]).timeout(const Duration(seconds: 1));
+      for (final suggestions in results) {
+        if (stdinCloseHangs) {
+          expect(suggestions, isEmpty);
+        } else {
+          expect(suggestions.single.label, 'tool éclair');
+        }
+      }
       verify(input.close).called(1);
       verify(exec.close).called(1);
-    },
-  );
+    });
+  }
 
   group('buildShellCompletionInvocation', () {
     test('uses a captured prompt prefix to isolate the command text', () {

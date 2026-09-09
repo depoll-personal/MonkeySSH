@@ -77,6 +77,7 @@ class AcpComposerError {
   /// private remote directory instead of embedding them inline.
   bool get isUploadRecoverable =>
       attachmentFailure == AcpAttachmentFailure.inlineSizeLimit ||
+      attachmentFailure == AcpAttachmentFailure.imageSizeLimit ||
       attachmentFailure == AcpAttachmentFailure.unsupportedCapability;
 
   @override

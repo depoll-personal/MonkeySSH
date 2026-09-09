@@ -61,6 +61,29 @@ void main() {
       );
     });
 
+    test('separates anonymous subagent and top-level chunks', () {
+      final timeline = _run(AcpTimelineBuilder(), [
+        const AcpContentChunkUpdate(
+          kind: 'agent_message_chunk',
+          content: AcpTextContent('nested'),
+          meta: {
+            'claudeCode': {'parentToolUseId': 'agent-launch'},
+          },
+        ),
+        _chunk('agent_message_chunk', 'top-level'),
+      ]);
+
+      final messages = timeline.entries.cast<AcpMessageEntry>();
+      expect(messages.map((entry) => entry.parentToolCallId), [
+        'agent-launch',
+        null,
+      ]);
+      expect(
+        messages.map((entry) => (entry.content.single as AcpTextContent).text),
+        ['nested', 'top-level'],
+      );
+    });
+
     test('resumes an earlier message id after an interruption', () {
       final timeline = _run(AcpTimelineBuilder(), [
         _chunk('agent_message_chunk', 'a', messageId: 'm1'),
@@ -92,6 +115,48 @@ void main() {
       expect(
         (timeline.entries.last as AcpMessageEntry).role,
         AcpMessageRole.agent,
+      );
+    });
+
+    test('does not suppress unrelated user updates after non-echoed turns', () {
+      final builder = AcpTimelineBuilder();
+      for (var turn = 0; turn < 600; turn++) {
+        builder
+          ..appendLocalUserPrompt([AcpTextContent('prompt-$turn')])
+          ..apply(_chunk('agent_message_chunk', 'reply-$turn'));
+      }
+      builder.apply(_chunk('user_message_chunk', 'another client'));
+
+      final timeline = builder.snapshot();
+      expect(timeline.overflowed, isTrue);
+      final last = timeline.entries.last as AcpMessageEntry;
+      expect(last.role, AcpMessageRole.user);
+      expect((last.content.single as AcpTextContent).text, 'another client');
+    });
+
+    test('suppresses queued prompt echoes only after dispatch', () {
+      final builder = AcpTimelineBuilder();
+      final first = builder.appendLocalUserPrompt(const [
+        AcpTextContent('one'),
+      ]);
+      final second = builder.appendLocalUserPrompt(const [
+        AcpTextContent('two'),
+      ], queued: true);
+      builder
+        ..apply(_chunk('user_message_chunk', 'one', messageId: 'remote-one'))
+        ..apply(_chunk('agent_message_chunk', 'reply'))
+        ..apply(_chunk('user_message_chunk', 'unrelated', messageId: 'other'))
+        ..markLocalUserPromptDispatched(second)
+        ..apply(_chunk('user_message_chunk', 'two', messageId: 'remote-two'));
+
+      expect(
+        builder
+            .snapshot()
+            .entries
+            .whereType<AcpMessageEntry>()
+            .where((entry) => entry.role == AcpMessageRole.user)
+            .map((entry) => entry.messageId),
+        [first, second, 'other'],
       );
     });
 

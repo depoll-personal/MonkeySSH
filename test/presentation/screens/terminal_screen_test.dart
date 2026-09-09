@@ -17,6 +17,7 @@ import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/app/routes.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
+import 'package:monkeyssh/data/repositories/snippet_repository.dart';
 import 'package:monkeyssh/domain/models/acp_provider.dart';
 import 'package:monkeyssh/domain/models/acp_recent_session.dart';
 import 'package:monkeyssh/domain/models/acp_session_keys.dart';
@@ -44,6 +45,7 @@ import 'package:monkeyssh/domain/services/local_notification_service.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/domain/services/monkeymux_installer_service.dart';
 import 'package:monkeyssh/domain/services/monkeymux_service.dart';
+import 'package:monkeyssh/domain/services/remote_file_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/shell_completion_service.dart';
 import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
@@ -111,6 +113,8 @@ class _MockAgentManagementService extends Mock
     implements AgentManagementService {}
 
 Future<void> _completeSftpClose(Invocation _) async {}
+
+class _MockRemoteFileService extends Mock implements RemoteFileService {}
 
 class _MockSftpClient extends Mock implements SftpClient {
   _MockSftpClient() {
@@ -518,7 +522,7 @@ class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
     this.connectCompleter,
   }) : reconnectSession = reconnectSession ?? session;
 
-  final SshSession session;
+  SshSession session;
   final SshSession reconnectSession;
   final Completer<void>? connectCompleter;
   final disconnectedConnectionIds = <int>[];
@@ -721,6 +725,7 @@ void main() {
     registerFallbackValue(const HostsCompanion());
     registerFallbackValue(<int>[]);
     registerFallbackValue(Uint8List(0));
+    registerFallbackValue(const Stream<List<int>>.empty());
     registerFallbackValue(_FakeSshSession());
     registerFallbackValue(<int, int>{});
     registerFallbackValue(MonetizationFeature.autoConnectAutomation);
@@ -1414,6 +1419,7 @@ void main() {
       AndroidDeviceDebugPlatform? deviceDebugPlatform,
       RemoteAdbCommandRunner? remoteAdbCommandRunner,
       AgentManagementService? agentManagementService,
+      RemoteFileService? remoteFileService,
       MonetizationState monetizationState = _proMonetizationState,
       bool sharedClipboard = false,
       bool sharedClipboardLocalRead = false,
@@ -1422,6 +1428,8 @@ void main() {
         ProviderScope(
           overrides: [
             databaseProvider.overrideWithValue(db),
+            if (remoteFileService != null)
+              remoteFileServiceProvider.overrideWithValue(remoteFileService),
             hostRepositoryProvider.overrideWithValue(hostRepository),
             monetizationServiceProvider.overrideWithValue(monetizationService),
             monetizationStateProvider.overrideWith(
@@ -1475,6 +1483,105 @@ void main() {
 
       await tester.pump();
       await tester.pump();
+    }
+
+    for (final phase in ['startup', 'poll']) {
+      for (final stop in ['background', 'disable', 'replace']) {
+        testWidgets(
+          'clipboard $phase ignores delayed completion after $stop',
+          (tester) async {
+            final pendingRead = Completer<SSHSession>();
+            var reads = 0;
+            final writes = <String>[];
+            final activeSessions = _TestActiveSessionsNotifier(session);
+            SSHSession readResult(String text) {
+              final channel = _MockShellChannel();
+              when(() => channel.stdout).thenAnswer(
+                (_) => Stream.value(
+                  Uint8List.fromList(
+                    utf8.encode(base64Encode(utf8.encode(text))),
+                  ),
+                ),
+              );
+              when(
+                () => channel.stderr,
+              ).thenAnswer((_) => const Stream<Uint8List>.empty());
+              when(() => channel.done).thenAnswer((_) async {});
+              return channel;
+            }
+
+            when(
+              () => sshClient.execute(any(that: contains('pbpaste'))),
+            ).thenAnswer((_) async {
+              reads++;
+              return reads == (phase == 'startup' ? 1 : 2)
+                  ? pendingRead.future
+                  : readResult('initial');
+            });
+            tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+              SystemChannels.platform,
+              (call) async {
+                if (call.method == 'Clipboard.setData') {
+                  writes.add((call.arguments as Map)['text'] as String);
+                }
+                return null;
+              },
+            );
+            addTearDown(
+              () => tester.binding.defaultBinaryMessenger
+                  .setMockMethodCallHandler(SystemChannels.platform, null),
+            );
+            await pumpScreen(
+              tester,
+              activeSessions: activeSessions,
+              sharedClipboard: true,
+            );
+            await tester.pumpAndSettle();
+            if (phase == 'poll') {
+              await tester.pump(const Duration(seconds: 1));
+              await tester.pump();
+            }
+            expect(reads, phase == 'startup' ? 1 : 2);
+            switch (stop) {
+              case 'background':
+                addTearDown(() {
+                  for (final state in [
+                    AppLifecycleState.hidden,
+                    AppLifecycleState.inactive,
+                    AppLifecycleState.resumed,
+                  ]) {
+                    tester.binding.handleAppLifecycleStateChanged(state);
+                  }
+                });
+                for (final state in [
+                  AppLifecycleState.inactive,
+                  AppLifecycleState.hidden,
+                  AppLifecycleState.paused,
+                ]) {
+                  tester.binding.handleAppLifecycleStateChanged(state);
+                }
+              case 'disable':
+                session.clipboardSharingEnabled = false;
+              case 'replace':
+                activeSessions.session = SshSession(
+                  connectionId: session.connectionId,
+                  hostId: host.id,
+                  client: sshClient,
+                  config: session.config,
+                )..getOrCreateTerminal();
+            }
+            await tester.pump();
+            pendingRead.complete(readResult('stale clipboard'));
+            await tester.pump();
+            await tester.pump(const Duration(seconds: 2));
+            expect(writes, isEmpty);
+            expect(reads, phase == 'startup' ? 1 : 2);
+            await tester.pumpWidget(const SizedBox.shrink());
+            await tester.pump();
+          },
+          variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+        );
+      }
     }
 
     for (final platform in [TargetPlatform.iOS, TargetPlatform.android]) {
@@ -1653,6 +1760,60 @@ void main() {
       await openTerminalOverflowMenu(tester);
       await tester.tap(terminalSubmenuButton(label));
       await tester.pumpAndSettle();
+    }
+
+    for (final cancel in [false, true]) {
+      testWidgets(
+        'snippet sheet substitutes once and tracks usage, cancel=$cancel',
+        (tester) async {
+          final repository = SnippetRepository(db);
+          final id = await repository.insert(
+            SnippetsCompanion.insert(
+              name: 'Literal variables',
+              command: 'echo {{a}} {{b}} {{a}}',
+            ),
+          );
+          await pumpScreen(tester);
+          await tester.pumpAndSettle();
+          shellWrites.clear();
+          await openTerminalOverflowMenu(tester);
+          await tester.tap(terminalMenuItemButton('Snippets'));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Literal variables'));
+          await tester.pumpAndSettle();
+          expect(find.byType(TextFormField), findsNWidgets(2));
+          await tester.enterText(find.byType(TextFormField).at(0), '{{b}}');
+          await tester.enterText(find.byType(TextFormField).at(1), 'world');
+          await tester.tap(
+            find.widgetWithText(
+              cancel ? TextButton : FilledButton,
+              cancel ? 'Cancel' : 'Insert',
+            ),
+          );
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 50));
+          expect(tester.takeException(), isNull);
+          await tester.pumpAndSettle();
+          expect(find.byType(TextFormField), findsNothing);
+          if (!cancel && find.text('Insert command').evaluate().isNotEmpty) {
+            await tester.tap(find.text('Insert command'));
+            await tester.pumpAndSettle();
+          }
+          final output = utf8.decode(
+            shellWrites.expand((chunk) => chunk).toList(),
+          );
+          expect(
+            output,
+            cancel
+                ? isNot(contains('echo'))
+                : contains('echo {{b}} world {{b}}'),
+          );
+          expect((await repository.getById(id))!.usageCount, cancel ? 0 : 1);
+          await tester.pumpWidget(const SizedBox.shrink());
+          await tester.pump();
+        },
+        variant: TargetPlatformVariant.only(TargetPlatform.android),
+      );
     }
 
     void enablePlainTuiSignals() {
@@ -3391,6 +3552,8 @@ void main() {
       SettingsService? settingsServiceOverride,
       AgentSessionDiscoveryService? agentSessionDiscoveryServiceOverride,
       bool simulateAttachedTuiSignals = false,
+      RemoteFileService? remoteFileServiceOverride,
+      Stream<TmuxWindowChangeEvent>? windowEvents,
     }) async {
       const tmuxSessionName = 'work';
       const windows = <TmuxWindow>[
@@ -3456,7 +3619,9 @@ void main() {
       ).thenAnswer((_) async {});
       when(
         () => tmuxService.watchWindowChanges(session, tmuxSessionName),
-      ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+      ).thenAnswer(
+        (_) => windowEvents ?? const Stream<TmuxWindowChangeEvent>.empty(),
+      );
       when(
         () => tmuxService.detectInstalledAgentTools(session),
       ).thenAnswer((_) async => const <AgentLaunchTool>{});
@@ -3476,6 +3641,10 @@ void main() {
         ProviderScope(
           overrides: [
             databaseProvider.overrideWithValue(db),
+            if (remoteFileServiceOverride != null)
+              remoteFileServiceProvider.overrideWithValue(
+                remoteFileServiceOverride,
+              ),
             hostRepositoryProvider.overrideWithValue(hostRepository),
             monetizationServiceProvider.overrideWithValue(monetizationService),
             monetizationStateProvider.overrideWith(
@@ -3508,6 +3677,214 @@ void main() {
       await tester.pump();
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
+    }
+
+    for (final interruption in ['none', 'typing', 'window', 'partial']) {
+      testWidgets(
+        'clipboard content URI upload handles $interruption',
+        (tester) async {
+          final files = _MockRemoteFileService();
+          final sftp = _MockSftpClient();
+          final uploaded = <List<int>>[];
+          final upload = Completer<void>();
+          final events = StreamController<TmuxWindowChangeEvent>.broadcast();
+          addTearDown(events.close);
+          when(() => sshClient.sftp()).thenAnswer((_) async => sftp);
+          when(
+            () => files.resolveInitialDirectory(sftp),
+          ).thenAnswer((_) async => '/home/test');
+          when(
+            () => files.ensureDirectoryExists(
+              sftp,
+              any(),
+              mode: any(named: 'mode'),
+            ),
+          ).thenAnswer((_) async {});
+          when(
+            () => files.uploadStream(
+              sftp: sftp,
+              remotePath: any(named: 'remotePath'),
+              stream: any(named: 'stream'),
+              applyPrivateMode: any(named: 'applyPrivateMode'),
+            ),
+          ).thenAnswer((invocation) async {
+            final stream =
+                invocation.namedArguments[#stream] as Stream<List<int>>;
+            uploaded.add(await stream.expand((chunk) => chunk).toList());
+            await upload.future;
+          });
+          const pasteboard = MethodChannel('pasteboard');
+          const content = MethodChannel(
+            'xyz.depollsoft.monkeyssh/clipboard_content',
+          );
+          tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            pasteboard,
+            (call) async => call.method == 'files'
+                ? [
+                    'content://clipboard/one',
+                    if (interruption == 'partial') 'content://clipboard/two',
+                  ]
+                : null,
+          );
+          tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            content,
+            (call) async => {
+              'name':
+                  (call.arguments as Map)['uri'] == 'content://clipboard/one'
+                  ? 'one.txt'
+                  : 'two.txt',
+              'bytes': Uint8List.fromList([1, 2, 3]),
+            },
+          );
+          addTearDown(() {
+            tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+              pasteboard,
+              null,
+            );
+            tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+              content,
+              null,
+            );
+          });
+          if (interruption == 'window') {
+            await pumpTmuxScreen(
+              tester,
+              _MockTmuxService(),
+              remoteFileServiceOverride: files,
+              windowEvents: events.stream,
+            );
+          } else {
+            await pumpScreen(tester, remoteFileService: files);
+          }
+          await tester.pumpAndSettle();
+          session.terminal!.write('\x1b[?2004h');
+          shellWrites.clear();
+          await tester.ensureVisible(find.byTooltip('Paste'));
+          await tester.tap(find.byTooltip('Paste'));
+          await tester.pumpAndSettle();
+          expect(find.text('Upload clipboard files?'), findsOneWidget);
+          await tester.tap(find.text('Upload and paste'));
+          await tester.pumpAndSettle();
+          expect(uploaded, [
+            [1, 2, 3],
+          ]);
+          final toolbar = tester.widget<KeyboardToolbar>(
+            find.byType(KeyboardToolbar),
+          );
+          if (interruption == 'typing') {
+            toolbar.onKeyPressed!();
+            session.terminal!.textInput('typed');
+          } else if (interruption == 'window') {
+            events.add(
+              const TmuxWindowListEvent([
+                TmuxWindow(index: 0, name: 'shell', isActive: false),
+                TmuxWindow(index: 1, name: 'agent', isActive: true),
+              ]),
+            );
+            await tester.pump();
+          } else if (interruption == 'partial') {
+            final originalOutput = session.terminal!.onOutput!;
+            session.terminal!.onOutput = (text) {
+              originalOutput(text);
+              if (text.contains('one.txt')) {
+                scheduleMicrotask(toolbar.onKeyPressed!);
+              }
+            };
+          }
+          upload.complete();
+          await tester.pumpAndSettle();
+          await tester.pump(const Duration(milliseconds: 300));
+          await tester.pumpAndSettle();
+          final output = utf8.decode(
+            shellWrites.expand((chunk) => chunk).toList(),
+          );
+          expect(
+            output,
+            interruption == 'typing' || interruption == 'window'
+                ? isNot(contains('one.txt'))
+                : contains('one.txt'),
+          );
+          if (interruption == 'partial') {
+            expect(uploaded, hasLength(2));
+            expect(output, isNot(contains('two.txt')));
+            expect(find.textContaining('pasted 1 of 2 paths'), findsOneWidget);
+          }
+          await tester.pumpWidget(const SizedBox.shrink());
+          await tester.pump();
+        },
+        variant: TargetPlatformVariant.only(TargetPlatform.android),
+      );
+    }
+
+    for (final failOldLoad in [false, true]) {
+      testWidgets(
+        'bar recovery discards an old ${failOldLoad ? 'error' : 'result'}',
+        (tester) async {
+          final tmux = _MockTmuxService();
+          final events = StreamController<TmuxWindowChangeEvent>.broadcast();
+          addTearDown(events.close);
+          await pumpTmuxScreen(tester, tmux, windowEvents: events.stream);
+          await tester.pumpAndSettle();
+          final oldLoad = Completer<List<TmuxWindow>>();
+          final freshLoad = Completer<List<TmuxWindow>>();
+          var calls = 0;
+          when(() => tmux.listWindows(session, 'work')).thenAnswer((_) {
+            calls++;
+            if (calls == 1) return oldLoad.future;
+            if (calls == 2) {
+              return Future.value(const [
+                TmuxWindow(index: 0, name: 'recovered', isActive: true),
+              ]);
+            }
+            return freshLoad.future;
+          });
+          events.add(const TmuxWindowReloadEvent());
+          await tester.pump();
+          expect(calls, 1);
+          final barFinder = find.byWidgetPredicate(
+            (widget) => widget.runtimeType.toString() == '_TmuxExpandableBar',
+          );
+          final dynamic bar = tester.widget(barFinder);
+          final dynamic barState = tester.state(barFinder);
+          final recovery =
+              // ignore: avoid_dynamic_calls
+              bar.onWindowLoadStalled(session, 'work') as Future<void>;
+          await tester.pump(const Duration(milliseconds: 500));
+          await recovery;
+          await tester.pump();
+          expect(calls, 2);
+          if (failOldLoad) {
+            oldLoad.completeError(StateError('old load'));
+          } else {
+            oldLoad.complete(const [
+              TmuxWindow(index: 0, name: 'stale', isActive: true),
+            ]);
+          }
+          await tester.pump();
+          expect(calls, 3);
+          expect(
+            // ignore: avoid_dynamic_calls
+            (barState.currentWindowsSnapshot as List<TmuxWindow>?)?.map(
+              (window) => window.name,
+            ),
+            isNot(contains('stale')),
+          );
+          await tester.pump(const Duration(seconds: 1));
+          freshLoad.complete(const [
+            TmuxWindow(index: 0, name: 'fresh', isActive: true),
+          ]);
+          await tester.pumpAndSettle();
+          expect(
+            // ignore: avoid_dynamic_calls
+            (barState.currentWindowsSnapshot as List<TmuxWindow>).single.name,
+            'fresh',
+          );
+          expect(calls, 3);
+          await tester.pumpWidget(const SizedBox.shrink());
+          await tester.pump();
+        },
+        variant: TargetPlatformVariant.only(TargetPlatform.android),
+      );
     }
 
     testWidgets(
@@ -4645,7 +5022,7 @@ void main() {
             session,
             sessionName,
             1,
-            windowId: any(named: 'windowId'),
+            windowId: '@1',
             extraFlags: any(named: 'extraFlags'),
             clientImageSignatures: any(named: 'clientImageSignatures'),
             suppressReplay: any(named: 'suppressReplay'),
@@ -4710,7 +5087,7 @@ void main() {
     );
 
     testWidgets(
-      'MonkeyMux create and background close preserve snapshot progress',
+      'MonkeyMux close keeps its ID after reindexing during confirmation',
       (tester) async {
         final tmuxService = _MockTmuxService();
         final monkeyMuxService = _MockMonkeyMuxService();
@@ -4747,9 +5124,8 @@ void main() {
           ),
         ];
         const remainingWindows = <TmuxWindow>[
-          TmuxWindow(index: 0, name: 'shell', isActive: false, id: '@0'),
           TmuxWindow(
-            index: 1,
+            index: 0,
             name: 'new',
             isActive: true,
             id: '@2',
@@ -4809,6 +5185,7 @@ void main() {
             session,
             sessionName,
             1,
+            windowId: '@1',
             extraFlags: any(named: 'extraFlags'),
           ),
         ).thenAnswer((_) => closeWindowCompleter.future);
@@ -4903,6 +5280,19 @@ void main() {
         await tester.tap(closeWindowButtons.at(1));
         await tester.pumpAndSettle();
         expect(find.text('Close window?'), findsOneWidget);
+        currentWindows = [
+          const TmuxWindow(index: 0, name: 'logs', isActive: false, id: '@1'),
+          TmuxWindow(
+            index: 1,
+            name: 'new',
+            isActive: true,
+            id: '@2',
+            terminalProgress: createdWindows[2].terminalProgress,
+          ),
+        ];
+        windowEvents.add(TmuxWindowListEvent(currentWindows));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
         await tester.tap(find.widgetWithText(FilledButton, 'Close window'));
         await tester.pump();
         await tester.pump();
@@ -4917,6 +5307,7 @@ void main() {
             session,
             sessionName,
             1,
+            windowId: '@1',
             extraFlags: any(named: 'extraFlags'),
           ),
         ).called(1);
@@ -5686,7 +6077,7 @@ void main() {
     );
 
     testWidgets(
-      'disconnects when final MonkeyMux close shuts the control channel',
+      'disconnects when a reindexed final MonkeyMux close shuts control',
       (tester) async {
         final tmuxService = _MockTmuxService();
         final monkeyMuxService = _MockMonkeyMuxService();
@@ -5696,7 +6087,9 @@ void main() {
         const sessionName = 'work';
         const initialWindows = <TmuxWindow>[
           TmuxWindow(index: 0, name: 'shell', isActive: true, id: '@0'),
+          TmuxWindow(index: 1, name: 'logs', isActive: false, id: '@1'),
         ];
+        var currentWindows = initialWindows;
         host = _buildHost(
           id: host.id,
           tmuxSessionName: sessionName,
@@ -5724,7 +6117,7 @@ void main() {
             sessionName,
             extraFlags: any(named: 'extraFlags'),
           ),
-        ).thenAnswer((_) async => initialWindows);
+        ).thenAnswer((_) async => currentWindows);
         when(
           () => monkeyMuxService.watchWindowChanges(
             session,
@@ -5736,7 +6129,8 @@ void main() {
           () => monkeyMuxService.killWindow(
             session,
             sessionName,
-            0,
+            1,
+            windowId: '@1',
             extraFlags: any(named: 'extraFlags'),
           ),
         ).thenThrow(
@@ -5781,10 +6175,16 @@ void main() {
         final closeWindowButton = find.byWidgetPredicate(
           (widget) => widget is IconButton && widget.tooltip == 'Close window',
         );
-        expect(closeWindowButton, findsOneWidget);
-        await tester.tap(closeWindowButton);
+        expect(closeWindowButton, findsNWidgets(2));
+        await tester.tap(closeWindowButton.last);
         await tester.pumpAndSettle();
         expect(find.text('Close window?'), findsOneWidget);
+        currentWindows = const [
+          TmuxWindow(index: 0, name: 'logs', isActive: true, id: '@1'),
+        ];
+        windowEvents.add(TmuxWindowListEvent(currentWindows));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
         await tester.tap(find.widgetWithText(FilledButton, 'Close window'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
@@ -7925,6 +8325,7 @@ void main() {
             session,
             'work',
             2,
+            windowId: '@3',
             extraFlags: any(named: 'extraFlags'),
           ),
         ).thenAnswer((_) => closeWindowCompleter.future);
@@ -8189,6 +8590,7 @@ void main() {
             session,
             'work',
             2,
+            windowId: any(named: 'windowId'),
             extraFlags: any(named: 'extraFlags'),
           ),
         ).thenAnswer((_) async {});
@@ -8230,6 +8632,7 @@ void main() {
             session,
             'work',
             2,
+            windowId: any(named: 'windowId'),
             extraFlags: any(named: 'extraFlags'),
           ),
         ).called(1);
@@ -11751,6 +12154,148 @@ void main() {
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
+
+    testWidgets(
+      'path cache evicts oldest stores and retains reinserted paths',
+      (tester) async {
+        final sftp = _MockSftpClient();
+        final calls = <String, int>{};
+        when(() => sshClient.sftp()).thenAnswer((_) async => sftp);
+        when(() => sftp.stat(any())).thenAnswer((invocation) async {
+          final path = invocation.positionalArguments.single as String;
+          calls.update(path, (count) => count + 1, ifAbsent: () => 1);
+          return SftpFileAttrs();
+        });
+        await pumpScreen(tester);
+        shellStdoutController.add(
+          Uint8List.fromList(utf8.encode('\x1b]7;file://remote/project\x07')),
+        );
+        await tester.pumpAndSettle();
+        Future<void> showPath(int index) async {
+          session.terminal!.write('\x1b[2J\x1b[Hcat lib/file$index.txt');
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 100));
+          await tester.pump();
+        }
+
+        for (var index = 0; index <= 128; index++) {
+          await showPath(index);
+        }
+        expect(calls['/project/lib/file0.txt'], 1);
+        await showPath(0);
+        expect(calls['/project/lib/file0.txt'], 2);
+        await showPath(129);
+        await showPath(0);
+        expect(calls['/project/lib/file0.txt'], 2);
+        await showPath(2);
+        expect(calls['/project/lib/file2.txt'], 2);
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'path batch stops using its SFTP client after session replacement',
+      (tester) async {
+        final sftp = _MockSftpClient();
+        final stat = Completer<SftpFileAttrs>();
+        final activeSessions = _TestActiveSessionsNotifier(session);
+        when(() => sshClient.sftp()).thenAnswer((_) async => sftp);
+        when(
+          () => sftp.stat('/project/lib/first.txt'),
+        ).thenAnswer((_) => stat.future);
+        when(
+          () => sftp.stat('/project/lib/second.txt'),
+        ).thenAnswer((_) async => SftpFileAttrs());
+        await pumpScreen(tester, activeSessions: activeSessions);
+        shellStdoutController.add(
+          Uint8List.fromList(utf8.encode('\x1b]7;file://remote/project\x07')),
+        );
+        await tester.pumpAndSettle();
+        session.terminal!.write('cat lib/first.txt lib/second.txt');
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 75));
+        verify(() => sftp.stat('/project/lib/first.txt')).called(1);
+        activeSessions.session = SshSession(
+          connectionId: session.connectionId,
+          hostId: host.id,
+          client: _MockSshClient(),
+          config: session.config,
+        )..getOrCreateTerminal();
+        stat.complete(SftpFileAttrs());
+        await tester.pump();
+        verifyNever(() => sftp.stat('/project/lib/second.txt'));
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    for (final pendingHome in [false, true]) {
+      testWidgets(
+        'path verification discards a directory change during ${pendingHome ? 'home lookup' : 'stat'}',
+        (tester) async {
+          final sftp = _MockSftpClient();
+          final home = Completer<String>();
+          final stat = Completer<SftpFileAttrs>();
+          const oldDirectory = '/old/project';
+          const newDirectory = '/new/project';
+          final terminalPath = pendingHome ? '~/notes.txt' : 'lib/notes.txt';
+          final statPaths = <String>[];
+          var homeCalls = 0;
+          when(() => sshClient.sftp()).thenAnswer((_) async => sftp);
+          when(() => sftp.absolute('.')).thenAnswer((_) {
+            homeCalls++;
+            return homeCalls == 1 ? home.future : Future.value('/new/home');
+          });
+          when(() => sftp.stat(any())).thenAnswer((invocation) {
+            final path = invocation.positionalArguments.single as String;
+            statPaths.add(path);
+            return path.startsWith(oldDirectory)
+                ? stat.future
+                : Future.value(SftpFileAttrs());
+          });
+          await pumpScreen(tester);
+          shellStdoutController.add(
+            Uint8List.fromList(
+              utf8.encode('\x1b]7;file://remote$oldDirectory\x07'),
+            ),
+          );
+          await tester.pumpAndSettle();
+          session.terminal!.write('cat $terminalPath');
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 75));
+          expect(pendingHome ? homeCalls : statPaths.length, 1);
+          shellStdoutController.add(
+            Uint8List.fromList(
+              utf8.encode('\x1b]7;file://remote$newDirectory\x07'),
+            ),
+          );
+          await tester.pump();
+          if (pendingHome) {
+            home.complete('/old/home');
+          } else {
+            stat.complete(SftpFileAttrs());
+          }
+          await tester.pumpAndSettle();
+          expect(statPaths, isNot(contains('/old/home/notes.txt')));
+          session.terminal!.write('\r\ncat $terminalPath');
+          await tester.pumpAndSettle();
+          expect(
+            statPaths,
+            contains(
+              pendingHome
+                  ? '/new/home/notes.txt'
+                  : '$newDirectory/lib/notes.txt',
+            ),
+          );
+          await tester.pumpWidget(const SizedBox.shrink());
+          await tester.pump();
+        },
+        variant: TargetPlatformVariant.only(TargetPlatform.android),
+      );
+    }
 
     testWidgets(
       'background path verification batches relative path stats',

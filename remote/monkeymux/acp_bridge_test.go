@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -108,6 +109,146 @@ func TestRequestAcpBridgeStopAndWaitRemovesAbandonedSocket(t *testing.T) {
 	}
 	if _, err := os.Stat(socket); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("abandoned socket stat = %v, want not exist", err)
+	}
+}
+
+func TestRequestAcpBridgeStopAndWaitPreservesStatusFailures(t *testing.T) {
+	for _, response := range []string{"", "invalid\n", `{"version":1,"type":"status"}` + "\n",
+		`{"version":1,"type":"error","bridge":{}}` + "\n",
+		`{"version":2,"type":"status","bridge":{}}` + "\n"} {
+		t.Run(response, func(t *testing.T) {
+			t.Setenv("XDG_RUNTIME_DIR", testAcpRuntimeDirectory(t))
+			bridge := newAuditAcpBridge()
+			socket, err := acpSocketPath(bridge.id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			listener, err := net.Listen("unix", socket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				for {
+					conn, err := listener.Accept()
+					if err != nil {
+						return
+					}
+					_ = conn.SetDeadline(time.Now().Add(2 * socketTimeout))
+					message, err := readAcpWireFrame(bufio.NewReader(conn))
+					if err == nil && message.Command == "status" {
+						if response == "" {
+							_, _ = io.Copy(io.Discard, conn)
+						} else {
+							_, _ = io.WriteString(conn, response)
+						}
+					}
+					_ = conn.Close()
+				}
+			}()
+			server := newMuxServer("test")
+			server.windows = []*muxWindow{{id: "@1", nativeAcpBridgeID: bridge.id}}
+			server.activeID = "@1"
+			for _, stop := range []func() error{
+				func() error { return requestAcpBridgeStopAndWait(bridge.id) },
+				func() error {
+					shutdown, err := server.closeWindow("@1")
+					if shutdown || server.windows[0].closed || server.windows[0].closing {
+						t.Error("status failure did not preserve a retryable window")
+					}
+					return err
+				},
+			} {
+				started := time.Now()
+				err := stop()
+				if err == nil {
+					t.Fatal("status failure was treated as successful shutdown")
+				}
+				if response == "" {
+					var timeout net.Error
+					if !errors.As(err, &timeout) || !timeout.Timeout() {
+						t.Fatalf("status error = %v, want preserved timeout", err)
+					}
+				}
+				if response == "invalid\n" {
+					var syntax *json.SyntaxError
+					if !errors.As(err, &syntax) {
+						t.Fatalf("status error = %v, want preserved JSON error", err)
+					}
+				}
+				if time.Since(started) > 2*acpRequestTimeout {
+					t.Error("status request exceeded its deadline")
+				}
+			}
+			_ = listener.Close()
+			<-done
+			if _, err := server.closeWindow("@1"); err != nil {
+				t.Fatalf("retry after bridge disappeared: %v", err)
+			}
+		})
+	}
+}
+
+func TestGCAcpArtifactsPreservesUnconfirmedSockets(t *testing.T) {
+	for _, state := range []string{"live", "abandoned", "runtime_error", "permission"} {
+		t.Run(state, func(t *testing.T) {
+			runtimeRoot := testAcpRuntimeDirectory(t)
+			t.Setenv("XDG_RUNTIME_DIR", runtimeRoot)
+			socket, err := acpSocketPath(newAuditAcpBridge().id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socket, Net: "unix"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			listener.SetUnlinkOnClose(false)
+			defer listener.Close()
+			switch state {
+			case "abandoned":
+				_ = listener.Close()
+			case "runtime_error":
+				t.Setenv("XDG_RUNTIME_DIR", socket)
+			case "permission":
+				private := filepath.Join(runtimeRoot, "private")
+				if err := os.Mkdir(private, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				target, err := filepath.Abs(filepath.Join(private, "bridge.sock"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(socket, target); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, socket); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(private, 0); err != nil {
+					t.Fatal(err)
+				}
+				defer os.Chmod(private, 0o700)
+				conn, err := dialAcpBridge(newAuditAcpBridge().id)
+				if err == nil {
+					_ = conn.Close()
+					t.Skip("current user bypasses directory permissions")
+				}
+				if !errors.Is(err, os.ErrPermission) {
+					t.Fatalf("dial = %v, want permission error", err)
+				}
+			}
+			gcAcpArtifacts(filepath.Dir(socket))
+			_, err = os.Lstat(socket)
+			if state == "abandoned" {
+				if !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("abandoned socket remains: %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("unconfirmed socket was removed: %v", err)
+			}
+		})
 	}
 }
 

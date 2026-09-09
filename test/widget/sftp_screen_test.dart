@@ -83,18 +83,6 @@ void main() {
     });
   });
 
-  group('resolveRemoteEditorCaretPosition', () {
-    test('returns the current line and column from the selection offset', () {
-      expect(
-        resolveRemoteEditorCaretPosition(
-          'alpha\nbeta\ngamma',
-          const TextSelection.collapsed(offset: 7),
-        ),
-        (line: 2, column: 2),
-      );
-    });
-  });
-
   group('buildRemoteTextEditorScreenForTesting', () {
     test('uses Menlo for the system monospace font on iOS', () {
       expect(

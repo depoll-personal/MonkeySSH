@@ -369,9 +369,10 @@ func (w *muxWindow) resizePty(width int, height int) {
 	}
 	w.resizeGeneration.Add(1)
 	w.ptyResizeMu.Lock()
-	_ = w.pty.Resize(width, height)
-	w.ptyWidth = width
-	w.ptyHeight = height
+	if err := w.pty.Resize(width, height); err == nil {
+		w.ptyWidth = width
+		w.ptyHeight = height
+	}
 	w.ptyResizeMu.Unlock()
 }
 
@@ -400,9 +401,10 @@ func (w *muxWindow) resizePtyIfCurrent(
 	if w.resizeGeneration.Load() != generation {
 		return
 	}
-	_ = w.pty.Resize(width, height)
-	w.ptyWidth = width
-	w.ptyHeight = height
+	if err := w.pty.Resize(width, height); err == nil {
+		w.ptyWidth = width
+		w.ptyHeight = height
+	}
 }
 
 func (w *muxWindow) closePty(ptyFile muxPty) error {
@@ -925,13 +927,11 @@ func (r *attachInputRouting) addUserInput(data []byte, bracketedPaste bool) {
 }
 
 type attachClient struct {
-	conn           net.Conn
-	id             string
-	width          int
-	height         int
-	terminalWidth  int
-	terminalHeight int
-	clipViewport   bool
+	conn         net.Conn
+	id           string
+	width        int
+	height       int
+	clipViewport bool
 	// capabilityHint holds this client's replies to static terminal capability
 	// queries. It is per client because the answer describes *this* terminal:
 	// a client that sends no hint (an older helper, or a plain terminal running
@@ -1733,12 +1733,15 @@ func gcCommand() {
 		default:
 			continue
 		}
+		identity, _ := socketFileIdentity(path)
 		conn, err := net.DialTimeout("unix", path, 150*time.Millisecond)
 		if err == nil {
 			_ = conn.Close()
 			continue
 		}
-		_ = os.Remove(path)
+		if isStaleUnixSocketError(err) {
+			removeSocketPathIfUnchanged(path, identity)
+		}
 	}
 	gcAcpArtifacts(runDir)
 }
@@ -2257,14 +2260,6 @@ func removeSessionPIDFile(session string) {
 		return
 	}
 	_ = os.Remove(path)
-}
-
-func readSessionPID(session string) int {
-	path, err := sessionPIDPath(session)
-	if err != nil {
-		return 0
-	}
-	return readPIDFileOrZero(path)
 }
 
 // A record is only
@@ -5822,10 +5817,6 @@ func serveSession(
 	}
 }
 
-func newMuxServer(session string) *muxServer {
-	return newMuxServerWithSize(session, defaultColumns, defaultRows)
-}
-
 func newMuxServerWithSize(session string, width int, height int) *muxServer {
 	if width <= 0 {
 		width = defaultColumns
@@ -6806,12 +6797,14 @@ func (s *muxServer) markWindowClosed(windowID string) {
 }
 
 func (s *muxServer) handleConnection(conn net.Conn) {
+	_ = conn.SetReadDeadline(time.Now().Add(socketTimeout))
 	reader := bufio.NewReader(conn)
 	line, err := readBoundedProtocolLine(reader, controlMaxFrameBytes)
 	if err != nil {
 		_ = conn.Close()
 		return
 	}
+	_ = conn.SetReadDeadline(time.Time{})
 	var hello controlMessage
 	if err := json.Unmarshal(line, &hello); err != nil {
 		_ = conn.Close()
@@ -6832,21 +6825,11 @@ func newAttachClient(conn net.Conn, hello controlMessage) *attachClient {
 	if clientID == "" {
 		clientID = fmt.Sprintf("client-%d-%d", os.Getpid(), time.Now().UnixNano())
 	}
-	terminalWidth := hello.Width
-	terminalHeight := hello.Height
-	if hello.ClipViewport {
-		// A clipping-aware client starts unconfirmed so the server always sends
-		// the initial canonical grid, even when it matches the client's viewport.
-		terminalWidth = 0
-		terminalHeight = 0
-	}
 	client := &attachClient{
 		conn:            conn,
 		id:              clientID,
 		width:           hello.Width,
 		height:          hello.Height,
-		terminalWidth:   terminalWidth,
-		terminalHeight:  terminalHeight,
 		clipViewport:    hello.ClipViewport,
 		prefixEnabled:   !hello.NoPrefix,
 		capabilityHint:  capabilityHintDataFromString(hello.CapabilityHint),
@@ -7169,10 +7152,6 @@ func (c *attachClient) suppressesReplayedOutput(
 	return false
 }
 
-func (c *attachClient) expectTerminalResponse(windowID string) {
-	c.expectTerminalResponses(windowID, 1)
-}
-
 func (c *attachClient) expectTerminalResponses(windowID string, count int) {
 	if c == nil || windowID == "" {
 		return
@@ -7249,10 +7228,6 @@ func (c *attachClient) expectTerminalResponses(windowID string, count int) {
 	if passthrough != nil {
 		passthrough(expiredInput)
 	}
-}
-
-func (c *attachClient) inputClaimsFocus(data []byte) bool {
-	return c.routeInput(data).claimsFocus
 }
 
 func (c *attachClient) routeInput(data []byte) attachInputRouting {
@@ -8074,9 +8049,6 @@ func (s *muxServer) isAttachConnectionLocked(conn net.Conn) bool {
 	if conn == nil {
 		return false
 	}
-	if len(s.attachClients) == 0 {
-		return s.attachConn == conn
-	}
 	_, ok := s.attachClients[conn]
 	return ok
 }
@@ -8096,13 +8068,7 @@ func (s *muxServer) capabilityHintLocked() []byte {
 }
 
 func (s *muxServer) attachCountLocked() int {
-	if len(s.attachClients) > 0 {
-		return len(s.attachClients)
-	}
-	if s.attachConn != nil {
-		return 1
-	}
-	return 0
+	return len(s.attachClients)
 }
 
 func (s *muxServer) promoteAttachClient(client *attachClient) {
@@ -8828,9 +8794,6 @@ func (s *muxServer) canUseClientImageSignatures(clientID string) bool {
 	if s.attachCountLocked() != 1 {
 		return false
 	}
-	if len(s.attachClients) == 0 {
-		return true
-	}
 	normalizedID := strings.TrimSpace(clientID)
 	if normalizedID == "" {
 		return true
@@ -8858,7 +8821,10 @@ func (c *controlClient) send(response controlResponse) {
 	if c.enc == nil {
 		return
 	}
-	_ = c.enc.Encode(response)
+	_ = c.conn.SetWriteDeadline(time.Now().Add(socketTimeout))
+	if err := c.enc.Encode(response); err != nil {
+		_ = c.conn.Close()
+	}
 }
 
 func (c *controlClient) sendError(request controlMessage, err error) {
@@ -9344,7 +9310,6 @@ func (s *muxServer) replayRequestedImages(
 	if len(ids) == 0 {
 		return nil
 	}
-	var attach net.Conn
 	var client *attachClient
 	var payload []byte
 	s.attachMu.Lock()
@@ -9355,17 +9320,12 @@ func (s *muxServer) replayRequestedImages(
 		s.attachMu.Unlock()
 		return nil
 	}
-	attach = s.attachConn
 	if normalizedID := strings.TrimSpace(clientID); normalizedID != "" {
 		client = s.attachClientByIDLocked(normalizedID)
-		attach = nil
-		if client != nil {
-			attach = client.conn
-		}
 	} else {
-		client = s.attachClients[attach]
+		client = s.attachClients[s.attachConn]
 	}
-	if attach == nil {
+	if client == nil {
 		s.mu.Unlock()
 		s.attachMu.Unlock()
 		return nil
@@ -9376,17 +9336,9 @@ func (s *muxServer) replayRequestedImages(
 		s.attachMu.Unlock()
 		return nil
 	}
-	if client != nil {
-		completion, queued := client.enqueue(payload, true)
-		s.attachMu.Unlock()
-		if !queued || !client.waitForWrite(completion) {
-			return nil
-		}
-		return ids
-	}
-	queued := s.writeAttachLocked(attach, payload)
+	completion, queued := client.enqueue(payload, true)
 	s.attachMu.Unlock()
-	if !queued {
+	if !queued || !client.waitForWrite(completion) {
 		return nil
 	}
 	return ids
@@ -10030,7 +9982,6 @@ func (s *muxServer) resumePausedAttachForwarding(
 	var primary net.Conn
 	var primaryNeedsFailover bool
 	var clients []*attachClient
-	var legacy net.Conn
 	var refreshPendingFocus bool
 	var refreshPendingResize bool
 	s.attachMu.Lock()
@@ -10044,17 +9995,11 @@ func (s *muxServer) resumePausedAttachForwarding(
 		s.attachMu.Unlock()
 		return
 	}
-	replay = append([]byte(nil), window.redrawForwardingReplay...)
-	buffered = append([]byte(nil), window.redrawForwardingBuffer...)
-	failoverBuffered = append(
-		[]byte(nil),
-		window.redrawForwardingFailoverBuffer...,
-	)
-	secondaryBuffered = append(
-		[]byte(nil),
-		window.redrawForwardingSecondaryBuffer...,
-	)
-	queryData = append([]byte(nil), window.redrawForwardingQueryBuffer...)
+	replay = window.redrawForwardingReplay
+	buffered = window.redrawForwardingBuffer
+	failoverBuffered = window.redrawForwardingFailoverBuffer
+	secondaryBuffered = window.redrawForwardingSecondaryBuffer
+	queryData = window.redrawForwardingQueryBuffer
 	primary = window.redrawForwardingPrimaryConn
 	if !s.isAttachConnectionLocked(primary) {
 		primary = s.attachConn
@@ -10121,9 +10066,6 @@ func (s *muxServer) resumePausedAttachForwarding(
 		for _, client := range s.attachClients {
 			clients = append(clients, client)
 		}
-		if len(clients) == 0 {
-			legacy = s.attachConn
-		}
 	}
 	s.mu.Unlock()
 	primaryOutput := wrapSynchronizedTerminalOutput(
@@ -10138,11 +10080,6 @@ func (s *muxServer) resumePausedAttachForwarding(
 		replay,
 		secondaryBuffered,
 	)
-	if legacy != nil {
-		s.writeAttachLocked(legacy, primaryOutput)
-		s.attachMu.Unlock()
-		return
-	}
 	var primaryClient *attachClient
 	for _, client := range clients {
 		if client.conn == primary {
@@ -10672,25 +10609,12 @@ func (s *muxServer) writeAttachLocked(conn net.Conn, data []byte) bool {
 	}
 	s.mu.Lock()
 	client := s.attachClients[conn]
-	legacy := len(s.attachClients) == 0 && s.attachConn == conn
 	s.mu.Unlock()
-	if client != nil {
-		_, queued := client.enqueue(data, false)
-		return queued
-	}
-	if !legacy {
+	if client == nil {
 		return false
 	}
-	err := writeConnection(conn, data)
-	if err != nil {
-		s.mu.Lock()
-		if s.attachConn == conn {
-			s.attachConn = nil
-		}
-		s.mu.Unlock()
-		return false
-	}
-	return true
+	_, queued := client.enqueue(data, false)
+	return queued
 }
 
 func (s *muxServer) writeAllAttachesLocked(data []byte) {
@@ -10702,16 +10626,9 @@ func (s *muxServer) writeAllAttachesLocked(data []byte) {
 	for _, client := range s.attachClients {
 		clients = append(clients, client)
 	}
-	legacy := net.Conn(nil)
-	if len(clients) == 0 {
-		legacy = s.attachConn
-	}
 	s.mu.Unlock()
 	for _, client := range clients {
 		_, _ = client.enqueue(data, false)
-	}
-	if legacy != nil {
-		s.writeAttachLocked(legacy, data)
 	}
 }
 
@@ -10758,12 +10675,6 @@ func (s *muxServer) enqueueAttachViewportTransitionLocked(
 		if !client.clipViewport {
 			continue
 		}
-		// Deliberately not suppressed when the tracked size already matches:
-		// that value records what was queued, never what the client actually
-		// applied, so trusting it can silence the only message able to repair a
-		// client whose grid drifted.
-		client.terminalWidth = width
-		client.terminalHeight = height
 		_, _ = client.enqueue(sequence, false)
 	}
 }
@@ -10797,15 +10708,9 @@ func (s *muxServer) writeAttachOutputIfActive(
 			clients = append(clients, client)
 		}
 	}
-	legacy := len(s.attachClients) == 0 && s.attachConn == primary
 	currentPrimary := s.attachConn
 	s.mu.Unlock()
 
-	if legacy {
-		s.writeAttachLocked(primary, primaryData)
-		s.attachMu.Unlock()
-		return
-	}
 	var primaryClient *attachClient
 	for _, client := range clients {
 		if client.conn == primary {
@@ -10969,19 +10874,6 @@ func (s *muxServer) writeAttachOutputIfActive(
 	s.attachMu.Unlock()
 }
 
-func (s *muxServer) writeAttachIfActive(windowID string, conn net.Conn, data []byte) {
-	s.writeAttachOutputIfActive(
-		windowID,
-		conn,
-		data,
-		data,
-		data,
-		nil,
-		^uint64(0),
-		0,
-	)
-}
-
 func (s *muxServer) enqueuePrimaryAttachLocked(
 	preferred net.Conn,
 	data []byte,
@@ -10997,11 +10889,7 @@ func (s *muxServer) enqueuePrimaryAttachLocked(
 	for _, client := range s.attachClients {
 		clients = append(clients, client)
 	}
-	legacy := len(clients) == 0 && currentPrimary == preferred
 	s.mu.Unlock()
-	if legacy {
-		return nil, nil, s.writeAttachLocked(preferred, data)
-	}
 	sort.Slice(clients, func(i int, j int) bool {
 		iPreferred := clients[i].conn == preferred
 		jPreferred := clients[j].conn == preferred
@@ -11953,11 +11841,6 @@ func (w *muxWindow) appendHistoryLocked(chunk []byte) {
 	}
 }
 
-func (w *muxWindow) historyTailLocked() []byte {
-	history, _ := w.historyTailWithParserLocked()
-	return history
-}
-
 func (w *muxWindow) historyTailWithParserLocked() (
 	[]byte,
 	terminalOutputParserSnapshot,
@@ -11978,13 +11861,6 @@ func (w *muxWindow) historyLimitLocked() int {
 		return windowFullReplayHistoryLimitBytes
 	}
 	return windowHistoryLimitBytes
-}
-
-func trimReplayHistoryForAttach(history []byte) []byte {
-	return trimReplayHistoryForAttachWithParser(
-		history,
-		terminalOutputParserSnapshot{},
-	)
 }
 
 func trimReplayHistoryForAttachWithParser(
@@ -16284,13 +16160,9 @@ func (s *muxServer) close() {
 	socket := s.socketPath
 	identity := s.socketIdentity
 	s.listener = nil
-	attach := net.Conn(nil)
 	attachClients := make([]*attachClient, 0, len(s.attachClients))
 	for _, client := range s.attachClients {
 		attachClients = append(attachClients, client)
-	}
-	if len(attachClients) == 0 {
-		attach = s.attachConn
 	}
 	s.attachConn = nil
 	s.attachClients = map[net.Conn]*attachClient{}
@@ -16315,9 +16187,6 @@ func (s *muxServer) close() {
 	}
 	if socket != "" {
 		removeSocketPathIfUnchanged(socket, identity)
-	}
-	if attach != nil {
-		_ = attach.Close()
 	}
 	for _, client := range attachClients {
 		client.close()

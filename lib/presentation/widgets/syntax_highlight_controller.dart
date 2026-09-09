@@ -32,10 +32,10 @@ class SyntaxHighlightController extends TextEditingController {
   SyntaxHighlightController({required this.theme, super.text, this.language});
 
   /// The highlight.js language name, or `null` for auto-detection.
-  String? language;
+  final String? language;
 
   /// Highlight.js theme map (class name → [TextStyle]).
-  Map<String, TextStyle> theme;
+  final Map<String, TextStyle> theme;
 
   // Cached highlight children keyed on the raw text value so base styles can
   // change without re-tokenizing unchanged text.
@@ -103,12 +103,5 @@ class SyntaxHighlightController extends TextEditingController {
         withComposing: withComposing,
       );
     }
-  }
-
-  /// Invalidates the internal cache, forcing the next [buildTextSpan] call to
-  /// re-highlight from scratch.
-  void invalidateHighlightCache() {
-    _cachedText = null;
-    _cachedChildren = null;
   }
 }

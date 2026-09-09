@@ -102,7 +102,7 @@ class TmuxService {
   static final Map<int, DateTime> _execQuietUntil = {};
 
   /// In-flight tmux session-existence probes.
-  static final _hasSessionRequests = <_TmuxSessionRequestKey, Future<bool>>{};
+  static final _hasSessionRequests = <_TmuxWindowWatchKey, Future<bool>>{};
 
   /// Cached set of installed agent CLIs per SSH session (by connectionId).
   static final _installedAgentToolsCache = <int, _CachedInstalledAgentTools>{};
@@ -636,7 +636,7 @@ class TmuxService {
     String sessionName, {
     String? extraFlags,
   }) async {
-    final requestKey = _TmuxSessionRequestKey(
+    final requestKey = _TmuxWindowWatchKey(
       connectionId: session.connectionId,
       sessionName: sessionName,
       extraFlags: resolveTmuxClientFlagsFromExtraFlags(extraFlags),
@@ -1798,8 +1798,13 @@ class TmuxService {
     SshSession session,
     String sessionName,
     int windowIndex, {
+    String? windowId,
     String? extraFlags,
   }) async {
+    final targetWindowId = windowId?.trim();
+    final target = targetWindowId != null && isValidTmuxWindowId(targetWindowId)
+        ? shellEscapePosix(targetWindowId)
+        : '${shellEscapePosix(sessionName)}:$windowIndex';
     DiagnosticsLogService.instance.info(
       'tmux.action',
       'kill_window_start',
@@ -1811,7 +1816,7 @@ class TmuxService {
     await _execTmuxCommand(
       session,
       sessionName,
-      'kill-window -t ${shellEscapePosix(sessionName)}:$windowIndex',
+      'kill-window -t $target',
       extraFlags: extraFlags,
     );
     DiagnosticsLogService.instance.info(
@@ -3381,30 +3386,6 @@ TmuxControlHeartbeatAction decideTmuxHeartbeatAction({
     return TmuxControlHeartbeatAction.refresh;
   }
   return TmuxControlHeartbeatAction.noop;
-}
-
-@immutable
-class _TmuxSessionRequestKey {
-  const _TmuxSessionRequestKey({
-    required this.connectionId,
-    required this.sessionName,
-    this.extraFlags,
-  });
-
-  final int connectionId;
-  final String sessionName;
-  final String? extraFlags;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is _TmuxSessionRequestKey &&
-          connectionId == other.connectionId &&
-          sessionName == other.sessionName &&
-          extraFlags == other.extraFlags;
-
-  @override
-  int get hashCode => Object.hash(connectionId, sessionName, extraFlags);
 }
 
 @immutable

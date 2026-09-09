@@ -10,6 +10,7 @@ import 'package:monkeyssh/domain/models/acp_protocol.dart';
 import 'package:monkeyssh/domain/models/acp_session_keys.dart';
 import 'package:monkeyssh/domain/models/acp_session_state.dart';
 import 'package:monkeyssh/domain/models/acp_updates.dart';
+import 'package:monkeyssh/domain/services/acp_attachment_service.dart';
 import 'package:monkeyssh/domain/services/acp_bridge_connector.dart';
 import 'package:monkeyssh/domain/services/acp_provider_service.dart';
 import 'package:monkeyssh/domain/services/acp_recent_sessions_service.dart';
@@ -115,9 +116,12 @@ Future<void> _pump(
 AcpComposerController _makeController(
   _RecordingManager manager, {
   AcpSessionState? session,
+  AcpAttachmentPreparationService preparationService =
+      const AcpAttachmentPreparationService(),
 }) => AcpComposerController(
   manager: manager,
   sessionKey: _key(),
+  preparationService: preparationService,
   initialSession: session ?? _session(),
 );
 
@@ -140,28 +144,53 @@ void main() {
     expect(manager.promptCount, 1);
   });
 
-  testWidgets('unsupported arbitrary file immediately offers private upload', (
-    tester,
-  ) async {
-    final manager = _RecordingManager();
-    final controller = _makeController(manager)
-      ..addAttachment(
-        AcpAttachmentCandidate.memory(
-          name: 'notes.bin',
-          bytes: Uint8List.fromList(const [1, 2, 3]),
-          mimeType: 'application/octet-stream',
-        ),
-      );
-    addTearDown(controller.dispose);
-    await _pump(tester, controller);
+  for (final oversizedImage in [false, true]) {
+    testWidgets(
+      '${oversizedImage ? 'oversized image' : 'unsupported arbitrary file'} '
+      'immediately offers private upload',
+      (tester) async {
+        final manager = _RecordingManager();
+        final controller =
+            _makeController(
+              manager,
+              session: _session().copyWith(
+                initialization: const AcpInitializeResult(
+                  protocolVersion: 1,
+                  agentCapabilities: AcpAgentCapabilities(
+                    prompt: AcpPromptCapabilities(image: true),
+                  ),
+                ),
+              ),
+              preparationService: const AcpAttachmentPreparationService(
+                limits: AcpAttachmentLimits(maxImageBytes: 2),
+              ),
+            )..addAttachment(
+              AcpAttachmentCandidate.memory(
+                name: oversizedImage ? 'large.png' : 'notes.bin',
+                bytes: Uint8List.fromList(const [1, 2, 3]),
+                mimeType: oversizedImage
+                    ? 'image/png'
+                    : 'application/octet-stream',
+              ),
+            );
+        addTearDown(controller.dispose);
+        await _pump(tester, controller);
 
-    await tester.tap(find.bySemanticsLabel('Send'));
-    await tester.pumpAndSettle();
+        await tester.tap(find.bySemanticsLabel('Send'));
+        await tester.pumpAndSettle();
 
-    expect(find.text('Upload to the server?'), findsOneWidget);
-    expect(find.widgetWithText(FilledButton, 'Upload'), findsOneWidget);
-    expect(manager.promptCount, 0);
-  });
+        expect(
+          controller.error?.attachmentFailure,
+          oversizedImage
+              ? AcpAttachmentFailure.imageSizeLimit
+              : AcpAttachmentFailure.unsupportedCapability,
+        );
+        expect(find.text('Upload to the server?'), findsOneWidget);
+        expect(find.widgetWithText(FilledButton, 'Upload'), findsOneWidget);
+        expect(manager.promptCount, 0);
+      },
+    );
+  }
 
   testWidgets('streaming with an empty draft uses one primary Stop control', (
     tester,

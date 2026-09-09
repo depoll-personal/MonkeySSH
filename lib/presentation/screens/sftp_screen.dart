@@ -417,32 +417,6 @@ String? formatRemoteModifiedTime(int? modifyTime) {
   ).toString().split('.').first;
 }
 
-/// Resolves the picker request used for local SFTP uploads.
-@visibleForTesting
-({bool allowMultiple}) resolveSftpUploadPickerRequest() =>
-    (allowMultiple: true);
-
-/// Resolves a readable stream for a picked SFTP upload file when available.
-@visibleForTesting
-Stream<List<int>>? resolvePickedSftpUploadReadStream(PlatformFile file) {
-  if (file.path == null) {
-    return null;
-  }
-  return file.readAsByteStream().cast<List<int>>();
-}
-
-/// Resolves the error message shown when selected SFTP upload files are unreadable.
-@visibleForTesting
-String resolveUnreadableSftpUploadMessage(List<PlatformFile> files) {
-  if (files.length == 1) {
-    final name = files.single.name.trim();
-    return name.isEmpty
-        ? 'Unable to read the selected file'
-        : 'Unable to read "$name"';
-  }
-  return 'Unable to read ${files.length} selected files';
-}
-
 /// Returns an error when a picker-provided upload name is not a single file.
 @visibleForTesting
 String? validateSftpUploadFileName(String name) {
@@ -824,6 +798,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   final ScrollController _breadcrumbScrollController = ScrollController();
   final ScrollController _fileListScrollController = ScrollController();
   String _currentPath = '/';
+  int _directoryRequest = 0;
   List<SftpName> _files = [];
   bool _isLoading = true;
   bool _isConnectingSession = false;
@@ -998,12 +973,17 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         await _openRequestedPath(requestedPath);
         return;
       }
+      final request = ++_directoryRequest;
       if (await _loadDirectory(
         _fallbackDirectoryPath!,
+        requestGeneration: request,
         nextHistory: [_fallbackDirectoryPath!],
         rethrowTimeout: true,
         showError: false,
       )) {
+        return;
+      }
+      if (!mounted || request != _directoryRequest) {
         return;
       }
       await _openFallbackDirectory(preferredPath: _fallbackDirectoryPath);
@@ -1075,6 +1055,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   }
 
   Future<void> _openFallbackDirectory({String? preferredPath}) async {
+    final request = ++_directoryRequest;
     final candidatePaths = <String>[];
 
     void addCandidate(String? path) {
@@ -1093,9 +1074,13 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     addCandidate('/');
 
     for (final candidatePath in candidatePaths) {
+      if (!mounted || request != _directoryRequest) {
+        return;
+      }
       try {
         if (await _loadDirectory(
           candidatePath,
+          requestGeneration: request,
           nextHistory: [candidatePath],
           rethrowTimeout: true,
           showError: false,
@@ -1104,7 +1089,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           return;
         }
       } on TimeoutException {
-        if (mounted) {
+        if (mounted && request == _directoryRequest) {
           setState(() {
             _isLoading = false;
             _error = sftpTimeoutMessage('opening the SFTP browser');
@@ -1114,7 +1099,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       }
     }
 
-    if (!mounted) {
+    if (!mounted || request != _directoryRequest) {
       return;
     }
     setState(() {
@@ -1129,16 +1114,23 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     bool rethrowTimeout = false,
     bool showError = true,
     bool allowReconnect = true,
+    int? requestGeneration,
   }) async {
+    final request = requestGeneration ?? ++_directoryRequest;
     if (_sftp == null) {
-      return false;
+      return _reconnectSftpAndLoadDirectory(
+        path,
+        request: request,
+        nextHistory: nextHistory,
+        showError: showError,
+      );
     }
 
     setState(() => _isLoading = true);
 
     try {
       final items = await withSftpOperationTimeout(_sftp!.listdir(path));
-      if (!mounted) {
+      if (!mounted || request != _directoryRequest) {
         return false;
       }
       setState(() {
@@ -1167,60 +1159,46 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       _rememberCurrentPath(path);
       _queueScrollBreadcrumbTailIntoView();
       return true;
-    } on TimeoutException catch (e) {
-      if (rethrowTimeout) {
-        rethrow;
-      }
-      return _handleLoadDirectoryFailure(
-        e,
-        path,
-        nextHistory: nextHistory,
-        showError: showError,
-        allowReconnect: allowReconnect,
-      );
-    } on SSHError catch (e) {
-      return _handleLoadDirectoryFailure(
-        e,
-        path,
-        nextHistory: nextHistory,
-        showError: showError,
-        allowReconnect: allowReconnect,
-      );
-    } on SftpStatusError catch (e) {
-      return _handleLoadDirectoryFailure(e, path, showError: showError);
-    } on SftpError catch (e) {
-      return _handleLoadDirectoryFailure(
-        e,
-        path,
-        nextHistory: nextHistory,
-        showError: showError,
-        allowReconnect: allowReconnect,
-      );
     } on Object catch (e) {
       if (e is! Exception && !isExpectedSshOperationError(e)) {
         rethrow;
       }
-      return _handleLoadDirectoryFailure(e, path, showError: showError);
+      if (!mounted || request != _directoryRequest) {
+        return false;
+      }
+      if (rethrowTimeout && e is TimeoutException) {
+        rethrow;
+      }
+      return _handleLoadDirectoryFailure(
+        e,
+        path,
+        request: request,
+        nextHistory: nextHistory,
+        showError: showError,
+        allowReconnect: allowReconnect,
+      );
     }
   }
 
   Future<bool> _handleLoadDirectoryFailure(
     Object error,
     String path, {
+    required int request,
     List<String>? nextHistory,
     bool showError = true,
     bool allowReconnect = true,
   }) async {
-    if (!mounted) {
+    if (!mounted || request != _directoryRequest) {
       return false;
     }
     if (allowReconnect && _shouldReconnectSftpAfterDirectoryError(error)) {
       final reconnected = await _reconnectSftpAndLoadDirectory(
         path,
+        request: request,
         nextHistory: nextHistory,
         showError: showError,
       );
-      if (reconnected || !mounted) {
+      if (reconnected || !mounted || request != _directoryRequest) {
         return reconnected;
       }
     }
@@ -1229,7 +1207,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       'list_failed',
       fields: {'errorType': error.runtimeType},
     );
-    if (!mounted) {
+    if (!mounted || request != _directoryRequest) {
       return false;
     }
     setState(() {
@@ -1250,10 +1228,11 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
   Future<bool> _reconnectSftpAndLoadDirectory(
     String path, {
+    required int request,
     List<String>? nextHistory,
     bool showError = true,
   }) async {
-    if (!mounted) {
+    if (!mounted || request != _directoryRequest) {
       return false;
     }
     final connectionId = _connectionId ?? widget.connectionId;
@@ -1272,12 +1251,14 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       'reconnect_start',
       fields: {'connectionId': connectionId},
     );
-    session.discardSftpClient(_sftp);
+    if (_sftp != null) {
+      session.discardSftpClient(_sftp);
+    }
     _sftp = null;
 
     try {
       final sftp = await _openSftpClient(session);
-      if (!mounted) {
+      if (!mounted || request != _directoryRequest) {
         return false;
       }
       _sftp = sftp;
@@ -1288,27 +1269,10 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       );
       return _loadDirectory(
         path,
+        requestGeneration: request,
         nextHistory: nextHistory,
         showError: showError,
         allowReconnect: false,
-      );
-    } on TimeoutException catch (error) {
-      return _handleSftpReconnectFailure(
-        connectionId,
-        error,
-        showError: showError,
-      );
-    } on SSHError catch (error) {
-      return _handleSftpReconnectFailure(
-        connectionId,
-        error,
-        showError: showError,
-      );
-    } on SftpError catch (error) {
-      return _handleSftpReconnectFailure(
-        connectionId,
-        error,
-        showError: showError,
       );
     } on Object catch (error) {
       if (error is! Exception && !isExpectedSshOperationError(error)) {
@@ -1317,6 +1281,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return _handleSftpReconnectFailure(
         connectionId,
         error,
+        request: request,
         showError: showError,
       );
     }
@@ -1325,6 +1290,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   bool _handleSftpReconnectFailure(
     int connectionId,
     Object error, {
+    required int request,
     required bool showError,
   }) {
     DiagnosticsLogService.instance.warning(
@@ -1332,7 +1298,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       'reconnect_failed',
       fields: {'connectionId': connectionId, 'errorType': error.runtimeType},
     );
-    if (!mounted || !showError) {
+    if (!mounted || request != _directoryRequest || !showError) {
       return false;
     }
     setState(() {
@@ -1394,8 +1360,9 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   }
 
   Future<bool> _openRequestedPath(String requestedPath) async {
+    final request = ++_directoryRequest;
     final homeDirectory = await _resolveHomeDirectoryPath();
-    if (!mounted) {
+    if (!mounted || request != _directoryRequest) {
       return false;
     }
     final normalizedPath = resolveRequestedSftpPath(
@@ -1413,10 +1380,14 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     if (normalizedPath == '/') {
       if (await _loadDirectory(
         normalizedPath,
+        requestGeneration: request,
         nextHistory: [normalizedPath],
         showError: false,
       )) {
         return true;
+      }
+      if (!mounted || request != _directoryRequest) {
+        return false;
       }
       _closeRequestedPathWithError(
         'Could not open "$normalizedPath" in SFTP: failed to list directory',
@@ -1436,11 +1407,17 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           .stat(normalizedPath)
           .timeout(_requestedPathLookupTimeout);
     } on TimeoutException {
+      if (!mounted || request != _directoryRequest) {
+        return false;
+      }
       _closeRequestedPathWithError(
         'Timed out opening "$normalizedPath" in SFTP',
       );
       return false;
     } on SftpStatusError catch (error) {
+      if (!mounted || request != _directoryRequest) {
+        return false;
+      }
       if (error.code == SftpStatusCode.noSuchFile) {
         _closeRequestedPathWithError(
           'Could not open "$normalizedPath" in SFTP: path does not exist',
@@ -1451,12 +1428,16 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return false;
     }
 
+    if (!mounted || request != _directoryRequest) {
+      return false;
+    }
     final navigationTarget = resolveRequestedSftpNavigationTarget(
       normalizedPath,
       isDirectory: requestedPathStat.isDirectory,
     );
     if (await _loadDirectory(
       navigationTarget.directoryPath,
+      requestGeneration: request,
       nextHistory: [navigationTarget.directoryPath],
       showError: false,
     )) {
@@ -1479,7 +1460,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         return false;
       }
 
-      if (!mounted) {
+      if (!mounted || request != _directoryRequest) {
         return true;
       }
       _highlightFile(navigationTarget.directoryPath, fileName);
@@ -1487,6 +1468,9 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return true;
     }
 
+    if (!mounted || request != _directoryRequest) {
+      return false;
+    }
     _closeRequestedPathWithError('Could not open "$normalizedPath" in SFTP');
     return false;
   }
@@ -2479,6 +2463,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return;
     }
 
+    final destinationDirectory = _currentPath;
     final telemetryService = ref.read(telemetryServiceProvider);
     final remoteFileService = ref.read(remoteFileServiceProvider);
     late final List<PlatformFile> result;
@@ -2527,37 +2512,6 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return;
     }
 
-    final uploads = <({PlatformFile file, Stream<List<int>>? readStream})>[
-      for (final file in selectedFiles)
-        (file: file, readStream: resolvePickedSftpUploadReadStream(file)),
-    ];
-    final unreadableUploads = uploads
-        .where((upload) => upload.readStream == null)
-        .toList();
-    if (unreadableUploads.isNotEmpty) {
-      unawaited(
-        telemetryService.logSftpTransferFailed(
-          direction: 'upload',
-          fileCount: selectedFiles.length,
-          sizeBytes: await _selectedUploadSizeBytes(selectedFiles),
-          duration: Duration.zero,
-          failureCategory: 'unreadable',
-        ),
-      );
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              resolveUnreadableSftpUploadMessage([
-                for (final upload in unreadableUploads) upload.file,
-              ]),
-            ),
-          ),
-        );
-      }
-      return;
-    }
-
     final startedAt = DateTime.now();
     final sizeBytes = await _selectedUploadSizeBytes(selectedFiles);
     if (!mounted || _sftp == null) {
@@ -2572,11 +2526,11 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       ),
     );
     try {
-      for (final upload in uploads) {
+      for (final file in selectedFiles) {
         await remoteFileService.uploadStream(
           sftp: sftp,
-          remotePath: _joinRemotePath(_currentPath, upload.file.name),
-          stream: upload.readStream!,
+          remotePath: _joinRemotePath(destinationDirectory, file.name),
+          stream: file.readAsByteStream(),
         );
       }
       if (mounted) {
@@ -4092,7 +4046,6 @@ class _RemoteVideoViewerScreenState extends State<_RemoteVideoViewerScreen> {
 
     try {
       await widget.localFile.copy(savePath.toFilePath());
-      _keepCachedFile = true;
       if (mounted) {
         ScaffoldMessenger.of(
           context,

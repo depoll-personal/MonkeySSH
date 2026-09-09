@@ -1366,46 +1366,7 @@ void main() {
     testWidgets('explains launch behavior without plan-gating copy', (
       tester,
     ) async {
-      final database = AppDatabase.forTesting(NativeDatabase.memory());
-      final encryptionService = SecretEncryptionService.forTesting();
-      addTearDown(database.close);
-      addTearDown(() => tester.binding.setSurfaceSize(null));
-      await tester.binding.setSurfaceSize(const Size(420, 900));
-
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            databaseProvider.overrideWithValue(database),
-            hostRepositoryProvider.overrideWithValue(
-              FakeHostRepository(
-                host: _testHost(
-                  id: 1,
-                  label: 'Imported Host',
-                  autoConnectRequiresConfirmation: false,
-                ),
-                database: database,
-                encryptionService: encryptionService,
-              ),
-            ),
-            keyRepositoryProvider.overrideWithValue(
-              FakeKeyRepository(
-                database: database,
-                encryptionService: encryptionService,
-              ),
-            ),
-            snippetRepositoryProvider.overrideWithValue(
-              FakeSnippetRepository(snippets: const [], database: database),
-            ),
-            portForwardRepositoryProvider.overrideWithValue(
-              FakePortForwardRepository(database: database),
-            ),
-          ],
-          child: const MaterialApp(home: HostEditScreen()),
-        ),
-      );
-
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 300));
+      await _pumpHostCreateScreen(tester);
 
       expect(
         find.text(
@@ -1491,47 +1452,16 @@ void main() {
     testWidgets('keeps auto-run command read-only without Pro access', (
       tester,
     ) async {
-      final database = AppDatabase.forTesting(NativeDatabase.memory());
-      final encryptionService = SecretEncryptionService.forTesting();
-      addTearDown(database.close);
-      addTearDown(() => tester.binding.setSurfaceSize(null));
-      await tester.binding.setSurfaceSize(const Size(420, 900));
-
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            databaseProvider.overrideWithValue(database),
-            hostRepositoryProvider.overrideWithValue(
-              FakeHostRepository(
-                host: _testHost(
-                  id: 1,
-                  label: 'Imported Host',
-                  autoConnectCommand: 'tmux attach',
-                  autoConnectRequiresConfirmation: false,
-                ),
-                database: database,
-                encryptionService: encryptionService,
-              ),
-            ),
-            keyRepositoryProvider.overrideWithValue(
-              FakeKeyRepository(
-                database: database,
-                encryptionService: encryptionService,
-              ),
-            ),
-            snippetRepositoryProvider.overrideWithValue(
-              FakeSnippetRepository(snippets: const [], database: database),
-            ),
-            portForwardRepositoryProvider.overrideWithValue(
-              FakePortForwardRepository(database: database),
-            ),
-          ],
-          child: const MaterialApp(home: HostEditScreen(hostId: 1)),
+      final fixture = HostEditFixture(
+        host: _testHost(
+          id: 1,
+          label: 'Imported Host',
+          autoConnectCommand: 'tmux attach',
+          autoConnectRequiresConfirmation: false,
         ),
       );
-
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 300));
+      await fixture.setSurfaceSize(tester);
+      await fixture.pump(tester);
       await tester.scrollUntilVisible(
         find.byKey(const Key('host-auto-connect-command-field')),
         200,

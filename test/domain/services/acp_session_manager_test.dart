@@ -46,6 +46,7 @@ class _FakeAcpServer implements AcpTransport {
     this.replayUpdateCountOnLoad = 0,
     this.replayUpdatesOnLoad = const <Map<String, Object?>>[],
     this.loadResponseGate,
+    this.newResponseGate,
     this.permissionIdOnLoad,
     this.permissionIdOnResume,
   });
@@ -94,6 +95,7 @@ class _FakeAcpServer implements AcpTransport {
   /// Holds the session/load response so reconnecting-state publication can be
   /// observed independently from provider history latency.
   final Future<void>? loadResponseGate;
+  final Future<void>? newResponseGate;
 
   /// When set, a `session/load` pushes a permission request with this stable
   /// JSON-RPC id before replying, simulating a replayed pending permission.
@@ -158,6 +160,7 @@ class _FakeAcpServer implements AcpTransport {
           if (authMethods.isNotEmpty) 'authMethods': authMethods,
         });
       case 'session/new':
+        if (newResponseGate != null) await newResponseGate;
         final params = (message['params']! as Map).cast<String, Object?>();
         newSessionCwds.add(params['cwd']! as String);
         if (authMethods.isNotEmpty || failNewSession) {
@@ -385,12 +388,40 @@ class _FakeCapabilityFileSystem implements AcpRemoteFileSystem {
   }
 }
 
-/// Minimal terminal executor used only to satisfy [AcpHostCapabilityBinding]
-/// in capability-wiring tests that do not exercise `terminal/*` methods.
 class _FakeCapabilityTerminalExecutor implements AcpTerminalExecutor {
+  final processes = <_FakeCapabilityTerminalProcess>[];
+
   @override
-  Future<AcpTerminalProcess> start(String command) =>
-      throw UnimplementedError();
+  Future<AcpTerminalProcess> start(String command) async {
+    final process = _FakeCapabilityTerminalProcess();
+    processes.add(process);
+    return process;
+  }
+}
+
+class _FakeCapabilityTerminalProcess implements AcpTerminalProcess {
+  final _exit = Completer<AcpTerminalExitStatus>();
+  bool killed = false;
+
+  @override
+  Stream<List<int>> get stdout => const Stream.empty();
+
+  @override
+  Stream<List<int>> get stderr => const Stream.empty();
+
+  @override
+  Future<void> get done => _exit.future.then((_) {});
+
+  @override
+  Future<AcpTerminalExitStatus> waitForExit() => _exit.future;
+
+  @override
+  void kill() {
+    killed = true;
+    if (!_exit.isCompleted) {
+      _exit.complete(const AcpTerminalExitStatus(signal: 'KILL'));
+    }
+  }
 }
 
 /// Fake connector that records bridge lifecycle calls and wires each bridge to
@@ -418,6 +449,7 @@ class _FakeConnector implements AcpBridgeConnector {
   transportErrorControllers =
       <String, StreamController<MonkeyMuxAcpBridgeException>>{};
   MonkeyMuxInstallConfirmation? lastListConfirmInstall;
+  Future<void>? startGate;
   Exception? startError;
   Exception? stopError;
   int _bridgeCounter = 0;
@@ -440,6 +472,7 @@ class _FakeConnector implements AcpBridgeConnector {
     final bridgeId = 'bridge-${++_bridgeCounter}';
     startedBridges.add(bridgeId);
     availableBridges.add(bridgeId);
+    if (startGate != null) await startGate;
     return MonkeyMuxAcpBridgeStartResult(bridgeId: bridgeId);
   }
 
@@ -802,18 +835,16 @@ void main() {
       label: 'My Agent',
       launchCommand: AcpLaunchCommand(executable: 'agent'),
     );
+    final changedDefinition = AcpCustomProviderDefinition.tryFromJson({
+      ...definition.toJson(),
+      'launchCommand': AcpLaunchCommand(
+        executable: 'agent',
+        arguments: const ['--changed'],
+      ).toJson(),
+    })!;
     await settings.setString(
       SettingKeys.acpCustomProviders,
-      jsonEncode([
-        definition
-            .update(
-              launchCommand: AcpLaunchCommand(
-                executable: 'agent',
-                arguments: const ['--changed'],
-              ),
-            )
-            .toJson(),
-      ]),
+      jsonEncode([changedDefinition.toJson()]),
     );
     final result = await manager.startNewSession(
       hostId: 1,
@@ -1442,6 +1473,106 @@ void main() {
   });
 
   group('lifecycle', () {
+    for (final gateStart in [true, false]) {
+      test('disposal during ${gateStart ? 'bridge start' : 'session open'} '
+          'cleans up and rejects queued launches', () async {
+        final gate = Completer<void>();
+        final gatedConnector = _FakeConnector(
+          serverFactory: (_, _) =>
+              _FakeAcpServer(newResponseGate: gateStart ? null : gate.future),
+        )..startGate = gateStart ? gate.future : null;
+        final gatedManager = buildManagerWith(gatedConnector);
+        Future<AcpSessionLaunchResult> launch() => gatedManager.startNewSession(
+          hostId: 1,
+          providerId: AcpBuiltinProviderIds.copilotCli,
+          cwd: '/repo',
+        );
+        final opening = launch();
+        for (var turn = 0; turn < 100; turn++) {
+          if (gateStart
+              ? gatedConnector.startedBridges.isNotEmpty
+              : gatedConnector.servers.values.any(
+                  (server) => server.methods.contains('session/new'),
+                )) {
+            break;
+          }
+          await _pump();
+        }
+        expect(gatedConnector.startedBridges, hasLength(1));
+        if (!gateStart) {
+          expect(
+            gatedConnector.servers.values.single.methods,
+            contains('session/new'),
+          );
+        }
+        final queued = expectLater(
+          launch(),
+          throwsA(isA<AcpConnectionClosedException>()),
+        );
+        final disposal = gatedManager.dispose();
+        gate.complete();
+
+        expect(await opening, isA<AcpSessionLaunchFailed>());
+        await disposal;
+        await queued;
+        expect(gatedConnector.stoppedBridges, gatedConnector.startedBridges);
+        expect(
+          gatedConnector.servers.values.every((server) => server.closed),
+          isTrue,
+        );
+        expect(gatedConnector.servers, hasLength(gateStart ? 0 : 1));
+        expect(gatedManager.liveSessionKeyValues, isEmpty);
+        expect(gatedManager.state.sessions, isEmpty);
+        await expectLater(
+          launch(),
+          throwsA(isA<AcpConnectionClosedException>()),
+        );
+      });
+    }
+
+    test(
+      'publishes a complete live burst with ordered metadata once',
+      () async {
+        final key = await startCopilot();
+        final published = <AcpSessionState>[];
+        final complete = Completer<void>();
+        final subscription = manager.states.listen((state) {
+          final session = state.byKeyValue(key.value)!;
+          published.add(session);
+          if (session.title == 'burst-complete' && !complete.isCompleted) {
+            complete.complete();
+          }
+        });
+        addTearDown(subscription.cancel);
+        await _pump();
+        published.clear();
+        final server = connector.servers[key.bridgeId]!;
+        for (var index = 0; index < 128; index++) {
+          server
+            ..pushUpdate(key.acpSessionId, {
+              'sessionUpdate': 'agent_message_chunk',
+              'messageId': 'live-burst',
+              'content': {'type': 'text', 'text': '$index '},
+            })
+            ..pushUpdate(key.acpSessionId, {
+              'sessionUpdate': 'session_info_update',
+              'title': index == 127 ? 'burst-complete' : 'title-$index',
+            });
+        }
+        await complete.future;
+        expect(published, hasLength(1));
+        final message =
+            published.single.timeline.entries.single as AcpMessageEntry;
+        expect(
+          message.content
+              .whereType<AcpTextContent>()
+              .map((block) => block.text)
+              .join(),
+          List.generate(128, (index) => '$index ').join(),
+        );
+      },
+    );
+
     test('detach keeps the remote bridge running', () async {
       final key = await startCopilot();
       await manager.detachSession(key);
@@ -1532,8 +1663,38 @@ void main() {
       'provider exit marks the session exited without stopping others',
       () async {
         isPro = true;
+        final terminals = _FakeCapabilityTerminalExecutor();
+        connector = _FakeConnector(
+          capabilityBinding: AcpHostCapabilityBinding(
+            fileSystem: _FakeCapabilityFileSystem(),
+            terminalExecutor: terminals,
+          ),
+        );
+        await manager.dispose();
+        manager = buildManager();
         final first = await startCopilot();
         final second = await startCopilot(hostId: 2);
+        final server = connector.servers[first.bridgeId]!;
+        final terminalRequest = server.pushServerRequest('terminal/create', {
+          'sessionId': first.acpSessionId,
+          'command': 'sleep',
+          'args': ['60'],
+        });
+        final writeRequest = server.pushServerRequest('fs/write_text_file', {
+          'sessionId': first.acpSessionId,
+          'path': '/repo/pending.txt',
+          'content': 'pending',
+        });
+        await _pump();
+        expect(
+          (server.permissionResponses[terminalRequest]! as Map)['terminalId'],
+          isNotNull,
+        );
+        expect(terminals.processes.single.killed, isFalse);
+        expect(
+          manager.state.byKeyValue(first.value)!.pendingWrites,
+          hasLength(1),
+        );
         connector
             .statesFor(first.bridgeId)
             .add(
@@ -1548,6 +1709,9 @@ void main() {
           manager.state.byKeyValue(first.value)!.status,
           AcpConnectionStatus.providerExited,
         );
+        expect(terminals.processes.single.killed, isTrue);
+        expect(server.permissionResponses[writeRequest], isNotNull);
+        expect(server.closed, isTrue);
         // The unrelated second session is untouched.
         expect(
           manager.state.byKeyValue(second.value)!.status,
@@ -2099,7 +2263,16 @@ void main() {
       'soft reattach resumes from the last rendered bridge sequence',
       () async {
         final key = await startCopilot();
-        connector.lastDeliveredSequences[key.bridgeId] = 23;
+        final server = connector.servers[key.bridgeId]!;
+        for (var index = 0; index < 128; index++) {
+          server.pushUpdate(key.acpSessionId, {
+            'sessionUpdate': 'agent_message_chunk',
+            'messageId': 'detach-burst',
+            'content': {'type': 'text', 'text': '$index '},
+          });
+        }
+        connector.lastDeliveredSequences[key.bridgeId] = 128;
+        await Future<void>.delayed(Duration.zero);
 
         await manager.detachSession(key);
         final result = await manager.reconnectSession(
@@ -2111,7 +2284,20 @@ void main() {
         );
 
         expect(result, isA<AcpSessionLaunchStarted>());
-        expect(connector.connectionAcknowledgements[key.bridgeId], [0, 23]);
+        expect(connector.connectionAcknowledgements[key.bridgeId], [0, 128]);
+        final message = manager.state
+            .byKeyValue(key.value)!
+            .timeline
+            .entries
+            .whereType<AcpMessageEntry>()
+            .singleWhere((entry) => entry.messageId == 'detach-burst');
+        expect(
+          message.content
+              .whereType<AcpTextContent>()
+              .map((block) => block.text)
+              .join(),
+          List.generate(128, (index) => '$index ').join(),
+        );
         expect(
           connector.servers[key.bridgeId]!.methods,
           isNot(contains('initialize')),

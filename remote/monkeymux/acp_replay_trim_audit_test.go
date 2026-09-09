@@ -35,7 +35,19 @@ func TestAcpTrimReplayKeepsPendingAndNewestEvents(t *testing.T) {
 				bridge.replayBytes += event.bytes
 			}
 			pendingEvents, pendingBytes := bridge.pendingReplayEvents, bridge.pendingReplayBytes
+			storage := bridge.replay
 			bridge.trimReplayLocked()
+			if test.name == "oldest" || test.name == "one oversized" {
+				removed := len(storage) - len(bridge.replay)
+				if &bridge.replay[0] != &storage[removed] {
+					t.Error("prefix eviction moved retained events")
+				}
+				for _, event := range storage[:removed] {
+					if !reflect.DeepEqual(event, acpReplayEvent{}) {
+						t.Error("evicted prefix retains payloads")
+					}
+				}
+			}
 			var got []uint64
 			bytes := 0
 			for _, event := range bridge.replay {
@@ -73,5 +85,19 @@ func TestAcpTrimReplayDoesNotAllocatePerEviction(t *testing.T) {
 	})
 	if allocations != 0 {
 		t.Errorf("allocations per eviction = %g, want zero", allocations)
+	}
+}
+
+func BenchmarkAcpReplayFullBufferStreaming(b *testing.B) {
+	bridge := newAuditAcpBridge()
+	message := acpWireMessage{Type: "output", Data: json.RawMessage(`{"delta":"x"}`)}
+	retained := acpReplayMaxBytes / (len(message.Data) + acpReplayEventOverheadBytes)
+	for i := 0; i < retained; i++ {
+		bridge.appendReplayLocked(message, "")
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bridge.appendReplayLocked(message, "")
 	}
 }

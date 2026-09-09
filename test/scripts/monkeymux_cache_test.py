@@ -90,6 +90,14 @@ class MonkeyMuxCacheTest(unittest.TestCase):
                 self.assertNotEqual(before, self.fingerprint())
                 target.write_bytes(original)
 
+    def test_go_test_edits_do_not_invalidate_the_fingerprint(self):
+        before = self.fingerprint()
+        test = self.remote / 'main_test.go'
+        for content in ['package main\n', 'package main\n// changed test\n']:
+            test.write_text(content)
+            self.assertEqual(before, self.fingerprint())
+        self.assertEqual(self.builder().returncode, 0)
+
     def test_app_only_edits_and_checkout_location_do_not_invalidate(self):
         before = self.fingerprint()
         (self.root / 'lib').mkdir()

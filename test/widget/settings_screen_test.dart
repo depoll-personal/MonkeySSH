@@ -519,6 +519,35 @@ void main() {
       expect(find.text('14 pt'), findsOneWidget);
     });
 
+    for (final family in ['monospace', 'JetBrains Mono', 'Custom Mono']) {
+      testWidgets('font size preview uses $family', (tester) async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        await _pumpSettingsScreen(tester, db: db);
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(SettingsScreen)),
+        );
+        await container
+            .read(fontFamilyNotifierProvider.notifier)
+            .setFontFamily(family);
+        await tester.scrollUntilVisible(
+          find.text('Font size'),
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Font size'));
+        await tester.pumpAndSettle();
+        expect(find.byType(AlertDialog), findsOneWidget);
+        final preview = tester.widget<Text>(find.text('AaBbCc 0123 {}[]'));
+        expect(
+          preview.style!.fontFamily,
+          family == 'JetBrains Mono' ? contains('JetBrainsMono') : family,
+        );
+        expect(preview.style!.fontSize, 14);
+      });
+    }
+
     testWidgets('displays font family option', (tester) async {
       final semantics = tester.ensureSemantics();
       final db = AppDatabase.forTesting(NativeDatabase.memory());

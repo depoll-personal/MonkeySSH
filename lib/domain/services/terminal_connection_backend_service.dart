@@ -82,7 +82,7 @@ abstract interface class TerminalConnectionBackend {
   });
 
   /// Closes a backend window.
-  Future<void> killWindow(int windowIndex);
+  Future<void> killWindow(int windowIndex, {String? windowId});
 
   /// Returns whether short-lived control operations are cooling down.
   bool isExecChannelCoolingDown();
@@ -220,9 +220,10 @@ class _DirectTerminalConnectionBackend implements TerminalConnectionBackend {
   );
 
   @override
-  Future<void> killWindow(int windowIndex) => Future<void>.error(
-    UnsupportedError('Direct terminal sessions do not support windows.'),
-  );
+  Future<void> killWindow(int windowIndex, {String? windowId}) =>
+      Future<void>.error(
+        UnsupportedError('Direct terminal sessions do not support windows.'),
+      );
 
   @override
   bool isExecChannelCoolingDown() => false;
@@ -369,12 +370,14 @@ class _MultiplexedTerminalConnectionBackend
   );
 
   @override
-  Future<void> killWindow(int windowIndex) => _remoteMultiplexer.killWindow(
-    _session,
-    _sessionName,
-    windowIndex,
-    extraFlags: _extraFlags,
-  );
+  Future<void> killWindow(int windowIndex, {String? windowId}) =>
+      _remoteMultiplexer.killWindow(
+        _session,
+        _sessionName,
+        windowIndex,
+        windowId: windowId,
+        extraFlags: _extraFlags,
+      );
 
   @override
   bool isExecChannelCoolingDown() =>

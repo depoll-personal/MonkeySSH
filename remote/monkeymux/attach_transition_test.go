@@ -236,8 +236,6 @@ func TestResizeRepublishesGridForUnchangedRequest(t *testing.T) {
 	server.mu.Lock()
 	server.attachClients[conn] = client
 	server.attachConn = conn
-	client.terminalWidth = 80
-	client.terminalHeight = 24
 	server.mu.Unlock()
 
 	server.resizeForClient("phone", 80, 24, false)

@@ -4,8 +4,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:monkeyssh/domain/models/auto_connect_command.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
-import 'package:xterm/xterm.dart';
 
+import '../test/helpers/terminal_input_harness.dart';
 import '../test/helpers/terminal_input_helpers.dart';
 
 import '../test/helpers/terminal_input_scenarios.dart';
@@ -19,25 +19,11 @@ void main() {
     testWidgets('does not prepend whitespace to the first swipe word', (
       tester,
     ) async {
-      final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
-      final focusNode = FocusNode();
-
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: TerminalTextInputHandler(
-              terminal: terminal,
-              focusNode: focusNode,
-              deleteDetection: true,
-              child: const SizedBox.expand(),
-            ),
-          ),
-        ),
+      final harness = await pumpTerminalInputHarness(
+        tester,
+        attachController: false,
       );
-
-      focusNode.requestFocus();
-      await tester.pump();
+      final terminalOutput = harness.terminalOutput;
 
       tester.testTextInput.updateEditingValue(
         const TextEditingValue(
@@ -49,31 +35,17 @@ void main() {
 
       expect(terminalTextFromEvents(terminalOutput), 'hello');
 
-      focusNode.dispose();
+      await disposeTerminalInputHarness(tester, harness);
     });
 
     testWidgets('preserves the full replacement word after swipe typing', (
       tester,
     ) async {
-      final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
-      final focusNode = FocusNode();
-
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: TerminalTextInputHandler(
-              terminal: terminal,
-              focusNode: focusNode,
-              deleteDetection: true,
-              child: const SizedBox.expand(),
-            ),
-          ),
-        ),
+      final harness = await pumpTerminalInputHarness(
+        tester,
+        attachController: false,
       );
-
-      focusNode.requestFocus();
-      await tester.pump();
+      final terminalOutput = harness.terminalOutput;
 
       tester.testTextInput.updateEditingValue(
         const TextEditingValue(
@@ -101,32 +73,18 @@ void main() {
 
       expect(terminalTextFromEvents(terminalOutput), 'the ');
 
-      focusNode.dispose();
+      await disposeTerminalInputHarness(tester, harness);
     });
 
     testWidgets(
       'preserves the separator when swipe typing resumes after an input reset',
       (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                resolveTextBeforeCursor: () => 'echo ready',
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
+        final harness = await pumpTerminalInputHarness(
+          tester,
+          attachController: false,
+          resolveTextBeforeCursor: () => 'echo ready',
         );
-
-        focusNode.requestFocus();
-        await tester.pump();
+        final terminalOutput = harness.terminalOutput;
 
         tester.testTextInput.updateEditingValue(
           const TextEditingValue(
@@ -147,7 +105,7 @@ void main() {
 
         expect(terminalTextFromEvents(terminalOutput), ' world');
 
-        focusNode.dispose();
+        await disposeTerminalInputHarness(tester, harness);
       },
     );
 
@@ -161,26 +119,12 @@ void main() {
     testWidgets(
       'does not duplicate the separator when swipe typing resumes after an input reset',
       (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                resolveTextBeforeCursor: () => 'echo ready ',
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
+        final harness = await pumpTerminalInputHarness(
+          tester,
+          attachController: false,
+          resolveTextBeforeCursor: () => 'echo ready ',
         );
-
-        focusNode.requestFocus();
-        await tester.pump();
+        final terminalOutput = harness.terminalOutput;
 
         tester.testTextInput.updateEditingValue(
           const TextEditingValue(
@@ -201,32 +145,18 @@ void main() {
 
         expect(terminalTextFromEvents(terminalOutput), 'world');
 
-        focusNode.dispose();
+        await disposeTerminalInputHarness(tester, harness);
       },
     );
 
     testWidgets(
       'does not prepend whitespace when a suggestion commits after the buffer is cleared',
       (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
+        final harness = await pumpTerminalInputHarness(
+          tester,
+          attachController: false,
         );
-
-        focusNode.requestFocus();
-        await tester.pump();
+        final terminalOutput = harness.terminalOutput;
 
         await commitSwipeText(tester, '$_deleteDetectionMarker hello');
 
@@ -250,7 +180,7 @@ void main() {
 
         expect(terminalTextFromEvents(terminalOutput), 'world');
 
-        focusNode.dispose();
+        await disposeTerminalInputHarness(tester, harness);
       },
     );
 
@@ -264,25 +194,11 @@ void main() {
     testWidgets(
       'touch-driven caret moves clear the IME buffer after a replacement selection collapses elsewhere',
       (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
+        final harness = await pumpTerminalInputHarness(
+          tester,
+          attachController: false,
         );
-
-        focusNode.requestFocus();
-        await tester.pump();
+        final terminalOutput = harness.terminalOutput;
 
         tester.testTextInput.updateEditingValue(
           const TextEditingValue(
@@ -333,33 +249,19 @@ void main() {
           ),
         );
 
-        focusNode.dispose();
+        await disposeTerminalInputHarness(tester, harness);
       },
     );
 
     testWidgets(
       'preserves the shortened prefix when a delete-reset continuation resumes the same word with the live terminal prefix',
       (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                resolveTextBeforeCursor: () => 'didn',
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
+        final harness = await pumpTerminalInputHarness(
+          tester,
+          attachController: false,
+          resolveTextBeforeCursor: () => 'didn',
         );
-
-        focusNode.requestFocus();
-        await tester.pump();
+        final terminalOutput = harness.terminalOutput;
 
         tester.testTextInput.updateEditingValue(
           const TextEditingValue(
@@ -387,33 +289,19 @@ void main() {
 
         expect(terminalTextFromEvents(terminalOutput), 'didntest');
 
-        focusNode.dispose();
+        await disposeTerminalInputHarness(tester, harness);
       },
     );
 
     testWidgets(
       'preserves the deleted suffix when a trailing-backspace reset resumes the same word and continues into the next word',
       (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                resolveTextBeforeCursor: () => 'thin',
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
+        final harness = await pumpTerminalInputHarness(
+          tester,
+          attachController: false,
+          resolveTextBeforeCursor: () => 'thin',
         );
-
-        focusNode.requestFocus();
-        await tester.pump();
+        final terminalOutput = harness.terminalOutput;
 
         tester.testTextInput.updateEditingValue(
           const TextEditingValue(
@@ -450,33 +338,19 @@ void main() {
           (text: 'things are ', cursorOffset: 'things are '.length),
         );
 
-        focusNode.dispose();
+        await disposeTerminalInputHarness(tester, harness);
       },
     );
 
     testWidgets(
       'keeps the shortened prefix when later delete-reset words only share letters with the deleted suggestion',
       (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                resolveTextBeforeCursor: () => 'what do we t',
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
+        final harness = await pumpTerminalInputHarness(
+          tester,
+          attachController: false,
+          resolveTextBeforeCursor: () => 'what do we t',
         );
-
-        focusNode.requestFocus();
-        await tester.pump();
+        final terminalOutput = harness.terminalOutput;
 
         tester.testTextInput.updateEditingValue(
           const TextEditingValue(
@@ -516,7 +390,7 @@ void main() {
           ),
         );
 
-        focusNode.dispose();
+        await disposeTerminalInputHarness(tester, harness);
       },
     );
 
@@ -530,26 +404,12 @@ void main() {
     testWidgets(
       'preserves a new separator when a trailing-backspace reset is followed by a same-initial unrelated committed word',
       (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                resolveTextBeforeCursor: () => 'shel',
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
+        final harness = await pumpTerminalInputHarness(
+          tester,
+          attachController: false,
+          resolveTextBeforeCursor: () => 'shel',
         );
-
-        focusNode.requestFocus();
-        await tester.pump();
+        final terminalOutput = harness.terminalOutput;
 
         tester.testTextInput.updateEditingValue(
           const TextEditingValue(
@@ -586,7 +446,7 @@ void main() {
           (text: 'shel story ', cursorOffset: 'shel story '.length),
         );
 
-        focusNode.dispose();
+        await disposeTerminalInputHarness(tester, harness);
       },
     );
 
@@ -614,30 +474,16 @@ void main() {
     testWidgets('reviews unbracketed multiline IME paste before sending it', (
       tester,
     ) async {
-      final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
-      final focusNode = FocusNode();
       final reviews = <TerminalCommandReview>[];
-
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: TerminalTextInputHandler(
-              terminal: terminal,
-              focusNode: focusNode,
-              deleteDetection: true,
-              onReviewInsertedText: (review) async {
-                reviews.add(review);
-                return false;
-              },
-              child: const SizedBox.expand(),
-            ),
-          ),
-        ),
+      final harness = await pumpTerminalInputHarness(
+        tester,
+        attachController: false,
+        onReviewInsertedText: (review) async {
+          reviews.add(review);
+          return false;
+        },
       );
-
-      focusNode.requestFocus();
-      await tester.pump();
+      final terminalOutput = harness.terminalOutput;
 
       (tester.state(find.byType(TerminalTextInputHandler)) as TextInputClient)
           .updateEditingValue(
@@ -656,7 +502,7 @@ void main() {
       );
       expect(terminalOutput, isEmpty);
 
-      focusNode.dispose();
+      await disposeTerminalInputHarness(tester, harness);
     });
   });
 }

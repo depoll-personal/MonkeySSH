@@ -107,7 +107,7 @@ class MonetizationService {
 
   Future<void> _initializeInternal() async {
     try {
-      _purchaseSubscription = _inAppPurchase.purchaseStream.listen(
+      _purchaseSubscription ??= _inAppPurchase.purchaseStream.listen(
         _handlePurchaseUpdates,
         onError: (Object error, StackTrace stackTrace) {
           if (kDebugMode) {
@@ -328,18 +328,22 @@ class MonetizationService {
       _MonetizationPurchaseOption(productDetails: final productDetails) =>
         PurchaseParam(productDetails: productDetails),
     };
-    final started = await _inAppPurchase.buyNonConsumable(
-      purchaseParam: purchaseParam,
-    );
-    if (!started) {
-      _pendingPurchaseResult = null;
-      _pendingOfferId = null;
-      _pendingPurchaseFlowStarted = false;
-      _pendingPurchaseObservedUpdate = false;
-      _emit(_state.copyWith(isLoading: false));
-      return const MonetizationActionResult.failure(
-        'Could not start the purchase flow.',
+    bool started;
+    try {
+      started = await _inAppPurchase.buyNonConsumable(
+        purchaseParam: purchaseParam,
       );
+    } on Object {
+      started = false;
+    }
+    if (!started) {
+      _emit(_state.copyWith(isLoading: false));
+      _resolvePendingPurchase(
+        const MonetizationActionResult.failure(
+          'Could not start the purchase flow.',
+        ),
+      );
+      return completer.future;
     }
     _pendingPurchaseFlowStarted = true;
 
@@ -741,7 +745,7 @@ class MonetizationService {
       final isLifetime = MonetizationProductIds.isLifetime(
         selectedPurchase.productID,
       );
-      return _applySuccessfulPurchase(
+      return await _applySuccessfulPurchase(
         selectedPurchase,
         successMessage: isLifetime
             ? 'Restored MonkeySSH Pro Lifetime.'

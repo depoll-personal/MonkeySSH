@@ -67,18 +67,14 @@ class TmuxWindow {
 
   /// Parses a [TmuxWindow] from a tmux format string.
   ///
-  /// Expected primary format (from `tmux list-windows -F`) is Unit
+  /// Expected format (from `tmux list-windows -F`) is Unit
   /// Separator-delimited:
   /// `index<US>name<US>active_flag<US>command<US>path<US>flags<US>`
   /// `pane_title<US>activity_epoch<US>pane_start_command<US>agent_tool<US>`
   /// `window_id<US>pane_pid<US>agent_session_id<US>agent_session_title<US>`
   /// `agent_session_confidence`
-  ///
-  /// Legacy pipe-delimited snapshots are still accepted for older tests and
-  /// stale control-mode messages.
   factory TmuxWindow.fromTmuxFormat(String line) {
-    final parsed = _splitTmuxWindowFormatFields(line);
-    final fields = parsed.fields;
+    final fields = line.split(tmuxWindowFieldSeparator);
     if (fields.length < 3) {
       throw FormatException('Invalid tmux window format: $line');
     }
@@ -103,7 +99,7 @@ class TmuxWindow {
       lastActivityEpochSeconds: activityEpoch != null && activityEpoch > 0
           ? activityEpoch
           : null,
-      paneStartCommand: parsed.paneStartCommand,
+      paneStartCommand: fields.length > 8 ? _nonEmpty(fields[8]) : null,
       agentTool: agentTool,
       hasUnsupportedAgentTool: unsupportedTool,
       activeAgentSessionId: !unsupportedTool && fields.length > 12
@@ -880,32 +876,6 @@ bool isValidTmuxWindowId(String value) => RegExp(r'^@\d+$').hasMatch(value);
 String? _nonEmpty(String value) {
   final trimmed = value.trim();
   return trimmed.isEmpty ? null : trimmed;
-}
-
-({List<String> fields, String? paneStartCommand}) _splitTmuxWindowFormatFields(
-  String line,
-) {
-  if (line.contains(tmuxWindowFieldSeparator)) {
-    final fields = line.split(tmuxWindowFieldSeparator);
-    return (
-      fields: fields,
-      paneStartCommand: fields.length > 8 ? _nonEmpty(fields[8]) : null,
-    );
-  }
-
-  final fields = line.split('|');
-  if (fields.length <= 7) {
-    return (fields: fields, paneStartCommand: null);
-  }
-
-  return (
-    fields: <String>[
-      ...fields.take(6),
-      fields.sublist(6, fields.length - 1).join('|'),
-      fields.last,
-    ],
-    paneStartCommand: null,
-  );
 }
 
 String? _normalizedTmuxTitle(

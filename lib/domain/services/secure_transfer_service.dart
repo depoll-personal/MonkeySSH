@@ -257,10 +257,7 @@ class SecureTransferService {
   }
 
   /// Creates canonical migration data that can be reused by sync flows.
-  Future<Map<String, dynamic>> createMigrationData({
-    Set<String>? allowedSettingsKeys,
-    bool includeKnownHosts = true,
-  }) async {
+  Future<Map<String, dynamic>> createMigrationData() async {
     final settings = await _db.select(_db.settings).get();
     final groups = await _db.select(_db.groups).get();
     final keys = await _keyRepository.getAll();
@@ -310,16 +307,13 @@ class SecureTransferService {
         fields: {'skippedCount': skippedPortForwardCount},
       );
     }
-    final knownHosts = includeKnownHosts
-        ? await _db.select(_db.knownHosts).get()
-        : const <KnownHost>[];
+    final knownHosts = await _db.select(_db.knownHosts).get();
     final rawSettings = <String, String>{
       for (final setting in settings) setting.key: setting.value,
     };
-    final filteredSettings = _filterSettings(rawSettings, allowedSettingsKeys);
 
     return {
-      'settings': filteredSettings,
+      'settings': _sortedStringMap(rawSettings),
       'groups': _sortedJsonRecords(groups.map((item) => item.toJson())),
       'keys': _sortedJsonRecords(keys.map((item) => item.toJson())),
       'hosts': _sortedJsonRecords(exportedHosts),
@@ -330,10 +324,7 @@ class SecureTransferService {
       'portForwards': _sortedJsonRecords(
         portForwards.map((item) => item.toJson()),
       ),
-      if (includeKnownHosts)
-        'knownHosts': _sortedJsonRecords(
-          knownHosts.map((item) => item.toJson()),
-        ),
+      'knownHosts': _sortedJsonRecords(knownHosts.map((item) => item.toJson())),
     };
   }
 
@@ -507,10 +498,7 @@ class SecureTransferService {
   }
 
   /// Produces a migration preview from raw migration data.
-  MigrationPreview previewMigrationData(
-    Map<String, dynamic> data, {
-    bool includeKnownHosts = true,
-  }) {
+  MigrationPreview previewMigrationData(Map<String, dynamic> data) {
     final settingsMap = data['settings'];
     final settingsCount = settingsMap is Map ? settingsMap.length : 0;
 
@@ -522,9 +510,7 @@ class SecureTransferService {
       snippetCount: _listFromData(data, 'snippets').length,
       snippetFolderCount: _listFromData(data, 'snippetFolders').length,
       portForwardCount: _listFromData(data, 'portForwards').length,
-      knownHostCount: includeKnownHosts
-          ? _listFromData(data, 'knownHosts').length
-          : 0,
+      knownHostCount: _listFromData(data, 'knownHosts').length,
     );
   }
 
@@ -544,14 +530,10 @@ class SecureTransferService {
   Future<void> importMigrationData({
     required Map<String, dynamic> data,
     required MigrationImportMode mode,
-    Set<String>? allowedSettingsKeys,
-    bool includeKnownHosts = true,
   }) async {
     final diagnosticsFields = _migrationImportDiagnosticsFields(
       data: data,
       mode: mode,
-      allowedSettingsKeys: allowedSettingsKeys,
-      includeKnownHosts: includeKnownHosts,
     );
     _diagnosticsLogger.info(
       'secure_transfer',
@@ -565,7 +547,7 @@ class SecureTransferService {
           if (mode == MigrationImportMode.replace) {
             await _db.customStatement('PRAGMA defer_foreign_keys = ON');
             deferForeignKeysEnabled = true;
-            await _clearMigrationTables(clearKnownHosts: includeKnownHosts);
+            await _clearMigrationTables();
           }
 
           final groupMapping = await _importGroups(
@@ -595,16 +577,13 @@ class SecureTransferService {
             _listFromData(data, 'portForwards'),
             hostMapping: hostMapping,
           );
-          if (includeKnownHosts) {
-            await _importKnownHosts(
-              _listFromData(data, 'knownHosts'),
-              mode: mode,
-            );
-          }
+          await _importKnownHosts(
+            _listFromData(data, 'knownHosts'),
+            mode: mode,
+          );
           await _importSettings(
             _settingsFromData(data),
             clearExisting: mode == MigrationImportMode.replace,
-            allowedSettingsKeys: allowedSettingsKeys,
             hostMapping: hostMapping,
           );
         } finally {
@@ -835,16 +814,14 @@ class SecureTransferService {
     return createdKey;
   }
 
-  Future<void> _clearMigrationTables({required bool clearKnownHosts}) async {
+  Future<void> _clearMigrationTables() async {
     await _db.customStatement('DELETE FROM port_forwards');
     await _db.customStatement('DELETE FROM snippets');
     await _db.customStatement('DELETE FROM snippet_folders');
     await _db.customStatement('DELETE FROM hosts');
     await _db.customStatement('DELETE FROM ssh_keys');
     await _db.customStatement('DELETE FROM groups');
-    if (clearKnownHosts) {
-      await _db.customStatement('DELETE FROM known_hosts');
-    }
+    await _db.customStatement('DELETE FROM known_hosts');
   }
 
   Future<Map<int, int>> _importGroups(List<Map<String, dynamic>> rawGroups) =>
@@ -1232,24 +1209,15 @@ class SecureTransferService {
     Map<String, String> settings, {
     required bool clearExisting,
     required Map<int, int> hostMapping,
-    Set<String>? allowedSettingsKeys,
   }) async {
-    final filteredSettings = _prepareImportedSettings(
-      _filterSettings(settings, allowedSettingsKeys),
+    final preparedSettings = _prepareImportedSettings(
+      _sortedStringMap(settings),
       hostMapping: hostMapping,
     );
     if (clearExisting) {
-      if (allowedSettingsKeys == null) {
-        await _db.customStatement('DELETE FROM settings');
-      } else {
-        for (final key in allowedSettingsKeys) {
-          await (_db.delete(
-            _db.settings,
-          )..where((s) => s.key.equals(key))).go();
-        }
-      }
+      await _db.customStatement('DELETE FROM settings');
     }
-    for (final entry in filteredSettings.entries) {
+    for (final entry in preparedSettings.entries) {
       final value =
           !clearExisting && _hostScopedSettingsKeys.contains(entry.key)
           ? await _mergeHostScopedSettingValue(entry.key, entry.value)
@@ -1283,20 +1251,16 @@ class SecureTransferService {
   Map<String, Object?> _migrationImportDiagnosticsFields({
     required Map<String, dynamic> data,
     required MigrationImportMode mode,
-    required Set<String>? allowedSettingsKeys,
-    required bool includeKnownHosts,
   }) => {
     'mode': mode,
-    'includeKnownHosts': includeKnownHosts,
     'settingsCount': _mapCount(data, 'settings'),
-    'allowedSettingsKeyCount': allowedSettingsKeys?.length,
     'groupCount': _listCount(data, 'groups'),
     'keyCount': _listCount(data, 'keys'),
     'hostCount': _listCount(data, 'hosts'),
     'snippetFolderCount': _listCount(data, 'snippetFolders'),
     'snippetCount': _listCount(data, 'snippets'),
     'portForwardCount': _listCount(data, 'portForwards'),
-    'knownHostCount': includeKnownHosts ? _listCount(data, 'knownHosts') : 0,
+    'knownHostCount': _listCount(data, 'knownHosts'),
   };
 
   int _listCount(Map<String, dynamic> data, String key) {
@@ -1321,22 +1285,6 @@ class SecureTransferService {
       }
     }
     return result;
-  }
-
-  Map<String, String> _filterSettings(
-    Map<String, String> settings,
-    Set<String>? allowedSettingsKeys,
-  ) {
-    if (allowedSettingsKeys == null) {
-      return _sortedStringMap(settings);
-    }
-    return _sortedStringMap(
-      Map<String, String>.fromEntries(
-        settings.entries.where(
-          (entry) => allowedSettingsKeys.contains(entry.key),
-        ),
-      ),
-    );
   }
 
   Map<String, String> _prepareImportedSettings(

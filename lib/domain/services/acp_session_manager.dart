@@ -612,6 +612,7 @@ class AcpSessionManager {
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    await _mutationQueue;
     final controllers = _controllers.values.toList(growable: false);
     _controllers.clear();
     for (final controller in controllers) {
@@ -640,6 +641,7 @@ class AcpSessionManager {
     final startedAt = _clock();
     MonkeyMuxAcpBridgeStartResult startResult;
     try {
+      if (_disposed) throw const AcpConnectionClosedException();
       startResult = await _connector.startBridge(
         hostId: hostId,
         providerId: launch.providerId,
@@ -655,6 +657,17 @@ class AcpSessionManager {
         fields: {'hostId': hostId, 'errorType': error.runtimeType},
       );
       return AcpSessionLaunchFailed(null, _mapBridgeError(error));
+    }
+    if (_disposed) {
+      await _maybeStopOrphanBridge(
+        startedBridge: true,
+        hostId: hostId,
+        bridgeId: startResult.bridgeId,
+      );
+      return AcpSessionLaunchFailed(
+        null,
+        _mapBridgeError(const AcpConnectionClosedException()),
+      );
     }
     return _attachAndOpen(
       hostId: hostId,
@@ -757,6 +770,7 @@ class AcpSessionManager {
         }
       }
       final key = await openFuture;
+      if (_disposed) throw const AcpConnectionClosedException();
       final previousPublishedKey = provisionalKeyValue;
       if (previousPublishedKey != null &&
           previousPublishedKey != key.value &&
@@ -1117,7 +1131,10 @@ class AcpSessionManager {
   }
 
   Future<T> _serialize<T>(Future<T> Function() action) {
-    final operation = _mutationQueue.then((_) => action());
+    final operation = _mutationQueue.then((_) {
+      if (_disposed) throw const AcpConnectionClosedException();
+      return action();
+    });
     _mutationQueue = operation.then<void>((_) {}, onError: (_) {});
     return operation;
   }
@@ -1822,7 +1839,7 @@ class _SessionController {
         var turnCount = 0;
         do {
           final queued = _removeNextSessionUpdate();
-          _applySessionUpdate(queued.notification, notifyManager: false);
+          _applySessionUpdate(queued.notification);
           _sessionUpdatesApplied += queued.consumedCount;
           updateCount += queued.consumedCount;
           turnCount += 1;
@@ -1845,6 +1862,7 @@ class _SessionController {
         if (_historyReplayPublicationHeld) {
           _managerNotificationPending = true;
         } else {
+          _state = _state.copyWith(timeline: _timelineBuilder.snapshot());
           _managerNotificationPending = false;
           _manager._onControllerChanged(this);
         }
@@ -1978,18 +1996,11 @@ class _SessionController {
     }
   }
 
-  void _applySessionUpdate(
-    AcpSessionNotification notification, {
-    bool notifyManager = true,
-  }) {
+  void _applySessionUpdate(AcpSessionNotification notification) {
     final update = notification.update;
-    final timeline = _timelineBuilder.apply(
-      update,
-      createSnapshot: !_historyReplayPublicationHeld,
-    );
+    _timelineBuilder.apply(update, createSnapshot: false);
     _update((s) {
       var next = s.copyWith(lastActivityAt: _clock());
-      if (timeline != null) next = next.copyWith(timeline: timeline);
       switch (update) {
         case AcpPlanUpdate(:final entries):
           next = next.copyWith(plan: _bounded(entries, _maxSessionListEntries));
@@ -2039,7 +2050,7 @@ class _SessionController {
           break;
       }
       return next;
-    }, notifyManager: notifyManager);
+    }, notifyManager: false);
     _scheduleRecentPersistence();
   }
 
@@ -2744,7 +2755,9 @@ class _SessionController {
   Future<void> _cleanUpAfterTerminalTransport() async {
     _stopDetachedTurnMonitor();
     await _cancelSubscriptions();
-    await _releaseLease();
+    await _releaseLease(
+      permanent: _state.status == AcpConnectionStatus.providerExited,
+    );
   }
 
   void _onTransportError(MonkeyMuxAcpBridgeException error) {
@@ -2819,8 +2832,6 @@ class _SessionController {
 
   Future<void> _cancelSubscriptions() async {
     await _updatesSub?.cancel();
-    _pendingSessionUpdates.clear();
-    _sessionUpdatesApplied = _sessionUpdatesEnqueued;
     final updatePump = _sessionUpdatePumpFuture;
     if (updatePump != null) await updatePump;
     _pendingSessionUpdates.clear();

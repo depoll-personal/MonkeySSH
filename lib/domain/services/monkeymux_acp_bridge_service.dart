@@ -1021,7 +1021,7 @@ final class MonkeyMuxAcpTransport implements AcpDecodedTransport {
       );
       return;
     }
-    if (directReplay) _directReplayInProgress = true;
+    _directReplayInProgress = directReplay;
     _acceptsPendingFrames = pendingOnly;
     _pendingHandshakeRequestCount = pendingOnly
         ? metadata.pendingRequestCount

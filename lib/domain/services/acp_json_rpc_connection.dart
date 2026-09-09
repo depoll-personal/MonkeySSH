@@ -57,19 +57,6 @@ final class AcpRequestTimeoutException extends AcpJsonRpcException {
   final String method;
 }
 
-/// A pending request was cancelled locally.
-final class AcpRequestCancelledException extends AcpJsonRpcException {
-  /// Creates a cancellation error.
-  const AcpRequestCancelledException(this.id, this.method)
-    : super('Request $method ($id) was cancelled');
-
-  /// Cancelled request identifier.
-  final AcpRequestId id;
-
-  /// Cancelled method.
-  final String method;
-}
-
 /// The connection closed while work was pending.
 final class AcpConnectionClosedException extends AcpJsonRpcException {
   /// Creates a connection-closed error.
@@ -143,40 +130,14 @@ final class AcpJsonRpcServerRequest {
   }
 }
 
-/// A cancellable pending JSON-RPC request.
-final class AcpPendingRequest {
-  AcpPendingRequest._({
-    required this.id,
-    required this.method,
-    required this.future,
-    required void Function() cancel,
-  }) : _cancel = cancel;
-
-  /// Request identifier.
-  final AcpRequestId id;
-
-  /// Request method.
-  final String method;
-
-  /// Future JSON-RPC result.
-  final Future<Object?> future;
-
-  final void Function() _cancel;
-
-  /// Cancels local response waiting.
-  void cancel() => _cancel();
-}
-
 final class _PendingResponse {
   _PendingResponse({
     required this.id,
-    required this.method,
     required this.completer,
     required this.timer,
   });
 
   final AcpRequestId id;
-  final String method;
   final Completer<Object?> completer;
   final Timer? timer;
 }
@@ -247,8 +208,8 @@ final class AcpJsonRpcConnection {
   /// Whether the connection has closed.
   bool get isClosed => _closed;
 
-  /// Sends a request and returns a cancellable handle.
-  AcpPendingRequest sendRequest(
+  /// Sends a request and awaits its result.
+  Future<Object?> request(
     String method, {
     Object? params,
     Duration? timeout,
@@ -284,7 +245,6 @@ final class AcpJsonRpcConnection {
           });
     pending = _PendingResponse(
       id: requestId,
-      method: method,
       completer: completer,
       timer: timer,
     );
@@ -301,28 +261,8 @@ final class AcpJsonRpcConnection {
         }
       }),
     );
-    return AcpPendingRequest._(
-      id: requestId,
-      method: method,
-      future: completer.future,
-      cancel: () => _cancelRequest(pending),
-    );
+    return completer.future;
   }
-
-  /// Sends a request and awaits its result.
-  Future<Object?> request(
-    String method, {
-    Object? params,
-    Duration? timeout,
-    AcpRequestId? id,
-    bool noTimeout = false,
-  }) => sendRequest(
-    method,
-    params: params,
-    timeout: timeout,
-    id: id,
-    noTimeout: noTimeout,
-  ).future;
 
   /// Sends a JSON-RPC notification.
   Future<void> notify(String method, {Object? params}) {
@@ -488,15 +428,6 @@ final class AcpJsonRpcConnection {
     _pending.remove(pending.id);
     pending.timer?.cancel();
     return true;
-  }
-
-  void _cancelRequest(_PendingResponse pending) {
-    if (!_removePending(pending)) return;
-    if (!pending.completer.isCompleted) {
-      pending.completer.completeError(
-        AcpRequestCancelledException(pending.id, pending.method),
-      );
-    }
   }
 
   Future<void> _writeMessage(AcpJsonMap message) async {

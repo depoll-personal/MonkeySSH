@@ -55,18 +55,6 @@ final class AcpFileSystemCapabilities implements AcpExtensible {
     this.extensions = const <String, Object?>{},
   });
 
-  /// Parses file-system capabilities.
-  factory AcpFileSystemCapabilities.fromJson(AcpJsonMap json) =>
-      AcpFileSystemCapabilities(
-        readTextFile: AcpJson.boolean(json, 'readTextFile') ?? false,
-        writeTextFile: AcpJson.boolean(json, 'writeTextFile') ?? false,
-        meta: AcpJson.meta(json),
-        extensions: AcpJson.extensions(json, const [
-          'readTextFile',
-          'writeTextFile',
-        ]),
-      );
-
   /// Whether `fs/read_text_file` is supported.
   final bool readTextFile;
 
@@ -98,25 +86,6 @@ final class AcpClientCapabilities implements AcpExtensible {
     this.meta = const <String, Object?>{},
     this.extensions = const <String, Object?>{},
   });
-
-  /// Parses client capabilities.
-  factory AcpClientCapabilities.fromJson(AcpJsonMap json) {
-    final fileSystem = AcpJson.objectField(json, 'fs');
-    final session = AcpJson.objectField(json, 'session');
-    final configOptions = session == null
-        ? null
-        : AcpJson.objectField(session, 'configOptions');
-    return AcpClientCapabilities(
-      fileSystem: fileSystem == null
-          ? null
-          : AcpFileSystemCapabilities.fromJson(fileSystem),
-      terminal: AcpJson.boolean(json, 'terminal') ?? false,
-      booleanConfigOptions:
-          configOptions != null && configOptions['boolean'] is Map,
-      meta: AcpJson.meta(json),
-      extensions: AcpJson.extensions(json, const ['fs', 'terminal', 'session']),
-    );
-  }
 
   /// Optional file-system capabilities.
   final AcpFileSystemCapabilities? fileSystem;
@@ -764,20 +733,13 @@ final class AcpConfigValueGroup implements AcpExtensible {
   });
 
   /// Parses a configuration value group.
-  factory AcpConfigValueGroup.fromJson(AcpJsonMap json) {
-    final options = <AcpConfigValue>[];
-    for (final item in AcpJson.listField(json, 'options') ?? const []) {
-      final option = AcpJson.object(item);
-      if (option != null) options.add(AcpConfigValue.fromJson(option));
-    }
-    return AcpConfigValueGroup(
-      id: AcpJson.identifier(json, 'group') ?? '',
-      name: AcpJson.string(json, 'name') ?? '',
-      options: List<AcpConfigValue>.unmodifiable(options),
-      meta: AcpJson.meta(json),
-      extensions: AcpJson.extensions(json, const ['group', 'name', 'options']),
-    );
-  }
+  factory AcpConfigValueGroup.fromJson(AcpJsonMap json) => AcpConfigValueGroup(
+    id: AcpJson.identifier(json, 'group') ?? '',
+    name: AcpJson.string(json, 'name') ?? '',
+    options: AcpJson.objectList(json['options'], AcpConfigValue.fromJson),
+    meta: AcpJson.meta(json),
+    extensions: AcpJson.extensions(json, const ['group', 'name', 'options']),
+  );
 
   /// Group identifier.
   final String id;

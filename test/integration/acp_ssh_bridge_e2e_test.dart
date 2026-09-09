@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/acp_content.dart';
+import 'package:monkeyssh/domain/models/acp_json.dart';
 import 'package:monkeyssh/domain/models/acp_protocol.dart';
 import 'package:monkeyssh/domain/models/acp_updates.dart';
 import 'package:monkeyssh/domain/services/acp_client.dart';
@@ -236,8 +237,7 @@ void main() {
 
         transport.holdAcknowledgements = true;
         final permissionRequests = requests
-            .where((request) => request is AcpPermissionServerRequest)
-            .cast<AcpPermissionServerRequest>()
+            .where((request) => request.method == 'session/request_permission')
             .asBroadcastStream();
         final firstPermission = permissionRequests.first;
         final image = updates.firstWhere(
@@ -262,13 +262,15 @@ void main() {
         final replayedPermission = permissionRequests.first;
         await transport.reconnect();
         final permission = await replayedPermission;
-        expect(permission.permission.options.map((option) => option.id), [
-          'allow-once',
-          'allow-always',
-          'reject-once',
-          'reject-always',
-        ]);
-        await permission.select('allow-once');
+        expect(
+          AcpPermissionRequest.fromJson(
+            AcpJson.object(permission.params)!,
+          ).options.map((option) => option.id),
+          ['allow-once', 'allow-always', 'reject-once', 'reject-always'],
+        );
+        await permission.respond({
+          'outcome': const AcpSelectedPermissionOutcome('allow-once').toJson(),
+        });
         expect((await prompt).stopReason, AcpStopReason.endTurn);
         final imageContent =
             ((await image).update as AcpContentChunkUpdate).content
@@ -316,7 +318,9 @@ void main() {
           sessionId: sessionId,
           content: const [AcpTextContent('/echo bridge-ok')],
         );
-        await (await slashPermission).select('allow-once');
+        await (await slashPermission).respond({
+          'outcome': const AcpSelectedPermissionOutcome('allow-once').toJson(),
+        });
         expect((await slashPrompt).stopReason, AcpStopReason.endTurn);
         await slashResponse;
 

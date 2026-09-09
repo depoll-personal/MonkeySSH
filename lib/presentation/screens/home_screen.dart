@@ -3407,6 +3407,9 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     _muxBackend = muxBackend;
 
     await _windowChangeSubscription?.cancel();
+    if (!_isCurrentTmuxQuery(queryGeneration)) {
+      return;
+    }
     final generation = ++_windowEventGeneration;
     _windowChangeSubscription = mux
         .watchWindowChanges(

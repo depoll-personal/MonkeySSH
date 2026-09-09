@@ -563,7 +563,6 @@ class MonkeyTerminalView extends StatefulWidget {
     this.autoResize = true,
     this.resizeTerminalToViewport = true,
     this.notifyPixelSizeChanges = true,
-    this.backgroundOpacity = 1,
     this.focusNode,
     this.cursorFocusNode,
     this.autofocus = false,
@@ -577,11 +576,9 @@ class MonkeyTerminalView extends StatefulWidget {
     this.resolveLinkTap,
     this.onLinkTapDown,
     this.onLinkTap,
-    this.mouseCursor = SystemMouseCursors.text,
     this.keyboardType = TextInputType.emailAddress,
     this.keyboardAppearance = Brightness.dark,
     this.cursorType = TerminalCursorType.block,
-    this.alwaysShowCursor = false,
     this.deleteDetection = false,
     this.shortcuts,
     this.onKeyEvent,
@@ -636,10 +633,6 @@ class MonkeyTerminalView extends StatefulWidget {
   /// to avoid making a remote TUI redraw for a sub-cell keyboard/layout change.
   final bool notifyPixelSizeChanges;
 
-  /// Opacity of the terminal background. Set to 0 to make the terminal
-  /// background transparent.
-  final double backgroundOpacity;
-
   /// An optional focus node to use as the focus node for this widget.
   final FocusNode? focusNode;
 
@@ -687,10 +680,6 @@ class MonkeyTerminalView extends StatefulWidget {
   /// Called when a primary tap should open a resolved terminal link.
   final ValueChanged<String>? onLinkTap;
 
-  /// The mouse cursor for mouse pointers that are hovering over the terminal.
-  /// [SystemMouseCursors.text] by default.
-  final MouseCursor mouseCursor;
-
   /// The type of information for which to optimize the text input control.
   /// [TextInputType.emailAddress] by default.
   final TextInputType keyboardType;
@@ -702,10 +691,6 @@ class MonkeyTerminalView extends StatefulWidget {
 
   /// The type of cursor to use. [TerminalCursorType.block] by default.
   final TerminalCursorType cursorType;
-
-  /// Whether to always show the cursor. This is useful for debugging.
-  /// [false] by default.
-  final bool alwaysShowCursor;
 
   /// Workaround to detect delete key for platforms and IMEs that does not
   /// emit hardware delete event. Preferred on mobile platforms. [false] by
@@ -1309,7 +1294,6 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
           inlineUnderlines: widget.inlineUnderlines,
           focusNode: cursorFocusNode,
           cursorType: widget.cursorType,
-          alwaysShowCursor: widget.alwaysShowCursor,
           onEditableRect: _onEditableRect,
           composingText: _composingText,
           selectionRegistrar: SelectionContainer.maybeOf(context),
@@ -1422,7 +1406,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       child: child,
     );
 
-    child = MouseRegion(cursor: widget.mouseCursor, child: child);
+    child = MouseRegion(cursor: SystemMouseCursors.text, child: child);
 
     if (shouldFillHorizontalRemainder && _viewportKey.currentContext != null) {
       final horizontalFillScale = resolveTerminalHorizontalFillScale(
@@ -1442,9 +1426,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     child = ClipRect(child: child);
 
     child = Container(
-      color: widget.theme.background.withValues(
-        alpha: widget.backgroundOpacity,
-      ),
+      color: widget.theme.background.withValues(alpha: 1),
       padding: terminalViewportPadding,
       child: child,
     );
@@ -2008,7 +1990,6 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   Future<Object?> _onPasteText(PasteTextIntent intent) async {
     if (widget.onPasteText != null) {
       await widget.onPasteText!();
-      _controller.clearSelection();
       return null;
     }
 
@@ -2073,7 +2054,6 @@ class _TerminalView extends LeafRenderObjectWidget {
     required this.inlineUnderlines,
     required this.focusNode,
     required this.cursorType,
-    required this.alwaysShowCursor,
     this.onEditableRect,
     this.composingText,
     this.selectionRegistrar,
@@ -2111,8 +2091,6 @@ class _TerminalView extends LeafRenderObjectWidget {
 
   final TerminalCursorType cursorType;
 
-  final bool alwaysShowCursor;
-
   final EditableRectCallback? onEditableRect;
 
   final String? composingText;
@@ -2138,7 +2116,6 @@ class _TerminalView extends LeafRenderObjectWidget {
       inlineUnderlines: inlineUnderlines,
       focusNode: focusNode,
       cursorType: cursorType,
-      alwaysShowCursor: alwaysShowCursor,
       onEditableRect: onEditableRect,
       composingText: composingText,
       selectionRegistrar: selectionRegistrar,
@@ -2167,7 +2144,6 @@ class _TerminalView extends LeafRenderObjectWidget {
       ..inlineUnderlines = inlineUnderlines
       ..focusNode = focusNode
       ..cursorType = cursorType
-      ..alwaysShowCursor = alwaysShowCursor
       ..onEditableRect = onEditableRect
       ..composingText = composingText
       ..selectionRegistrar = selectionRegistrar;
@@ -3094,7 +3070,6 @@ class MonkeyRenderTerminal extends RenderBox
     required List<TerminalTextUnderline> inlineUnderlines,
     required FocusNode focusNode,
     required TerminalCursorType cursorType,
-    required bool alwaysShowCursor,
     EditableRectCallback? onEditableRect,
     String? composingText,
     SelectionRegistrar? selectionRegistrar,
@@ -3111,7 +3086,6 @@ class MonkeyRenderTerminal extends RenderBox
        _inlineUnderlines = inlineUnderlines,
        _focusNode = focusNode,
        _cursorType = cursorType,
-       _alwaysShowCursor = alwaysShowCursor,
        _onEditableRect = onEditableRect,
        _composingText = composingText,
        _selectionGeometry = SelectionGeometry(
@@ -3260,13 +3234,6 @@ class MonkeyRenderTerminal extends RenderBox
   set cursorType(TerminalCursorType value) {
     if (value == _cursorType) return;
     _cursorType = value;
-    markNeedsPaint();
-  }
-
-  bool _alwaysShowCursor;
-  set alwaysShowCursor(bool value) {
-    if (value == _alwaysShowCursor) return;
-    _alwaysShowCursor = value;
     markNeedsPaint();
   }
 
@@ -4378,8 +4345,7 @@ class MonkeyRenderTerminal extends RenderBox
   bool get _isComposingText =>
       _composingText != null && _composingText!.isNotEmpty;
 
-  bool get _shouldShowCursor =>
-      _terminal.cursorVisibleMode || _alwaysShowCursor || _isComposingText;
+  bool get _shouldShowCursor => _terminal.cursorVisibleMode || _isComposingText;
 
   double get _viewportHeight => size.height - _padding.vertical;
 

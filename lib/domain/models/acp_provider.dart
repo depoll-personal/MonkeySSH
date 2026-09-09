@@ -208,20 +208,6 @@ class AcpLaunchCommand {
     List<String> arguments = const [],
   }) : arguments = List.unmodifiable(arguments);
 
-  /// Decodes an [AcpLaunchCommand] from JSON.
-  ///
-  /// This assumes [json] was already produced by [toJson] or validated with
-  /// [tryFromJson]; malformed input should use [tryFromJson] instead.
-  factory AcpLaunchCommand.fromJson(Map<String, dynamic> json) {
-    final rawArguments = json['arguments'];
-    return AcpLaunchCommand(
-      executable: json['executable'] as String? ?? '',
-      arguments: rawArguments is List
-          ? List.unmodifiable(rawArguments.map((value) => value.toString()))
-          : const [],
-    );
-  }
-
   /// Decodes an [AcpLaunchCommand] from untrusted JSON, returning `null`
   /// instead of throwing when [json] is malformed or fails validation.
   static AcpLaunchCommand? tryFromJson(Object? json) {
@@ -958,37 +944,6 @@ class AcpCustomProviderDefinition {
   bool get isCommandApproved =>
       approval.commandFingerprint ==
       computeAcpLaunchCommandFingerprint(launchCommand);
-
-  /// Returns a copy of this definition with [label] and/or [launchCommand]
-  /// replaced.
-  ///
-  /// This never silently re-approves a changed command: [approval] is
-  /// always preserved as-is, so changing [launchCommand] to a different
-  /// value makes [isCommandApproved] become `false`. Imported approval must
-  /// match the exact new command text. Throws a [FormatException] if the new [label]
-  /// or [launchCommand] fail validation.
-  AcpCustomProviderDefinition update({
-    String? label,
-    AcpLaunchCommand? launchCommand,
-    DateTime? now,
-  }) {
-    final normalizedLabel = label == null
-        ? this.label
-        : validateAcpProviderLabel(label);
-    final nextCommand = launchCommand ?? this.launchCommand;
-    if (launchCommand != null) {
-      validateAcpLaunchCommand(launchCommand);
-    }
-    final timestamp = (now ?? DateTime.now()).toUtc();
-    return AcpCustomProviderDefinition._(
-      id: id,
-      label: normalizedLabel,
-      launchCommand: nextCommand,
-      approval: approval,
-      createdAt: createdAt,
-      updatedAt: timestamp,
-    );
-  }
 
   /// Encodes this definition as JSON.
   Map<String, dynamic> toJson() => {

@@ -56,7 +56,7 @@ func TestForcedSameSizeRedrawUsesSyntheticWindowsFallback(t *testing.T) {
 	server.windows = []*muxWindow{window}
 	server.activeID = window.id
 	conn := &recordingConn{}
-	server.attachConn = conn
+	registerTestAttachClient(t, server, conn, "primary", server.width, server.height)
 
 	originalSimulateForegroundResize := simulateForegroundResize
 	t.Cleanup(func() {
@@ -102,7 +102,7 @@ func TestSingleCellRedrawUsesTemporaryWindowsExpansion(t *testing.T) {
 	}
 	server.windows = []*muxWindow{window}
 	server.activeID = window.id
-	server.attachConn = &recordingConn{}
+	registerTestAttachClient(t, server, &recordingConn{}, "primary", server.width, server.height)
 
 	server.resizeWithRedraw(1, 1, true, false, "")
 
@@ -177,7 +177,7 @@ func TestChangedSizeRedrawSkipsSyntheticWindowsFallback(t *testing.T) {
 	}
 	server.windows = []*muxWindow{window}
 	server.activeID = window.id
-	server.attachConn = &recordingConn{}
+	registerTestAttachClient(t, server, &recordingConn{}, "primary", server.width, server.height)
 
 	originalSimulateForegroundResize := simulateForegroundResize
 	t.Cleanup(func() {

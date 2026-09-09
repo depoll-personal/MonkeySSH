@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -1756,12 +1755,8 @@ String resolvePickedTerminalUploadFileName(PlatformFile file, {int index = 0}) {
 
 /// Resolves a readable stream for a picked upload file when available.
 @visibleForTesting
-Stream<List<int>>? resolvePickedTerminalUploadReadStream(PlatformFile file) {
-  if (file.path == null) {
-    return null;
-  }
-  return file.readAsByteStream().cast<List<int>>();
-}
+Stream<List<int>> resolvePickedTerminalUploadReadStream(PlatformFile file) =>
+    file.readAsByteStream().cast<List<int>>();
 
 /// Resolves the picker request used for terminal uploads.
 @visibleForTesting
@@ -3633,7 +3628,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _tmuxForegroundVerificationInFlight = false;
   final Map<String, _VerifiedTerminalPath> _verifiedTerminalPathCache =
       <String, _VerifiedTerminalPath>{};
-  final ListQueue<String> _verifiedTerminalPathCacheOrder = ListQueue<String>();
   final Set<String> _verifyingTerminalPathCacheKeys = <String>{};
   String? _terminalPathCacheScope;
   String? _pendingTerminalLinkTap;
@@ -3714,6 +3708,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Timer? _promptOutputImeResetTimer;
   Timer? _shellCompletionDebounceTimer;
   bool _isPollingRemoteClipboard = false;
+  int _clipboardSyncGeneration = 0;
   bool _isPushingLocalClipboard = false;
   bool _remoteClipboardUnsupported = false;
   String? _lastObservedLocalClipboardText;
@@ -5619,51 +5614,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         session.terminal != _terminal) {
       return;
     }
-    if (_activeMuxBackend == RemoteMuxBackend.monkeyMux) {
+    final isMonkeyMux = _activeMuxBackend == RemoteMuxBackend.monkeyMux;
+    if (isMonkeyMux) {
       DiagnosticsLogService.instance.debug(
         'terminal.theme',
         'monkeymux_window_refresh_requested',
         fields: {'reason': reason, 'connectionId': session.connectionId},
       );
-      final theme = session.terminalTheme ?? _resolveEffectiveTerminalTheme();
-      _pendingTmuxWindowThemeRefreshRequest = _TmuxTerminalThemeRefreshRequest(
-        theme: theme,
-        session: session,
-        sessionName: sessionName,
-        refreshGeneration: _terminalThemeRefreshGeneration,
-        reason: reason,
-        extraFlags: _activeTmuxExtraFlags,
-      );
-      if (_tmuxWindowThemeRefreshDebounceTimer?.isActive ?? false) {
-        return;
-      }
-
-      late final Timer timer;
-      timer = Timer(_tmuxWindowThemeRefreshDebounceDelay, () {
-        _terminalThemeRefreshTimers.remove(timer);
-        if (identical(_tmuxWindowThemeRefreshDebounceTimer, timer)) {
-          _tmuxWindowThemeRefreshDebounceTimer = null;
-        }
-        final pendingRequest = _pendingTmuxWindowThemeRefreshRequest;
-        _pendingTmuxWindowThemeRefreshRequest = null;
-        if (pendingRequest == null ||
-            _tmuxSessionName != pendingRequest.sessionName ||
-            !_isCurrentTerminalThemeRefresh(
-              theme: pendingRequest.theme,
-              session: pendingRequest.session,
-              refreshGeneration: pendingRequest.refreshGeneration,
-            )) {
-          return;
-        }
-        _queueTmuxTerminalThemeRefresh(pendingRequest);
-      });
-      _tmuxWindowThemeRefreshDebounceTimer = timer;
-      _terminalThemeRefreshTimers.add(timer);
-      return;
     }
 
     final theme = session.terminalTheme ?? _resolveEffectiveTerminalTheme();
-    if (session.terminalTheme == null) {
+    if (!isMonkeyMux && session.terminalTheme == null) {
       _applyTerminalThemeToSession(
         theme,
         session: session,
@@ -5680,7 +5641,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       refreshGeneration: _terminalThemeRefreshGeneration,
       reason: reason,
       extraFlags: _activeTmuxExtraFlags,
-      sendOuterFocusReport: true,
+      sendOuterFocusReport: !isMonkeyMux,
     );
     if (_tmuxWindowThemeRefreshDebounceTimer?.isActive ?? false) {
       return;
@@ -5689,7 +5650,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     late final Timer timer;
     timer = Timer(
       _tmuxWindowThemeRefreshDebounceDelay +
-          _remainingMuxWindowSwitchQuietPeriod(),
+          (isMonkeyMux
+              ? Duration.zero
+              : _remainingMuxWindowSwitchQuietPeriod()),
       () {
         _terminalThemeRefreshTimers.remove(timer);
         if (identical(_tmuxWindowThemeRefreshDebounceTimer, timer)) {
@@ -6213,17 +6176,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       session.localClipboardReadEnabled &&
       (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS);
 
+  bool _ownsClipboardSync(SshSession session, int generation) =>
+      mounted &&
+      generation == _clipboardSyncGeneration &&
+      session.clipboardSharingEnabled &&
+      identical(_activeSession(), session) &&
+      _sessionController.isObservingSession(session);
+
   Future<void> _startSharedClipboardSync(SshSession session) async {
     _stopSharedClipboardSync();
+    final generation = _clipboardSyncGeneration;
     _remoteClipboardUnsupported = false;
-    _lastObservedLocalClipboardText = _canPollLocalClipboard(session)
+    final localText = _canPollLocalClipboard(session)
         ? await _readSystemClipboardText()
         : null;
+    if (!_ownsClipboardSync(session, generation)) return;
+    _lastObservedLocalClipboardText = localText;
     try {
-      _lastObservedRemoteClipboardText = await _readRemoteClipboardText(
-        session,
-      );
+      final remoteText = await _readRemoteClipboardText(session);
+      if (!_ownsClipboardSync(session, generation)) return;
+      _lastObservedRemoteClipboardText = remoteText;
     } on Object catch (error) {
+      if (!_ownsClipboardSync(session, generation)) return;
       _handleSharedClipboardRemoteCommandFailure(
         session,
         error,
@@ -6232,27 +6206,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    if (!mounted ||
-        !session.clipboardSharingEnabled ||
-        _remoteClipboardUnsupported) {
-      return;
-    }
-
+    if (_remoteClipboardUnsupported) return;
     if (_canPollLocalClipboard(session)) {
       _localClipboardSyncTimer = Timer.periodic(
         _localClipboardSyncInterval,
         (_) => unawaited(_syncLocalClipboardToRemote(session)),
       );
     }
-    if (!_remoteClipboardUnsupported) {
-      _remoteClipboardSyncTimer = Timer.periodic(
-        _remoteClipboardSyncInterval,
-        (_) => unawaited(_syncRemoteClipboardToLocal(session)),
-      );
-    }
+    _remoteClipboardSyncTimer = Timer.periodic(
+      _remoteClipboardSyncInterval,
+      (_) => unawaited(_syncRemoteClipboardToLocal(session)),
+    );
   }
 
   void _stopSharedClipboardSync() {
+    _clipboardSyncGeneration++;
     _localClipboardSyncTimer?.cancel();
     _localClipboardSyncTimer = null;
     _remoteClipboardSyncTimer?.cancel();
@@ -6285,30 +6253,35 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<void> _syncLocalClipboardToRemote(SshSession session) async {
-    if (!mounted ||
+    if (!_ownsClipboardSync(session, _clipboardSyncGeneration) ||
         !_canPollLocalClipboard(session) ||
-        !_sessionController.isObservingSession(session) ||
         _remoteClipboardUnsupported ||
         _isPushingLocalClipboard) {
       return;
     }
 
-    final localText = await _readSystemClipboardText();
-    if (localText == null ||
-        localText == _lastObservedLocalClipboardText ||
-        localText == _lastObservedRemoteClipboardText ||
-        localText == _lastAppliedLocalClipboardText ||
-        !RemoteClipboardSyncService.canSyncText(localText)) {
-      _lastObservedLocalClipboardText = localText;
-      return;
-    }
-
+    final generation = _clipboardSyncGeneration;
     _isPushingLocalClipboard = true;
     try {
+      final localText = await _readSystemClipboardText();
+      if (!_ownsClipboardSync(session, generation) ||
+          !_canPollLocalClipboard(session)) {
+        return;
+      }
+      if (localText == null ||
+          localText == _lastObservedLocalClipboardText ||
+          localText == _lastObservedRemoteClipboardText ||
+          localText == _lastAppliedLocalClipboardText ||
+          !RemoteClipboardSyncService.canSyncText(localText)) {
+        _lastObservedLocalClipboardText = localText;
+        return;
+      }
+
       final output = await _runRemoteCommand(
         session,
         RemoteClipboardSyncService.buildWriteCommand(localText),
       );
+      if (!_ownsClipboardSync(session, generation)) return;
       if (RemoteClipboardSyncService.outputIndicatesUnsupported(output)) {
         _remoteClipboardUnsupported = true;
         _remoteClipboardSyncTimer?.cancel();
@@ -6319,28 +6292,31 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _lastObservedRemoteClipboardText = localText;
       _lastAppliedRemoteClipboardText = localText;
     } on Object catch (error) {
+      if (!_ownsClipboardSync(session, generation)) return;
       _handleSharedClipboardRemoteCommandFailure(
         session,
         error,
         operation: 'write',
       );
     } finally {
-      _isPushingLocalClipboard = false;
+      if (generation == _clipboardSyncGeneration) {
+        _isPushingLocalClipboard = false;
+      }
     }
   }
 
   Future<void> _syncRemoteClipboardToLocal(SshSession session) async {
-    if (!mounted ||
-        !session.clipboardSharingEnabled ||
-        !_sessionController.isObservingSession(session) ||
+    if (!_ownsClipboardSync(session, _clipboardSyncGeneration) ||
         _remoteClipboardUnsupported ||
         _isPollingRemoteClipboard) {
       return;
     }
 
+    final generation = _clipboardSyncGeneration;
     _isPollingRemoteClipboard = true;
     try {
       final remoteText = await _readRemoteClipboardText(session);
+      if (!_ownsClipboardSync(session, generation)) return;
       if (!shouldApplyRemoteClipboardTextToLocal(
         remoteText: remoteText,
         lastObservedRemoteText: _lastObservedRemoteClipboardText,
@@ -6361,12 +6337,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return;
       }
       await Clipboard.setData(ClipboardData(text: remoteClipboardText));
+      if (!_ownsClipboardSync(session, generation)) return;
       _lastObservedRemoteClipboardText = remoteClipboardText;
       _lastObservedLocalClipboardText = remoteClipboardText;
       _lastAppliedLocalClipboardText = remoteClipboardText;
     } on PlatformException {
       return;
     } on Object catch (error) {
+      if (!_ownsClipboardSync(session, generation)) return;
       _handleSharedClipboardRemoteCommandFailure(
         session,
         error,
@@ -6374,15 +6352,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
       return;
     } finally {
-      _isPollingRemoteClipboard = false;
+      if (generation == _clipboardSyncGeneration) {
+        _isPollingRemoteClipboard = false;
+      }
     }
   }
 
   Future<String?> _readRemoteClipboardText(SshSession session) async {
+    final generation = _clipboardSyncGeneration;
     final output = await _runRemoteCommand(
       session,
       RemoteClipboardSyncService.buildReadCommand(),
     );
+    if (!_ownsClipboardSync(session, generation)) return null;
     final parsed = RemoteClipboardSyncService.parseReadOutput(output);
     if (!parsed.supported) {
       _remoteClipboardUnsupported = true;
@@ -11420,8 +11402,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               },
             ).toString(),
           );
-        case TmuxSwitchWindowAction(:final windowIndex):
-          await _switchTmuxWindow(session, windowIndex);
+        case TmuxSwitchWindowAction(:final windowIndex, :final windowId):
+          await _switchTmuxWindow(session, windowIndex, windowId: windowId);
           if (!mounted) return;
           _showTerminalViewport();
           unawaited(
@@ -11544,10 +11526,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   usesMux: true,
                 ),
           );
-        case TmuxCloseWindowAction(:final windowIndex):
-          final closingWindow = _resolveTmuxWindowByTarget(windowIndex);
+        case TmuxCloseWindowAction(:final windowIndex, :final windowId):
+          final closingWindow = _resolveTmuxWindowByTarget(
+            windowIndex,
+            windowId: windowId,
+          );
           if (!(closingWindow?.isNativeAcp ?? false)) {
-            await _closeTmuxWindow(session, windowIndex);
+            await _closeTmuxWindow(session, windowIndex, windowId: windowId);
             break;
           }
 
@@ -11566,7 +11551,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           // controller and concurrency lease until that close is confirmed so
           // a transport/control failure leaves a retryable, still-accounted
           // native window instead of an untracked provider.
-          await _closeTmuxWindow(session, windowIndex);
+          await _closeTmuxWindow(session, windowIndex, windowId: windowId);
           if (_activeNativeAcpSessionKey?.bridgeId == bridgeId) {
             _showTerminalViewport();
           }
@@ -12584,24 +12569,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<bool> _isClosingLastMonkeyMuxWindow(
     SshSession session,
     String sessionName,
-    int windowIndex,
-  ) async {
+    int windowIndex, {
+    String? windowId,
+  }) async {
     if (_activeMuxBackend != RemoteMuxBackend.monkeyMux) {
       return false;
     }
-    final knownWindows = _tmuxBarKey.currentState?.currentWindowsSnapshot;
-    if (knownWindows != null && knownWindows.isNotEmpty) {
-      return knownWindows.length == 1 &&
-          knownWindows.any((window) => window.index == windowIndex);
-    }
     try {
-      final windows = await _activeRemoteMultiplexerService.listWindows(
-        session,
-        sessionName,
-        extraFlags: _activeTmuxExtraFlags,
-      );
+      final knownWindows = _tmuxBarKey.currentState?.currentWindowsSnapshot;
+      final windows = knownWindows != null && knownWindows.isNotEmpty
+          ? knownWindows
+          : await _activeRemoteMultiplexerService.listWindows(
+              session,
+              sessionName,
+              extraFlags: _activeTmuxExtraFlags,
+            );
       return windows.length == 1 &&
-          windows.any((window) => window.index == windowIndex);
+          (windowId != null
+              ? windows.single.id == windowId
+              : windows.single.index == windowIndex);
     } on Object catch (error) {
       DiagnosticsLogService.instance.debug(
         'tmux.ui',
@@ -12752,10 +12738,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return null;
     }
     if (windowId != null) {
-      final byId = windows.where((window) => window.id == windowId).firstOrNull;
-      if (byId != null) {
-        return byId;
-      }
+      return windows.where((window) => window.id == windowId).firstOrNull;
     }
     return windows.where((window) => window.index == windowIndex).firstOrNull;
   }
@@ -12890,6 +12873,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<void> _closeTmuxWindow(
     SshSession session,
     int windowIndex, {
+    String? windowId,
     bool preserveMuxSession = false,
   }) async {
     final sessionName = _tmuxSessionName;
@@ -12897,9 +12881,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     final closesLastMonkeyMuxWindow =
         !preserveMuxSession &&
-        await _isClosingLastMonkeyMuxWindow(session, sessionName, windowIndex);
+        await _isClosingLastMonkeyMuxWindow(
+          session,
+          sessionName,
+          windowIndex,
+          windowId: windowId,
+        );
     try {
-      await _activeTerminalConnectionBackend(session).killWindow(windowIndex);
+      await _activeTerminalConnectionBackend(
+        session,
+      ).killWindow(windowIndex, windowId: windowId);
     } on Object catch (error) {
       if (error is! Exception && !isExpectedSshOperationError(error)) {
         rethrow;
@@ -17401,7 +17392,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _resetVerifiedTerminalPathCache() {
     _verifiedTerminalPathCache.clear();
-    _verifiedTerminalPathCacheOrder.clear();
     _verifyingTerminalPathCacheKeys.clear();
     _pendingTerminalPathVerifications.clear();
   }
@@ -17433,13 +17423,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   ) {
     _verifiedTerminalPathCache.remove(cacheKey);
     _verifiedTerminalPathCache[cacheKey] = verifiedPath;
-    _verifiedTerminalPathCacheOrder
-      ..remove(cacheKey)
-      ..addLast(cacheKey);
-    while (_verifiedTerminalPathCacheOrder.length >
+    while (_verifiedTerminalPathCache.length >
         _maxVerifiedTerminalPathCacheEntries) {
-      final evictedKey = _verifiedTerminalPathCacheOrder.removeFirst();
-      _verifiedTerminalPathCache.remove(evictedKey);
+      _verifiedTerminalPathCache.remove(_verifiedTerminalPathCache.keys.first);
     }
   }
 
@@ -17588,6 +17574,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<String?> _resolveTerminalPathVerificationHomeDirectory(
     SftpClient sftp,
     String terminalPath,
+    String scope,
   ) async {
     if (terminalPath != '~' && !terminalPath.startsWith('~/')) {
       return null;
@@ -17601,26 +17588,33 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       await _resolveTerminalPathVerificationSftpOperation(
         sftp,
         () => sftp.absolute('.'),
+        scope: scope,
       ),
     );
+    if (!mounted ||
+        scope != _currentTerminalPathCacheScope() ||
+        !identical(sftp, _terminalPathVerificationSftp) ||
+        !identical(_activeSession(), _terminalPathVerificationSession)) {
+      return null;
+    }
     _terminalPathVerificationHomeDirectory = homeDirectory;
     return homeDirectory;
   }
 
   Future<T> _resolveTerminalPathVerificationSftpOperation<T>(
     SftpClient sftp,
-    Future<T> Function() operation,
-  ) async {
+    Future<T> Function() operation, {
+    required String scope,
+  }) async {
     try {
       return await operation().timeout(_terminalPathVerificationTimeout);
-    } on TimeoutException catch (error) {
-      _handleTerminalPathVerificationSftpFailure(sftp, error);
-      rethrow;
-    } on SSHError catch (error) {
-      _handleTerminalPathVerificationSftpFailure(sftp, error);
-      rethrow;
-    } on SftpError catch (error) {
-      _handleTerminalPathVerificationSftpFailure(sftp, error);
+    } on Object catch (error) {
+      if (mounted &&
+          scope == _currentTerminalPathCacheScope() &&
+          identical(_activeSession(), _terminalPathVerificationSession) &&
+          identical(sftp, _terminalPathVerificationSftp)) {
+        _handleTerminalPathVerificationSftpFailure(sftp, error);
+      }
       rethrow;
     }
   }
@@ -17724,6 +17718,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return null;
     }
 
+    final scope = _currentTerminalPathCacheScope();
+    final workingDirectory = _workingDirectoryPath;
+    bool ownsScope() =>
+        mounted &&
+        scope == _currentTerminalPathCacheScope() &&
+        identical(session, _activeSession());
     final batch = Map<String, String>.from(_pendingTerminalPathVerifications);
     _pendingTerminalPathVerifications.clear();
     var cacheChanged = false;
@@ -17732,11 +17732,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         session,
         allowBackoff: true,
       );
-      if (sftp == null) {
+      if (sftp == null || !ownsScope()) {
         return null;
       }
 
       for (final entry in batch.entries) {
+        if (!ownsScope()) return null;
         if (_verifiedTerminalPathCache.containsKey(entry.key)) {
           continue;
         }
@@ -17745,6 +17746,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             sftp,
             entry.value,
             showErrors: false,
+            scope: scope,
+            workingDirectory: workingDirectory,
           );
           // A positive or negative result was cached: refresh underlines so an
           // optimistic link shrinks to (or drops below) the verified extent.
@@ -17770,6 +17773,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         }
       }
     } on Object catch (error, stackTrace) {
+      if (!ownsScope()) return null;
       final backoffRemaining = _terminalPathVerificationBackoffRemaining();
       if (backoffRemaining != null) {
         _pendingTerminalPathVerifications.addAll(batch);
@@ -17792,7 +17796,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
     }
 
-    if (cacheChanged && mounted) {
+    if (cacheChanged && ownsScope()) {
       setState(() {
         _shouldScheduleVisibleTerminalPathUnderlineRefreshFromBuild = true;
       });
@@ -17804,9 +17808,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     SftpClient sftp,
     String terminalPath, {
     required bool showErrors,
+    required String scope,
+    required String? workingDirectory,
   }) async {
-    _syncVerifiedTerminalPathCacheScope();
-    final cacheKey = _terminalPathCacheKey(terminalPath);
+    bool ownsScope() =>
+        mounted &&
+        scope == _currentTerminalPathCacheScope() &&
+        identical(sftp, _terminalPathVerificationSftp) &&
+        identical(_activeSession(), _terminalPathVerificationSession);
+    if (!ownsScope()) return null;
+    final cacheKey = '$scope:$terminalPath';
     final cachedPath = _verifiedTerminalPathCache[cacheKey];
     if (cachedPath != null) {
       return cachedPath.exists ? cachedPath.resolvedPath : null;
@@ -17823,10 +17834,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final homeDirectory = await _resolveTerminalPathVerificationHomeDirectory(
         sftp,
         candidate,
+        scope,
       );
+      if (!ownsScope()) return null;
       final resolvedPath = resolveRequestedSftpPath(
         candidate,
-        workingDirectory: _workingDirectoryPath,
+        workingDirectory: workingDirectory,
         homeDirectory: homeDirectory,
       );
       if (resolvedPath == null) {
@@ -17837,14 +17850,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         await _resolveTerminalPathVerificationSftpOperation(
           sftp,
           () => sftp.stat(resolvedPath),
+          scope: scope,
         );
       } on SftpStatusError catch (error) {
+        if (!ownsScope()) return null;
         if (error.code == SftpStatusCode.noSuchFile) {
           continue;
         }
         rethrow;
       }
 
+      if (!ownsScope()) return null;
       _cacheVerifiedTerminalPath(
         cacheKey,
         terminalPath: candidate,
@@ -17853,6 +17869,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return resolvedPath;
     }
 
+    if (!ownsScope()) return null;
     _cacheNonexistentTerminalPath(cacheKey, terminalPath: terminalPath);
     if (showErrors && isExplicitPath) {
       _showTerminalLinkMessage(
@@ -17873,6 +17890,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return cachedPath.exists ? cachedPath.resolvedPath : null;
     }
 
+    final scope = _currentTerminalPathCacheScope();
+    final workingDirectory = _workingDirectoryPath;
     final session = _activeSession();
     final isExplicitPath = isExplicitTerminalFilePath(terminalPath);
     if (session == null) {
@@ -17894,13 +17913,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         sftp,
         terminalPath,
         showErrors: showErrors,
+        scope: scope,
+        workingDirectory: workingDirectory,
       );
     } on TimeoutException {
+      if (!mounted ||
+          scope != _currentTerminalPathCacheScope() ||
+          !identical(session, _activeSession())) {
+        return null;
+      }
       if (showErrors && isExplicitPath) {
         _showTerminalLinkMessage('Timed out opening "$terminalPath" in SFTP');
       }
       return null;
     } on SftpStatusError catch (error) {
+      if (!mounted ||
+          scope != _currentTerminalPathCacheScope() ||
+          !identical(session, _activeSession())) {
+        return null;
+      }
       if (showErrors && isExplicitPath) {
         final message = error.code == SftpStatusCode.noSuchFile
             ? 'Could not open "$terminalPath" in SFTP: path does not exist'
@@ -17909,6 +17940,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
       return null;
     } on Object catch (error, stackTrace) {
+      if (!mounted ||
+          scope != _currentTerminalPathCacheScope() ||
+          !identical(session, _activeSession())) {
+        return null;
+      }
       DiagnosticsLogService.instance.warning(
         'terminal',
         'sftp_path_resolution_failed',
@@ -18485,8 +18521,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<_AttachmentPasteResult> _insertUploadedFileReferences(
     List<String> remotePaths, {
     required bool windows,
+    required int inputGeneration,
+    required _TerminalPasteMode? pasteMode,
   }) async {
-    final inputGeneration = _terminalUserInputGeneration;
     final pathCount = remotePaths
         .where((remotePath) => remotePath.isNotEmpty)
         .length;
@@ -18496,11 +18533,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return result(0);
     }
     var sentCount = 0;
-    final initialPasteMode = await _resolveSettledTerminalPasteMode();
-    if (initialPasteMode == null || !mounted) {
+    if (pasteMode == null || !mounted) {
       return result(sentCount);
     }
-    final pasteMode = initialPasteMode;
     if (!_terminalPasteModeOwnsCurrentContext(pasteMode)) {
       DiagnosticsLogService.instance.warning(
         'terminal.clipboard',
@@ -18656,92 +18691,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    final timestamp = DateTime.now();
-    final remotePaths = await _withClipboardSftp((
-      sftp,
-      remoteFileService,
-      uploadTarget,
-    ) async {
-      final remotePaths = <String>[];
-      for (var index = 0; index < clipboardFiles.length; index++) {
-        final localPath = clipboardFiles[index];
-        final isContentUri = localPath.startsWith('content://');
-        late final String sourceName;
-        late final String remotePath;
-
-        if (isContentUri) {
-          if (!_isAndroidPlatform) {
-            throw const FileSystemException(
-              'Clipboard file URIs are not supported on this platform yet',
-            );
-          }
-          final clipboardFile = await _readAndroidClipboardContentUri(
-            localPath,
-          );
-          sourceName = clipboardFile.name;
-          remotePath = joinRemotePath(
-            uploadTarget.sftpDirectory,
-            buildClipboardUploadFileName(
-              sourceName,
-              timestamp,
-              sequence: index,
-            ),
-          );
-          await remoteFileService.uploadBytes(
-            sftp: sftp,
-            remotePath: remotePath,
-            bytes: clipboardFile.bytes,
-            applyPrivateMode: uploadTarget.applyPrivateFileMode,
-          );
-        } else {
-          sourceName = path.basename(localPath);
-          remotePath = joinRemotePath(
-            uploadTarget.sftpDirectory,
-            buildClipboardUploadFileName(
-              sourceName,
-              timestamp,
-              sequence: index,
-            ),
-          );
-          await remoteFileService.uploadStream(
-            sftp: sftp,
-            remotePath: remotePath,
-            stream: File(localPath).openRead(),
-            applyPrivateMode: uploadTarget.applyPrivateFileMode,
+    final files = <PlatformFile>[];
+    for (final localPath in clipboardFiles) {
+      if (localPath.startsWith('content://')) {
+        if (!_isAndroidPlatform) {
+          throw const FileSystemException(
+            'Clipboard file URIs are not supported on this platform yet',
           );
         }
-        remotePaths.add(uploadTarget.terminalPathForSftpPath(remotePath));
+        final file = await _readAndroidClipboardContentUri(localPath);
+        files.add(AppPlatformFile(name: file.name, bytes: file.bytes));
+      } else {
+        files.add(
+          AppPlatformFile(name: path.basename(localPath), path: localPath),
+        );
       }
-      return (paths: remotePaths, windows: uploadTarget.windows);
-    });
-
-    _followLiveOutput();
-    final pasteResult = await _insertUploadedFileReferences(
-      remotePaths.paths,
-      windows: remotePaths.windows,
-    );
-    if (!mounted) {
-      return;
     }
-    if (pasteResult.sentCount > 0) {
-      unawaited(
-        ref
-            .read(telemetryServiceProvider)
-            .logTerminalPasteUsed(
-              source: 'clipboard_files',
-              requiredReview: true,
-            ),
-      );
-    }
-    _terminalController.clearSelection();
-    _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-    final pathsInserted = pasteResult.sentCount == pasteResult.requestedCount;
-    _showClipboardMessage(
-      pathsInserted
-          ? 'Uploaded ${remotePaths.paths.length} file${remotePaths.paths.length == 1 ? '' : 's'} to $_clipboardUploadDirectoryDisplay'
-          : pasteResult.sentCount > 0
-          ? 'Uploaded ${remotePaths.paths.length} files and pasted ${pasteResult.sentCount} of ${pasteResult.requestedCount} paths'
-          : 'Uploaded ${remotePaths.paths.length} file${remotePaths.paths.length == 1 ? '' : 's'}, but could not paste ${remotePaths.paths.length == 1 ? 'its path' : 'their paths'}',
+    await _pasteSelectedFiles(
+      files,
+      itemLabelSingular: 'file',
+      itemLabelPlural: 'files',
+      confirm: false,
+      telemetrySource: 'clipboard_files',
     );
   }
 
@@ -18814,6 +18785,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
     }
 
+    final inputGeneration = _terminalUserInputGeneration;
+    final pasteMode = await _resolveSettledTerminalPasteMode();
     final remotePath = await _withClipboardSftp((
       sftp,
       remoteFileService,
@@ -18835,9 +18808,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }, uploadBaseDirectory: uploadBaseDirectory);
     _followLiveOutput();
-    final pasteResult = await _insertUploadedFileReferences([
-      remotePath.path,
-    ], windows: remotePath.windows);
+    final pasteResult = await _insertUploadedFileReferences(
+      [remotePath.path],
+      windows: remotePath.windows,
+      inputGeneration: inputGeneration,
+      pasteMode: pasteMode,
+    );
     if (!mounted) {
       return false;
     }
@@ -18868,6 +18844,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     List<PlatformFile> selectedFiles, {
     required String itemLabelSingular,
     required String itemLabelPlural,
+    bool confirm = true,
+    String telemetrySource = 'picked_files',
   }) async {
     if (!mounted) {
       return;
@@ -18875,24 +18853,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final itemLabel = selectedFiles.length == 1
         ? itemLabelSingular
         : itemLabelPlural;
-    final shouldUpload = await _confirmClipboardUpload(
-      title: 'Upload selected $itemLabel?',
-      message:
-          'This will upload ${selectedFiles.length == 1 ? 'the selected $itemLabelSingular' : '${selectedFiles.length} selected $itemLabelPlural'} to $_clipboardUploadDirectoryDisplay on the connected host and paste ${selectedFiles.length == 1 ? 'its remote path' : 'their remote paths'} into the terminal.',
-      confirmLabel: 'Upload and paste',
-      details: [
-        for (var index = 0; index < selectedFiles.length; index++)
-          resolvePickedTerminalUploadFileName(
-            selectedFiles[index],
-            index: index,
-          ),
-      ],
-    );
+    final shouldUpload =
+        !confirm ||
+        await _confirmClipboardUpload(
+          title: 'Upload selected $itemLabel?',
+          message:
+              'This will upload ${selectedFiles.length == 1 ? 'the selected $itemLabelSingular' : '${selectedFiles.length} selected $itemLabelPlural'} to $_clipboardUploadDirectoryDisplay on the connected host and paste ${selectedFiles.length == 1 ? 'its remote path' : 'their remote paths'} into the terminal.',
+          confirmLabel: 'Upload and paste',
+          details: [
+            for (var index = 0; index < selectedFiles.length; index++)
+              resolvePickedTerminalUploadFileName(
+                selectedFiles[index],
+                index: index,
+              ),
+          ],
+        );
     if (!shouldUpload) {
       _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
       return;
     }
 
+    final inputGeneration = _terminalUserInputGeneration;
+    final pasteMode = await _resolveSettledTerminalPasteMode();
     final timestamp = DateTime.now();
     final remotePaths = await _withClipboardSftp((
       sftp,
@@ -18910,28 +18892,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           uploadTarget.sftpDirectory,
           buildClipboardUploadFileName(sourceName, timestamp, sequence: index),
         );
-        final readStream = resolvePickedTerminalUploadReadStream(file);
-        if (readStream != null) {
-          await remoteFileService.uploadStream(
-            sftp: sftp,
-            remotePath: remotePath,
-            stream: readStream,
-            applyPrivateMode: uploadTarget.applyPrivateFileMode,
-          );
-        } else {
-          final Uint8List bytes;
-          try {
-            bytes = await file.readAsBytes();
-          } on Exception {
-            throw const FileSystemException('Unable to read selected file');
-          }
-          await remoteFileService.uploadBytes(
-            sftp: sftp,
-            remotePath: remotePath,
-            bytes: bytes,
-            applyPrivateMode: uploadTarget.applyPrivateFileMode,
-          );
-        }
+        await remoteFileService.uploadStream(
+          sftp: sftp,
+          remotePath: remotePath,
+          stream: resolvePickedTerminalUploadReadStream(file),
+          applyPrivateMode: uploadTarget.applyPrivateFileMode,
+        );
         remotePaths.add(uploadTarget.terminalPathForSftpPath(remotePath));
       }
       return (paths: remotePaths, windows: uploadTarget.windows);
@@ -18941,6 +18907,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final pasteResult = await _insertUploadedFileReferences(
       remotePaths.paths,
       windows: remotePaths.windows,
+      inputGeneration: inputGeneration,
+      pasteMode: pasteMode,
     );
     if (!mounted) {
       return;
@@ -18949,7 +18917,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       unawaited(
         ref
             .read(telemetryServiceProvider)
-            .logTerminalPasteUsed(source: 'picked_files', requiredReview: true),
+            .logTerminalPasteUsed(
+              source: telemetrySource,
+              requiredReview: true,
+            ),
       );
     }
     _terminalController.clearSelection();
@@ -19132,132 +19103,101 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     final variablePattern = RegExp(r'\{\{(\w+)\}\}');
 
-    final result =
-        await showModalBottomSheet<
-          ({String command, bool hadVariableSubstitution, int snippetId})
-        >(
-          context: context,
-          isScrollControlled: true,
-          requestFocus: terminalOverlayRouteRequestFocus(context),
-          builder: (context) => DraggableScrollableSheet(
-            maxChildSize: 0.8,
-            minChildSize: 0.3,
-            expand: false,
-            builder: (context, scrollController) => Column(
-              children: [
-                // Handle bar
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  child: Container(
-                    width: 40,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.outline,
-                      borderRadius: BorderRadius.circular(2),
+    final result = await showModalBottomSheet<KeyboardToolbarSnippet>(
+      context: context,
+      isScrollControlled: true,
+      requestFocus: terminalOverlayRouteRequestFocus(context),
+      builder: (context) => DraggableScrollableSheet(
+        maxChildSize: 0.8,
+        minChildSize: 0.3,
+        expand: false,
+        builder: (context, scrollController) => Column(
+          children: [
+            // Handle bar
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.outline,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                children: [
+                  Text(
+                    'Snippets',
+                    style: FluttyTheme.displayMono(
+                      fontSize: 18,
+                      color: Theme.of(context).colorScheme.onSurface,
                     ),
                   ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Row(
-                    children: [
-                      Text(
-                        'Snippets',
-                        style: FluttyTheme.displayMono(
-                          fontSize: 18,
-                          color: Theme.of(context).colorScheme.onSurface,
-                        ),
-                      ),
-                      const Spacer(),
-                      TextButton(
-                        onPressed: () => Navigator.pop(context),
-                        child: const Text('Cancel'),
-                      ),
-                    ],
+                  const Spacer(),
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Cancel'),
                   ),
-                ),
-                const Divider(),
-                Expanded(
-                  child: ListView.builder(
-                    controller: scrollController,
-                    itemCount: snippets.length,
-                    itemBuilder: (context, index) {
-                      final snippet = snippets[index];
-                      final hasVariables = variablePattern.hasMatch(
-                        snippet.command,
-                      );
-                      return ListTile(
-                        leading: Icon(
-                          hasVariables ? Icons.tune : Icons.code,
-                          color: Theme.of(context).colorScheme.primary,
-                        ),
-                        title: Text(
-                          snippet.name,
-                          style: FluttyTheme.monoStyle.copyWith(
-                            fontSize: 14,
-                            color: Theme.of(context).colorScheme.onSurface,
-                          ),
-                        ),
-                        subtitle: Text(
-                          snippet.command.replaceAll('\n', ' '),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: FluttyTheme.monoStyle.copyWith(
-                            fontSize: 12,
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                        trailing: hasVariables
-                            ? const Chip(label: Text('Has variables'))
-                            : null,
-                        onTap: () async {
-                          // Handle variable substitution
-                          final command = await _substituteVariables(
-                            context,
-                            snippet,
-                          );
-                          if (command != null && context.mounted) {
-                            Navigator.pop(context, (
-                              command: command.command,
-                              hadVariableSubstitution:
-                                  command.hadVariableSubstitution,
-                              snippetId: snippet.id,
-                            ));
-                          }
-                        },
-                      );
-                    },
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-        );
+            const Divider(),
+            Expanded(
+              child: ListView.builder(
+                controller: scrollController,
+                itemCount: snippets.length,
+                itemBuilder: (context, index) {
+                  final snippet = snippets[index];
+                  final hasVariables = variablePattern.hasMatch(
+                    snippet.command,
+                  );
+                  return ListTile(
+                    leading: Icon(
+                      hasVariables ? Icons.tune : Icons.code,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                    title: Text(
+                      snippet.name,
+                      style: FluttyTheme.monoStyle.copyWith(
+                        fontSize: 14,
+                        color: Theme.of(context).colorScheme.onSurface,
+                      ),
+                    ),
+                    subtitle: Text(
+                      snippet.command.replaceAll('\n', ' '),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: FluttyTheme.monoStyle.copyWith(
+                        fontSize: 12,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    trailing: hasVariables
+                        ? const Chip(label: Text('Has variables'))
+                        : null,
+                    onTap: () => Navigator.pop(
+                      context,
+                      KeyboardToolbarSnippet(
+                        id: snippet.id,
+                        name: snippet.name,
+                        command: snippet.command,
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
 
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-    if (result != null && result.command.isNotEmpty) {
-      final shouldInsert = await _confirmTerminalInsertionIfNeeded(
-        insertedText: result.command,
-        buildReview: (commandText) => assessSnippetCommandInsertion(
-          commandText,
-          hadVariableSubstitution: result.hadVariableSubstitution,
-        ),
-        title: 'Review snippet command',
-        messageBuilder: (_) =>
-            'Confirm the rendered command before inserting it.',
-        confirmLabel: 'Insert command',
-      );
-      if (!shouldInsert) {
-        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-        return;
-      }
-      _handleTerminalUserInput();
-      // Insert the command into terminal
-      _terminal.paste(result.command);
-      // Track usage
-      unawaited(snippetRepo.incrementUsage(result.snippetId));
+    if (result != null && mounted) {
+      await _pasteKeyboardToolbarSnippet(result);
     }
   }
 
@@ -19272,7 +19212,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return (command: snippet.command, hadVariableSubstitution: false);
     }
 
-    final controllers = {for (final v in variables) v: TextEditingController()};
+    final values = <String, String>{};
     final formKey = GlobalKey<FormState>();
 
     final result = await showDialog<bool>(
@@ -19287,7 +19227,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               children: [
                 for (final variable in variables) ...[
                   TextFormField(
-                    controller: controllers[variable],
+                    onChanged: (value) => values[variable] = value,
                     decoration: InputDecoration(
                       labelText: variable,
                       hintText: 'Enter value for $variable',
@@ -19322,21 +19262,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ),
     );
 
-    if (result != true) {
-      for (final c in controllers.values) {
-        c.dispose();
-      }
-      return null;
-    }
-
-    // Substitute variables
-    var command = snippet.command;
-    for (final entry in controllers.entries) {
-      command = command.replaceAll('{{${entry.key}}}', entry.value.text);
-      entry.value.dispose();
-    }
-
-    return (command: command, hadVariableSubstitution: true);
+    if (result != true) return null;
+    return (
+      command: snippet.command.replaceAllMapped(
+        regex,
+        (match) => values[match.group(1)]!,
+      ),
+      hadVariableSubstitution: true,
+    );
   }
 
   Future<_AutoConnectReviewDecision> _reviewImportedAutoConnectCommand(

@@ -13,30 +13,23 @@ Future<String> _buildSolidPngBase64(Color color, int size) async {
     Rect.fromLTWH(0, 0, size.toDouble(), size.toDouble()),
     Paint()..color = color,
   );
-  final image = await recorder.endRecording().toImage(size, size);
-  final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
-  return base64.encode(bytes!.buffer.asUint8List());
+  final picture = recorder.endRecording();
+  ui.Image? image;
+  try {
+    image = await picture.toImage(size, size);
+    final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+    return base64.encode(bytes!.buffer.asUint8List());
+  } finally {
+    image?.dispose();
+    picture.dispose();
+  }
 }
 
 Future<bool> _boundaryHasRed(GlobalKey key) async =>
     await _boundaryRedPixelCount(key) > 0;
 
-Future<int> _boundaryRedPixelCount(GlobalKey key) async {
-  final boundary =
-      key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
-  final shot = await boundary.toImage();
-  final data = (await shot.toByteData())!;
-  var count = 0;
-  for (var i = 0; i + 4 <= data.lengthInBytes; i += 4) {
-    final r = data.getUint8(i);
-    final g = data.getUint8(i + 1);
-    final b = data.getUint8(i + 2);
-    if (r > 150 && g < 90 && b < 90) {
-      count += 1;
-    }
-  }
-  return count;
-}
+Future<int> _boundaryRedPixelCount(GlobalKey key) =>
+    _boundaryPixelCount(key, (r, g, b) => r > 150 && g < 90 && b < 90);
 
 /// Counts red pixels within the vertical pixel band [topY, bottomY).
 Future<int> _boundaryRedPixelCountInBand(
@@ -47,24 +40,28 @@ Future<int> _boundaryRedPixelCountInBand(
   final boundary =
       key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
   final shot = await boundary.toImage();
-  final width = shot.width;
-  final data = (await shot.toByteData())!;
-  var count = 0;
-  for (var y = topY; y < bottomY; y++) {
-    for (var x = 0; x < width; x++) {
-      final i = (y * width + x) * 4;
-      if (i + 4 > data.lengthInBytes) {
-        continue;
-      }
-      final r = data.getUint8(i);
-      final g = data.getUint8(i + 1);
-      final b = data.getUint8(i + 2);
-      if (r > 150 && g < 90 && b < 90) {
-        count += 1;
+  try {
+    final width = shot.width;
+    final data = (await shot.toByteData())!;
+    var count = 0;
+    for (var y = topY; y < bottomY; y++) {
+      for (var x = 0; x < width; x++) {
+        final i = (y * width + x) * 4;
+        if (i + 4 > data.lengthInBytes) {
+          continue;
+        }
+        final r = data.getUint8(i);
+        final g = data.getUint8(i + 1);
+        final b = data.getUint8(i + 2);
+        if (r > 150 && g < 90 && b < 90) {
+          count += 1;
+        }
       }
     }
+    return count;
+  } finally {
+    shot.dispose();
   }
-  return count;
 }
 
 /// Counts boundary pixels matching [predicate] (r, g, b).
@@ -75,18 +72,22 @@ Future<int> _boundaryPixelCount(
   final boundary =
       key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
   final shot = await boundary.toImage();
-  final data = (await shot.toByteData())!;
-  var count = 0;
-  for (var i = 0; i + 4 <= data.lengthInBytes; i += 4) {
-    if (predicate(
-      data.getUint8(i),
-      data.getUint8(i + 1),
-      data.getUint8(i + 2),
-    )) {
-      count += 1;
+  try {
+    final data = (await shot.toByteData())!;
+    var count = 0;
+    for (var i = 0; i + 4 <= data.lengthInBytes; i += 4) {
+      if (predicate(
+        data.getUint8(i),
+        data.getUint8(i + 1),
+        data.getUint8(i + 2),
+      )) {
+        count += 1;
+      }
     }
+    return count;
+  } finally {
+    shot.dispose();
   }
-  return count;
 }
 
 bool _isBlue(int r, int g, int b) => b > 150 && r < 90 && g < 90;
@@ -127,9 +128,16 @@ Future<String> _buildSplitPngBase64(
       Rect.fromLTWH(half, 0, half, imageHeight.toDouble()),
       Paint()..color = right,
     );
-  final image = await recorder.endRecording().toImage(width, imageHeight);
-  final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
-  return base64.encode(bytes!.buffer.asUint8List());
+  final picture = recorder.endRecording();
+  ui.Image? image;
+  try {
+    image = await picture.toImage(width, imageHeight);
+    final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+    return base64.encode(bytes!.buffer.asUint8List());
+  } finally {
+    image?.dispose();
+    picture.dispose();
+  }
 }
 
 /// Kitty row/column placeholder diacritics (rowcolumn-diacritics order),
@@ -231,6 +239,51 @@ Future<void> _pumpUntilImagesDecoded(
 }
 
 void main() {
+  testWidgets('pixel scanners and PNG builders dispose captured resources', (
+    tester,
+  ) async {
+    final boundaryKey = GlobalKey();
+    await tester.pumpWidget(_graphicsHost(boundaryKey, Terminal()));
+    final images = <ui.Image>[];
+    final pictures = <ui.Picture>[];
+    final onImageCreate = ui.Image.onCreate;
+    final onPictureCreate = ui.Picture.onCreate;
+    addTearDown(() {
+      ui.Image.onCreate = onImageCreate;
+      ui.Picture.onCreate = onPictureCreate;
+    });
+    ui.Image.onCreate = (image) {
+      images.add(image);
+      onImageCreate?.call(image);
+    };
+
+    await tester.runAsync(() async {
+      await _boundaryRedPixelCount(boundaryKey);
+      await _boundaryPixelCount(boundaryKey, _isBlue);
+      await _boundaryRedPixelCountInBand(boundaryKey, 0, 1);
+      await expectLater(
+        _boundaryPixelCount(boundaryKey, (_, _, _) => throw StateError('scan')),
+        throwsStateError,
+      );
+      await expectLater(
+        _boundaryRedPixelCountInBand(boundaryKey, -1, 0),
+        throwsRangeError,
+      );
+
+      ui.Picture.onCreate = (picture) {
+        pictures.add(picture);
+        onPictureCreate?.call(picture);
+      };
+      await _buildSolidPngBase64(Colors.red, 2);
+      await _buildSplitPngBase64(Colors.red, Colors.blue, 2);
+    });
+
+    expect(images, hasLength(7));
+    expect(images.every((image) => image.debugDisposed), isTrue);
+    expect(pictures, hasLength(2));
+    expect(pictures.every((picture) => picture.debugDisposed), isTrue);
+  });
+
   testWidgets('only visible pending Kitty placeholders start lazy decoding', (
     tester,
   ) async {
@@ -327,7 +380,6 @@ void main() {
     );
     await tester.pump();
 
-    var hasRed = false;
     await tester.runAsync(() async {
       final png = await _buildSolidPngBase64(const Color(0xFFFF0000), 24);
       terminal.write('\x1b_Ga=T,f=100,c=8,r=4;$png\x1b\\');
@@ -340,22 +392,7 @@ void main() {
     });
     await tester.pump();
 
-    await tester.runAsync(() async {
-      final boundary =
-          boundaryKey.currentContext!.findRenderObject()!
-              as RenderRepaintBoundary;
-      final shot = await boundary.toImage();
-      final data = (await shot.toByteData())!;
-      for (var i = 0; i + 4 <= data.lengthInBytes; i += 4) {
-        final r = data.getUint8(i);
-        final g = data.getUint8(i + 1);
-        final b = data.getUint8(i + 2);
-        if (r > 150 && g < 90 && b < 90) {
-          hasRed = true;
-          break;
-        }
-      }
-    });
+    final hasRed = await tester.runAsync(() => _boundaryHasRed(boundaryKey));
 
     expect(
       terminal.graphics.hasPlacements,
@@ -1638,12 +1675,7 @@ void main() {
       fontSize = fs;
       await tester.pumpWidget(build());
       await tester.pump();
-      await tester.runAsync(() async {
-        final boundary =
-            boundaryKey.currentContext!.findRenderObject()!
-                as RenderRepaintBoundary;
-        await (await boundary.toImage()).toByteData();
-      });
+      await tester.runAsync(() => _boundaryHasRed(boundaryKey));
       expect(
         tester.takeException(),
         isNull,

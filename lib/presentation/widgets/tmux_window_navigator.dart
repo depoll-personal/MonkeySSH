@@ -579,10 +579,13 @@ sealed class TmuxNavigatorAction {
 /// Switch the current terminal to a different tmux window.
 class TmuxSwitchWindowAction extends TmuxNavigatorAction {
   /// Creates a new [TmuxSwitchWindowAction].
-  const TmuxSwitchWindowAction(this.windowIndex);
+  const TmuxSwitchWindowAction(this.windowIndex, {this.windowId});
 
   /// The window index to switch to.
   final int windowIndex;
+
+  /// The stable window ID, when available.
+  final String? windowId;
 }
 
 /// Create a new tmux window, optionally running a command.
@@ -703,10 +706,13 @@ class TmuxUpgradeAction extends TmuxNavigatorAction {
 /// Close a tmux window.
 class TmuxCloseWindowAction extends TmuxNavigatorAction {
   /// Creates a new [TmuxCloseWindowAction].
-  const TmuxCloseWindowAction(this.windowIndex);
+  const TmuxCloseWindowAction(this.windowIndex, {this.windowId});
 
   /// The window index to close.
   final int windowIndex;
+
+  /// The stable window ID, when available.
+  final String? windowId;
 }
 
 /// Returns a safe diagnostics category for a tmux navigator action.
@@ -1149,9 +1155,12 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
   bool get _shouldStopShowingInitialWindowSpinner =>
       !(_windows?.isNotEmpty ?? false) && _windowRetryAttempts >= 1;
 
-  void _switchToWindow(int windowIndex) {
+  void _switchToWindow(TmuxWindow window) {
     unawaited(HapticFeedback.selectionClick());
-    Navigator.pop(context, TmuxSwitchWindowAction(windowIndex));
+    Navigator.pop(
+      context,
+      TmuxSwitchWindowAction(window.index, windowId: window.id),
+    );
   }
 
   Future<void> _confirmCloseWindow(
@@ -1166,7 +1175,10 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
     if (!mounted || !confirmed) {
       return;
     }
-    Navigator.pop(context, TmuxCloseWindowAction(window.index));
+    Navigator.pop(
+      context,
+      TmuxCloseWindowAction(window.index, windowId: window.id),
+    );
   }
 
   void _createNewWindow({
@@ -1826,7 +1838,7 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
             )
           : isActive
           ? () => Navigator.pop(context)
-          : () => _switchToWindow(window.index),
+          : () => _switchToWindow(window),
     );
   }
 

@@ -16,7 +16,10 @@ final allHostsProvider = StreamProvider<List<Host>>((ref) {
 });
 
 /// Stream of a single saved host, or `null` when it no longer exists.
-final hostByIdProvider = StreamProvider.family<Host?, int>((ref, hostId) {
+final hostByIdProvider = StreamProvider.autoDispose.family<Host?, int>((
+  ref,
+  hostId,
+) {
   final repo = ref.watch(hostRepositoryProvider);
   return repo.watchById(hostId);
 });
@@ -52,8 +55,8 @@ final allPortForwardsProvider = StreamProvider<List<PortForward>>((ref) {
 });
 
 /// Stream of saved port forwards for a single host.
-final portForwardsForHostProvider =
-    StreamProvider.family<List<PortForward>, int>((ref, hostId) {
+final portForwardsForHostProvider = StreamProvider.autoDispose
+    .family<List<PortForward>, int>((ref, hostId) {
       final repo = ref.watch(portForwardRepositoryProvider);
       return repo.watchByHostId(hostId);
     });

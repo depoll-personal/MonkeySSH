@@ -210,6 +210,59 @@ void main() {
     );
   });
 
+  testWidgets('closing releases host streams and reopening loads again', (
+    tester,
+  ) async {
+    final repository = _MockPortForwardRepository();
+    final hostRepository = _MockHostRepository();
+    final session = _LiveTestSession(
+      connectionId: 7,
+      hostId: 10,
+      client: _MockSshClient(),
+    );
+    addTearDown(session.changes.close);
+    var hostListens = 0;
+    var forwardListens = 0;
+    var hostCancels = 0;
+    var forwardCancels = 0;
+    final hosts = StreamController<Host?>.broadcast(
+      onListen: () => hostListens++,
+      onCancel: () => hostCancels++,
+    );
+    final forwards = StreamController<List<PortForward>>.broadcast(
+      onListen: () => forwardListens++,
+      onCancel: () => forwardCancels++,
+    );
+    addTearDown(hosts.close);
+    addTearDown(forwards.close);
+    when(() => repository.watchByHostId(10)).thenAnswer((_) => forwards.stream);
+    await tester.pumpWidget(
+      _buildSheetHost(
+        session: session,
+        notifier: _TestActiveSessionsNotifier([session]),
+        portForwardRepository: repository,
+        hostRepository: hostRepository,
+        hostStream: hosts.stream,
+      ),
+    );
+    for (var visit = 1; visit <= 2; visit++) {
+      await tester.tap(find.text('Open'));
+      await tester.pump();
+      expect(hostListens, visit);
+      expect(forwardListens, visit);
+      expect(find.byType(BrandListSkeleton), findsWidgets);
+      hosts.add(_host());
+      forwards.add([_portForward()]);
+      await tester.pumpAndSettle();
+      expect(find.text('Web preview'), findsOneWidget);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      await tester.pump();
+      expect(hostCancels, visit);
+      expect(forwardCancels, visit);
+    }
+  });
+
   testWidgets('live switch starts and stops the current session rule', (
     tester,
   ) async {

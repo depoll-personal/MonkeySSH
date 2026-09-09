@@ -67,6 +67,18 @@ func TestMuxHelloRejectsOversizeWithoutWaitingForNewline(t *testing.T) {
 	}
 }
 
+func TestMuxIncompleteHelloExpiresAfterShutdown(t *testing.T) {
+	server := newMuxServer("incomplete-hello")
+	peer := auditMuxConnection(t, server)
+	if _, err := io.WriteString(peer, "{\"role\":"); err != nil {
+		t.Fatal(err)
+	}
+	server.close()
+	if _, err := bufio.NewReader(peer).ReadByte(); !errors.Is(err, io.EOF) {
+		t.Fatalf("incomplete hello read = %v, want EOF", err)
+	}
+}
+
 func TestMuxHelloPreservesBufferedControlRequest(t *testing.T) {
 	server := newMuxServer("buffered-control")
 	defer server.close()
@@ -87,6 +99,19 @@ func TestMuxHelloPreservesBufferedControlRequest(t *testing.T) {
 			t.Errorf("pong ID = %q, want probe", response.ID)
 		}
 	}
+	time.Sleep(socketTimeout + 20*time.Millisecond)
+	_ = peer.SetDeadline(time.Now().Add(time.Second))
+	if _, err := io.WriteString(peer, "{\"type\":\"ping\",\"id\":\"after-handshake\"}\n"); err != nil {
+		t.Fatalf("handshake deadline was not cleared: %v", err)
+	}
+	var response controlResponse
+	if err := decoder.Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Type != "pong" || response.ID != "after-handshake" {
+		t.Fatalf("response after handshake timeout = %#v", response)
+	}
+
 }
 
 func TestStartWindowPreservesCommandError(t *testing.T) {

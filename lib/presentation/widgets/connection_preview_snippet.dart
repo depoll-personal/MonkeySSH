@@ -155,8 +155,6 @@ class ConnectionPreviewSnippet extends StatelessWidget {
     this.lastExitCode,
     this.endpointStyle,
     this.terminalTheme,
-    this.showEndpoint = true,
-    this.previewMaxLines = _previewMaxLines,
     super.key,
   });
 
@@ -197,12 +195,6 @@ class ConnectionPreviewSnippet extends StatelessWidget {
   /// Terminal theme used to tint the preview surface.
   final TerminalThemeData? terminalTheme;
 
-  /// Whether to render the endpoint metadata line above the preview.
-  final bool showEndpoint;
-
-  /// Maximum number of preview lines to render before truncating.
-  final int previewMaxLines;
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -233,9 +225,9 @@ class ConnectionPreviewSnippet extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (showEndpoint) Text(endpoint, style: endpointStyle),
+        Text(endpoint, style: endpointStyle),
         if (activityTitle != null) ...[
-          if (showEndpoint) const SizedBox(height: 2),
+          const SizedBox(height: 2),
           Text(
             'Active: $activityTitle',
             maxLines: 1,
@@ -248,7 +240,7 @@ class ConnectionPreviewSnippet extends StatelessWidget {
         ],
         if ((workingDirectoryLabel?.isNotEmpty ?? false) ||
             (shellStatusLabel?.isNotEmpty ?? false)) ...[
-          if (showEndpoint || activityTitle != null) const SizedBox(height: 2),
+          const SizedBox(height: 2),
           Text(
             [
               if ((workingDirectoryLabel ?? '').isNotEmpty)
@@ -264,11 +256,7 @@ class ConnectionPreviewSnippet extends StatelessWidget {
         ],
         if ((previewText != null && previewText.isNotEmpty) ||
             nativeAcpPreviewSnapshot != null) ...[
-          if (showEndpoint ||
-              activityTitle != null ||
-              (workingDirectoryLabel?.isNotEmpty ?? false) ||
-              (shellStatusLabel?.isNotEmpty ?? false))
-            const SizedBox(height: 4),
+          const SizedBox(height: 4),
           Container(
             width: double.infinity,
             constraints: const BoxConstraints(minHeight: 48),
@@ -284,7 +272,7 @@ class ConnectionPreviewSnippet extends StatelessWidget {
                     previewSnapshot: previewSnapshot,
                     terminalTheme: terminalTheme,
                     color: previewTextColor,
-                    maxLines: previewMaxLines,
+                    maxLines: _previewMaxLines,
                   )
                 : _NativeAcpConnectionPreview(
                     snapshot: nativeAcpPreviewSnapshot!,
@@ -352,26 +340,10 @@ class ConnectionPreviewStackEntry {
 /// Renders one or more connection preview cards in a visibly offset stack.
 class ConnectionPreviewStack extends StatelessWidget {
   /// Creates a [ConnectionPreviewStack].
-  const ConnectionPreviewStack({
-    required this.entries,
-    this.cardHeight = _stackPreviewCardHeight,
-    this.verticalOffset = 14,
-    this.horizontalOffset = 10,
-    this.onTap,
-    super.key,
-  });
+  const ConnectionPreviewStack({required this.entries, this.onTap, super.key});
 
   /// Cards to render in the stack, ordered from oldest to newest.
   final List<ConnectionPreviewStackEntry> entries;
-
-  /// Height of each stacked preview card.
-  final double cardHeight;
-
-  /// Vertical offset applied between stacked cards.
-  final double verticalOffset;
-
-  /// Horizontal offset applied between stacked cards.
-  final double horizontalOffset;
 
   /// Called when the preview stack is tapped.
   final VoidCallback? onTap;
@@ -384,7 +356,7 @@ class ConnectionPreviewStack extends StatelessWidget {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final maxHorizontalInset = (entries.length - 1) * horizontalOffset;
+        final maxHorizontalInset = (entries.length - 1) * 10.0;
         final cardWidth = constraints.maxWidth > maxHorizontalInset
             ? constraints.maxWidth - maxHorizontalInset
             : 0.0;
@@ -395,13 +367,13 @@ class ConnectionPreviewStack extends StatelessWidget {
               entry: entry,
               cardWidth: cardWidth,
               maxHeight:
-                  cardHeight +
+                  _stackPreviewCardHeight +
                   (entry.metadata != null ? _stackPreviewMetadataHeight : 0),
             ),
         ];
         final stackHeight = [
           for (var index = 0; index < cardHeights.length; index++)
-            cardHeights[index] + (index * verticalOffset),
+            cardHeights[index] + (index * 14.0),
         ].reduce(math.max);
 
         final stack = SizedBox(
@@ -412,8 +384,8 @@ class ConnectionPreviewStack extends StatelessWidget {
             children: [
               for (var index = 0; index < entries.length; index++)
                 Positioned(
-                  top: index * verticalOffset,
-                  left: index * horizontalOffset,
+                  top: index * 14.0,
+                  left: index * 10.0,
                   width: cardWidth,
                   child: _ConnectionPreviewStackCard(
                     entry: entries[index],

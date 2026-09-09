@@ -618,6 +618,44 @@ func TestGCKeepsPIDAndLockFilesOfLiveOwners(t *testing.T) {
 	}
 }
 
+func TestGCSocketFailures(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", shortUnixSocketDir(t))
+	dir, err := runtimeDirectory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, live := range []bool{true, false} {
+		path := filepath.Join(dir, fmt.Sprintf("monkeymux-%t.sock", live))
+		listener, err := net.Listen("unix", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		disableUnixListenerUnlink(listener)
+		t.Cleanup(func() { _ = listener.Close() })
+		if !live {
+			_ = listener.Close()
+		}
+		gcCommand()
+		_, err = os.Stat(path)
+		if live && err != nil {
+			t.Fatalf("gc removed a live socket: %v", err)
+		}
+		if !live && !os.IsNotExist(err) {
+			t.Fatalf("gc kept an abandoned socket: %v", err)
+		}
+	}
+	t.Run("unconfirmed failure", func(t *testing.T) {
+		path := filepath.Join(dir, "monkeymux-loop.sock")
+		if err := os.Symlink(path, path); err != nil {
+			t.Skipf("symlink unavailable: %v", err)
+		}
+		gcCommand()
+		if _, err := os.Lstat(path); err != nil {
+			t.Fatalf("gc removed a path after an unconfirmed failure: %v", err)
+		}
+	})
+}
+
 func TestGCKeepsInFlightRestoreSnapshots(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

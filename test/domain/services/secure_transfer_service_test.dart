@@ -329,53 +329,116 @@ void main() {
       });
     }
 
-    test('encrypts and decrypts host payload roundtrip', () async {
-      final snippetId = await db
-          .into(db.snippets)
-          .insert(
-            SnippetsCompanion.insert(
-              name: 'Attach tmux',
-              command: 'tmux new -As MonkeySSH',
-            ),
-          );
-      final hostId = await db
-          .into(db.hosts)
-          .insert(
-            HostsCompanion.insert(
-              label: 'Production',
-              hostname: 'prod.example.com',
-              username: 'root',
-              password: const Value('secret'),
-              skipJumpHostOnSsids: const Value('Home WiFi\nOffice WiFi'),
-              autoConnectCommand: const Value('tmux new -As MonkeySSH'),
-              autoConnectSnippetId: Value(snippetId),
-              autoForwardPorts: const Value(true),
-              portProxyName: const Value('production'),
-            ),
-          );
-      final host = await (db.select(
-        db.hosts,
-      )..where((h) => h.id.equals(hostId))).getSingle();
+    for (final (
+          writerThreshold,
+          readerThreshold,
+          label,
+          hostname,
+          username,
+          passphrase,
+        )
+        in [
+          (null, null, 'Production', 'prod.example.com', 'root', '1234'),
+          (
+            0,
+            0,
+            'Threshold Test Host',
+            'threshold.example.com',
+            'user',
+            'pass',
+          ),
+          (
+            0x7fffffffffffffff,
+            0x7fffffffffffffff,
+            'Inline Threshold Host',
+            'inline.example.com',
+            'user',
+            'pass',
+          ),
+          (
+            0,
+            0x7fffffffffffffff,
+            'Interop Host',
+            'interop.example.com',
+            'user',
+            'pass',
+          ),
+          (
+            0x7fffffffffffffff,
+            0,
+            'Interop Host',
+            'interop.example.com',
+            'user',
+            'pass',
+          ),
+        ]) {
+      test('encrypts and decrypts $label host payload '
+          '(writer=$writerThreshold, reader=$readerThreshold)', () async {
+        final writer = writerThreshold == null
+            ? transferService
+            : SecureTransferService(
+                db,
+                keyRepository,
+                hostRepository,
+                isolateAssemblyThresholdBytes: writerThreshold,
+              );
+        final reader = readerThreshold == null
+            ? transferService
+            : SecureTransferService(
+                db,
+                keyRepository,
+                hostRepository,
+                isolateAssemblyThresholdBytes: readerThreshold,
+              );
+        final snippetId = await db
+            .into(db.snippets)
+            .insert(
+              SnippetsCompanion.insert(
+                name: 'Attach tmux',
+                command: 'tmux new -As MonkeySSH',
+              ),
+            );
+        final hostId = await db
+            .into(db.hosts)
+            .insert(
+              HostsCompanion.insert(
+                label: label,
+                hostname: hostname,
+                username: username,
+                password: const Value('secret'),
+                skipJumpHostOnSsids: const Value('Home WiFi\nOffice WiFi'),
+                autoConnectCommand: const Value('tmux new -As MonkeySSH'),
+                autoConnectSnippetId: Value(snippetId),
+                autoForwardPorts: const Value(true),
+                portProxyName: const Value('production'),
+              ),
+            );
+        final host = await (db.select(
+          db.hosts,
+        )..where((h) => h.id.equals(hostId))).getSingle();
 
-      final encodedPayload = await transferService.createHostPayload(
-        host: host,
-        transferPassphrase: '1234',
-      );
-      final decrypted = await transferService.decryptPayload(
-        encodedPayload: encodedPayload,
-        transferPassphrase: '1234',
-      );
+        final encodedPayload = await writer.createHostPayload(
+          host: host,
+          transferPassphrase: passphrase,
+        );
+        final decrypted = await reader.decryptPayload(
+          encodedPayload: encodedPayload,
+          transferPassphrase: passphrase,
+        );
 
-      expect(decrypted.type, TransferPayloadType.host);
-      final hostData = Map<String, dynamic>.from(decrypted.data['host'] as Map);
-      expect(hostData['label'], 'Production');
-      expect(hostData['hostname'], 'prod.example.com');
-      expect(hostData['autoConnectCommand'], 'tmux new -As MonkeySSH');
-      expect(hostData['autoConnectSnippetId'], isNull);
-      expect(hostData['skipJumpHostOnSsids'], 'Home WiFi\nOffice WiFi');
-      expect(hostData['autoForwardPorts'], isTrue);
-      expect(hostData['portProxyName'], 'production');
-    });
+        expect(decrypted.type, TransferPayloadType.host);
+        final hostData = Map<String, dynamic>.from(
+          decrypted.data['host'] as Map,
+        );
+        expect(hostData['label'], label);
+        expect(hostData['hostname'], hostname);
+        expect(hostData['autoConnectCommand'], 'tmux new -As MonkeySSH');
+        expect(hostData['autoConnectSnippetId'], isNull);
+        expect(hostData['skipJumpHostOnSsids'], 'Home WiFi\nOffice WiFi');
+        expect(hostData['autoForwardPorts'], isTrue);
+        expect(hostData['portProxyName'], 'production');
+      });
+    }
 
     test(
       'createMigrationData includes skip-jump SSIDs in host exports',
@@ -389,9 +452,7 @@ void main() {
           ),
         );
 
-        final migrationData = await transferService.createMigrationData(
-          includeKnownHosts: false,
-        );
+        final migrationData = await transferService.createMigrationData();
         final hosts = migrationData['hosts'] as List;
         final hostData = Map<String, dynamic>.from(hosts.single as Map);
 
@@ -496,9 +557,7 @@ void main() {
               ),
             );
 
-        final migrationData = await transferService.createMigrationData(
-          includeKnownHosts: false,
-        );
+        final migrationData = await transferService.createMigrationData();
         final portForwards = migrationData['portForwards'] as List;
         final portForwardData = Map<String, dynamic>.from(
           portForwards.single as Map,
@@ -519,7 +578,6 @@ void main() {
         await importedTransferService.importMigrationData(
           data: migrationData,
           mode: MigrationImportMode.replace,
-          includeKnownHosts: false,
         );
 
         final importedPortForwards = await importedDb
@@ -795,176 +853,87 @@ void main() {
       },
     );
 
-    test('rejects invalid passphrase', () async {
-      final hostId = await db
-          .into(db.hosts)
-          .insert(
-            HostsCompanion.insert(
-              label: 'Host',
-              hostname: 'example.com',
-              username: 'user',
-            ),
-          );
-      final host = await (db.select(
-        db.hosts,
-      )..where((h) => h.id.equals(hostId))).getSingle();
-      final encodedPayload = await transferService.createHostPayload(
-        host: host,
-        transferPassphrase: 'correct',
-      );
+    for (final threshold in [null, 0]) {
+      test('rejects invalid passphrase (threshold=$threshold)', () async {
+        final service = threshold == null
+            ? transferService
+            : SecureTransferService(
+                db,
+                keyRepository,
+                hostRepository,
+                isolateAssemblyThresholdBytes: threshold,
+              );
+        final hostId = await db
+            .into(db.hosts)
+            .insert(
+              HostsCompanion.insert(
+                label: 'Host',
+                hostname: 'example.com',
+                username: 'user',
+              ),
+            );
+        final host = await (db.select(
+          db.hosts,
+        )..where((h) => h.id.equals(hostId))).getSingle();
+        final encodedPayload = await service.createHostPayload(
+          host: host,
+          transferPassphrase: 'correct',
+        );
 
-      await expectLater(
-        transferService.decryptPayload(
-          encodedPayload: encodedPayload,
-          transferPassphrase: 'wrong',
-        ),
-        throwsFormatException,
-      );
-    });
+        await expectLater(
+          service.decryptPayload(
+            encodedPayload: encodedPayload,
+            transferPassphrase: 'wrong',
+          ),
+          throwsFormatException,
+        );
+      });
+    }
 
-    test('rejects envelope with invalid component lengths', () async {
-      final hostId = await db
-          .into(db.hosts)
-          .insert(
-            HostsCompanion.insert(
-              label: 'Host',
-              hostname: 'example.com',
-              username: 'user',
-            ),
-          );
-      final host = await (db.select(
-        db.hosts,
-      )..where((h) => h.id.equals(hostId))).getSingle();
-      final encodedPayload = await transferService.createHostPayload(
-        host: host,
-        transferPassphrase: '1234',
-      );
-
-      final compact = encodedPayload.substring('MSSH1:'.length);
-      final envelope = Map<String, dynamic>.from(
-        jsonDecode(utf8.decode(base64Url.decode(base64Url.normalize(compact))))
-            as Map,
-      );
-      envelope['salt'] = base64Url.encode(const [1, 2, 3]);
-      final tampered =
-          'MSSH1:${base64Url.encode(utf8.encode(jsonEncode(envelope)))}';
-
-      await expectLater(
-        transferService.decryptPayload(
-          encodedPayload: tampered,
+    for (final (name, field, value) in [
+      ('invalid component lengths', 'salt', base64Url.encode(const [1, 2, 3])),
+      ('non-string encoded components', 'salt', 42),
+      ('invalid iteration count', 'iter', 0),
+      ('excessive iteration count', 'iter', 1000001),
+    ]) {
+      test('rejects envelope with $name', () async {
+        final hostId = await db
+            .into(db.hosts)
+            .insert(
+              HostsCompanion.insert(
+                label: 'Host',
+                hostname: 'example.com',
+                username: 'user',
+              ),
+            );
+        final host = await (db.select(
+          db.hosts,
+        )..where((h) => h.id.equals(hostId))).getSingle();
+        final encodedPayload = await transferService.createHostPayload(
+          host: host,
           transferPassphrase: '1234',
-        ),
-        throwsFormatException,
-      );
-    });
+        );
 
-    test('rejects envelope with non-string encoded components', () async {
-      final hostId = await db
-          .into(db.hosts)
-          .insert(
-            HostsCompanion.insert(
-              label: 'Host',
-              hostname: 'example.com',
-              username: 'user',
-            ),
-          );
-      final host = await (db.select(
-        db.hosts,
-      )..where((h) => h.id.equals(hostId))).getSingle();
-      final encodedPayload = await transferService.createHostPayload(
-        host: host,
-        transferPassphrase: '1234',
-      );
+        final compact = encodedPayload.substring('MSSH1:'.length);
+        final envelope = Map<String, dynamic>.from(
+          jsonDecode(
+                utf8.decode(base64Url.decode(base64Url.normalize(compact))),
+              )
+              as Map,
+        );
+        envelope[field] = value;
+        final tampered =
+            'MSSH1:${base64Url.encode(utf8.encode(jsonEncode(envelope)))}';
 
-      final compact = encodedPayload.substring('MSSH1:'.length);
-      final envelope = Map<String, dynamic>.from(
-        jsonDecode(utf8.decode(base64Url.decode(base64Url.normalize(compact))))
-            as Map,
-      );
-      envelope['salt'] = 42;
-      final tampered =
-          'MSSH1:${base64Url.encode(utf8.encode(jsonEncode(envelope)))}';
-
-      await expectLater(
-        transferService.decryptPayload(
-          encodedPayload: tampered,
-          transferPassphrase: '1234',
-        ),
-        throwsFormatException,
-      );
-    });
-
-    test('rejects envelope with invalid iteration count', () async {
-      final hostId = await db
-          .into(db.hosts)
-          .insert(
-            HostsCompanion.insert(
-              label: 'Host',
-              hostname: 'example.com',
-              username: 'user',
-            ),
-          );
-      final host = await (db.select(
-        db.hosts,
-      )..where((h) => h.id.equals(hostId))).getSingle();
-      final encodedPayload = await transferService.createHostPayload(
-        host: host,
-        transferPassphrase: '1234',
-      );
-
-      final compact = encodedPayload.substring('MSSH1:'.length);
-      final envelope = Map<String, dynamic>.from(
-        jsonDecode(utf8.decode(base64Url.decode(base64Url.normalize(compact))))
-            as Map,
-      );
-      envelope['iter'] = 0;
-      final tampered =
-          'MSSH1:${base64Url.encode(utf8.encode(jsonEncode(envelope)))}';
-
-      await expectLater(
-        transferService.decryptPayload(
-          encodedPayload: tampered,
-          transferPassphrase: '1234',
-        ),
-        throwsFormatException,
-      );
-    });
-
-    test('rejects envelope with excessive iteration count', () async {
-      final hostId = await db
-          .into(db.hosts)
-          .insert(
-            HostsCompanion.insert(
-              label: 'Host',
-              hostname: 'example.com',
-              username: 'user',
-            ),
-          );
-      final host = await (db.select(
-        db.hosts,
-      )..where((h) => h.id.equals(hostId))).getSingle();
-      final encodedPayload = await transferService.createHostPayload(
-        host: host,
-        transferPassphrase: '1234',
-      );
-
-      final compact = encodedPayload.substring('MSSH1:'.length);
-      final envelope = Map<String, dynamic>.from(
-        jsonDecode(utf8.decode(base64Url.decode(base64Url.normalize(compact))))
-            as Map,
-      );
-      envelope['iter'] = 1000001;
-      final tampered =
-          'MSSH1:${base64Url.encode(utf8.encode(jsonEncode(envelope)))}';
-
-      await expectLater(
-        transferService.decryptPayload(
-          encodedPayload: tampered,
-          transferPassphrase: '1234',
-        ),
-        throwsFormatException,
-      );
-    });
+        await expectLater(
+          transferService.decryptPayload(
+            encodedPayload: tampered,
+            transferPassphrase: '1234',
+          ),
+          throwsFormatException,
+        );
+      });
+    }
 
     test('fails migration when host references missing key mapping', () async {
       final payload = TransferPayload(
@@ -1293,7 +1262,6 @@ void main() {
         await service.importMigrationData(
           data: data,
           mode: MigrationImportMode.merge,
-          includeKnownHosts: false,
         );
 
         expect(
@@ -1305,9 +1273,7 @@ void main() {
         );
         expect(diagnosticsLogger.events.first.fields, {
           'mode': MigrationImportMode.merge,
-          'includeKnownHosts': false,
           'settingsCount': 1,
-          'allowedSettingsKeyCount': null,
           'groupCount': 0,
           'keyCount': 0,
           'hostCount': 1,
@@ -1351,9 +1317,7 @@ void main() {
           ),
         );
 
-        final migrationData = await transferService.createMigrationData(
-          includeKnownHosts: false,
-        );
+        final migrationData = await transferService.createMigrationData();
 
         final importedDb = AppDatabase.forTesting(NativeDatabase.memory());
         addTearDown(importedDb.close);
@@ -1367,7 +1331,6 @@ void main() {
         await importedTransferService.importMigrationData(
           data: migrationData,
           mode: MigrationImportMode.replace,
-          includeKnownHosts: false,
         );
 
         final importedHost = await importedDb
@@ -1405,9 +1368,7 @@ void main() {
           sourceHostId,
           const HostCliLaunchPreferences(startInYoloMode: true),
         );
-        final migrationData = await transferService.createMigrationData(
-          includeKnownHosts: false,
-        );
+        final migrationData = await transferService.createMigrationData();
 
         final importedDb = AppDatabase.forTesting(NativeDatabase.memory());
         addTearDown(importedDb.close);
@@ -1450,7 +1411,6 @@ void main() {
         await importedTransferService.importMigrationData(
           data: migrationData,
           mode: MigrationImportMode.merge,
-          includeKnownHosts: false,
         );
 
         final importedHost = await (importedDb.select(
@@ -1494,7 +1454,6 @@ void main() {
             ],
           },
           mode: MigrationImportMode.replace,
-          includeKnownHosts: false,
         );
 
         final now = DateTime.now().toUtc();
@@ -1750,39 +1709,66 @@ void main() {
       },
     );
 
-    test('encrypts and imports key payload roundtrip', () async {
-      final keyId = await db
-          .into(db.sshKeys)
-          .insert(
-            SshKeysCompanion.insert(
-              name: 'Deploy Key',
-              keyType: 'ed25519',
-              publicKey: _publicKeyA,
-              privateKey: 'test-open-ssh-key-materialxyz',
-              passphrase: const Value('key-passphrase'),
-            ),
+    for (final (threshold, name, privateKey, keyPassphrase, transferPassphrase)
+        in [
+          (
+            null,
+            'Deploy Key',
+            'test-open-ssh-key-materialxyz',
+            'key-passphrase',
+            '1234',
+          ),
+          (0, 'Threshold Key', 'test-open-ssh-key-thresholdxyz', null, 'pass'),
+        ]) {
+      test(
+        'encrypts and imports $name payload (threshold=$threshold)',
+        () async {
+          final service = threshold == null
+              ? transferService
+              : SecureTransferService(
+                  db,
+                  keyRepository,
+                  hostRepository,
+                  isolateAssemblyThresholdBytes: threshold,
+                );
+          final entry = SshKeysCompanion.insert(
+            name: name,
+            keyType: 'ed25519',
+            publicKey: _publicKeyA,
+            privateKey: privateKey,
+            passphrase: Value(keyPassphrase),
           );
-      final key = await (db.select(
-        db.sshKeys,
-      )..where((k) => k.id.equals(keyId))).getSingle();
+          final keyId = threshold == null
+              ? await db.into(db.sshKeys).insert(entry)
+              : await keyRepository.insert(entry);
+          final key = await (db.select(
+            db.sshKeys,
+          )..where((k) => k.id.equals(keyId))).getSingle();
 
-      final encodedPayload = await transferService.createKeyPayload(
-        key: key,
-        transferPassphrase: '1234',
+          final encodedPayload = await service.createKeyPayload(
+            key: key,
+            transferPassphrase: transferPassphrase,
+          );
+
+          await db.delete(db.sshKeys).go();
+
+          final decrypted = await service.decryptPayload(
+            encodedPayload: encodedPayload,
+            transferPassphrase: transferPassphrase,
+          );
+          final importedKey = await service.importKeyPayload(decrypted);
+
+          expect(importedKey.name, name);
+          expect(
+            importedKey.privateKey,
+            threshold == null
+                ? contains('test-open-ssh-key-material')
+                : privateKey,
+          );
+          expect(importedKey.passphrase, keyPassphrase);
+        },
       );
-
-      await db.delete(db.sshKeys).go();
-
-      final decrypted = await transferService.decryptPayload(
-        encodedPayload: encodedPayload,
-        transferPassphrase: '1234',
-      );
-      final importedKey = await transferService.importKeyPayload(decrypted);
-
-      expect(importedKey.name, 'Deploy Key');
-      expect(importedKey.privateKey, contains('test-open-ssh-key-material'));
-      expect(importedKey.passphrase, 'key-passphrase');
-    });
+    }
 
     test(
       'importKeyPayload does not deduplicate by fingerprint alone',
@@ -1942,209 +1928,6 @@ void main() {
           transferService.importFullMigrationPayload(
             payload: tamperedPayload,
             mode: MigrationImportMode.merge,
-          ),
-          throwsFormatException,
-        );
-      },
-    );
-  });
-
-  group('isolate assembly threshold', () {
-    test('host payload roundtrip via isolate path (threshold = 0)', () async {
-      // threshold=0 forces all payloads through the isolate assembly path.
-      final service = SecureTransferService(
-        db,
-        keyRepository,
-        hostRepository,
-        isolateAssemblyThresholdBytes: 0,
-      );
-      final hostId = await db
-          .into(db.hosts)
-          .insert(
-            HostsCompanion.insert(
-              label: 'Threshold Test Host',
-              hostname: 'threshold.example.com',
-              username: 'user',
-            ),
-          );
-      final host = await (db.select(
-        db.hosts,
-      )..where((h) => h.id.equals(hostId))).getSingle();
-
-      final encoded = await service.createHostPayload(
-        host: host,
-        transferPassphrase: 'pass',
-      );
-      final decrypted = await service.decryptPayload(
-        encodedPayload: encoded,
-        transferPassphrase: 'pass',
-      );
-
-      expect(decrypted.type, TransferPayloadType.host);
-      final hostData = Map<String, dynamic>.from(decrypted.data['host'] as Map);
-      expect(hostData['label'], 'Threshold Test Host');
-      expect(hostData['hostname'], 'threshold.example.com');
-    });
-
-    test(
-      'host payload roundtrip via inline path (threshold = maxInt)',
-      () async {
-        // Very large threshold forces all payloads through the inline path.
-        final service = SecureTransferService(
-          db,
-          keyRepository,
-          hostRepository,
-          isolateAssemblyThresholdBytes: 0x7fffffffffffffff,
-        );
-        final hostId = await db
-            .into(db.hosts)
-            .insert(
-              HostsCompanion.insert(
-                label: 'Inline Threshold Host',
-                hostname: 'inline.example.com',
-                username: 'user',
-              ),
-            );
-        final host = await (db.select(
-          db.hosts,
-        )..where((h) => h.id.equals(hostId))).getSingle();
-
-        final encoded = await service.createHostPayload(
-          host: host,
-          transferPassphrase: 'pass',
-        );
-        final decrypted = await service.decryptPayload(
-          encodedPayload: encoded,
-          transferPassphrase: 'pass',
-        );
-
-        expect(decrypted.type, TransferPayloadType.host);
-        final hostData = Map<String, dynamic>.from(
-          decrypted.data['host'] as Map,
-        );
-        expect(hostData['label'], 'Inline Threshold Host');
-        expect(hostData['hostname'], 'inline.example.com');
-      },
-    );
-
-    test(
-      'isolate path and inline path produce interoperable payloads',
-      () async {
-        final isolateService = SecureTransferService(
-          db,
-          keyRepository,
-          hostRepository,
-          isolateAssemblyThresholdBytes: 0,
-        );
-        final inlineService = SecureTransferService(
-          db,
-          keyRepository,
-          hostRepository,
-          isolateAssemblyThresholdBytes: 0x7fffffffffffffff,
-        );
-        final hostId = await db
-            .into(db.hosts)
-            .insert(
-              HostsCompanion.insert(
-                label: 'Interop Host',
-                hostname: 'interop.example.com',
-                username: 'user',
-              ),
-            );
-        final host = await (db.select(
-          db.hosts,
-        )..where((h) => h.id.equals(hostId))).getSingle();
-
-        // Encrypt via isolate path, decrypt via inline path.
-        final isolateEncoded = await isolateService.createHostPayload(
-          host: host,
-          transferPassphrase: 'pass',
-        );
-        final fromInline = await inlineService.decryptPayload(
-          encodedPayload: isolateEncoded,
-          transferPassphrase: 'pass',
-        );
-        expect(fromInline.type, TransferPayloadType.host);
-        expect((fromInline.data['host'] as Map)['label'], 'Interop Host');
-
-        // Encrypt via inline path, decrypt via isolate path.
-        final inlineEncoded = await inlineService.createHostPayload(
-          host: host,
-          transferPassphrase: 'pass',
-        );
-        final fromIsolate = await isolateService.decryptPayload(
-          encodedPayload: inlineEncoded,
-          transferPassphrase: 'pass',
-        );
-        expect(fromIsolate.type, TransferPayloadType.host);
-        expect((fromIsolate.data['host'] as Map)['label'], 'Interop Host');
-      },
-    );
-
-    test('key payload roundtrip via isolate path (threshold = 0)', () async {
-      final service = SecureTransferService(
-        db,
-        keyRepository,
-        hostRepository,
-        isolateAssemblyThresholdBytes: 0,
-      );
-      final keyId = await keyRepository.insert(
-        SshKeysCompanion.insert(
-          name: 'Threshold Key',
-          keyType: 'ed25519',
-          publicKey: _publicKeyA,
-          privateKey: 'test-open-ssh-key-thresholdxyz',
-        ),
-      );
-      final key = await (db.select(
-        db.sshKeys,
-      )..where((k) => k.id.equals(keyId))).getSingle();
-
-      final encoded = await service.createKeyPayload(
-        key: key,
-        transferPassphrase: 'pass',
-      );
-      await db.delete(db.sshKeys).go();
-      final decrypted = await service.decryptPayload(
-        encodedPayload: encoded,
-        transferPassphrase: 'pass',
-      );
-      final imported = await service.importKeyPayload(decrypted);
-
-      expect(imported.name, 'Threshold Key');
-      expect(imported.privateKey, 'test-open-ssh-key-thresholdxyz');
-    });
-
-    test(
-      'wrong passphrase is rejected on isolate path (threshold = 0)',
-      () async {
-        final service = SecureTransferService(
-          db,
-          keyRepository,
-          hostRepository,
-          isolateAssemblyThresholdBytes: 0,
-        );
-        final hostId = await db
-            .into(db.hosts)
-            .insert(
-              HostsCompanion.insert(
-                label: 'Host',
-                hostname: 'example.com',
-                username: 'user',
-              ),
-            );
-        final host = await (db.select(
-          db.hosts,
-        )..where((h) => h.id.equals(hostId))).getSingle();
-        final encoded = await service.createHostPayload(
-          host: host,
-          transferPassphrase: 'correct',
-        );
-
-        await expectLater(
-          service.decryptPayload(
-            encodedPayload: encoded,
-            transferPassphrase: 'wrong',
           ),
           throwsFormatException,
         );

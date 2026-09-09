@@ -157,7 +157,10 @@ void main() {
       expect(emissions.last.map((p) => p.id).last, 'agent-1');
       expect(emissions.last.last.label, 'Agent One');
 
-      final edited = added.update(label: 'Agent One Renamed');
+      final edited = AcpCustomProviderDefinition.tryFromJson({
+        ...added.toJson(),
+        'label': 'Agent One Renamed',
+      })!;
       await settings.setString(
         SettingKeys.acpCustomProviders,
         jsonEncode([edited.toJson()]),
@@ -239,7 +242,10 @@ void main() {
       await pumpEventQueue();
       expect(emissions.last.value!.map((p) => p.id).last, 'agent-1');
 
-      final edited = added.update(label: 'Agent One Renamed');
+      final edited = AcpCustomProviderDefinition.tryFromJson({
+        ...added.toJson(),
+        'label': 'Agent One Renamed',
+      })!;
       await providerSettings.setString(
         SettingKeys.acpCustomProviders,
         jsonEncode([edited.toJson()]),

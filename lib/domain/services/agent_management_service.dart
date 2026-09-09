@@ -650,18 +650,14 @@ class AgentManagementService {
         // Registry metadata is best-effort; installed tools remain visible.
       }
     }
-    final uniqueRuntimes = await Future.wait(
-      definitions.map(
-        (definition) => _resolveRuntimeInfo(
-          session,
+    final uniqueRuntimes = [
+      for (final definition in definitions)
+        _resolveRuntimeInfo(
           definition,
           snapshots[definition.id] ?? const AgentProbeSnapshot(),
-          priority: priority,
           metadata: metadata[definition.id],
-          metadataWasBatched: true,
         ),
-      ),
-    );
+    ];
     return _assembleRuntimeList(
       session,
       uniqueRuntimes,
@@ -743,14 +739,7 @@ class AgentManagementService {
           // Registry failures must not erase a working executable's version.
         }
       }
-      return _resolveRuntimeInfo(
-        session,
-        definition,
-        snapshot,
-        priority: priority,
-        metadata: metadata,
-        metadataWasBatched: true,
-      );
+      return _resolveRuntimeInfo(definition, snapshot, metadata: metadata);
     } on Object catch (error) {
       return AgentRuntimeInfo(
         definition: definition,
@@ -760,14 +749,11 @@ class AgentManagementService {
     }
   }
 
-  Future<AgentRuntimeInfo> _resolveRuntimeInfo(
-    SshSession session,
+  AgentRuntimeInfo _resolveRuntimeInfo(
     AgentRuntimeDefinition definition,
     AgentProbeSnapshot snapshot, {
-    required SshExecPriority priority,
     AgentMetadataSnapshot? metadata,
-    bool metadataWasBatched = false,
-  }) async {
+  }) {
     final path = snapshot.executablePath;
     var installed = parseAgentVersion(snapshot.versionOutput ?? '');
     if (path == null) {
@@ -796,28 +782,7 @@ class AgentManagementService {
         ? 'npx on demand'
         : _detectionSourceFromPath(path);
     installed ??= parseAgentVersion(metadata?.installedVersionOutput ?? '');
-    var latest = parseAgentVersion(metadata?.latestVersionOutput ?? '');
-    if (!metadataWasBatched) {
-      try {
-        source = await _detectInstallationSource(
-          session,
-          definition,
-          path,
-          priority: priority,
-        );
-      } on Object {
-        // Ownership lookup is best-effort; the executable itself was found.
-      }
-      try {
-        latest = await _readLatestVersion(
-          session,
-          definition,
-          priority: priority,
-        );
-      } on Object {
-        // An offline registry must not hide an installed runtime.
-      }
-    }
+    final latest = parseAgentVersion(metadata?.latestVersionOutput ?? '');
     final hasUpdate =
         installed != null &&
         latest != null &&
@@ -947,69 +912,6 @@ class AgentManagementService {
     return result;
   }
 
-  Future<String> _detectInstallationSource(
-    SshSession session,
-    AgentRuntimeDefinition definition,
-    String path, {
-    required SshExecPriority priority,
-  }) async {
-    final formula = definition.homebrewFormula;
-    if (!session.remoteIsWindows && formula != null) {
-      final result = await _run(
-        session,
-        '$_profilePrefix command -v brew >/dev/null 2>&1 && brew list --versions ${_shellQuote(formula)} 2>/dev/null',
-        priority: priority,
-      );
-      if (result.output.contains(formula) &&
-          parseAgentVersion(result.output) != null) {
-        return 'Homebrew';
-      }
-    }
-
-    final package = definition.packageName;
-    if (package != null && definition.registry != null) {
-      final command = switch (definition.registry!) {
-        AgentPackageRegistry.npm when session.remoteIsWindows =>
-          _windowsNpmCommand(['list', '-g', '--depth=0', package]),
-        AgentPackageRegistry.npm =>
-          '$_profilePrefix npm list -g --depth=0 ${_shellQuote(package)} 2>/dev/null',
-        AgentPackageRegistry.pipx when session.remoteIsWindows =>
-          _windowsExecutableCommand('pipx', ['list', '--short']),
-        AgentPackageRegistry.pipx =>
-          '$_profilePrefix pipx list --short 2>/dev/null',
-      };
-      final result = await _run(session, command, priority: priority);
-      if (result.succeeded &&
-          result.output.toLowerCase().contains(package.toLowerCase())) {
-        return definition.registry == AgentPackageRegistry.npm
-            ? 'npm global'
-            : 'pipx';
-      }
-    }
-    return _detectionSourceFromPath(path);
-  }
-
-  Future<String?> _readLatestVersion(
-    SshSession session,
-    AgentRuntimeDefinition definition, {
-    required SshExecPriority priority,
-  }) async {
-    final package = definition.packageName;
-    if (package == null || definition.registry == null) return null;
-    final command = switch (definition.registry!) {
-      AgentPackageRegistry.npm when session.remoteIsWindows =>
-        _windowsNpmCommand(['view', package, 'version']),
-      AgentPackageRegistry.npm =>
-        '$_profilePrefix npm view ${_shellQuote(package)} version 2>/dev/null',
-      AgentPackageRegistry.pipx when session.remoteIsWindows =>
-        _windowsPipCommand(['-m', 'pip', 'index', 'versions', package]),
-      AgentPackageRegistry.pipx =>
-        '$_profilePrefix python3 -m pip index versions ${_shellQuote(package)} 2>/dev/null | head -n 1',
-    };
-    final result = await _run(session, command, priority: priority);
-    return parseAgentVersion(result.output);
-  }
-
   Future<AgentRuntimeActionResult> _run(
     SshSession session,
     String command, {
@@ -1054,19 +956,6 @@ class AgentManagementService {
       exec.close();
     }
   }, priority: priority);
-}
-
-String _windowsNpmCommand(List<String> arguments) =>
-    _windowsExecutableCommand('npm', arguments);
-
-String _windowsPipCommand(List<String> arguments) =>
-    _windowsExecutableCommand('py', arguments);
-
-String _windowsExecutableCommand(String executable, List<String> arguments) {
-  final argv = arguments.map(powerShellSingleQuote).join(' ');
-  return buildWindowsPowerShellCommand(
-    '$powerShellProfilePathPreamble& $executable $argv; exit \$LASTEXITCODE',
-  );
 }
 
 /// Parsed executable and version output for one runtime probe.

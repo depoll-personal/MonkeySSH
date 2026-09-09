@@ -1,6 +1,5 @@
 // ignore_for_file: public_member_api_docs, directives_ordering
 
-import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -249,26 +248,29 @@ void main() {
       });
     });
 
-    group('isBiometricSupported', () {
-      test('preserves legacy device-auth support semantics', () async {
-        when(
-          () => mockLocalAuth.isDeviceSupported(),
-        ).thenAnswer((_) async => true);
-        when(
-          () => mockLocalAuth.canCheckBiometrics,
-        ).thenAnswer((_) async => false);
+    group('isDeviceAuthSupported', () {
+      test(
+        'returns true when device auth is supported without biometrics',
+        () async {
+          when(
+            () => mockLocalAuth.isDeviceSupported(),
+          ).thenAnswer((_) async => true);
+          when(
+            () => mockLocalAuth.canCheckBiometrics,
+          ).thenAnswer((_) async => false);
 
-        final result = await authService.isBiometricSupported();
+          final result = await authService.isDeviceAuthSupported();
 
-        expect(result, true);
-      });
+          expect(result, true);
+        },
+      );
 
       test('returns false when device auth is unsupported', () async {
         when(
           () => mockLocalAuth.isDeviceSupported(),
         ).thenAnswer((_) async => false);
 
-        final result = await authService.isBiometricSupported();
+        final result = await authService.isDeviceAuthSupported();
 
         expect(result, false);
       });
@@ -624,65 +626,6 @@ void main() {
         final result = await authService.getAuthMethod();
 
         expect(result, AuthMethod.both);
-      });
-    });
-
-    group('disableAuth', () {
-      test('waits for pending PIN setup before removing credentials', () async {
-        final storage = <String, String>{};
-        final saltWritten = Completer<void>();
-        final resumeSetup = Completer<void>();
-        when(() => mockStorage.read(key: any(named: 'key'))).thenAnswer(
-          (invocation) async => storage[invocation.namedArguments[#key]],
-        );
-        when(
-          () => mockStorage.write(
-            key: any(named: 'key'),
-            value: any(named: 'value'),
-          ),
-        ).thenAnswer((invocation) async {
-          final key = invocation.namedArguments[#key] as String;
-          storage[key] = invocation.namedArguments[#value] as String;
-          if (key == 'flutty_pin_salt') {
-            saltWritten.complete();
-            await resumeSetup.future;
-          }
-        });
-        when(() => mockStorage.delete(key: any(named: 'key'))).thenAnswer((
-          invocation,
-        ) async {
-          storage.remove(invocation.namedArguments[#key]);
-        });
-
-        final setup = authService.setupPin('1234');
-        await saltWritten.future;
-        final disable = authService.disableAuth();
-        // Let deletion run if it is not serialized behind setup.
-        await Future<void>.delayed(Duration.zero);
-        resumeSetup.complete();
-        await Future.wait([setup, disable]);
-
-        expect(await authService.isAuthEnabled(), isFalse);
-        expect(storage, isEmpty);
-        expect(await authService.verifyPin('1234'), isFalse);
-      });
-
-      test('clears all auth data', () async {
-        when(
-          () => mockStorage.delete(key: any(named: 'key')),
-        ).thenAnswer((_) async {});
-
-        await authService.disableAuth();
-
-        verify(() => mockStorage.delete(key: 'flutty_pin_hash')).called(1);
-        verify(() => mockStorage.delete(key: 'flutty_pin_salt')).called(1);
-        verify(
-          () => mockStorage.delete(key: 'flutty_pin_kdf_metadata'),
-        ).called(1);
-        verify(() => mockStorage.delete(key: 'flutty_auth_enabled')).called(1);
-        verify(
-          () => mockStorage.delete(key: 'flutty_biometric_enabled'),
-        ).called(1);
       });
     });
 

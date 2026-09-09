@@ -89,6 +89,7 @@ void main() {
       );
       await backend.createWindow(command: 'codex', workingDirectory: '/repo');
       await backend.killWindow(3);
+      await backend.killWindow(3, windowId: '@8');
 
       expect(backend.type, TerminalBackendType.tmux);
       expect(backend.capabilities.supportsWindows, isTrue);
@@ -100,7 +101,8 @@ void main() {
           'select:dev:2:@7:-L flutty:null:false',
           'select:dev:4:@9:-L flutty:2:true',
           'create:dev:codex:/repo:-L flutty',
-          'kill:dev:3:-L flutty',
+          'kill:dev:3:null:-L flutty',
+          'kill:dev:3:@8:-L flutty',
         ]),
       );
     });
@@ -257,9 +259,10 @@ class _FakeRemoteMultiplexerService implements RemoteMultiplexerService {
     SshSession session,
     String sessionName,
     int windowIndex, {
+    String? windowId,
     String? extraFlags,
   }) async {
-    calls.add('kill:$sessionName:$windowIndex:$extraFlags');
+    calls.add('kill:$sessionName:$windowIndex:$windowId:$extraFlags');
   }
 
   @override

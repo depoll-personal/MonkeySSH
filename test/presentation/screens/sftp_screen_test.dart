@@ -3,13 +3,16 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:cross_file/cross_file.dart';
 import 'package:dartssh2/dartssh2.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
+import 'package:monkeyssh/domain/services/remote_file_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/models/app_platform_file.dart';
 import 'package:monkeyssh/presentation/screens/sftp_screen.dart';
@@ -41,6 +44,42 @@ class _MockSftpClient extends Mock implements SftpClient {
   }
 }
 
+class _MockRemoteFileService extends Mock implements RemoteFileService {}
+
+class _MockXFile extends Mock implements XFile {}
+
+class _SftpFilePicker extends FilePickerPlatform {
+  List<PlatformFile> files = [];
+  Uri? saveDestination;
+
+  @override
+  Future<List<PlatformFile>> pickFiles({
+    String? dialogTitle,
+    String? initialDirectory,
+    FileType type = FileType.any,
+    List<String>? allowedExtensions,
+    Function(FilePickerStatus)? onFileLoading,
+    int compressionQuality = 0,
+    AndroidOptions androidOptions = const AndroidOptions(),
+    WindowsOptions windowsOptions = const WindowsOptions(),
+    LinuxOptions linuxOptions = const LinuxOptions(),
+    WebOptions webOptions = const WebOptions(),
+  }) async => files;
+
+  @override
+  Future<Uri?> saveFile({
+    required String fileName,
+    required Uint8List bytes,
+    required String mimeType,
+    String? dialogTitle,
+    String? initialDirectory,
+    Function(FilePickerStatus)? onFileSaving,
+    WindowsOptions windowsOptions = const WindowsOptions(),
+    LinuxOptions linuxOptions = const LinuxOptions(),
+    WebOptions webOptions = const WebOptions(),
+  }) async => saveDestination;
+}
+
 class _MockSftpFile extends Mock implements SftpFile {}
 
 class _MockMonetizationService extends Mock implements MonetizationService {}
@@ -67,8 +106,11 @@ Widget _buildSftpTestApp({
   required SshSession session,
   required MonetizationService monetizationService,
   required Widget child,
+  RemoteFileService? remoteFileService,
 }) => ProviderScope(
   overrides: [
+    if (remoteFileService != null)
+      remoteFileServiceProvider.overrideWithValue(remoteFileService),
     activeSessionsProvider.overrideWith(
       () => _TestActiveSessionsNotifier(session),
     ),
@@ -597,56 +639,6 @@ void main() {
           loadedBytes: Uint8List.fromList('hello'.codeUnits),
         ),
         isNull,
-      );
-    });
-
-    test('allows selecting multiple files for SFTP uploads', () {
-      final request = resolveSftpUploadPickerRequest();
-
-      expect(request.allowMultiple, isTrue);
-    });
-
-    test(
-      'opens an upload stream from the picked file path when needed',
-      () async {
-        final tempDirectory = Directory('build/sftp-upload-test')
-          ..createSync(recursive: true);
-        addTearDown(() => tempDirectory.delete(recursive: true));
-
-        final fileOnDisk = File('${tempDirectory.path}/notes.txt');
-        await fileOnDisk.writeAsString('copilot');
-
-        final file = AppPlatformFile(
-          name: 'notes.txt',
-          path: fileOnDisk.path,
-          size: 7,
-        );
-        final stream = resolvePickedSftpUploadReadStream(file);
-
-        expect(stream, isNotNull);
-        expect(
-          await stream!.transform(const SystemEncoding().decoder).join(),
-          'copilot',
-        );
-      },
-    );
-
-    test('uses the file name when a single upload is unreadable', () {
-      expect(
-        resolveUnreadableSftpUploadMessage([
-          AppPlatformFile(name: 'notes.txt', size: 0),
-        ]),
-        'Unable to read "notes.txt"',
-      );
-    });
-
-    test('uses a pluralized count when multiple uploads are unreadable', () {
-      expect(
-        resolveUnreadableSftpUploadMessage([
-          AppPlatformFile(name: 'notes.txt', size: 0),
-          AppPlatformFile(name: 'todo.txt', size: 0),
-        ]),
-        'Unable to read 2 selected files',
       );
     });
 
@@ -1238,6 +1230,199 @@ void main() {
       }
     }
 
+    for (final outcome in ['success', 'failure', 'timeout', 'reconnect']) {
+      testWidgets('newer navigation supersedes older $outcome', (tester) async {
+        final sshClient = _MockSshClient();
+        final sftp = _MockSftpClient();
+        final freshSftp = _MockSftpClient();
+        final older = Completer<List<SftpName>>();
+        final newer = Completer<List<SftpName>>();
+        final reconnect = Completer<SftpClient>();
+        final monetizationService = _MockMonetizationService();
+        final session = SshSession(
+          connectionId: 7,
+          hostId: 1,
+          client: sshClient,
+          config: const SshConnectionConfig(
+            hostname: 'demo.example.com',
+            port: 22,
+            username: 'demo',
+          ),
+        );
+        addTearDown(session.close);
+        when(
+          () => monetizationService.currentState,
+        ).thenReturn(_proMonetizationState);
+        var opens = 0;
+        when(sshClient.sftp).thenAnswer(
+          (_) => opens++ == 0 ? Future.value(sftp) : reconnect.future,
+        );
+        when(() => sftp.absolute('.')).thenAnswer((_) async => '/home/demo');
+        when(
+          () => sftp.listdir('/home/demo'),
+        ).thenAnswer((_) async => [_fileEntry('initial.txt')]);
+        when(() => sftp.listdir('/home')).thenAnswer((_) => older.future);
+        when(() => sftp.listdir('/')).thenAnswer((_) => newer.future);
+        when(() => freshSftp.listdir('/')).thenAnswer((_) => newer.future);
+        when(
+          () => freshSftp.listdir('/home/demo'),
+        ).thenAnswer((_) async => [_fileEntry('initial.txt')]);
+        await tester.pumpWidget(
+          _buildSftpTestApp(
+            session: session,
+            monetizationService: monetizationService,
+            child: const SftpScreen(hostId: 1, connectionId: 7),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('home'));
+        await tester.pump();
+        if (outcome == 'reconnect') {
+          older.completeError(SSHStateError('closed'));
+          await tester.pump();
+        }
+        await tester.tap(find.text('/'));
+        await tester.pump();
+        if (outcome == 'reconnect') {
+          reconnect.complete(freshSftp);
+          await tester.pump();
+        }
+        newer.complete([_fileEntry('newer.txt')]);
+        await tester.pumpAndSettle();
+        if (outcome == 'success') {
+          older.complete([_fileEntry('older.txt')]);
+        } else if (outcome == 'failure') {
+          older.completeError(SSHStateError('stale failure'));
+        } else if (outcome == 'timeout') {
+          older.completeError(TimeoutException('stale timeout'));
+        }
+        await tester.pumpAndSettle();
+        expect(find.text('newer.txt'), findsOneWidget);
+        expect(find.text('older.txt'), findsNothing);
+        expect(find.text('home'), findsNothing);
+        expect(opens, outcome == 'reconnect' ? 2 : 1);
+        verifyNever(() => freshSftp.listdir('/home'));
+        await tester.tap(find.byTooltip('Back'));
+        await tester.pumpAndSettle();
+        expect(find.text('initial.txt'), findsOneWidget);
+        await tester.pumpWidget(const SizedBox.shrink());
+      });
+    }
+
+    for (final failRead in [false, true]) {
+      testWidgets(
+        'upload keeps its directory and handles stream failure: $failRead',
+        (tester) async {
+          final sshClient = _MockSshClient();
+          final sftp = _MockSftpClient();
+          final monetizationService = _MockMonetizationService();
+          final remoteFiles = _MockRemoteFileService();
+          final session = SshSession(
+            connectionId: 7,
+            hostId: 1,
+            client: sshClient,
+            config: const SshConnectionConfig(
+              hostname: 'demo.example.com',
+              port: 22,
+              username: 'demo',
+            ),
+          );
+          addTearDown(session.close);
+          final picker = _SftpFilePicker();
+          final previous = FilePickerPlatform.instance;
+          FilePickerPlatform.instance = picker;
+          addTearDown(() => FilePickerPlatform.instance = previous);
+          final broken = _MockXFile();
+          when(broken.length).thenAnswer((_) async => 1);
+          when(broken.openRead).thenAnswer(
+            (_) => Stream.error(const FileSystemException('read failed')),
+          );
+          picker.files = [
+            AppPlatformFile(name: 'first.txt', bytes: Uint8List.fromList([1])),
+            if (failRead)
+              AppPlatformFile(name: 'second.txt', xFile: broken)
+            else
+              AppPlatformFile(
+                name: 'second.txt',
+                bytes: Uint8List.fromList([2]),
+              ),
+          ];
+          when(
+            () => monetizationService.currentState,
+          ).thenReturn(_proMonetizationState);
+          when(sshClient.sftp).thenAnswer((_) async => sftp);
+          when(() => sftp.absolute('.')).thenAnswer((_) async => '/home/demo');
+          when(
+            () => sftp.listdir(any()),
+          ).thenAnswer((_) async => [_fileEntry('notes.txt')]);
+          when(
+            () => remoteFiles.resolveInitialDirectory(sftp),
+          ).thenAnswer((_) async => '/home/demo');
+          registerFallbackValue(const Stream<List<int>>.empty());
+          final firstUpload = Completer<void>();
+          final destinations = <String>[];
+          final contents = <List<int>>[];
+          when(
+            () => remoteFiles.uploadStream(
+              sftp: sftp,
+              remotePath: any(named: 'remotePath'),
+              stream: any(named: 'stream'),
+            ),
+          ).thenAnswer((invocation) async {
+            destinations.add(invocation.namedArguments[#remotePath] as String);
+            contents.add(
+              await (invocation.namedArguments[#stream] as Stream<List<int>>)
+                  .expand((chunk) => chunk)
+                  .toList(),
+            );
+            if (destinations.length == 1) {
+              await firstUpload.future;
+            }
+          });
+          await tester.pumpWidget(
+            _buildSftpTestApp(
+              session: session,
+              monetizationService: monetizationService,
+              remoteFileService: remoteFiles,
+              child: const SftpScreen(hostId: 1, connectionId: 7),
+            ),
+          );
+          await tester.pumpAndSettle();
+          await tester.tap(find.byTooltip('Upload files'));
+          await tester.pump();
+          expect(destinations, ['/home/demo/first.txt']);
+          await tester.tap(find.text('home'));
+          await tester.pumpAndSettle();
+          firstUpload.complete();
+          await tester.pumpAndSettle();
+          expect(destinations, [
+            '/home/demo/first.txt',
+            '/home/demo/second.txt',
+          ]);
+          expect(
+            contents,
+            failRead
+                ? [
+                    [1],
+                  ]
+                : [
+                    [1],
+                    [2],
+                  ],
+          );
+          expect(
+            find.text(
+              failRead
+                  ? 'Upload failed. Check the connection and try again.'
+                  : 'Uploaded 2 files',
+            ),
+            findsOneWidget,
+          );
+          await tester.pumpWidget(const SizedBox.shrink());
+        },
+      );
+    }
+
     testWidgets('reopens SFTP when the directory channel goes stale', (
       tester,
     ) async {
@@ -1369,38 +1554,52 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     });
 
-    testWidgets('video preview deletes cached files when closed', (
-      tester,
-    ) async {
-      final cacheDirectory = Directory('build/sftp-video-preview-test')
-        ..createSync(recursive: true);
-      addTearDown(() {
-        if (cacheDirectory.existsSync()) {
-          cacheDirectory.deleteSync(recursive: true);
-        }
-      });
+    testWidgets(
+      'video preview deletes its cache after saving a separate copy',
+      (tester) async {
+        final cacheDirectory = Directory('build/sftp-video-preview-test')
+          ..createSync(recursive: true);
+        addTearDown(() {
+          if (cacheDirectory.existsSync()) {
+            cacheDirectory.deleteSync(recursive: true);
+          }
+        });
 
-      final cachedFile = File('${cacheDirectory.path}/cached-preview.mp4')
-        ..writeAsBytesSync([1, 2, 3]);
+        final cachedFile = File('${cacheDirectory.path}/cached-preview.mp4')
+          ..writeAsBytesSync([1, 2, 3]);
 
-      await tester.pumpWidget(
-        MaterialApp(
-          home: buildRemoteVideoPreviewErrorForTesting(
-            fileName: 'cached-preview.mp4',
-            remotePath: '/home/depoll/cached-preview.mp4',
-            localPath: cachedFile.path,
-            errorMessage: 'Unsupported codec',
-            sizeBytes: 3,
-            mimeType: 'video/mp4',
+        final exportedFile = File('${cacheDirectory.path}/export.mp4');
+        final previous = FilePickerPlatform.instance;
+        FilePickerPlatform.instance = _SftpFilePicker()
+          ..saveDestination = exportedFile.absolute.uri;
+        addTearDown(() => FilePickerPlatform.instance = previous);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: buildRemoteVideoPreviewErrorForTesting(
+              fileName: 'cached-preview.mp4',
+              remotePath: '/home/depoll/cached-preview.mp4',
+              localPath: cachedFile.path,
+              errorMessage: 'Unsupported codec',
+              sizeBytes: 3,
+              mimeType: 'video/mp4',
+            ),
           ),
-        ),
-      );
+        );
 
-      expect(cachedFile.existsSync(), isTrue);
+        expect(cachedFile.existsSync(), isTrue);
+        final saveButton = tester.widget<OutlinedButton>(
+          find.widgetWithText(OutlinedButton, 'Save copy'),
+        );
+        await tester.runAsync(saveButton.onPressed! as Future<void> Function());
+        await tester.pumpAndSettle();
+        expect(exportedFile.readAsBytesSync(), [1, 2, 3]);
 
-      await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pumpWidget(const SizedBox.shrink());
 
-      expect(cachedFile.existsSync(), isFalse);
-    });
+        expect(cachedFile.existsSync(), isFalse);
+        expect(exportedFile.readAsBytesSync(), [1, 2, 3]);
+      },
+    );
   });
 }

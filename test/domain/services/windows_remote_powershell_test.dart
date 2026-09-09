@@ -284,21 +284,30 @@ void main() {
       expect(script, contains(r"if($__flShell -eq 'cmd'){return $false}"));
     });
 
-    test('path mode enumerates directories and files', () {
-      const invocation = ShellCompletionInvocation(
-        commandLine: 'type .cop',
-        cursorOffset: 9,
-        token: '.cop',
-        tokenStart: 5,
-        mode: ShellCompletionMode.path,
-        workingDirectory: r'C:\Users\x',
-      );
-      final script = buildWindowsShellCompletionScript(invocation);
-      expect(script, contains(r"$__flMode='path'"));
-      expect(script, contains('Get-ChildItem -LiteralPath'));
-      expect(script, contains(r"__flEmit 'directory' $__val"));
-      expect(script, contains(r"__flEmit 'file' $__val"));
-    });
+    for (final shell in ['cmd.exe', 'pwsh.exe']) {
+      test('$shell argument fallback emits directories and regular files', () {
+        final invocation = buildShellCompletionInvocation(
+          terminalText: r'C:\Users\x>type rea',
+          terminalCursorOffset: r'C:\Users\x>type rea'.length,
+          promptPrefix: r'C:\Users\x>',
+          shellCommand: shell,
+          workingDirectory: r'C:\Users\x',
+        )!;
+        expect(invocation.mode, ShellCompletionMode.argument);
+        final script = buildWindowsShellCompletionScript(invocation);
+        expect(script, contains(r"$__flMode='argument'"));
+        expect(script, contains(r"$__flToken='rea'"));
+        expect(script, contains(r"if($__flShell -eq 'cmd'){return $false}"));
+        expect(script, contains('Get-ChildItem -LiteralPath'));
+        expect(script, contains(r"__flEmit 'directory' $__val"));
+        expect(
+          script,
+          contains(
+            r"elseif($__flMode -ne 'directory'){if(!(__flEmit 'file' $__val)){break}}",
+          ),
+        );
+      });
+    }
 
     test('escapes wildcard tokens and handles drive roots', () {
       const invocation = ShellCompletionInvocation(
@@ -306,7 +315,7 @@ void main() {
         cursorOffset: 10,
         token: 'C:/Us',
         tokenStart: 5,
-        mode: ShellCompletionMode.path,
+        mode: ShellCompletionMode.argument,
         workingDirectory: r'C:\Users\x',
       );
       final script = buildWindowsShellCompletionScript(invocation);

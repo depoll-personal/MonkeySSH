@@ -215,6 +215,18 @@ void main() {
       },
     );
 
+    test('system keyboard combines and consumes one-shot Ctrl+Alt', () {
+      final controller = KeyboardToolbarController()
+        ..toggleCtrl()
+        ..toggleAlt();
+      addTearDown(controller.dispose);
+
+      expect(controller.applySystemKeyboardModifiers('b'), '\x1b\u0002');
+      expect(controller.isCtrlActive, isFalse);
+      expect(controller.isAltActive, isFalse);
+      expect(controller.applySystemKeyboardModifiers('b'), 'b');
+    });
+
     testWidgets('calls onKeyPressed callback', (tester) async {
       var callCount = 0;
 
@@ -922,31 +934,6 @@ void main() {
 
       expect(outputCount, greaterThan(1));
       expect(output.where((value) => value == '\x1b[H').length, outputCount);
-    });
-  });
-
-  group('Terminal key sequences', () {
-    test('arrow key escape sequences', () {
-      // These are the expected escape sequences for arrow keys
-      expect('\x1b[A', equals('\x1b[A')); // Up
-      expect('\x1b[B', equals('\x1b[B')); // Down
-      expect('\x1b[C', equals('\x1b[C')); // Right
-      expect('\x1b[D', equals('\x1b[D')); // Left
-    });
-
-    test('navigation key escape sequences', () {
-      expect('\x1b[H', equals('\x1b[H')); // Home
-      expect('\x1b[F', equals('\x1b[F')); // End
-      expect('\x1b[5~', equals('\x1b[5~')); // Page Up
-      expect('\x1b[6~', equals('\x1b[6~')); // Page Down
-    });
-
-    test('modifier key combinations', () {
-      // With modifiers, sequences change
-      // Shift = 2, Alt = 3, Shift+Alt = 4, Ctrl = 5, etc.
-      expect('\x1b[1;5A', equals('\x1b[1;5A')); // Ctrl+Up
-      expect('\x1b[1;3A', equals('\x1b[1;3A')); // Alt+Up
-      expect('\x1b[1;2A', equals('\x1b[1;2A')); // Shift+Up
     });
   });
 }

@@ -789,13 +789,12 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     final legacyModeState = session.modeState;
     final legacyModeIsEffort =
         legacyModeState != null && _legacyModeStateIsEffort(legacyModeState);
-    if (effortOption == null &&
-        legacyModeState != null &&
-        legacyModeIsEffort &&
-        legacyModeState.availableModes.isNotEmpty) {
+    if (legacyModeState != null &&
+        legacyModeState.availableModes.isNotEmpty &&
+        (legacyModeIsEffort ? effortOption == null : modeOption == null)) {
       selectors.add(
         _AcpQuickSelectorData(
-          label: 'Effort',
+          label: legacyModeIsEffort ? 'Effort' : 'Mode',
           currentValue: legacyModeState.currentModeId,
           choices: [
             for (final mode in legacyModeState.availableModes)
@@ -809,36 +808,29 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
         ),
       );
     }
-
     addGeneric('Mode', modeOption);
-    if (modeOption == null && !legacyModeIsEffort) {
-      final state = legacyModeState;
-      if (state != null && state.availableModes.isNotEmpty) {
-        selectors.add(
-          _AcpQuickSelectorData(
-            label: 'Mode',
-            currentValue: state.currentModeId,
-            choices: [
-              for (final mode in state.availableModes)
-                _AcpQuickChoice(
-                  value: mode.id,
-                  label: mode.name.isEmpty ? mode.id : mode.name,
-                  description: mode.description,
-                ),
-            ],
-            onSelected: (value) => manager.setMode(_key, value),
-          ),
-        );
-      }
-    }
 
     addGeneric('Permission', permissionOption);
-    if (permissionOption == null && permissionToggle != null) {
-      displayedOptionIds.add(permissionToggle.id);
+    if (permissionOption == null) {
+      if (permissionToggle != null) {
+        displayedOptionIds.add(permissionToggle.id);
+      }
+      final autoApprove =
+          permissionToggle?.currentValue ?? session.autoApprovePermissions;
+      final onSelected = permissionToggle != null
+          ? (String value) => manager.setConfigOption(
+              _key,
+              configId: permissionToggle.id,
+              value: value == 'true',
+            )
+          : (String value) => manager.setAutoApprovePermissions(
+              _key,
+              enabled: value == 'true',
+            );
       selectors.add(
         _AcpQuickSelectorData(
           label: 'Permission',
-          currentValue: permissionToggle.currentValue ? 'true' : 'false',
+          currentValue: autoApprove ? 'true' : 'false',
           choices: const [
             _AcpQuickChoice(
               value: 'false',
@@ -851,33 +843,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
               description: 'Auto-approve supported actions for this session.',
             ),
           ],
-          onSelected: (value) => manager.setConfigOption(
-            _key,
-            configId: permissionToggle.id,
-            value: value == 'true',
-          ),
-        ),
-      );
-    }
-    if (permissionOption == null && permissionToggle == null) {
-      selectors.add(
-        _AcpQuickSelectorData(
-          label: 'Permission',
-          currentValue: session.autoApprovePermissions ? 'true' : 'false',
-          choices: const [
-            _AcpQuickChoice(
-              value: 'false',
-              label: 'Ask',
-              description: 'Ask before protected actions.',
-            ),
-            _AcpQuickChoice(
-              value: 'true',
-              label: 'YOLO',
-              description: 'Auto-approve supported actions for this session.',
-            ),
-          ],
-          onSelected: (value) =>
-              manager.setAutoApprovePermissions(_key, enabled: value == 'true'),
+          onSelected: onSelected,
         ),
       );
     }
@@ -1013,20 +979,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     );
   }
 
-  Future<void> _openConfig(AcpSessionState session) => showAcpConfigOptions(
-    context,
-    options: session.configOptions,
-    onSetConfigOption: (configId, value) => ref
-        .read(acpSessionManagerProvider)
-        .setConfigOption(_key, configId: configId, value: value),
-    modeState: session.modeState,
-    modelState: session.modelState,
-    onSetMode: (modeId) =>
-        ref.read(acpSessionManagerProvider).setMode(_key, modeId),
-    onSetModel: (modelId) =>
-        ref.read(acpSessionManagerProvider).setModel(_key, modelId),
-    enabled: session.status == AcpConnectionStatus.ready,
-  );
+  Future<void> _openConfig() => showAcpConfigOptions(context, sessionKey: _key);
 
   List<AcpPermissionPrompt> _prompts(AcpSessionState session) {
     final manager = ref.read(acpSessionManagerProvider);
@@ -1832,7 +1785,7 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
     try {
       switch (action) {
         case _ChatAction.settings:
-          await _openConfig(session);
+          await _openConfig();
         case _ChatAction.reconnect:
           await _ensureConnected();
         case _ChatAction.detach:
