@@ -1687,6 +1687,10 @@ func acpBridgeStatus(id string) (acpBridgeInfo, error) {
 }
 
 func gcAcpArtifacts(runDir string) {
+	gcAcpArtifactsWithSocketIdentity(runDir, socketFileIdentity)
+}
+
+func gcAcpArtifactsWithSocketIdentity(runDir string, identify func(string) (socketIdentity, error)) {
 	entries, err := os.ReadDir(runDir)
 	if err != nil {
 		return
@@ -1703,10 +1707,7 @@ func gcAcpArtifacts(runDir string) {
 			_ = os.Remove(path)
 			continue
 		}
-		identity, err := socketFileIdentity(path)
-		if err != nil {
-			continue
-		}
+		identity, _ := identify(path)
 		conn, err := dialAcpBridge(id)
 		if err != nil {
 			if isStaleUnixSocketError(err) {

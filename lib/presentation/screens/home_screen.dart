@@ -3572,15 +3572,17 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       });
     } finally {
       _loadingWindows = false;
-      if (_pendingWindowReload) {
+      if (_pendingWindowReload && mounted) {
         _pendingWindowReload = false;
         unawaited(
-          _refreshTmuxWindows(
-            session,
-            sessionName,
-            muxBackend: muxBackend,
-            queryGeneration: queryGeneration,
-          ),
+          _isCurrentTmuxQuery(queryGeneration)
+              ? _refreshTmuxWindows(
+                  session,
+                  sessionName,
+                  muxBackend: muxBackend,
+                  queryGeneration: queryGeneration,
+                )
+              : _queryTmux(),
         );
       }
     }
@@ -3854,36 +3856,30 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     return Icon(Icons.window_outlined, size: 14, color: color);
   }
 
-  void _closeWindow(int windowIndex) {
+  void _closeWindow(TmuxWindow window) {
     final session = ref
         .read(activeSessionsProvider.notifier)
         .getSession(widget.connectionId);
     if (session == null || _sessionName == null) return;
 
     final mux = _serviceForBackend(_muxBackend);
-    TmuxWindow? closingWindow;
-    for (final window in _windows ?? const <TmuxWindow>[]) {
-      if (window.index == windowIndex) {
-        closingWindow = window;
-        break;
-      }
-    }
     final closesLastMonkeyMuxWindow =
         _muxBackend == RemoteMuxBackend.monkeyMux &&
         (_windows?.length ?? 0) <= 1;
     _runTmuxPreviewAction(() async {
-      if (closingWindow?.isNativeAcp ?? false) {
+      if (window.isNativeAcp) {
         await ref
             .read(acpSessionManagerProvider)
             .releaseSessionsForClosingMuxWindow(
               hostId: session.hostId,
-              bridgeId: closingWindow!.nativeAcpBridgeId!,
+              bridgeId: window.nativeAcpBridgeId!,
             );
       }
       await mux.killWindow(
         session,
         _sessionName!,
-        windowIndex,
+        window.index,
+        windowId: window.id,
         extraFlags: _muxBackend == RemoteMuxBackend.tmux
             ? widget.tmuxExtraFlags
             : null,
@@ -3895,7 +3891,12 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
 
     // Optimistically remove from the list.
     setState(() {
-      _windows = _windows?.where((w) => w.index != windowIndex).toList();
+      _windows = _windows
+          ?.where(
+            (w) =>
+                window.id != null ? w.id != window.id : w.index != window.index,
+          )
+          .toList();
     });
   }
 
@@ -3921,7 +3922,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
         .disconnect(session.connectionId);
   }
 
-  void _switchAndOpenWindow(int windowIndex) {
+  void _switchAndOpenWindow(TmuxWindow window) {
     // Switch tmux to the target window before opening the terminal.
     final session = ref
         .read(activeSessionsProvider.notifier)
@@ -3932,7 +3933,8 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
         mux.selectWindow(
           session,
           _sessionName!,
-          windowIndex,
+          window.index,
+          windowId: window.id,
           extraFlags: _muxBackend == RemoteMuxBackend.tmux
               ? widget.tmuxExtraFlags
               : null,
@@ -4245,7 +4247,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     );
 
     return InkWell(
-      onTap: () => _switchAndOpenWindow(window.index),
+      onTap: () => _switchAndOpenWindow(window),
       borderRadius: BorderRadius.circular(6),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 6),
@@ -4331,7 +4333,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
             ),
             // Close button.
             GestureDetector(
-              onTap: () => _closeWindow(window.index),
+              onTap: () => _closeWindow(window),
               child: Icon(
                 Icons.close,
                 size: 14,

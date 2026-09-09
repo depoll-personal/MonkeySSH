@@ -192,7 +192,7 @@ func TestRequestAcpBridgeStopAndWaitPreservesStatusFailures(t *testing.T) {
 }
 
 func TestGCAcpArtifactsPreservesUnconfirmedSockets(t *testing.T) {
-	for _, state := range []string{"live", "abandoned", "runtime_error", "permission"} {
+	for _, state := range []string{"live", "abandoned", "live_without_identity", "abandoned_without_identity", "runtime_error", "permission"} {
 		t.Run(state, func(t *testing.T) {
 			runtimeRoot := testAcpRuntimeDirectory(t)
 			t.Setenv("XDG_RUNTIME_DIR", runtimeRoot)
@@ -207,7 +207,7 @@ func TestGCAcpArtifactsPreservesUnconfirmedSockets(t *testing.T) {
 			listener.SetUnlinkOnClose(false)
 			defer listener.Close()
 			switch state {
-			case "abandoned":
+			case "abandoned", "abandoned_without_identity":
 				_ = listener.Close()
 			case "runtime_error":
 				t.Setenv("XDG_RUNTIME_DIR", socket)
@@ -239,9 +239,25 @@ func TestGCAcpArtifactsPreservesUnconfirmedSockets(t *testing.T) {
 					t.Fatalf("dial = %v, want permission error", err)
 				}
 			}
-			gcAcpArtifacts(filepath.Dir(socket))
+			if strings.HasSuffix(state, "_without_identity") {
+				// Windows cannot identify socket inodes. Exercise its fallback
+				// against real Unix sockets, including a still-live listener.
+				identityRequested := false
+				gcAcpArtifactsWithSocketIdentity(filepath.Dir(socket), func(path string) (socketIdentity, error) {
+					identityRequested = true
+					if path != socket {
+						t.Fatalf("identity path = %q, want %q", path, socket)
+					}
+					return socketIdentity{}, errors.New("windows socket identity unavailable")
+				})
+				if !identityRequested {
+					t.Fatal("GC did not attempt socket identity lookup")
+				}
+			} else {
+				gcAcpArtifacts(filepath.Dir(socket))
+			}
 			_, err = os.Lstat(socket)
-			if state == "abandoned" {
+			if state == "abandoned" || state == "abandoned_without_identity" {
 				if !errors.Is(err, os.ErrNotExist) {
 					t.Fatalf("abandoned socket remains: %v", err)
 				}
