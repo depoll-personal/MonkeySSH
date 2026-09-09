@@ -48,7 +48,15 @@ function Invoke-AgentProbe([string]$Script) {
     if (!$process.Start()) { return };
     $stdout = $process.StandardOutput.ReadToEndAsync();
     $stderr = $process.StandardError.ReadToEndAsync();
-    if (!$process.WaitForExit(5000)) { $process.Kill(); return };
+    if (!$process.WaitForExit(5000)) {
+      # Kill descendants before their PowerShell parent so hung CLIs cannot
+      # survive repeated probes. Kill(bool) is unavailable in PowerShell 5.1.
+      try { & taskkill.exe /PID $process.Id /T /F *> $null } catch {};
+      if (!$process.HasExited) {
+        try { $process.Kill() } catch {};
+      };
+      return;
+    };
     if ($process.ExitCode -eq 0) { $stdout.Result };
   } finally { $process.Dispose() };
 }

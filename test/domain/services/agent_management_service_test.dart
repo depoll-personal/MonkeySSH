@@ -1513,6 +1513,113 @@ esac
       expect(command.replaceAll(r"'\''", "'"), contains("'--version'"));
     });
 
+    test(
+      'Windows probe timeouts terminate descendants and handle cleanup failures',
+      () async {
+        final script = _decodePowerShellCommand(
+          buildAgentBatchProbeCommand([], windows: true),
+        );
+        final root = await Directory.systemTemp.createTemp(
+          'monkeyssh-probe-cleanup-',
+        );
+        addTearDown(() => root.delete(recursive: true));
+        final fixture = File('${root.path}/cleanup.ps1')
+          ..writeAsStringSync(
+            script +
+                r'''
+$ErrorActionPreference = 'Stop';
+function New-Object([string]$TypeName) {
+  if ($TypeName -ne 'System.Diagnostics.Process') { throw "Unexpected type: $TypeName" };
+  $process = [pscustomobject]@{
+    Id = 12345;
+    HasExited = $false;
+    ExitCode = 0;
+    StartInfo = [pscustomobject]@{
+      FileName = ''; Arguments = ''; UseShellExecute = $true;
+      CreateNoWindow = $false; RedirectStandardOutput = $false;
+      RedirectStandardError = $false;
+    };
+    StandardOutput = [pscustomobject]@{};
+    StandardError = [pscustomobject]@{};
+  };
+  $process.StandardOutput | Add-Member ScriptMethod ReadToEndAsync { [pscustomobject]@{Result = '1.2.3'} };
+  $process.StandardError | Add-Member ScriptMethod ReadToEndAsync { [pscustomobject]@{Result = ''} };
+  $process | Add-Member ScriptMethod Start { return $true };
+  $process | Add-Member ScriptMethod WaitForExit {
+    param($timeout)
+    if ($timeout -ne 5000) { throw 'Unexpected timeout' };
+    return $script:scenario -eq 'completed';
+  };
+  $process | Add-Member ScriptMethod Kill {
+    $script:events.Add('kill');
+    if ($script:scenario -eq 'exit-race') { throw 'Process already exited' };
+    $this.HasExited = $true;
+  };
+  $process | Add-Member ScriptMethod Dispose { $script:events.Add('dispose') };
+  $script:probeProcess = $process;
+  return $process;
+}
+function taskkill.exe {
+  if (($args -join ' ') -ne '/PID 12345 /T /F') { throw 'Expected forceful tree cleanup for the probe PID' };
+  $script:events.Add('tree');
+  if ($script:scenario -eq 'unavailable') { throw 'taskkill unavailable' };
+  if ($script:scenario -eq 'tree-success') { $script:probeProcess.HasExited = $true };
+  $global:LASTEXITCODE = if ($script:probeProcess.HasExited) { 0 } else { 1 };
+  'taskkill output must not become a version';
+}
+foreach ($scenario in @('tree-success', 'tree-failure', 'unavailable', 'exit-race', 'completed')) {
+  $script:scenario = $scenario;
+  $script:events = [System.Collections.Generic.List[string]]::new();
+  $output = Invoke-AgentProbe 'unused';
+  $expected = if ($scenario -eq 'completed') { 'dispose' }
+    elseif ($scenario -eq 'tree-success') { 'tree,dispose' }
+    else { 'tree,kill,dispose' };
+  if (($script:events -join ',') -ne $expected) {
+    throw "${scenario}: expected $expected, got $script:events";
+  };
+  if ($scenario -eq 'completed') {
+    if ($output -ne '1.2.3') { throw 'Successful version output was lost' };
+  } elseif ($null -ne $output) { throw 'A timed-out probe returned output' };
+  Write-Output "${scenario}: passed";
+}
+''',
+          );
+        final ProcessResult result;
+        try {
+          result = await Process.run(
+            Platform.isWindows ? 'powershell.exe' : 'pwsh',
+            [
+              '-NoProfile',
+              '-NonInteractive',
+              '-ExecutionPolicy',
+              'Bypass',
+              '-File',
+              fixture.path,
+            ],
+          ).timeout(const Duration(seconds: 20));
+        } on ProcessException {
+          markTestSkipped(
+            'PowerShell is required to execute the Windows probe cleanup regression',
+          );
+          return;
+        }
+        expect(
+          result.exitCode,
+          0,
+          reason: '${result.stdout}\n${result.stderr}',
+        );
+        for (final scenario in [
+          'tree-success',
+          'tree-failure',
+          'unavailable',
+          'exit-race',
+          'completed',
+        ]) {
+          expect(result.stdout, contains('$scenario: passed'));
+        }
+      },
+    );
+
     test('uses Get-Command and one-line markers on Windows', () {
       final command = buildAgentProbeCommand(
         agentCliRuntimeDefinitions.first,
