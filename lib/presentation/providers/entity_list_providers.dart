@@ -8,7 +8,6 @@ import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
 import '../../domain/services/settings_service.dart';
-import '../../domain/services/terminal_theme_service.dart';
 
 /// Shared stream of all saved hosts for presentation screens.
 final allHostsProvider = StreamProvider<List<Host>>((ref) {
@@ -75,17 +74,8 @@ void invalidateImportedEntityProviders(ProviderInvalidator invalidate) {
 
 /// Refreshes presentation providers that depend on synced settings and data.
 void invalidateSyncedDataProviders(ProviderInvalidator invalidate) {
-  invalidate(themeModeNotifierProvider);
-  invalidate(terminalThemesApplyToAppNotifierProvider);
-  invalidate(terminalThemesApplyToAppProvider);
-  invalidate(fontSizeNotifierProvider);
-  invalidate(fontFamilyNotifierProvider);
-  invalidate(cursorStyleNotifierProvider);
-  invalidate(bellSoundNotifierProvider);
-  invalidate(terminalNotificationsNotifierProvider);
-  invalidate(shellCompletionsNotifierProvider);
-  invalidate(terminalThemeSettingsProvider);
-  invalidate(allTerminalThemesProvider);
-  invalidate(customTerminalThemesProvider);
+  // Settings notifiers and theme providers watch this service. Recreating it
+  // reloads all persisted settings, including those added after this helper.
+  invalidate(settingsServiceProvider);
   invalidateImportedEntityProviders(invalidate);
 }

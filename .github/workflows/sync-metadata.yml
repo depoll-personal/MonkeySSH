@@ -9,6 +9,7 @@ on:
       - 'ios/fastlane/metadata-*/**'
       - '.github/workflows/sync-metadata.yml'
       - 'scripts/store_assets.sh'
+      - 'scripts/store_media.py'
       - 'scripts/validate_store_screenshots.py'
       - 'scripts/validate_store_demo_videos.py'
       - 'scripts/validate_app_store_metadata.py'
