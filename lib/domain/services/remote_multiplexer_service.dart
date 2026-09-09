@@ -80,6 +80,7 @@ abstract interface class RemoteMultiplexerService {
     SshSession session,
     String sessionName,
     int windowIndex, {
+    String? windowId,
     String? extraFlags,
   });
 
@@ -215,11 +216,13 @@ class TmuxRemoteMultiplexerService implements RemoteMultiplexerService {
     SshSession session,
     String sessionName,
     int windowIndex, {
+    String? windowId,
     String? extraFlags,
   }) => _tmuxService.killWindow(
     session,
     sessionName,
     windowIndex,
+    windowId: windowId,
     extraFlags: extraFlags,
   );
 

@@ -98,6 +98,18 @@ void main() {
   });
 
   group('resolveRemoteEditorCaretPositionFromLineStarts', () {
+    test('returns the current line and column from the selection offset', () {
+      const text = 'alpha\nbeta\ngamma';
+      expect(
+        resolveRemoteEditorCaretPositionFromLineStarts(
+          text: text,
+          selection: const TextSelection.collapsed(offset: 7),
+          lineStartOffsets: computeRemoteEditorLineStartOffsets(text),
+        ),
+        (line: 2, column: 2),
+      );
+    });
+
     final lineStarts = [0, 4, 8]; // "abc\ndef\nghi"
     const text = 'abc\ndef\nghi';
 

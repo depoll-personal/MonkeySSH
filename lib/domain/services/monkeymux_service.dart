@@ -267,7 +267,6 @@ class MonkeyMuxService implements RemoteMultiplexerService {
   static final _agentMetadataPeriodicTimers = <_MonkeyMuxWatchKey, Timer>{};
   static final _agentMetadataPeriodicSessions =
       <_MonkeyMuxWatchKey, ({SshSession session, String sessionName})>{};
-  static final _windowSnapshotGenerations = <_MonkeyMuxWatchKey, int>{};
   static final _runtimeGenerations = <_MonkeyMuxWatchKey, int>{};
   static final _appReviewDemoMuxStates =
       <_MonkeyMuxWatchKey, _AppReviewDemoMonkeyMuxState>{};
@@ -320,7 +319,6 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     void clearKeyState() {
       _windowSnapshotCache.remove(key);
       _serverStatusCache.remove(key);
-      _windowSnapshotGenerations.remove(key);
       _agentMetadataRefreshes.remove(key);
       _cancelAgentMetadataPeriodicRefresh(key);
       _agentMetadataRequestPanePids.remove(key);
@@ -362,9 +360,6 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       (key, _) => key.connectionId == connectionId,
     );
     _serverStatusCache.removeWhere(
-      (key, _) => key.connectionId == connectionId,
-    );
-    _windowSnapshotGenerations.removeWhere(
       (key, _) => key.connectionId == connectionId,
     );
     _agentMetadataRefreshes.removeWhere(
@@ -825,12 +820,13 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     SshSession session,
     String sessionName,
     int windowIndex, {
+    String? windowId,
     String? extraFlags,
   }) async {
     if (isAppReviewDemoSession(session)) {
       final key = _MonkeyMuxWatchKey(session.connectionId, sessionName);
       final state = _appReviewDemoMuxState(key);
-      final closed = state.killWindow(windowIndex);
+      final closed = state.killWindow(windowIndex, windowId: windowId);
       _replaceCachedWindows(key, state.windows);
       if (closed != null) {
         _renderAppReviewDemoWindow(session, state.activeWindow);
@@ -840,7 +836,10 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     await _runControlCommand(session, sessionName, {
       'type': 'close_window',
       'clientId': session.monkeyMuxClientId,
-      'windowIndex': windowIndex,
+      if (windowId != null && windowId.trim().isNotEmpty)
+        'windowId': windowId.trim()
+      else
+        'windowIndex': windowIndex,
     });
   }
 
@@ -1375,7 +1374,6 @@ class MonkeyMuxService implements RemoteMultiplexerService {
   static void _cacheWindows(_MonkeyMuxWatchKey key, List<TmuxWindow> windows) {
     if (windows.isEmpty) {
       _windowSnapshotCache[key] = const <TmuxWindow>[];
-      _bumpWindowSnapshotGeneration(key);
       return;
     }
     final currentWindows = _windowSnapshotCache[key];
@@ -1387,14 +1385,12 @@ class MonkeyMuxService implements RemoteMultiplexerService {
               TmuxWindowListEvent(windows),
             ),
     );
-    _bumpWindowSnapshotGeneration(key);
   }
 
   static void _cacheWindowSnapshot(_MonkeyMuxWatchKey key, TmuxWindow window) {
     final currentWindows = _windowSnapshotCache[key];
     if (currentWindows == null || currentWindows.isEmpty) {
       _windowSnapshotCache[key] = List<TmuxWindow>.unmodifiable([window]);
-      _bumpWindowSnapshotGeneration(key);
       return;
     }
     _windowSnapshotCache[key] = List<TmuxWindow>.unmodifiable(
@@ -1403,7 +1399,6 @@ class MonkeyMuxService implements RemoteMultiplexerService {
         TmuxWindowSnapshotEvent(window),
       ),
     );
-    _bumpWindowSnapshotGeneration(key);
   }
 
   static void _replaceCachedWindows(
@@ -1411,15 +1406,6 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     List<TmuxWindow> windows,
   ) {
     _windowSnapshotCache[key] = List<TmuxWindow>.unmodifiable(windows);
-    _bumpWindowSnapshotGeneration(key);
-  }
-
-  static void _bumpWindowSnapshotGeneration(_MonkeyMuxWatchKey key) {
-    _windowSnapshotGenerations.update(
-      key,
-      (value) => value + 1,
-      ifAbsent: () => 1,
-    );
   }
 }
 
@@ -2344,20 +2330,23 @@ class _AppReviewDemoMonkeyMuxState {
     return activeWindow;
   }
 
-  TmuxWindow? killWindow(int windowIndex) {
+  TmuxWindow? killWindow(int windowIndex, {String? windowId}) {
+    final targetIndex = windowId == null
+        ? windowIndex
+        : _windows.indexWhere((window) => window.id == windowId);
     if (_windows.length <= 1 ||
-        windowIndex < 0 ||
-        windowIndex >= _windows.length) {
+        targetIndex < 0 ||
+        targetIndex >= _windows.length) {
       return null;
     }
-    final closed = _windows.removeAt(windowIndex);
+    final closed = _windows.removeAt(targetIndex);
     if (_activeIndex >= _windows.length) {
       _activeIndex = _windows.length - 1;
-    } else if (windowIndex < _activeIndex) {
+    } else if (targetIndex < _activeIndex) {
       _activeIndex -= 1;
     }
     emitWindowList();
-    return closed.toWindow(index: windowIndex, isActive: false);
+    return closed.toWindow(index: targetIndex, isActive: false);
   }
 
   void emitWindowList() {

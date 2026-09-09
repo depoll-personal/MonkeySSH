@@ -115,13 +115,6 @@ class AuthService {
     return value == 'true';
   }
 
-  /// Check if this device supports local authentication.
-  ///
-  /// This preserves the legacy contract of reporting whether the platform can
-  /// authenticate with device credentials. It can be true even when biometric
-  /// hardware is not present.
-  Future<bool> isBiometricSupported() async => isDeviceAuthSupported();
-
   /// Check if device supports local authentication.
   Future<bool> isDeviceAuthSupported() async {
     try {
@@ -266,42 +259,6 @@ class AuthService {
       return false;
     }
   }
-
-  /// Authenticate with any available method.
-  Future<bool> authenticate({String? pin, String? reason}) async {
-    final method = await getAuthMethod();
-
-    switch (method) {
-      case AuthMethod.none:
-        return true;
-
-      case AuthMethod.pin:
-        if (pin == null) return false;
-        return verifyPin(pin);
-
-      case AuthMethod.biometric:
-        return authenticateWithBiometrics(reason: reason);
-
-      case AuthMethod.both:
-        // Try biometric first, fall back to PIN
-        final biometricSuccess = await authenticateWithBiometrics(
-          reason: reason,
-        );
-        if (biometricSuccess) return true;
-        if (pin != null) return verifyPin(pin);
-        return false;
-    }
-  }
-
-  /// Disable authentication.
-  Future<void> disableAuth() => _withPinWriteLock(() async {
-    // A pending setup must finish before its salt and hash are removed.
-    await _deleteStorageValue(_pinKey);
-    await _deleteStorageValue(_pinSaltKey);
-    await _deleteStorageValue(_pinMetadataKey);
-    await _deleteStorageValue(_authEnabledKey);
-    await _deleteStorageValue(_biometricEnabledKey);
-  });
 
   /// Change PIN.
   Future<bool> changePin(String currentPin, String newPin) async {
@@ -468,15 +425,6 @@ class AuthService {
       value: value,
       iOptions: _hardenedIosOptions,
     );
-  }
-
-  Future<void> _deleteStorageValue(String key) async {
-    if (defaultTargetPlatform != TargetPlatform.iOS) {
-      await _storage.delete(key: key);
-      return;
-    }
-    await _storage.delete(key: key, iOptions: _hardenedIosOptions);
-    await _storage.delete(key: key, iOptions: _legacyIosOptions);
   }
 
   bool _constantTimeEquals(String a, String b) {

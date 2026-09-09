@@ -141,18 +141,9 @@ void main() {
       },
     );
 
-    test('still parses legacy pipe-delimited window snapshots', () {
-      const line = '0|vim|1|vim|/home/user/project|*|Editing main.dart';
-      final window = TmuxWindow.fromTmuxFormat(line);
-
-      expect(window.index, 0);
-      expect(window.id, isNull);
-      expect(window.name, 'vim');
-      expect(window.displayTitle, 'Editing main.dart');
-    });
-
-    test('preserves pipe characters in legacy pane titles', () {
-      const line = '1|logs|0|tail|/var/log|-|api | worker | errors|1712930000';
+    test('preserves pipe characters in pane titles', () {
+      const line =
+          '1\x1flogs\x1f0\x1ftail\x1f/var/log\x1f-\x1fapi | worker | errors\x1f1712930000';
       final window = TmuxWindow.fromTmuxFormat(line);
 
       expect(window.paneTitle, 'api | worker | errors');
@@ -161,7 +152,7 @@ void main() {
     });
 
     test('parses with minimal fields', () {
-      const line = '2|bash|0';
+      const line = '2\x1fbash\x1f0';
       final window = TmuxWindow.fromTmuxFormat(line);
 
       expect(window.index, 2);
@@ -534,7 +525,7 @@ void main() {
     });
 
     test('handles empty command and path', () {
-      const line = '1|shell|0||';
+      const line = '1\x1fshell\x1f0\x1f\x1f';
       final window = TmuxWindow.fromTmuxFormat(line);
 
       expect(window.currentCommand, isNull);
@@ -542,7 +533,7 @@ void main() {
     });
 
     test('detects alert flag', () {
-      const line = '3|build|0|make|/tmp|#|Building project';
+      const line = '3\x1fbuild\x1f0\x1fmake\x1f/tmp\x1f#\x1fBuilding project';
       final window = TmuxWindow.fromTmuxFormat(line);
 
       expect(window.hasAlert, true);
@@ -553,7 +544,7 @@ void main() {
       final activityEpoch =
           (DateTime.now().millisecondsSinceEpoch ~/ 1000) - 20;
       final window = TmuxWindow.fromTmuxFormat(
-        '3|claude|1|claude|/tmp|*|Waiting|$activityEpoch',
+        '3\x1fclaude\x1f1\x1fclaude\x1f/tmp\x1f*\x1fWaiting\x1f$activityEpoch',
       );
 
       expect(window.lastActivityEpochSeconds, activityEpoch);
@@ -563,7 +554,10 @@ void main() {
     });
 
     test('throws on too few fields', () {
-      expect(() => TmuxWindow.fromTmuxFormat('0|vim'), throwsFormatException);
+      expect(
+        () => TmuxWindow.fromTmuxFormat('0\x1fvim'),
+        throwsFormatException,
+      );
     });
 
     test('statusLabel returns correct values', () {

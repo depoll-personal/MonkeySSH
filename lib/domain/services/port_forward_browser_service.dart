@@ -175,13 +175,6 @@ Uri buildPortForwardBrowserFallbackRequestUri({
   );
 }
 
-/// Returns whether [uri] is allowed for the forwarded local [port].
-bool isPortForwardBrowserUri(Uri uri, {required int port}) =>
-    _isValidPort(port) &&
-    (uri.scheme == 'http' || uri.scheme == 'https') &&
-    isPortForwardBrowserHost(uri.host) &&
-    portForwardBrowserUriPort(uri) == port;
-
 /// Returns whether [uri] should be handed to another installed application.
 bool shouldLaunchPortForwardBrowserUriExternally(Uri uri) =>
     uri.scheme.isNotEmpty &&

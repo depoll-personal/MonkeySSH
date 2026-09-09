@@ -62,6 +62,12 @@ class _MockAgentLaunchPresetService extends Mock
 class _MockHostCliLaunchPreferencesService extends Mock
     implements HostCliLaunchPreferencesService {}
 
+class _FailingRecentSessionsManager extends FakeAcpSessionManager {
+  @override
+  Future<List<AcpRecentSessionRef>> loadRecentSessions() async =>
+      throw StateError('Recents unavailable');
+}
+
 Host _host({
   int id = 1,
   String? tmuxWorkingDirectory,
@@ -103,6 +109,7 @@ Future<AcpSessionKey? Function()> _pumpAndLaunch(
   WidgetTester tester,
   FakeAcpSessionManager manager, {
   AgentLaunchPreset? preset,
+  Error? presetError,
   int? initialHostId = 1,
   String? initialProviderId = AcpBuiltinProviderIds.copilotCli,
   String? initialWorkingDirectory,
@@ -127,9 +134,12 @@ Future<AcpSessionKey? Function()> _pumpAndLaunch(
     () => ssh.getSessionsForHost(any()),
   ).thenReturn(<SshSession>[?activeSession]);
   when(() => ssh.getSession(any())).thenReturn(activeSession);
-  when(
-    () => presetService.getPresetForHost(any()),
-  ).thenAnswer((_) async => preset);
+  when(() => presetService.getPresetForHost(any())).thenAnswer((_) async {
+    if (presetError != null) {
+      throw presetError;
+    }
+    return preset;
+  });
   when(() => launchPreferencesService.getPreferencesForHost(any())).thenAnswer(
     (_) async => HostCliLaunchPreferences(startInYoloMode: startInYoloMode),
   );
@@ -453,6 +463,58 @@ void main() {
       );
     },
   );
+
+  for (final failedRead in ['recents', 'preset']) {
+    for (final locked in [false, true]) {
+      testWidgets(
+        '$failedRead failure uses fallback defaults, locked=$locked',
+        (tester) async {
+          final manager = failedRead == 'recents'
+              ? _FailingRecentSessionsManager()
+              : FakeAcpSessionManager(
+                  recents: [
+                    AcpRecentSessionRef(
+                      hostId: 1,
+                      providerId: AcpBuiltinProviderIds.openCode,
+                      bridgeId: 'bridge-1',
+                      acpSessionId: 'session-1',
+                      cwd: '/recent',
+                      createdAt: DateTime(2026),
+                      lastActivityAt: DateTime(2026),
+                    ),
+                  ],
+                  lastSelected: fakeAcpKey(
+                    providerId: AcpBuiltinProviderIds.openCode,
+                  ),
+                );
+          addTearDown(manager.dispose);
+          await _pumpAndLaunch(
+            tester,
+            manager,
+            presetError: failedRead == 'preset'
+                ? StateError('No preset')
+                : null,
+            initialHostId: locked ? 1 : null,
+            initialProviderId: locked ? AcpBuiltinProviderIds.openCode : null,
+            initialWorkingDirectory: locked ? '/explicit' : null,
+            lockHost: locked,
+            lockProvider: locked,
+          );
+
+          expect(manager.starts, [
+            (
+              hostId: 1,
+              providerId: locked
+                  ? AcpBuiltinProviderIds.openCode
+                  : AcpBuiltinProviderIds.copilotCli,
+              cwd: locked ? '/explicit' : '~',
+            ),
+          ]);
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
 
   testWidgets('selecting a recent session exposes a Resume session button', (
     tester,

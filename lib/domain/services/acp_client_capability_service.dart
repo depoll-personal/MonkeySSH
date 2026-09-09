@@ -464,7 +464,7 @@ final class AcpClientCapabilityService {
   // Count overlapping teardowns so admission resumes only after all finish.
   final _closingSessions = <String, int>{};
   var _closed = false;
-  StreamSubscription<AcpServerRequest>? _subscription;
+  StreamSubscription<AcpJsonRpcServerRequest>? _subscription;
   var _nextTerminalId = 0;
 
   /// Capabilities that are safe to advertise for this service instance.
@@ -628,8 +628,7 @@ final class AcpClientCapabilityService {
     }
   }
 
-  void _handle(AcpServerRequest serverRequest) {
-    final request = serverRequest.raw;
+  void _handle(AcpJsonRpcServerRequest request) {
     unawaited(_route(request));
   }
 
@@ -783,7 +782,10 @@ final class AcpClientCapabilityService {
       forWrite: true,
     );
     _ensureRequestActive(request);
-    final content = _requiredString(params, 'content');
+    final content = AcpJson.string(params, 'content');
+    if (content == null) {
+      throw const AcpClientCapabilityException('Invalid request parameters');
+    }
     if (utf8.encode(content).length > limits.maxWriteBytes) {
       throw const AcpLimitExceededException(
         'Write exceeds the configured limit',

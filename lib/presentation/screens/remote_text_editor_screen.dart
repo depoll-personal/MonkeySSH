@@ -86,17 +86,6 @@ double _measureLaidOutUnwrappedEditorContentWidth(
   double trailingSlack,
 ) => painter.width > 0 ? painter.width + trailingSlack : 0;
 
-/// Resolves the current editor line and column from a selection.
-@visibleForTesting
-({int line, int column}) resolveRemoteEditorCaretPosition(
-  String text,
-  TextSelection selection,
-) => resolveRemoteEditorCaretPositionFromLineStarts(
-  text: text,
-  selection: selection,
-  lineStartOffsets: computeRemoteEditorLineStartOffsets(text),
-);
-
 /// Computes the text offsets where each logical line begins.
 @visibleForTesting
 List<int> computeRemoteEditorLineStartOffsets(String text) {

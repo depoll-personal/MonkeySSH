@@ -250,7 +250,7 @@ void main() {
     );
     final expectedSha = sha256.convert(assetBytes).toString();
     final remoteFileService = _FakeRemoteFileService(
-      homeDirectory: '/C:/Users/proof',
+      homeDirectory: '/C:/Users/proof’s',
     );
     final installer = MonkeyMuxInstallerService(
       manifestFuture: Future.value(
@@ -320,7 +320,7 @@ void main() {
     expect(installation.isWindows, isTrue);
     expect(
       installation.executablePath,
-      r'C:\Users\proof\.monkeyssh\bin\monkeymux\9.9.9\windows-amd64\'
+      r'C:\Users\proof’s\.monkeyssh\bin\monkeymux\9.9.9\windows-amd64\'
       'monkeymux.exe',
     );
     expect(installation.installedDuringCall, isTrue);
@@ -328,7 +328,7 @@ void main() {
     expect(renames, hasLength(1));
     expect(
       renames.single.$2,
-      '/C:/Users/proof/.monkeyssh/bin/monkeymux/9.9.9/windows-amd64/'
+      '/C:/Users/proof’s/.monkeyssh/bin/monkeymux/9.9.9/windows-amd64/'
       'monkeymux.exe',
     );
     final launcherCommand = commands.singleWhere(
@@ -336,6 +336,14 @@ void main() {
     );
     final launcherScript = _decodePowerShellCommand(launcherCommand);
     expect(launcherScript, contains(r'.local\bin\monkeymux.cmd'));
+    expect(
+      launcherScript,
+      contains(r"'C:\Users\proof’’s\.local\bin\monkeymux.cmd'"),
+    );
+    expect(
+      launcherScript,
+      contains(r"'C:\Users\proof’’s\.local\bin\.monkeymux-current'"),
+    );
     expect(launcherScript, contains('%~dp0.monkeymux-current'));
     expect(launcherScript, contains(r'%~dp0..\..\.monkeyssh\bin\monkeymux'));
     expect(launcherScript, isNot(contains('%USERPROFILE%')));

@@ -246,18 +246,6 @@ class AgentLaunchPreset {
     this.additionalArguments,
   });
 
-  /// Decodes an [AgentLaunchPreset] from JSON.
-  ///
-  /// Throws [FormatException] when the stored tool name is missing or unknown
-  /// instead of silently rewriting it to another agent.
-  factory AgentLaunchPreset.fromJson(Map<String, dynamic> json) {
-    final preset = AgentLaunchPreset.tryFromJson(json);
-    if (preset == null) {
-      throw FormatException('Unknown agent launch tool: ${json['tool']}');
-    }
-    return preset;
-  }
-
   /// Decodes an [AgentLaunchPreset] from JSON, or `null` when invalid.
   static AgentLaunchPreset? tryFromJson(Map<String, dynamic> json) {
     final tool = agentLaunchToolFromStorageName(
@@ -338,25 +326,6 @@ class AgentLaunchPreset {
     if (additionalArguments case final value? when value.trim().isNotEmpty)
       'additionalArguments': value.trim(),
   };
-
-  /// Returns a copy of this preset with selected fields replaced.
-  AgentLaunchPreset copyWith({
-    AgentLaunchTool? tool,
-    String? workingDirectory,
-    String? tmuxSessionName,
-    RemoteMuxBackend? remoteMuxBackend,
-    String? tmuxExtraFlags,
-    bool? tmuxDisableStatusBar,
-    String? additionalArguments,
-  }) => AgentLaunchPreset(
-    tool: tool ?? this.tool,
-    workingDirectory: workingDirectory ?? this.workingDirectory,
-    tmuxSessionName: tmuxSessionName ?? this.tmuxSessionName,
-    remoteMuxBackend: remoteMuxBackend ?? this.remoteMuxBackend,
-    tmuxExtraFlags: tmuxExtraFlags ?? this.tmuxExtraFlags,
-    tmuxDisableStatusBar: tmuxDisableStatusBar ?? this.tmuxDisableStatusBar,
-    additionalArguments: additionalArguments ?? this.additionalArguments,
-  );
 }
 
 enum _ShellQuoteMode { none, single, double }

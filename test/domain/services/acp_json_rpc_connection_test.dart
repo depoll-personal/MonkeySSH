@@ -123,118 +123,69 @@ void main() {
       ),
       throwsA(isA<JsonCyclicError>()),
     );
-    final next = connection.sendRequest('valid', id: 'reusable');
-    final cancelled = expectLater(
-      next.future,
-      throwsA(isA<AcpRequestCancelledException>()),
-    );
-    next.cancel();
-    await cancelled;
-  });
-
-  test('async encoding cleanup does not remove a reused request ID', () async {
-    final transport = _MemoryTransport();
-    final connection = AcpJsonRpcConnection(transport: transport);
-    addTearDown(connection.close);
-    final cyclic = <Object?>[];
-    cyclic.add(cyclic);
-    final invalid = connection.sendRequest(
-      'invalid',
-      id: 'same',
-      params: cyclic,
-    );
-    final cancelled = expectLater(
-      invalid.future,
-      throwsA(isA<AcpRequestCancelledException>()),
-    );
-    invalid.cancel();
-    // Reuse synchronously, before the encoding failure's cleanup runs.
-    final valid = connection.sendRequest('valid', id: 'same');
-    final response = expectLater(valid.future, completion('ok'));
-    await cancelled;
-    await Future<void>.delayed(Duration.zero);
-    expect(_decodeWrite(transport.writes.single)['method'], 'valid');
-    expect(connection.isClosed, isFalse);
+    final next = connection.request('valid', id: 'reusable');
     transport.add(
-      _encodeMessage({'jsonrpc': '2.0', 'id': 'same', 'result': 'ok'}),
+      _encodeMessage({'jsonrpc': '2.0', 'id': 'reusable', 'result': 'ok'}),
     );
-    await response;
+    expect(await next, 'ok');
   });
 
-  for (final outcome in ['response', 'cancellation', 'timeout', 'encoding']) {
-    test(
-      'stale cancellation after $outcome does not cancel reused ID',
-      () async {
-        final transport = _MemoryTransport();
-        final connection = AcpJsonRpcConnection(transport: transport);
-        addTearDown(connection.close);
-        final cyclic = <Object?>[];
-        cyclic.add(cyclic);
-        final original = connection.sendRequest(
-          'original',
-          id: 7,
-          params: outcome == 'encoding' ? cyclic : null,
-          timeout: outcome == 'timeout' ? Duration.zero : null,
-        );
-        switch (outcome) {
-          case 'response':
-            transport.add(
-              _encodeMessage({'jsonrpc': '2.0', 'id': 7, 'result': 'original'}),
-            );
-            expect(await original.future, 'original');
-          case 'cancellation':
-            final cancelled = expectLater(
-              original.future,
-              throwsA(isA<AcpRequestCancelledException>()),
-            );
-            original.cancel();
-            await cancelled;
-          case 'timeout':
-            await expectLater(
-              original.future,
-              throwsA(isA<AcpRequestTimeoutException>()),
-            );
-          case 'encoding':
-            await expectLater(original.future, throwsA(isA<JsonCyclicError>()));
-        }
-        final replacement = connection.sendRequest('replacement', id: 7);
-        final response = expectLater(
-          replacement.future,
-          completion('replacement'),
-        );
-        original
-          ..cancel()
-          ..cancel();
-        transport.add(
-          _encodeMessage({'jsonrpc': '2.0', 'id': 7, 'result': 'replacement'}),
-        );
-        await response;
-        expect(connection.isClosed, isFalse);
-      },
-    );
+  for (final outcome in ['response', 'timeout', 'encoding']) {
+    test('request ID can be reused after $outcome', () async {
+      final transport = _MemoryTransport();
+      final connection = AcpJsonRpcConnection(transport: transport);
+      addTearDown(connection.close);
+      final cyclic = <Object?>[];
+      cyclic.add(cyclic);
+      final original = connection.request(
+        'original',
+        id: 7,
+        params: outcome == 'encoding' ? cyclic : null,
+        timeout: outcome == 'timeout' ? Duration.zero : null,
+      );
+      switch (outcome) {
+        case 'response':
+          transport.add(
+            _encodeMessage({'jsonrpc': '2.0', 'id': 7, 'result': 'original'}),
+          );
+          expect(await original, 'original');
+        case 'timeout':
+          await expectLater(
+            original,
+            throwsA(isA<AcpRequestTimeoutException>()),
+          );
+        case 'encoding':
+          await expectLater(original, throwsA(isA<JsonCyclicError>()));
+      }
+      final replacement = connection.request('replacement', id: 7);
+      final response = expectLater(replacement, completion('replacement'));
+      transport.add(
+        _encodeMessage({'jsonrpc': '2.0', 'id': 7, 'result': 'replacement'}),
+      );
+      await response;
+      expect(connection.isClosed, isFalse);
+    });
   }
 
-  test('cancelled request timer does not expire a reused ID', () async {
+  test('completed request timer does not expire a reused ID', () async {
     final transport = _MemoryTransport();
     final connection = AcpJsonRpcConnection(transport: transport);
     addTearDown(connection.close);
-    final original = connection.sendRequest(
+    final original = connection.request(
       'original',
       id: 'same',
       timeout: Duration.zero,
     );
-    final cancelled = expectLater(
-      original.future,
-      throwsA(isA<AcpRequestCancelledException>()),
+    transport.add(
+      _encodeMessage({'jsonrpc': '2.0', 'id': 'same', 'result': 'original'}),
     );
-    original.cancel();
-    final replacement = connection.sendRequest(
+    expect(await original, 'original');
+    final replacement = connection.request(
       'replacement',
       id: 'same',
       noTimeout: true,
     );
-    final response = expectLater(replacement.future, completion('ok'));
-    await cancelled;
+    final response = expectLater(replacement, completion('ok'));
     await Future<void>.delayed(Duration.zero);
     transport.add(
       _encodeMessage({'jsonrpc': '2.0', 'id': 'same', 'result': 'ok'}),
@@ -248,9 +199,9 @@ void main() {
       final transport = _MemoryTransport();
       final connection = AcpJsonRpcConnection(transport: transport);
       addTearDown(connection.close);
-      final original = connection.sendRequest('original', id: 'same');
+      final original = connection.request('original', id: 'same');
       expect(
-        () => connection.sendRequest('duplicate', id: 'same'),
+        () => connection.request('duplicate', id: 'same'),
         throwsStateError,
       );
       await Future<void>.delayed(Duration.zero);
@@ -258,7 +209,7 @@ void main() {
       transport.add(
         _encodeMessage({'jsonrpc': '2.0', 'id': 'same', 'result': 'ok'}),
       );
-      expect(await original.future, 'ok');
+      expect(await original, 'ok');
     },
   );
 
@@ -266,16 +217,15 @@ void main() {
     final transport = _GatedTransport();
     final connection = AcpJsonRpcConnection(transport: transport);
     addTearDown(connection.close);
-    final original = connection.sendRequest('original', id: 'same');
-    final cancelled = expectLater(
-      original.future,
-      throwsA(isA<AcpRequestCancelledException>()),
-    );
+    final original = connection.request('original', id: 'same');
     await transport.writeStarted.future;
-    original.cancel();
-    final replacement = connection.sendRequest('replacement', id: 'same');
+    transport.add(
+      _encodeMessage({'jsonrpc': '2.0', 'id': 'same', 'result': 'original'}),
+    );
+    expect(await original, 'original');
+    final replacement = connection.request('replacement', id: 'same');
     final rejected = expectLater(
-      replacement.future,
+      replacement,
       throwsA(isA<AcpConnectionClosedException>()),
     );
     final error = expectLater(
@@ -284,12 +234,12 @@ void main() {
     );
     transport.finishClose.complete();
     transport.finishWrite.completeError(StateError('write failed'));
-    await Future.wait([cancelled, rejected, error]);
+    await Future.wait([rejected, error]);
     await connection.close();
     expect(connection.isClosed, isTrue);
     expect(transport.closed, isTrue);
     expect(
-      () => connection.sendRequest('after failure'),
+      () => connection.request('after failure'),
       throwsA(isA<AcpConnectionClosedException>()),
     );
   });
@@ -342,10 +292,10 @@ void main() {
   test('generates UUID string request IDs by default', () async {
     final transport = _MemoryTransport();
     final connection = AcpJsonRpcConnection(transport: transport);
-    final pending = connection.sendRequest('example');
+    final pending = connection.request('example');
     final expectation = expectLater(
-      pending.future,
-      throwsA(isA<AcpRequestCancelledException>()),
+      pending,
+      throwsA(isA<AcpConnectionClosedException>()),
     );
     await Future<void>.delayed(Duration.zero);
 
@@ -358,9 +308,8 @@ void main() {
         ),
       ),
     );
-    pending.cancel();
-    await expectation;
     await connection.close();
+    await expectation;
   });
 
   test('decodes split UTF-8 and NDJSON response frames', () async {
@@ -454,46 +403,32 @@ void main() {
     },
   );
 
-  test(
-    'times out, cancels, and closes pending requests deterministically',
-    () async {
-      final transport = _MemoryTransport();
-      var nextId = 0;
-      final connection = AcpJsonRpcConnection(
-        transport: transport,
-        defaultRequestTimeout: const Duration(milliseconds: 10),
-        requestIdFactory: () => 'request-${nextId++}',
-      );
+  test('times out and closes pending requests deterministically', () async {
+    final transport = _MemoryTransport();
+    var nextId = 0;
+    final connection = AcpJsonRpcConnection(
+      transport: transport,
+      defaultRequestTimeout: const Duration(milliseconds: 10),
+      requestIdFactory: () => 'request-${nextId++}',
+    );
 
-      await expectLater(
-        connection.request('slow'),
-        throwsA(isA<AcpRequestTimeoutException>()),
-      );
+    await expectLater(
+      connection.request('slow'),
+      throwsA(isA<AcpRequestTimeoutException>()),
+    );
 
-      final cancelled = connection.sendRequest(
-        'cancelled',
-        timeout: const Duration(seconds: 1),
-      );
-      final cancelledExpectation = expectLater(
-        cancelled.future,
-        throwsA(isA<AcpRequestCancelledException>()),
-      );
-      cancelled.cancel();
-      await cancelledExpectation;
-
-      final pending = connection.request(
-        'pending',
-        timeout: const Duration(seconds: 1),
-      );
-      final closeExpectation = expectLater(
-        pending,
-        throwsA(isA<AcpConnectionClosedException>()),
-      );
-      await connection.close();
-      await closeExpectation;
-      expect(transport.closed, isTrue);
-    },
-  );
+    final pending = connection.request(
+      'pending',
+      timeout: const Duration(seconds: 1),
+    );
+    final closeExpectation = expectLater(
+      pending,
+      throwsA(isA<AcpConnectionClosedException>()),
+    );
+    await connection.close();
+    await closeExpectation;
+    expect(transport.closed, isTrue);
+  });
 
   test('no-timeout request can finish after the default deadline', () async {
     final transport = _MemoryTransport();

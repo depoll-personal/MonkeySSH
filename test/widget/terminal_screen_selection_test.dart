@@ -16,6 +16,30 @@ import 'package:xterm/xterm.dart';
 
 class _FakeImagePickerPlatform extends ImagePickerPlatform {}
 
+final class _StreamOnlyFile extends PlatformFile {
+  _StreamOnlyFile(this.stream);
+
+  final Stream<Uint8List> stream;
+
+  @override
+  Future<int> length() async => 2;
+
+  @override
+  XFile get xFile => throw StateError('Must stream');
+
+  @override
+  String get name => 'stream.txt';
+
+  @override
+  Uri get uri => Uri.parse('memory:stream.txt');
+
+  @override
+  Future<Uint8List> readAsBytes() => throw StateError('Must stream');
+
+  @override
+  Stream<Uint8List> readAsByteStream() => stream;
+}
+
 void main() {
   test('picked-file failures preserve category and safe messages', () {
     for (final (error, category) in <(Object, String)>[
@@ -350,6 +374,24 @@ void main() {
   });
 
   group('resolvePickedTerminalUploadReadStream', () {
+    test('streams a pathless file without reading all bytes', () async {
+      final file = _StreamOnlyFile(Stream.value(Uint8List.fromList([1, 2])));
+      expect(file.path, isNull);
+      expect(await resolvePickedTerminalUploadReadStream(file).toList(), [
+        [1, 2],
+      ]);
+    });
+
+    test('propagates a pathless stream error', () async {
+      final file = _StreamOnlyFile(
+        Stream.error(const FileSystemException('read')),
+      );
+      await expectLater(
+        resolvePickedTerminalUploadReadStream(file).drain<void>(),
+        throwsA(isA<FileSystemException>()),
+      );
+    });
+
     test('opens a stream from the picked file path when needed', () async {
       final tempDirectory = await Directory.systemTemp.createTemp(
         'terminal-upload-test',
@@ -368,7 +410,7 @@ void main() {
 
       expect(stream, isNotNull);
       expect(
-        await stream!.transform(const SystemEncoding().decoder).join(),
+        await stream.transform(const SystemEncoding().decoder).join(),
         'copilot',
       );
     });
@@ -2103,118 +2145,49 @@ void main() {
   });
 
   group('isTerminalPathContinuationAcrossLines', () {
-    test('joins explicit paths split by unindented rendered line breaks', () {
-      expect(
-        isTerminalPathContinuationAcrossLines(
-          previousLineText:
-              'Edit ~/Code/flutty.worktrees/fix-sftp-local-path-link',
-          nextLineText: 's/lib/presentation/screens/terminal_screen.dart',
-        ),
-        isTrue,
-      );
-    });
-
-    test('does not join unrelated rendered lines', () {
-      expect(
-        isTerminalPathContinuationAcrossLines(
-          previousLineText: 'Read terminal_screen.dart',
-          nextLineText: 'Read sftp_screen.dart',
-        ),
-        isFalse,
-      );
-    });
-
-    test('does not join file labels to a following explicit path row', () {
-      expect(
-        isTerminalPathContinuationAcrossLines(
-          previousLineText: 'Read terminal_screen.dart',
-          nextLineText:
-              '~/Code/flutty.worktrees/session-resumption-all-provide',
-        ),
-        isFalse,
-      );
-    });
-
-    test('does not join standalone view metadata rows after a path', () {
-      expect(
-        isTerminalPathContinuationAcrossLines(
-          previousLineText:
-              '~/Code/flutty.worktrees/session-resumption-all-provide',
-          nextLineText: '└ L330:390 (61 lines read)',
-        ),
-        isFalse,
-      );
-    });
-
-    test('does not join separate absolute path starts across lines', () {
-      expect(
-        isTerminalPathContinuationAcrossLines(
-          previousLineText: '/tmp/foo',
-          nextLineText: '/var/log/app.log',
-        ),
-        isFalse,
-      );
-    });
-
-    test('joins relative paths split after a directory separator', () {
-      expect(
-        isTerminalPathContinuationAcrossLines(
-          previousLineText: 'Open lib/presentation/',
-          nextLineText: 'screens/terminal_screen.dart',
-        ),
-        isTrue,
-      );
-    });
-
-    test('joins tilde-root prefixes split before the next segment', () {
-      expect(
-        isTerminalPathContinuationAcrossLines(
-          previousLineText: 'Open ~/',
-          nextLineText: 'Code/flutty',
-        ),
-        isTrue,
-      );
-    });
-
-    test('joins slash-root prefixes split before the next segment', () {
-      expect(
-        isTerminalPathContinuationAcrossLines(
-          previousLineText: 'Open /',
-          nextLineText: 'var/log/app.log',
-        ),
-        isTrue,
-      );
-    });
-
-    test('joins absolute path continuations that resume with a slash', () {
-      expect(
-        isTerminalPathContinuationAcrossLines(
-          previousLineText: 'Open /Users/tester',
-          nextLineText: '/project/lib/main.dart',
-        ),
-        isTrue,
-      );
-    });
-
-    test('does not join separate relative path starts across lines', () {
-      expect(
-        isTerminalPathContinuationAcrossLines(
-          previousLineText: 'lib/presentation/screens/terminal_screen.dart',
-          nextLineText: 'test/widget/terminal_screen_selection_test.dart',
-        ),
-        isFalse,
-      );
-    });
-
-    test('does not join ordinary prose rows to a following prompt path', () {
-      expect(
-        isTerminalPathContinuationAcrossLines(
-          previousLineText: 'metadata rows no longer get folded into the path',
-          nextLineText: '~/Code/flutty [⇢main]',
-        ),
-        isFalse,
-      );
-    });
+    for (final (previous, next, expected) in <(String, String, bool)>[
+      (
+        'Edit ~/Code/flutty.worktrees/fix-sftp-local-path-link',
+        's/lib/presentation/screens/terminal_screen.dart',
+        true,
+      ),
+      ('Read terminal_screen.dart', 'Read sftp_screen.dart', false),
+      (
+        'Read terminal_screen.dart',
+        '~/Code/flutty.worktrees/session-resumption-all-provide',
+        false,
+      ),
+      (
+        '~/Code/flutty.worktrees/session-resumption-all-provide',
+        '└ L330:390 (61 lines read)',
+        false,
+      ),
+      ('/tmp/foo', '/var/log/app.log', false),
+      ('Open lib/presentation/', 'screens/terminal_screen.dart', true),
+      ('Open ~/', 'Code/flutty', true),
+      ('Open /', 'var/log/app.log', true),
+      ('Open /Users/tester', '/project/lib/main.dart', true),
+      (
+        'lib/presentation/screens/terminal_screen.dart',
+        'test/widget/terminal_screen_selection_test.dart',
+        false,
+      ),
+      (
+        'metadata rows no longer get folded into the path',
+        '~/Code/flutty [⇢main]',
+        false,
+      ),
+    ]) {
+      test('joins "$previous" to "$next": $expected', () {
+        expect(
+          isTerminalPathContinuationAcrossLines(
+            previousLineText: previous,
+            nextLineText: next,
+          ),
+          expected,
+        );
+      });
+    }
   });
 
   group('terminalRowMayContainPath', () {

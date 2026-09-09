@@ -3922,7 +3922,6 @@ class SshSession {
   Future<void> _automaticPortForwardConfiguration = Future<void>.value();
   final Map<RemoteTcpListenerKey, int>
   _automaticPortForwardIdsByRemoteListener = {};
-  final Set<RemoteTcpListenerKey> _automaticPortForwardShellRelated = {};
   final Map<RemoteTcpListenerKey, int> _automaticPortForwardMisses = {};
   Set<RemoteTcpListenerKey> _automaticPortForwardExcludedListeners = const {};
   Set<String> _automaticPortForwardShellTokens = const {};
@@ -4931,7 +4930,6 @@ class SshSession {
       await stopForward(id);
     }
     _automaticPortForwardIdsByRemoteListener.clear();
-    _automaticPortForwardShellRelated.clear();
     _automaticPortForwardMisses.clear();
   }
 
@@ -5094,20 +5092,11 @@ class SshSession {
       final targetListener = targetListeners[entry.key];
       if (targetListener != null) {
         _automaticPortForwardMisses.remove(entry.key);
-        final wasShellRelated = _automaticPortForwardShellRelated.contains(
-          entry.key,
-        );
-        if (wasShellRelated != targetListener.isShellRelated) {
-          if (targetListener.isShellRelated) {
-            _automaticPortForwardShellRelated.add(entry.key);
-          } else {
-            _automaticPortForwardShellRelated.remove(entry.key);
-          }
-          final tunnel = _activeTunnels[entry.value];
-          if (tunnel != null) {
-            tunnel.isShellRelated = targetListener.isShellRelated;
-            _notifyPortForwardsChanged();
-          }
+        final tunnel = _activeTunnels[entry.value];
+        if (tunnel != null &&
+            tunnel.isShellRelated != targetListener.isShellRelated) {
+          tunnel.isShellRelated = targetListener.isShellRelated;
+          _notifyPortForwardsChanged();
         }
         continue;
       }
@@ -5160,9 +5149,6 @@ class SshSession {
       }
       if (started) {
         _automaticPortForwardIdsByRemoteListener[listenerKey] = portForwardId;
-        if (listener.isShellRelated) {
-          _automaticPortForwardShellRelated.add(listenerKey);
-        }
       }
     }
   }
@@ -6359,7 +6345,6 @@ while($true){
     )) {
       if (entry.value == portForwardId) {
         _automaticPortForwardIdsByRemoteListener.remove(entry.key);
-        _automaticPortForwardShellRelated.remove(entry.key);
         _automaticPortForwardMisses.remove(entry.key);
       }
     }
@@ -6422,24 +6407,12 @@ while($true){
     }
   }
 
-  /// Forward a local port (legacy method for jump hosts).
-  Future<SSHForwardChannel> forwardLocal(
-    String remoteHost,
-    int remotePort, {
-    String localHost = 'localhost',
-    int localPort = 0,
-  }) async {
-    try {
-      return await client.forwardLocal(remoteHost, remotePort);
-    } on SSHError catch (e) {
-      _reportConnectionHealthFailureIfClosed(e, operation: 'forward_local');
-      rethrow;
-    }
-  }
-
   /// Close the session.
   Future<void> close() async {
     _isClosing = true;
+    if (!_closeStarted.isCompleted) {
+      _closeStarted.complete();
+    }
     _automaticPortForwardGeneration++;
     _automaticPortForwardTimer?.cancel();
     _automaticPortForwardTimer = null;
@@ -6452,9 +6425,6 @@ while($true){
     final pendingSnapshot = _automaticPortForwardSnapshotQueue;
     if (pendingSnapshot != null) {
       await pendingSnapshot;
-    }
-    if (!_closeStarted.isCompleted) {
-      _closeStarted.complete();
     }
     await stopAllForwards();
     await closeShell();
@@ -7489,6 +7459,9 @@ String _telemetryAuthMethodFromHost(Host? host) {
 
 String _telemetryConnectionFailureCategory(String? error) {
   final normalized = error?.toLowerCase() ?? '';
+  if (normalized.contains('host key')) {
+    return 'host_key';
+  }
   if (normalized.contains('auth') ||
       normalized.contains('password') ||
       normalized.contains('key') ||
@@ -7497,9 +7470,6 @@ String _telemetryConnectionFailureCategory(String? error) {
   }
   if (normalized.contains('timeout') || normalized.contains('timed out')) {
     return 'timeout';
-  }
-  if (normalized.contains('host key')) {
-    return 'host_key';
   }
   if (normalized.contains('network') ||
       normalized.contains('socket') ||
@@ -7575,7 +7545,6 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   final Map<int, Future<void>> _automaticForwardHostReconfigurationQueues = {};
   final Map<String, Future<void>> _automaticForwardReconfigurationQueues = {};
   Timer? _previewStateRefreshTimer;
-  bool _previewStateRefreshQueued = false;
   Future<void> _backgroundStatusSyncQueue = Future<void>.value();
 
   @override
@@ -7584,7 +7553,6 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     ref.onDispose(() {
       _previewStateRefreshTimer?.cancel();
       _previewStateRefreshTimer = null;
-      _previewStateRefreshQueued = false;
       for (final subscription in _disconnectSubscriptions.values) {
         unawaited(subscription.cancel());
       }
@@ -8686,21 +8654,14 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       return;
     }
     if (_previewStateRefreshTimer?.isActive ?? false) {
-      _previewStateRefreshQueued = true;
       return;
     }
     _previewStateRefreshTimer = Timer(_previewStateRefreshInterval, () {
       _previewStateRefreshTimer = null;
       if (!ref.mounted) {
-        _previewStateRefreshQueued = false;
         return;
       }
-      final shouldReschedule = _previewStateRefreshQueued;
-      _previewStateRefreshQueued = false;
       state = {...state};
-      if (shouldReschedule) {
-        _schedulePreviewStateRefresh();
-      }
     });
   }
 

@@ -143,7 +143,8 @@ class KeyboardToolbarController extends ChangeNotifier {
         output = String.fromCharCode(ctrlCode);
       }
       shouldConsume = true;
-    } else if (_altState != null) {
+    }
+    if (_altState != null) {
       output = '\x1b$output';
       shouldConsume = true;
     }
@@ -1133,36 +1134,6 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     bool consumeOneShot = true,
     TerminalKeyEventType type = TerminalKeyEventType.press,
   }) {
-    if (withHaptic) {
-      HapticFeedback.lightImpact();
-    }
-    final key = _terminalKeyForArrow(arrow);
-    if (widget.onSpecialKey case final sink?) {
-      sink(key);
-      widget.onKeyPressed?.call();
-      if (consumeOneShot) {
-        _consumeOneShot();
-      }
-      return;
-    }
-    if (_shouldUseKittyKeyboardEncoding(type)) {
-      final handled = widget.terminal.keyInput(
-        key,
-        shift: _controller.isShiftActive,
-        alt: _controller.isAltActive,
-        ctrl: _controller.isCtrlActive,
-        type: type,
-      );
-      if (!handled) {
-        return;
-      }
-      widget.onKeyPressed?.call();
-      if (consumeOneShot) {
-        _consumeOneShot();
-      }
-      return;
-    }
-
     final modifier = _getModifierPrefix();
     final suffix = switch (arrow) {
       _Arrow.up => 'A',
@@ -1171,16 +1142,13 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       _Arrow.left => 'D',
     };
 
-    if (modifier.isNotEmpty) {
-      widget.terminal.textInput('\x1b[1;$modifier$suffix');
-    } else {
-      widget.terminal.textInput('\x1b[$suffix');
-    }
-
-    widget.onKeyPressed?.call();
-    if (consumeOneShot) {
-      _consumeOneShot();
-    }
+    _sendNavigationKey(
+      _terminalKeyForArrow(arrow),
+      modifier.isNotEmpty ? '\x1b[1;$modifier$suffix' : '\x1b[$suffix',
+      withHaptic: withHaptic,
+      consumeOneShot: consumeOneShot,
+      type: type,
+    );
   }
 
   bool _shouldUseKittyKeyboardEncoding(TerminalKeyEventType type) {

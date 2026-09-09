@@ -7,10 +7,12 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'command_output_marker_reader.dart';
 import 'diagnostics_log_service.dart';
 import 'remote_file_service.dart';
 import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
+import 'windows_remote_powershell.dart';
 
 /// Asset path for the bundled MonkeyMux binary manifest.
 const monkeyMuxManifestAssetPath = 'assets/monkeymux/manifest.json';
@@ -561,10 +563,10 @@ class MonkeyMuxInstallerService {
       const managedMarker = '@REM Managed by MonkeySSH launcher v1';
       final script = <String>[
         r"$ErrorActionPreference = 'Stop'",
-        '\$path = ${_powerShellSingleQuote(launcherPath)}',
-        '\$pointer = ${_powerShellSingleQuote(pointerPath)}',
-        '\$managedMarker = ${_powerShellSingleQuote(managedMarker)}',
-        '\$target = ${_powerShellSingleQuote(relativeTarget)}',
+        '\$path = ${powerShellSingleQuote(launcherPath)}',
+        '\$pointer = ${powerShellSingleQuote(pointerPath)}',
+        '\$managedMarker = ${powerShellSingleQuote(managedMarker)}',
+        '\$target = ${powerShellSingleQuote(relativeTarget)}',
         'function Set-AtomicAsciiFile {',
         r'  param([string]$Destination, [string[]]$Lines)',
         r'  for ($attempt = 0; $attempt -lt 3; $attempt++) {',
@@ -595,7 +597,7 @@ class MonkeyMuxInstallerService {
         r'New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null',
         r'Set-AtomicAsciiFile -Destination $pointer -Lines @($target)',
         r'Set-AtomicAsciiFile -Destination $path -Lines @(',
-        '  ${_powerShellSingleQuote(managedMarker)},',
+        '  ${powerShellSingleQuote(managedMarker)},',
         "  '@echo off',",
         '''  'set /p "MONKEYMUX_TARGET="<"%~dp0.monkeymux-current"',''',
         r'''  '"%~dp0..\..\.monkeyssh\bin\monkeymux\%MONKEYMUX_TARGET%" %*',''',
@@ -606,7 +608,7 @@ class MonkeyMuxInstallerService {
       final output = await _runRawRemoteCommand(
         session,
         'powershell -NoProfile -NonInteractive -EncodedCommand '
-        '${_encodePowerShellCommand(script)}',
+        '${encodePowerShellCommand(script)}',
         priority: priority,
       );
       if (!output.contains('MONKEYMUX_LAUNCHER_MANAGED') &&
@@ -961,47 +963,25 @@ String _markRemoteCommandDone(String command) =>
     r'"$__monkeymux_status__"; }';
 
 Future<String> _readStdoutUntilMarker(SSHSession execSession) async {
-  final output = StringBuffer();
-  await for (final chunk
-      in execSession.stdout
+  try {
+    final result = await readCommandOutputUntilMarker(
+      execSession.stdout
           .cast<List<int>>()
           .transform(utf8.decoder)
-          .timeout(_monkeyMuxInstallTimeout)) {
-    output.write(chunk);
-    final currentOutput = output.toString();
-    final markerPattern = RegExp(
-      '(?:^|\\n)${RegExp.escape(_monkeyMuxExecMarker)}:([0-9]+)\\n',
+          .timeout(_monkeyMuxInstallTimeout),
+      _monkeyMuxExecMarker,
     );
-    final markers = markerPattern.allMatches(currentOutput);
-    final marker = markers.isEmpty ? null : markers.last;
-    if (marker == null) {
-      continue;
-    }
-    final status = int.parse(marker.group(1)!);
-    if (status != 0) {
+    if (result.status != 0) {
       throw MonkeyMuxInstallException(
-        'Remote command failed with exit status $status.',
+        'Remote command failed with exit status ${result.status}.',
       );
     }
-    return currentOutput.substring(0, marker.start).trimRight();
+    return result.output.trimRight();
+  } on CommandOutputMarkerMissingException {
+    throw const MonkeyMuxInstallException(
+      'Remote command closed before completion marker.',
+    );
   }
-  throw const MonkeyMuxInstallException(
-    'Remote command closed before completion marker.',
-  );
 }
 
 String _shellQuote(String value) => "'${value.replaceAll("'", "'\"'\"'")}'";
-
-String _powerShellSingleQuote(String value) =>
-    "'${value.replaceAll("'", "''")}'";
-
-String _encodePowerShellCommand(String script) {
-  final codeUnits = script.codeUnits;
-  final bytes = Uint8List(codeUnits.length * 2);
-  for (var index = 0; index < codeUnits.length; index++) {
-    final codeUnit = codeUnits[index];
-    bytes[index * 2] = codeUnit & 0xff;
-    bytes[index * 2 + 1] = codeUnit >> 8;
-  }
-  return base64Encode(bytes);
-}

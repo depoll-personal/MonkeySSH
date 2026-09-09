@@ -1,4 +1,3 @@
-import 'dart:collection';
 import 'dart:convert';
 
 import 'package:collection/collection.dart';
@@ -439,7 +438,6 @@ class AcpTimelineBuilder {
   bool _overflowed = false;
   int _droppedEntryCount = 0;
   int _nextLocalUserMessageId = 0;
-  final Queue<String> _pendingLocalUserMessageIds = Queue<String>();
   String? _pendingLocalUserMessageId;
   bool _suppressingUserEcho = false;
   String? _suppressedUserEchoMessageId;
@@ -466,13 +464,18 @@ class AcpTimelineBuilder {
     _totalBytes += approximateTimelineEntryBytes(entry);
     _entries.add(entry);
     _openMessageIndex = null;
-    _pendingLocalUserMessageIds.addLast(messageId);
+    if (!queued) {
+      _clearPendingUserEcho();
+      _pendingLocalUserMessageId = messageId;
+    }
     _enforceLimits();
     return messageId;
   }
 
   /// Marks a queued local prompt as dispatched to the agent.
   AcpTimeline markLocalUserPromptDispatched(String messageId) {
+    _clearPendingUserEcho();
+    _pendingLocalUserMessageId = messageId;
     final index = _entries.indexWhere(
       (entry) =>
           entry is AcpMessageEntry &&
@@ -508,7 +511,6 @@ class AcpTimelineBuilder {
       _totalBytes -= approximateTimelineEntryBytes(_entries.removeAt(index));
       _rebuildIndexes();
     }
-    _pendingLocalUserMessageIds.removeWhere((id) => id == messageId);
     if (_pendingLocalUserMessageId == messageId) {
       _clearPendingUserEcho();
     }
@@ -573,7 +575,7 @@ class AcpTimelineBuilder {
       if (open is AcpMessageEntry &&
           open.role == role &&
           open.messageId == messageId &&
-          (parentToolCallId == null ||
+          ((messageId != null && parentToolCallId == null) ||
               open.parentToolCallId == parentToolCallId)) {
         _replaceEntry(openIndex, open.appendContent(block));
         return;
@@ -796,9 +798,6 @@ class AcpTimelineBuilder {
   }
 
   bool _shouldSuppressUserEcho(String? remoteMessageId) {
-    _pendingLocalUserMessageId ??= _pendingLocalUserMessageIds.isEmpty
-        ? null
-        : _pendingLocalUserMessageIds.removeFirst();
     if (_pendingLocalUserMessageId == null) {
       return false;
     }
@@ -811,7 +810,7 @@ class AcpTimelineBuilder {
       return true;
     }
     _clearPendingUserEcho();
-    return _shouldSuppressUserEcho(remoteMessageId);
+    return false;
   }
 
   void _clearPendingUserEcho() {

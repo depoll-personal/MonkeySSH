@@ -1482,7 +1482,6 @@ class AgentSessionDiscoveryService {
   final Map<_AgentSessionDiscoveryScopeKey, Future<List<String>>>
   _inFlightRelatedWorkingDirectories =
       <_AgentSessionDiscoveryScopeKey, Future<List<String>>>{};
-  int _cacheGeneration = 0;
 
   /// Invalidates cached and in-flight discovery state for [session].
   ///
@@ -1494,7 +1493,6 @@ class AgentSessionDiscoveryService {
         key.port == session.config.port &&
         key.username == session.config.username;
 
-    _cacheGeneration += 1;
     _discoveryCache.removeWhere((key, _) => matches(key.scopeKey));
     _inFlightDiscoveries.removeWhere((key, _) => matches(key.scopeKey));
     _inFlightDiscoverySnapshots.removeWhere((key, _) => matches(key.scopeKey));
@@ -1646,7 +1644,6 @@ class AgentSessionDiscoveryService {
   }) {
     final controller = StreamController<DiscoveredSessionsResult>.broadcast();
     final stream = controller.stream;
-    final cacheGeneration = _cacheGeneration;
     _inFlightDiscoveries[key] = stream;
 
     unawaited(() async {
@@ -1713,7 +1710,7 @@ class AgentSessionDiscoveryService {
         }
         controller.add(latestResult);
 
-        if (cacheGeneration == _cacheGeneration) {
+        if (identical(_inFlightDiscoveries[key], stream)) {
           _discoveryCache[key] = _CachedDiscoveryResult(
             result: latestResult,
             cachedAt: _now(),
@@ -4450,11 +4447,10 @@ print(json.dumps(sessions))
       return inFlight;
     }
 
-    final cacheGeneration = _cacheGeneration;
     late final Future<List<String>> future;
     future = _resolveRelatedWorkingDirectories(session, key.workingDirectory)
         .then((directories) {
-          if (cacheGeneration == _cacheGeneration) {
+          if (identical(_inFlightRelatedWorkingDirectories[key], future)) {
             _relatedWorkingDirectoriesCache[key] =
                 _CachedRelatedWorkingDirectories(
                   directories: directories,

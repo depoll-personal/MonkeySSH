@@ -442,59 +442,6 @@ void main() {
     });
   });
 
-  group('isPortForwardBrowserUri', () {
-    test('matches http and https loopback URLs', () {
-      expect(
-        isPortForwardBrowserUri(Uri.parse('http://127.0.0.1:8080'), port: 8080),
-        isTrue,
-      );
-      expect(
-        isPortForwardBrowserUri(
-          Uri.parse('https://localhost:8443'),
-          port: 8443,
-        ),
-        isTrue,
-      );
-      expect(
-        isPortForwardBrowserUri(Uri.parse('http://127.0.0.5:8080'), port: 8080),
-        isTrue,
-      );
-      expect(
-        isPortForwardBrowserUri(Uri.parse('http://localhost/'), port: 80),
-        isTrue,
-      );
-      expect(
-        isPortForwardBrowserUri(Uri.parse('https://localhost/'), port: 443),
-        isTrue,
-      );
-    });
-
-    test('does not match inactive loopback ports', () {
-      expect(
-        isPortForwardBrowserUri(Uri.parse('http://127.0.0.1:8080'), port: 3000),
-        isFalse,
-      );
-    });
-
-    test('does not match non-web or non-loopback URLs', () {
-      expect(
-        isPortForwardBrowserUri(Uri.parse('ssh://localhost:22'), port: 22),
-        isFalse,
-      );
-      expect(
-        isPortForwardBrowserUri(Uri.parse('https://example.com'), port: 443),
-        isFalse,
-      );
-      expect(
-        isPortForwardBrowserUri(
-          Uri.parse('https://127.example.com'),
-          port: 443,
-        ),
-        isFalse,
-      );
-    });
-  });
-
   group('normalizePortForwardBrowserUri', () {
     test('maps wildcard URL hosts to loopback', () {
       expect(
@@ -587,36 +534,6 @@ void main() {
       expect(
         portForwardBrowserDisplayOrigin(Uri.parse('http:relative-path')),
         'http',
-      );
-    });
-  });
-
-  group('isPortForwardBrowserUri', () {
-    test('allows only loopback web URLs on the forwarded port', () {
-      expect(
-        isPortForwardBrowserUri(
-          Uri.parse('http://127.0.0.5:3000/path'),
-          port: 3000,
-        ),
-        isTrue,
-      );
-      expect(
-        isPortForwardBrowserUri(
-          Uri.parse('http://127.0.0.1:4000/path'),
-          port: 3000,
-        ),
-        isFalse,
-      );
-      expect(
-        isPortForwardBrowserUri(
-          Uri.parse('https://example.com:3000/path'),
-          port: 3000,
-        ),
-        isFalse,
-      );
-      expect(
-        isPortForwardBrowserUri(Uri.parse('http://127.0.0.1:0/path'), port: 0),
-        isFalse,
       );
     });
   });

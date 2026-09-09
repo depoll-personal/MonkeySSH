@@ -50,6 +50,10 @@ void main() {
     expect(await session.sftp(), same(oldClient));
     verify(client.sftp).called(1);
     verifyNever(oldClient.close);
+
+    session.discardSftpClient(await first);
+
+    verify(oldClient.close).called(1);
   });
 
   for (final oldCompletesFirst in [true, false]) {

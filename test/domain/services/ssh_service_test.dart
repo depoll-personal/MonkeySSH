@@ -34,6 +34,7 @@ import 'package:monkeyssh/domain/services/port_forward_browser_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
+import 'package:monkeyssh/domain/services/telemetry_service.dart';
 import 'package:monkeyssh/domain/services/terminal_notification.dart';
 import 'package:monkeyssh/domain/services/wifi_network_service.dart';
 import 'package:xterm/xterm.dart';
@@ -130,6 +131,10 @@ class _MockExecSession extends Mock implements SSHSession {}
 
 class _MockSftpClient extends Mock implements SftpClient {}
 
+class _MockTelemetryService extends Mock implements TelemetryService {}
+
+class _MockSshService extends Mock implements SshService {}
+
 class _MockRemoteForward extends Mock implements SSHRemoteForward {}
 
 class _MockHostRepository extends Mock implements HostRepository {}
@@ -225,6 +230,42 @@ class _ConcurrentAutomaticForwardTestSession extends SshSession {
       await firstStartGate.future;
     }
     return true;
+  }
+}
+
+class _PendingBindAutomaticForwardSession extends SshSession {
+  _PendingBindAutomaticForwardSession({required super.client})
+    : super(
+        connectionId: 7,
+        hostId: 42,
+        config: const SshConnectionConfig(
+          hostname: 'dev.example.com',
+          port: 22,
+          username: 'tester',
+        ),
+      );
+
+  final bindStarted = Completer<void>();
+  final pendingBind = Completer<ServerSocket>();
+
+  @override
+  Future<bool> startAutomaticPortForwardWatcher({
+    required int generation,
+  }) async => false;
+
+  @override
+  Future<Map<RemoteTcpListenerKey, RemoteTcpListener>?>
+  discoverRemoteListeningTcpListeners() async =>
+      _listenerSnapshot([_remoteListener(3000)]);
+
+  @override
+  Future<ServerSocket> bindPortForwardServerSocket(
+    Object host,
+    int port, {
+    bool v6Only = false,
+  }) {
+    bindStarted.complete();
+    return pendingBind.future;
   }
 }
 
@@ -704,6 +745,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   registerFallbackValue(const SSHPtyConfig());
   registerFallbackValue(Uint8List(0));
+  registerFallbackValue(Duration.zero);
 
   group('SshConnectionState', () {
     test('has expected values', () {
@@ -718,6 +760,28 @@ void main() {
   });
 
   group('automatic port forwarding', () {
+    test('close cancels a pending automatic-forward bind', () async {
+      final client = _MockSshClient();
+      when(client.close).thenAnswer((_) async {});
+      final session = _PendingBindAutomaticForwardSession(client: client);
+      final configured = session.configureAutomaticPortForwarding(
+        enabled: true,
+        proxyHost: 'dev-box.localhost',
+      );
+      await session.bindStarted.future;
+
+      await session.close().timeout(const Duration(seconds: 1));
+      await configured;
+      expect(session.pendingBind.isCompleted, isFalse);
+      expect(session.activeTunnels, isEmpty);
+      expect(session.automaticForwardedRemoteListeners, isEmpty);
+      session.pendingBind.completeError(
+        const SocketException('Bind cancelled'),
+      );
+      await pumpEventQueue();
+      verify(client.close).called(1);
+    });
+
     test('parses listener output from supported remote tools', () {
       const output = '''
 __monkeyssh_shell_descendant_pids__:42,43
@@ -3386,35 +3450,6 @@ LISTEN ::1:4201
       expect(openAttempts, 2);
     });
 
-    test('reuses the session SFTP client', () async {
-      final client = _MockSshClient();
-      final sftp = _MockSftpClient();
-      final session = SshSession(
-        connectionId: 11,
-        hostId: 2,
-        client: client,
-        config: const SshConnectionConfig(
-          hostname: 'example.com',
-          port: 22,
-          username: 'tester',
-        ),
-      );
-
-      when(client.sftp).thenAnswer((_) async => sftp);
-      when(sftp.close).thenAnswer((_) async {});
-
-      final first = await session.sftp();
-      final second = await session.sftp();
-
-      expect(first, same(sftp));
-      expect(second, same(sftp));
-      verify(client.sftp).called(1);
-
-      session.discardSftpClient(first);
-
-      verify(sftp.close).called(1);
-    });
-
     test('discarding SFTP consumes close errors after disconnect', () async {
       final client = _MockSshClient();
       final sftp = _MockSftpClient();
@@ -4085,7 +4120,11 @@ LISTEN ::1:4201
         await pumpEventQueue();
         shell.shellWrites.clear();
 
-        final report = buildTerminalThemeBackgroundColorReport(theme);
+        final report = buildTerminalThemeOscResponse(
+          theme: theme,
+          code: '11',
+          args: const ['?'],
+        )!;
         terminal.onOutput!.call('${report}typed');
         await pumpEventQueue();
 
@@ -4277,6 +4316,103 @@ LISTEN ::1:4201
           .setMockMethodCallHandler(_backgroundSshChannel, null);
       container.dispose();
     });
+
+    test(
+      'reports host-key connection failures separately from authentication',
+      () async {
+        final sshService = _MockSshService();
+        final telemetry = _MockTelemetryService();
+        when(() => sshService.sessions).thenReturn({});
+        when(
+          () => sshService.connectToHost(
+            any(),
+            onProgress: any(named: 'onProgress'),
+            useHostThemeOverrides: any(named: 'useHostThemeOverrides'),
+            cancellationToken: any(named: 'cancellationToken'),
+          ),
+        ).thenAnswer(
+          (_) async => const SshConnectionResult(
+            success: false,
+            error: 'Host key verification failed',
+          ),
+        );
+        when(
+          () => telemetry.logConnectionAttempted(
+            authMethod: any(named: 'authMethod'),
+            usesJumpHost: any(named: 'usesJumpHost'),
+          ),
+        ).thenAnswer((_) async {});
+        when(
+          () => telemetry.logConnectionFailed(
+            authMethod: any(named: 'authMethod'),
+            usesJumpHost: any(named: 'usesJumpHost'),
+            duration: any(named: 'duration'),
+            failureCategory: any(named: 'failureCategory'),
+          ),
+        ).thenAnswer((_) async {});
+        final failureContainer = ProviderContainer(
+          overrides: [
+            sshServiceProvider.overrideWithValue(sshService),
+            telemetryServiceProvider.overrideWithValue(telemetry),
+            hostRepositoryProvider.overrideWithValue(
+              container.read(hostRepositoryProvider),
+            ),
+          ],
+        );
+        addTearDown(failureContainer.dispose);
+
+        final result = await failureContainer
+            .read(activeSessionsProvider.notifier)
+            .connect(42);
+
+        expect(result.success, isFalse);
+        verify(
+          () => telemetry.logConnectionFailed(
+            authMethod: 'unknown',
+            usesJumpHost: false,
+            duration: any(named: 'duration'),
+            failureCategory: 'host_key',
+          ),
+        ).called(1);
+      },
+    );
+
+    for (final laterChange in [false, true]) {
+      testWidgets(
+        laterChange
+            ? 'publishes a later preview change after a burst'
+            : 'publishes a preview burst only once',
+        (tester) async {
+          final notifier = container.read(activeSessionsProvider.notifier);
+          final result = await tester.runAsync(() async {
+            final result = await notifier.connect(42);
+            await pumpEventQueue();
+            return result;
+          });
+          final session = notifier.getSession(result!.connectionId!)!;
+          await tester.pump(const Duration(milliseconds: 300));
+          var publications = 0;
+          final subscription = container.listen(
+            activeSessionsProvider,
+            (_, _) => publications++,
+          );
+          addTearDown(subscription.close);
+
+          session
+            ..terminalTheme = monkey_themes.TerminalThemes.defaultDarkTheme
+            ..terminalTheme = monkey_themes.TerminalThemes.defaultLightTheme;
+          await tester.pump(const Duration(milliseconds: 150));
+          expect(publications, 1);
+          await tester.pump(const Duration(milliseconds: 150));
+          expect(publications, 1);
+          if (laterChange) {
+            session.terminalTheme = null;
+            await tester.pump(const Duration(milliseconds: 150));
+            expect(publications, 2);
+          }
+        },
+      );
+    }
 
     test(
       'syncBackgroundStatus stops the background service when empty',
@@ -4927,167 +5063,60 @@ LISTEN ::1:4201
       expect(primary.shellLineageToken, isNot(secondary.shellLineageToken));
     });
 
-    test(
-      'does not exclude shell ports from a different SSH endpoint',
-      () async {
+    for (final (
+          name,
+          hostname,
+          otherHostname,
+          username,
+          otherUsername,
+          jumpHostname,
+          otherJumpHostname,
+        )
+        in const [
+          (
+            'does not exclude shell ports from a different SSH endpoint',
+            'dev.example.com',
+            'other.example.com',
+            'tester',
+            'tester',
+            null,
+            null,
+          ),
+          (
+            'keeps case-sensitive usernames on separate automatic endpoints',
+            'dev.example.com',
+            'dev.example.com',
+            'Build',
+            'build',
+            null,
+            null,
+          ),
+          (
+            'keeps distinct jump routes on separate automatic endpoints',
+            'internal.example.com',
+            'internal.example.com',
+            'tester',
+            'tester',
+            'east-bastion.example.com',
+            'west-bastion.example.com',
+          ),
+        ]) {
+      test(name, () async {
         final primary = _RecordingAutomaticForwardSession(
           connectionId: 1,
           hostId: 42,
           client: _MockSshClient(),
-          config: const SshConnectionConfig(
-            hostname: 'dev.example.com',
+          config: SshConnectionConfig(
+            hostname: hostname,
             port: 22,
-            username: 'tester',
-          ),
-        );
-        final unrelated = _RecordingAutomaticForwardSession(
-          connectionId: 2,
-          hostId: 43,
-          client: _MockSshClient(),
-          config: const SshConnectionConfig(
-            hostname: 'other.example.com',
-            port: 22,
-            username: 'tester',
-          ),
-          useRecordedTunnels: true,
-        );
-        unrelated.tunnels[-1] = const ActiveTunnelInfo(
-          portForwardId: -1,
-          localHost: '127.0.0.1',
-          localPort: 49152,
-          browserHost: 'other.localhost',
-          browserPort: 49152,
-          remoteHost: '127.0.0.1',
-          remotePort: 3000,
-          isLocal: true,
-          isAutomatic: true,
-          isShellRelated: true,
-        );
-        final hostRepository = _MockHostRepository();
-        when(
-          () => hostRepository.getById(42),
-        ).thenAnswer((_) async => _automaticForwardHost(enabled: true));
-        final localContainer = ProviderContainer(
-          overrides: [
-            hostRepositoryProvider.overrideWithValue(hostRepository),
-            portForwardRepositoryProvider.overrideWithValue(
-              _emptyPortForwardRepository(),
-            ),
-            activeSessionsProvider.overrideWith(
-              () => _OwnershipActiveSessionsNotifier(
-                sessions: [primary, unrelated],
-                connectionStates: {
-                  primary.connectionId: SshConnectionState.connected,
-                  unrelated.connectionId: SshConnectionState.connected,
-                },
-              ),
-            ),
-          ],
-        );
-        addTearDown(localContainer.dispose);
-
-        await localContainer
-            .read(activeSessionsProvider.notifier)
-            .reconfigureAutomaticPortForwardingForHost(42);
-
-        expect(
-          primary.automaticConfigurations.last.excludedRemoteListeners,
-          isNot(contains(remoteTcpListenerKey('127.0.0.1', 3000))),
-        );
-      },
-    );
-
-    test(
-      'keeps case-sensitive usernames on separate automatic endpoints',
-      () async {
-        final primary = _RecordingAutomaticForwardSession(
-          connectionId: 1,
-          hostId: 42,
-          client: _MockSshClient(),
-          config: const SshConnectionConfig(
-            hostname: 'dev.example.com',
-            port: 22,
-            username: 'Build',
-          ),
-        );
-        final unrelated = _RecordingAutomaticForwardSession(
-          connectionId: 2,
-          hostId: 43,
-          client: _MockSshClient(),
-          config: const SshConnectionConfig(
-            hostname: 'dev.example.com',
-            port: 22,
-            username: 'build',
-          ),
-          useRecordedTunnels: true,
-        );
-        unrelated.tunnels[-1] = const ActiveTunnelInfo(
-          portForwardId: -1,
-          localHost: '127.0.0.1',
-          localPort: 49152,
-          browserHost: 'other.localhost',
-          browserPort: 49152,
-          remoteHost: '127.0.0.1',
-          remotePort: 3000,
-          isLocal: true,
-          isAutomatic: true,
-          isShellRelated: true,
-        );
-        final hostRepository = _MockHostRepository();
-        when(
-          () => hostRepository.getById(42),
-        ).thenAnswer((_) async => _automaticForwardHost(enabled: true));
-        final localContainer = ProviderContainer(
-          overrides: [
-            hostRepositoryProvider.overrideWithValue(hostRepository),
-            portForwardRepositoryProvider.overrideWithValue(
-              _emptyPortForwardRepository(),
-            ),
-            activeSessionsProvider.overrideWith(
-              () => _OwnershipActiveSessionsNotifier(
-                sessions: [primary, unrelated],
-                connectionStates: {
-                  primary.connectionId: SshConnectionState.connected,
-                  unrelated.connectionId: SshConnectionState.connected,
-                },
-              ),
-            ),
-          ],
-        );
-        addTearDown(localContainer.dispose);
-
-        await localContainer
-            .read(activeSessionsProvider.notifier)
-            .reconfigureAutomaticPortForwardingForHost(42);
-
-        expect(
-          primary.automaticConfigurations.last.excludedRemoteListeners,
-          isNot(contains(remoteTcpListenerKey('127.0.0.1', 3000))),
-        );
-      },
-    );
-
-    test(
-      'keeps distinct jump routes on separate automatic endpoints',
-      () async {
-        const target = SshConnectionConfig(
-          hostname: 'internal.example.com',
-          port: 22,
-          username: 'tester',
-        );
-        final primary = _RecordingAutomaticForwardSession(
-          connectionId: 1,
-          hostId: 42,
-          client: _MockSshClient(),
-          config: const SshConnectionConfig(
-            hostname: 'internal.example.com',
-            port: 22,
-            username: 'tester',
-            jumpHost: SshConnectionConfig(
-              hostname: 'east-bastion.example.com',
-              port: 22,
-              username: 'jump',
-            ),
+            username: username,
+            jumpHost: jumpHostname == null
+                ? null
+                : SshConnectionConfig(
+                    hostname: jumpHostname,
+                    port: 22,
+                    username: 'jump',
+                  ),
           ),
         );
         final unrelated = _RecordingAutomaticForwardSession(
@@ -5095,14 +5124,16 @@ LISTEN ::1:4201
           hostId: 43,
           client: _MockSshClient(),
           config: SshConnectionConfig(
-            hostname: target.hostname,
-            port: target.port,
-            username: target.username,
-            jumpHost: const SshConnectionConfig(
-              hostname: 'west-bastion.example.com',
-              port: 22,
-              username: 'jump',
-            ),
+            hostname: otherHostname,
+            port: 22,
+            username: otherUsername,
+            jumpHost: otherJumpHostname == null
+                ? null
+                : SshConnectionConfig(
+                    hostname: otherJumpHostname,
+                    port: 22,
+                    username: 'jump',
+                  ),
           ),
           useRecordedTunnels: true,
         );
@@ -5149,8 +5180,8 @@ LISTEN ::1:4201
           primary.automaticConfigurations.last.excludedRemoteListeners,
           isNot(contains(remoteTcpListenerKey('127.0.0.1', 3000))),
         );
-      },
-    );
+      });
+    }
 
     test('excludes stopped saved local forwards from discovery', () async {
       final primary = _RecordingAutomaticForwardSession(

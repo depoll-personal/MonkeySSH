@@ -25,9 +25,6 @@ enum ShellCompletionMode {
 
   /// Complete only directories.
   directory,
-
-  /// Complete files and directories.
-  path,
 }
 
 /// Type of a single shell completion suggestion.
@@ -394,11 +391,11 @@ class ShellCompletionService {
             );
           });
       final stderrFuture = exec.stderr.drain<void>();
-      if (writeInput != null) await writeInput();
       await Future.wait<void>([
         stdoutFuture,
         stderrFuture,
         exec.done,
+        if (writeInput != null) writeInput(),
       ]).timeout(timeout);
       return stdout.toString();
     } finally {
@@ -2139,9 +2136,6 @@ case "\$FLUTTY_MODE" in
   directory)
     emit_path_matches directory "\$FLUTTY_TOKEN"
     ;;
-  path)
-    emit_path_matches path "\$FLUTTY_TOKEN"
-    ;;
 esac
 __FLUTTY_COMPLETION__
 ''';
@@ -2232,7 +2226,6 @@ elseif($__flType -eq 'ProviderContainer'){$__flKind='directory'}
 elseif($__flType -eq 'ProviderItem'){$__flKind='file'}
 if($__flMode -eq 'argument' -and $__flKind -eq 'command'){continue}
 if($__flMode -eq 'directory' -and $__flKind -ne 'directory'){continue}
-if($__flMode -eq 'path' -and $__flKind -ne 'directory' -and $__flKind -ne 'file'){continue}
 $__flAny=$true
 if(!(__flEmit $__flKind $__flText)){break}
 }
@@ -2259,7 +2252,7 @@ $__flItems=@(Get-ChildItem -LiteralPath $__flDir -ErrorAction SilentlyContinue|W
 foreach($__it in $__flItems){
 $__nm=$__it.Name;$__val="$__flPrefix$__nm"
 if($__it.PSIsContainer){if(!(__flEmit 'directory' $__val)){break}}
-elseif($__flMode -eq 'path'){if(!(__flEmit 'file' $__val)){break}}
+elseif($__flMode -ne 'directory'){if(!(__flEmit 'file' $__val)){break}}
 }
 }
 }''';
@@ -2270,7 +2263,7 @@ elseif($__flMode -eq 'path'){if(!(__flEmit 'file' $__val)){break}}
 ///
 /// Command mode lists matching commands via `Get-Command` (executable extensions
 /// stripped); argument mode asks PowerShell's native `TabExpansion2` completer;
-/// directory/path modes enumerate the token's directory.
+/// directory mode enumerates the token's directory.
 @visibleForTesting
 String buildWindowsShellCompletionScript(ShellCompletionInvocation invocation) {
   final limit = invocation.maxSuggestions * 4;

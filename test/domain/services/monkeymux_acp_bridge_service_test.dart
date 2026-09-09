@@ -955,111 +955,132 @@ void main() {
     expect(transport.didSkipHistoricalReplay(), isFalse);
   });
 
-  test('direct replay resumes before flushing input after channel loss', () async {
-    final channels = <_TestChannel>[];
-    var opens = 0;
-    final releaseSecondReplay = Completer<void>();
-    final client = _MockSshClient();
-    when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
-      _,
-    ) async {
-      opens += 1;
-      late _TestChannel channel;
-      channel = _TestChannel(
-        onWrite: (value) {
-          final message = jsonDecode(value) as Map<String, dynamic>;
-          if (message['type'] != 'hello') return;
-          if (opens == 1) {
-            expect(message['lastAck'], 0);
-            expect(message['replayMode'], 'adaptive');
-            channel.addText(
-              '${_frame({'version': 1, 'type': 'hello', 'bridgeId': _bridgeId, 'clientId': _otherBridgeId, 'canSend': true, 'replayMode': 'direct', 'bridge': _metadata(nextSequence: 2)})}${_frame({
-                'version': 1,
-                'type': 'output',
-                'bridgeId': _bridgeId,
-                'sequence': 1,
-                'data': {'jsonrpc': '2.0', 'method': 'direct/1'},
-              })}',
-            );
-            unawaited(channel.remoteClose());
-            return;
-          }
-          expect(message['lastAck'], 1);
-          expect(message, isNot(contains('replayMode')));
-          channel.addText(
-            _frame({
-              'version': 1,
-              'type': 'hello',
-              'bridgeId': _bridgeId,
-              'clientId': _otherBridgeId,
-              'canSend': true,
-              'bridge': _metadata(nextSequence: 2),
-            }),
-          );
-          unawaited(
-            releaseSecondReplay.future.then(
-              (_) => channel.addText(
+  for (final overflow in [false, true]) {
+    test(
+      'direct replay reconnect handles incremental overflow=$overflow',
+      () async {
+        final channels = <_TestChannel>[];
+        var opens = 0;
+        final releaseSecondReplay = Completer<void>();
+        final client = _MockSshClient();
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+          _,
+        ) async {
+          opens += 1;
+          late _TestChannel channel;
+          channel = _TestChannel(
+            onWrite: (value) {
+              final message = jsonDecode(value) as Map<String, dynamic>;
+              if (message['type'] != 'hello') return;
+              if (opens == 1) {
+                expect(message['lastAck'], 0);
+                expect(message['replayMode'], 'adaptive');
+                channel.addText(
+                  '${_frame({'version': 1, 'type': 'hello', 'bridgeId': _bridgeId, 'clientId': _otherBridgeId, 'canSend': true, 'replayMode': 'direct', 'bridge': _metadata(nextSequence: 2)})}${_frame({
+                    'version': 1,
+                    'type': 'output',
+                    'bridgeId': _bridgeId,
+                    'sequence': 1,
+                    'data': {'jsonrpc': '2.0', 'method': 'direct/1'},
+                  })}',
+                );
+                unawaited(channel.remoteClose());
+                return;
+              }
+              expect(message['lastAck'], 1);
+              expect(message, isNot(contains('replayMode')));
+              channel.addText(
                 _frame({
                   'version': 1,
-                  'type': 'output',
+                  'type': 'hello',
                   'bridgeId': _bridgeId,
-                  'sequence': 2,
-                  'data': {'jsonrpc': '2.0', 'method': 'direct/2'},
+                  'clientId': _otherBridgeId,
+                  'canSend': true,
+                  'bridge': _metadata(nextSequence: overflow ? 3 : 2),
                 }),
-              ),
-            ),
+              );
+              if (overflow) {
+                channel.addText(
+                  _frame({
+                    'version': 1,
+                    'type': 'overflow',
+                    'bridgeId': _bridgeId,
+                    'retainedFrom': 3,
+                  }),
+                );
+              }
+              unawaited(
+                releaseSecondReplay.future.then(
+                  (_) => channel.addText(
+                    _frame({
+                      'version': 1,
+                      'type': 'output',
+                      'bridgeId': _bridgeId,
+                      'sequence': overflow ? 3 : 2,
+                      'data': {'jsonrpc': '2.0', 'method': 'direct/2'},
+                    }),
+                  ),
+                ),
+              );
+            },
           );
-        },
-      );
-      channels.add(channel);
-      return channel.session;
-    });
-    final transport =
-        MonkeyMuxAcpBridgeService(
-          installer: _FakeInstaller(
-            const MonkeyMuxInstallation(
-              executablePath: '/helper',
-              platform: 'linux-amd64',
-              version: 'test',
+          channels.add(channel);
+          return channel.session;
+        });
+        final transport =
+            MonkeyMuxAcpBridgeService(
+              installer: _FakeInstaller(
+                const MonkeyMuxInstallation(
+                  executablePath: '/helper',
+                  platform: 'linux-amd64',
+                  version: 'test',
+                ),
+              ),
+            ).connect(
+              sessionProvider: () async => _sshSession(client),
+              bridgeId: _bridgeId,
+              providerId: 'copilot',
+              reconnectBackoff: const [Duration(milliseconds: 100)],
+            );
+        addTearDown(transport.close);
+        final errors = <MonkeyMuxAcpBridgeException>[];
+        final errorsSub = transport.errors.listen(errors.add);
+        addTearDown(errorsSub.cancel);
+        final incoming = StreamIterator<List<int>>(transport.incoming);
+        addTearDown(incoming.cancel);
+
+        expect(await incoming.moveNext(), isTrue);
+        await _waitUntil(() => !transport.isConnected);
+        await expectLater(
+          transport.write(
+            utf8.encode(
+              '${jsonEncode({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize'})}\n',
             ),
           ),
-        ).connect(
-          sessionProvider: () async => _sshSession(client),
-          bridgeId: _bridgeId,
-          providerId: 'copilot',
-          reconnectBackoff: const [Duration(milliseconds: 100)],
+          throwsA(
+            isA<MonkeyMuxAcpBridgeException>().having(
+              (error) => error.kind,
+              'kind',
+              MonkeyMuxAcpBridgeErrorKind.sshChannel,
+            ),
+          ),
         );
-    addTearDown(transport.close);
-    final incoming = StreamIterator<List<int>>(transport.incoming);
-    addTearDown(incoming.cancel);
+        await _waitUntil(() => channels.length == 2);
 
-    expect(await incoming.moveNext(), isTrue);
-    await _waitUntil(() => !transport.isConnected);
-    await expectLater(
-      transport.write(
-        utf8.encode(
-          '${jsonEncode({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize'})}\n',
-        ),
-      ),
-      throwsA(
-        isA<MonkeyMuxAcpBridgeException>().having(
-          (error) => error.kind,
-          'kind',
-          MonkeyMuxAcpBridgeErrorKind.sshChannel,
-        ),
-      ),
+        releaseSecondReplay.complete();
+        expect(await incoming.moveNext(), isTrue);
+        await Future<void>.delayed(Duration.zero);
+        expect(
+          channels[1].writes.map(_decodeFrame),
+          isNot(contains(containsPair('type', 'input'))),
+        );
+        expect(transport.lastDeliveredSequence, overflow ? 3 : 2);
+        expect(errors.map((error) => error.kind), [
+          if (overflow) MonkeyMuxAcpBridgeErrorKind.replayOverflow,
+        ]);
+      },
     );
-    await _waitUntil(() => channels.length == 2);
-
-    releaseSecondReplay.complete();
-    expect(await incoming.moveNext(), isTrue);
-    await Future<void>.delayed(Duration.zero);
-    expect(
-      channels[1].writes.map(_decodeFrame),
-      isNot(contains(containsPair('type', 'input'))),
-    );
-    expect(transport.lastDeliveredSequence, 2);
-  });
+  }
 
   test('legacy bridge with no pending requests skips queued replay', () async {
     final channels = <_TestChannel>[];

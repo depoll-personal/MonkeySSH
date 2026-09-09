@@ -537,6 +537,36 @@ void main() {
       },
     );
 
+    for (final autoApprove in [false, true]) {
+      test(
+        'creates and truncates empty files with autoApprove=$autoApprove',
+        () async {
+          service.setSessionAutoApprovePermissions(
+            'session-1',
+            enabled: autoApprove,
+          );
+          files.files['/workspace/existing.txt'] = Uint8List.fromList([1]);
+          for (final name in ['new', 'existing']) {
+            final path = '/workspace/$name.txt';
+            transport.sendRequest(name, 'fs/write_text_file', {
+              'sessionId': 'session-1',
+              'path': path,
+              'content': '',
+            });
+            await _settle();
+            if (!autoApprove) {
+              expect(transport.responseForOrNull(name), isNull);
+              expect(files.writePaths, isNot(contains(path)));
+              await service.approveWrite('s:$name');
+            }
+            expect(transport.responseFor(name), containsPair('result', null));
+            expect(files.files[path], isEmpty);
+          }
+          expect(registry.requests, isEmpty);
+        },
+      );
+    }
+
     test(
       'rejects a write whose parent resolves through an escaping symlink',
       () async {

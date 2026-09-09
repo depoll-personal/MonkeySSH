@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 import '../../app/app_metadata.dart';
 import '../../app/routes.dart';
@@ -26,6 +25,7 @@ import '../widgets/font_family_picker.dart';
 import '../widgets/message_of_the_day.dart';
 import '../widgets/premium_access.dart';
 import '../widgets/premium_badge.dart';
+import '../widgets/terminal_text_style.dart';
 import '../widgets/terminal_theme_picker.dart';
 import 'transfer_screen.dart';
 
@@ -1051,28 +1051,6 @@ class _TerminalSection extends ConsumerWidget {
     }
   }
 
-  /// Gets a TextStyle for the given font family using Google Fonts.
-  TextStyle _getFontStyle(String family, {double fontSize = 16}) =>
-      switch (family) {
-        'monospace' => TextStyle(fontFamily: 'monospace', fontSize: fontSize),
-        'JetBrains Mono' => GoogleFonts.jetBrainsMono(fontSize: fontSize),
-        'Fira Code' => GoogleFonts.firaCode(fontSize: fontSize),
-        'Source Code Pro' => GoogleFonts.sourceCodePro(fontSize: fontSize),
-        'Ubuntu Mono' => GoogleFonts.ubuntuMono(fontSize: fontSize),
-        'Roboto Mono' => GoogleFonts.robotoMono(fontSize: fontSize),
-        'IBM Plex Mono' => GoogleFonts.ibmPlexMono(fontSize: fontSize),
-        'Inconsolata' => GoogleFonts.inconsolata(fontSize: fontSize),
-        'Anonymous Pro' => GoogleFonts.anonymousPro(fontSize: fontSize),
-        'Cousine' => GoogleFonts.cousine(fontSize: fontSize),
-        'PT Mono' => GoogleFonts.ptMono(fontSize: fontSize),
-        'Space Mono' => GoogleFonts.spaceMono(fontSize: fontSize),
-        'VT323' => GoogleFonts.vt323(fontSize: fontSize),
-        'Share Tech Mono' => GoogleFonts.shareTechMono(fontSize: fontSize),
-        'Overpass Mono' => GoogleFonts.overpassMono(fontSize: fontSize),
-        'Oxygen Mono' => GoogleFonts.oxygenMono(fontSize: fontSize),
-        _ => TextStyle(fontFamily: family, fontSize: fontSize),
-      };
-
   String _cursorStyleLabel(String style) => switch (style) {
     'block' => 'Block',
     'underline' => 'Underline',
@@ -1109,9 +1087,10 @@ class _TerminalSection extends ConsumerWidget {
                   children: [
                     Text(
                       previewText,
-                      style: _getFontStyle(
+                      style: resolveMonospaceTextStyle(
                         currentFont,
-                      ).copyWith(fontSize: tempValue),
+                        fontSize: tempValue,
+                      ),
                     ),
                     const SizedBox(height: 8),
                     Text(

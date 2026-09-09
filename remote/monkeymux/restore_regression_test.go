@@ -129,7 +129,7 @@ func TestRestoreArmsForegroundRedrawFollowUps(t *testing.T) {
 	}
 	server.activeID = "@1"
 	attach := &recordingConn{}
-	server.attachConn = attach
+	registerTestAttachClient(t, server, attach, "primary", server.width, server.height)
 	server.markRestoreRedrawPending([]string{"@2"})
 
 	if err := server.selectWindow("@2"); err != nil {
@@ -170,7 +170,7 @@ func TestRestoreRedrawFollowUpSkipsInactiveOrDetachedWindow(t *testing.T) {
 	server.windows = []*muxWindow{window}
 	server.activeID = "@1"
 	attach := &recordingConn{}
-	server.attachConn = attach
+	registerTestAttachClient(t, server, attach, "primary", server.width, server.height)
 
 	// Not the active window anymore.
 	server.activeID = "@other"
@@ -187,7 +187,7 @@ func TestRestoreRedrawFollowUpSkipsInactiveOrDetachedWindow(t *testing.T) {
 	}
 
 	// No attached clients: skip.
-	server.attachConn = nil
+	server.removeAttachClient(server.attachClients[attach])
 	server.redrawRestoredWindow("@1")
 	if !reflect.DeepEqual(simulated, []string{"@1"}) {
 		t.Fatalf("redraw fired without an attached client: %#v", simulated)

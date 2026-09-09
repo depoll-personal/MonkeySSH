@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -257,5 +259,51 @@ func TestAcpAuditReplayTrimWithinBudgetDoesNotAllocate(t *testing.T) {
 	}
 	if allocations := testing.AllocsPerRun(100, bridge.trimReplayLocked); allocations != 0 {
 		t.Fatalf("trimming unchanged replay allocates %.0f times per call", allocations)
+	}
+}
+
+func TestAcpAuditIncompleteHandshakeExpires(t *testing.T) {
+	for _, stopped := range []bool{false, true} {
+		t.Run(fmt.Sprint(stopped), func(t *testing.T) {
+			bridge := newAuditAcpBridge()
+			server, peer := net.Pipe()
+			defer peer.Close()
+			done := make(chan struct{})
+			go func() { bridge.handleConnection(server); close(done) }()
+			if _, err := io.WriteString(peer, `{"version":1,"type":"hello"`); err != nil {
+				t.Fatal(err)
+			}
+			if stopped {
+				bridge.stop()
+			}
+			select {
+			case <-done:
+			case <-time.After(socketTimeout + time.Second):
+				t.Fatal("incomplete handshake retained its connection")
+			}
+		})
+	}
+}
+
+func TestAcpAuditHandshakeDeadlineClearedAfterHello(t *testing.T) {
+	bridge := newAuditAcpBridge()
+	peer, reader := auditAcpAttach(t, bridge)
+	time.Sleep(socketTimeout + 50*time.Millisecond)
+	if status := auditAcpStatus(t, peer, reader); status.State != "running" {
+		t.Fatalf("attached bridge state = %q", status.State)
+	}
+}
+
+func TestAcpAuditProviderCommandMatchesPlatform(t *testing.T) {
+	for _, shell := range []string{"cmd.exe", "powershell.exe", "pwsh.exe"} {
+		t.Run(shell, func(t *testing.T) {
+			t.Setenv("ComSpec", shell)
+			got := newAcpProviderCommand("echo hello")
+			want := newRunCommand("echo hello")
+			if got.Path != want.Path || !reflect.DeepEqual(got.Args, want.Args) ||
+				!reflect.DeepEqual(got.SysProcAttr, want.SysProcAttr) {
+				t.Fatalf("ACP command = %+v, want %+v", got, want)
+			}
+		})
 	}
 }

@@ -450,26 +450,6 @@ final class AcpToolCallUpdate extends AcpSessionUpdate {
     AcpJsonMap json, {
     bool isInitial = false,
   }) {
-    List<AcpToolContent>? content;
-    final rawContent = AcpJson.listField(json, 'content');
-    if (rawContent != null) {
-      final parsed = <AcpToolContent>[];
-      for (final item in rawContent) {
-        final object = AcpJson.object(item);
-        if (object != null) parsed.add(AcpToolContent.fromJson(object));
-      }
-      content = List<AcpToolContent>.unmodifiable(parsed);
-    }
-    List<AcpToolLocation>? locations;
-    final rawLocations = AcpJson.listField(json, 'locations');
-    if (rawLocations != null) {
-      final parsed = <AcpToolLocation>[];
-      for (final item in rawLocations) {
-        final object = AcpJson.object(item);
-        if (object != null) parsed.add(AcpToolLocation.fromJson(object));
-      }
-      locations = List<AcpToolLocation>.unmodifiable(parsed);
-    }
     final toolKind = AcpJson.string(json, 'kind');
     final status = AcpJson.string(json, 'status');
     return AcpToolCallUpdate(
@@ -478,8 +458,12 @@ final class AcpToolCallUpdate extends AcpSessionUpdate {
       title: AcpJson.string(json, 'title'),
       toolKind: toolKind == null ? null : AcpToolKind(toolKind),
       status: status == null ? null : AcpToolStatus(status),
-      content: content,
-      locations: locations,
+      content: json['content'] is List
+          ? AcpJson.objectList(json['content'], AcpToolContent.fromJson)
+          : null,
+      locations: json['locations'] is List
+          ? AcpJson.objectList(json['locations'], AcpToolLocation.fromJson)
+          : null,
       rawInput: json['rawInput'],
       rawOutput: json['rawOutput'],
       meta: AcpJson.meta(json),
@@ -1018,15 +1002,13 @@ final class AcpPermissionRequest implements AcpExtensible {
     final toolCall =
         AcpJson.objectField(json, 'toolCall') ??
         const <String, Object?>{'toolCallId': ''};
-    final options = <AcpPermissionOption>[];
-    for (final item in AcpJson.listField(json, 'options') ?? const []) {
-      final option = AcpJson.object(item);
-      if (option != null) options.add(AcpPermissionOption.fromJson(option));
-    }
     return AcpPermissionRequest(
       sessionId: AcpJson.identifier(json, 'sessionId') ?? '',
       toolCall: AcpToolCallUpdate.fromJson(toolCall),
-      options: List<AcpPermissionOption>.unmodifiable(options),
+      options: AcpJson.objectList(
+        json['options'],
+        AcpPermissionOption.fromJson,
+      ),
       meta: AcpJson.meta(json),
       extensions: AcpJson.extensions(json, const [
         'sessionId',

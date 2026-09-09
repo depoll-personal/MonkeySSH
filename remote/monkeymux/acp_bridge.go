@@ -40,6 +40,7 @@ const (
 	acpPendingReplayMaxBytes  = acpReplayMaxBytes
 	acpIdleTimeout            = 24 * time.Hour
 	acpProviderDrainTimeout   = 2 * time.Second
+	acpRequestTimeout         = 500 * time.Millisecond
 	// Keep the steady-state live queue modest; attach sizes it dynamically for
 	// the actual replay being primed so a high event-count retention bound does
 	// not preallocate a huge channel for every connected client.
@@ -366,6 +367,9 @@ func requestAcpBridgeStop(id string) error {
 		return err
 	}
 	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(acpRequestTimeout)); err != nil {
+		return err
+	}
 	return writeAcpWireFrame(conn, acpWireMessage{
 		Version: acpBridgeProtocolVersion,
 		Type:    "command",
@@ -397,7 +401,15 @@ func requestAcpBridgeStopAndWait(id string) error {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := acpBridgeStatus(id); err != nil {
-			return nil
+			if isStaleUnixSocketError(err) {
+				return nil
+			}
+			if errors.Is(err, os.ErrNotExist) {
+				if _, statErr := os.Stat(socket); errors.Is(statErr, os.ErrNotExist) {
+					return nil
+				}
+			}
+			return err
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -536,6 +548,11 @@ func validateAcpProviderEnvironment(providerID string) error {
 		return errCursorAgentKeychainLocked
 	}
 	return nil
+}
+
+// newAcpProviderCommand uses ordinary pipes to preserve NDJSON framing.
+func newAcpProviderCommand(command string) *exec.Cmd {
+	return newRunCommand(command)
 }
 
 func newAcpBridge(
@@ -1100,6 +1117,19 @@ func (b *acpBridge) trimReplayLocked() {
 		(b.replayBytes <= acpReplayMaxBytes || len(b.replay) <= 1) {
 		return
 	}
+	for len(b.replay) > acpReplayMaxEvents ||
+		(b.replayBytes > acpReplayMaxBytes && len(b.replay) > 1) {
+		if b.replay[0].pendingID != "" {
+			break
+		}
+		b.replayBytes -= b.replay[0].bytes
+		b.replay[0] = acpReplayEvent{}
+		b.replay = b.replay[1:]
+	}
+	if len(b.replay) <= acpReplayMaxEvents &&
+		(b.replayBytes <= acpReplayMaxBytes || len(b.replay) <= 1) {
+		return
+	}
 	remainingEvents := len(b.replay)
 	kept := 0
 	for _, event := range b.replay {
@@ -1144,9 +1174,15 @@ func (b *acpBridge) releaseAllPendingReplayLocked() {
 
 func (b *acpBridge) handleConnection(conn net.Conn) {
 	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(socketTimeout)); err != nil {
+		return
+	}
 	reader := bufio.NewReader(conn)
 	first, err := readAcpWireFrame(reader)
 	if err != nil {
+		return
+	}
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
 		return
 	}
 	if first.Type == "command" {
@@ -1593,7 +1629,7 @@ func dialAcpBridge(id string) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return net.DialTimeout("unix", path, 500*time.Millisecond)
+	return net.DialTimeout("unix", path, acpRequestTimeout)
 }
 
 func listAcpBridgeIDs() ([]string, error) {
@@ -1630,6 +1666,9 @@ func acpBridgeStatus(id string) (acpBridgeInfo, error) {
 		return acpBridgeInfo{}, err
 	}
 	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(acpRequestTimeout)); err != nil {
+		return acpBridgeInfo{}, err
+	}
 	if err := writeAcpWireFrame(conn, acpWireMessage{
 		Version: acpBridgeProtocolVersion,
 		Type:    "command",
@@ -1638,13 +1677,20 @@ func acpBridgeStatus(id string) (acpBridgeInfo, error) {
 		return acpBridgeInfo{}, err
 	}
 	message, err := readAcpWireFrame(bufio.NewReader(conn))
-	if err != nil || message.Bridge == nil {
+	if err != nil {
+		return acpBridgeInfo{}, fmt.Errorf("invalid status response: %w", err)
+	}
+	if message.Type != "status" || message.Version != acpBridgeProtocolVersion || message.Bridge == nil {
 		return acpBridgeInfo{}, errors.New("invalid status response")
 	}
 	return *message.Bridge, nil
 }
 
 func gcAcpArtifacts(runDir string) {
+	gcAcpArtifactsWithSocketIdentity(runDir, socketFileIdentity)
+}
+
+func gcAcpArtifactsWithSocketIdentity(runDir string, identify func(string) (socketIdentity, error)) {
 	entries, err := os.ReadDir(runDir)
 	if err != nil {
 		return
@@ -1661,11 +1707,15 @@ func gcAcpArtifacts(runDir string) {
 			_ = os.Remove(path)
 			continue
 		}
+		identity, _ := identify(path)
 		conn, err := dialAcpBridge(id)
 		if err != nil {
-			_ = os.Remove(path)
+			if isStaleUnixSocketError(err) {
+				removeSocketPathIfUnchanged(path, identity)
+			}
 			continue
 		}
+		_ = conn.SetDeadline(time.Now().Add(acpRequestTimeout))
 		_ = writeAcpWireFrame(conn, acpWireMessage{
 			Version: acpBridgeProtocolVersion,
 			Type:    "command",

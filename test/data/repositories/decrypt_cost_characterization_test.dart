@@ -4,75 +4,12 @@ import 'dart:async';
 
 import 'package:drift/drift.dart' show Value;
 import 'package:drift/native.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
-
-// ---------------------------------------------------------------------------
-// Decrypt-cost characterisation tests
-//
-// Purpose: measure the wall-clock cost of decrypting all encrypted fields
-// across different list sizes so we can decide whether a ciphertext-diff
-// cache in the watchAll path is justified.
-//
-// Methodology
-// -----------
-// • SecretEncryptionService.forTesting() uses a fixed in-memory master key so
-//   no Keychain / secure-storage I/O skews the measurements.
-// • We pre-insert N rows with encrypted fields, warm up the service by calling
-//   getAll() once (master key is cached after the first decrypt), then time
-//   [_repetitions] consecutive getAll() calls and report mean µs/item.
-// • Tests assert only that measured timings are non-zero (i.e. the operation
-//   completed), so they never flap on CI due to machine speed.  The printed
-//   summary is the actionable output.
-//
-// Decision (recorded after first run on macOS)
-// --------------------------------------------
-// Observed costs without caching:
-//   HostRepository.getAll  n=10 → ~1986µs total, ~199µs/item
-//   HostRepository.getAll  n=50 → ~3292µs total, ~66µs/item
-//   HostRepository.getAll  n=100 → ~4786µs total, ~48µs/item
-//   KeyRepository.getAll   n=10 → ~928µs total, ~93µs/item
-//   KeyRepository.getAll   n=50 → ~3183µs total, ~64µs/item
-//   KeyRepository.getAll   n=100 → ~5546µs total, ~56µs/item
-//   HostRepository.watchAll n=50 → ~1781µs/emit, ~36µs/item
-//   KeyRepository.watchAll  n=50 → ~2876µs/emit, ~58µs/item
-//
-// A typical watchAll trigger (e.g. lastConnectedAt update for one host)
-// previously forced re-decryption of every row.  Caching the ciphertext →
-// plaintext mapping in the repository means a stream emit where only 1 of N
-// rows changed costs ≈1 AES-GCM decrypt + (N-1) map lookups instead of N
-// full decrypts — roughly 33× faster at N=50 for the common case.
-//
-// Caching was therefore added to HostRepository._decryptHost and
-// KeyRepository._decryptKey via a per-instance Map<String, String>.
-// ---------------------------------------------------------------------------
-
-const _repetitions = 5;
-
-/// Inserts [count] hosts with encrypted passwords and returns all their IDs.
-Future<List<int>> _insertHostsWithPasswords(
-  HostRepository repo,
-  int count,
-) async {
-  final ids = <int>[];
-  for (var i = 0; i < count; i++) {
-    final id = await repo.insert(
-      HostsCompanion.insert(
-        label: 'host-$i',
-        hostname: '10.0.0.$i',
-        username: 'user',
-        password: Value('password-secret-$i'),
-      ),
-    );
-    ids.add(id);
-  }
-  return ids;
-}
 
 /// Inserts [count] SSH keys with encrypted private key + passphrase.
 Future<void> _insertKeysWithSecrets(KeyRepository repo, int count) async {
@@ -87,17 +24,6 @@ Future<void> _insertKeysWithSecrets(KeyRepository repo, int count) async {
       ),
     );
   }
-}
-
-/// Times [_repetitions] calls to [action] and returns mean microseconds.
-Future<double> _timeRepeated(Future<void> Function() action) async {
-  final sw = Stopwatch();
-  for (var r = 0; r < _repetitions; r++) {
-    sw.start();
-    await action();
-    sw.stop();
-  }
-  return sw.elapsedMicroseconds / _repetitions;
 }
 
 class _PausedEncryptionService extends SecretEncryptionService {
@@ -216,152 +142,6 @@ void main() {
       });
     }
   }
-
-  group('Decrypt-cost characterisation – HostRepository.getAll', () {
-    for (final n in [10, 50, 100]) {
-      test('$n hosts with passwords – mean µs for getAll()', () async {
-        final db = AppDatabase.forTesting(NativeDatabase.memory());
-        final enc = SecretEncryptionService.forTesting();
-        final repo = HostRepository(db, enc);
-        addTearDown(db.close);
-
-        await _insertHostsWithPasswords(repo, n);
-
-        // Warm-up: ensure master key is cached before timing.
-        await repo.getAll();
-
-        final meanUs = await _timeRepeated(() async {
-          final hosts = await repo.getAll();
-          expect(hosts, hasLength(n));
-        });
-
-        final meanUsPerItem = meanUs / n;
-        debugPrint(
-          '[decrypt-cost] HostRepository.getAll  n=$n  '
-          'mean=${meanUs.round()}µs  '
-          'per-item=${meanUsPerItem.toStringAsFixed(1)}µs',
-        );
-
-        // Sanity-only assertion: the round-trip completed in finite time.
-        expect(meanUs, greaterThan(0));
-      });
-    }
-  });
-
-  group('Decrypt-cost characterisation – KeyRepository.getAll', () {
-    for (final n in [10, 50, 100]) {
-      test('$n keys (privkey+passphrase) – mean µs for getAll()', () async {
-        final db = AppDatabase.forTesting(NativeDatabase.memory());
-        final enc = SecretEncryptionService.forTesting();
-        final repo = KeyRepository(db, enc);
-        addTearDown(db.close);
-
-        await _insertKeysWithSecrets(repo, n);
-
-        // Warm-up.
-        await repo.getAll();
-
-        final meanUs = await _timeRepeated(() async {
-          final keys = await repo.getAll();
-          expect(keys, hasLength(n));
-        });
-
-        final meanUsPerItem = meanUs / n;
-        debugPrint(
-          '[decrypt-cost] KeyRepository.getAll     n=$n  '
-          'mean=${meanUs.round()}µs  '
-          'per-item=${meanUsPerItem.toStringAsFixed(1)}µs',
-        );
-
-        expect(meanUs, greaterThan(0));
-      });
-    }
-  });
-
-  group('Decrypt-cost characterisation – watchAll stream emit', () {
-    test(
-      'HostRepository.watchAll: 50 hosts – cost per stream emission',
-      () async {
-        const n = 50;
-        final db = AppDatabase.forTesting(NativeDatabase.memory());
-        final enc = SecretEncryptionService.forTesting();
-        final repo = HostRepository(db, enc);
-        addTearDown(db.close);
-
-        await _insertHostsWithPasswords(repo, n);
-
-        // Warm-up: consume the first stream event.
-        await repo.watchAll().first;
-
-        // Trigger [_repetitions] additional stream emissions by modifying a
-        // non-encrypted field (sortOrder).  Each emission runs asyncMap which
-        // decrypts all n passwords.
-        final allIds = await db.select(db.hosts).get();
-
-        final sw = Stopwatch();
-        for (var r = 0; r < _repetitions; r++) {
-          // Flip sortOrder on host 0 to trigger a DB change → stream emit.
-          await (db.update(db.hosts)..where((h) => h.id.equals(allIds[0].id)))
-              .write(HostsCompanion(sortOrder: Value(r + 1000)));
-
-          sw.start();
-          final hosts = await repo.watchAll().first;
-          sw.stop();
-          expect(hosts, hasLength(n));
-        }
-
-        final meanUs = sw.elapsedMicroseconds / _repetitions;
-        final meanUsPerItem = meanUs / n;
-        debugPrint(
-          '[decrypt-cost] HostRepository.watchAll n=$n  '
-          'mean-per-emit=${meanUs.round()}µs  '
-          'per-item=${meanUsPerItem.toStringAsFixed(1)}µs',
-        );
-
-        expect(meanUs, greaterThan(0));
-      },
-    );
-
-    test(
-      'KeyRepository.watchAll: 50 keys – cost per stream emission',
-      () async {
-        const n = 50;
-        final db = AppDatabase.forTesting(NativeDatabase.memory());
-        final enc = SecretEncryptionService.forTesting();
-        final repo = KeyRepository(db, enc);
-        addTearDown(db.close);
-
-        await _insertKeysWithSecrets(repo, n);
-
-        // Warm-up.
-        await repo.watchAll().first;
-
-        final allKeys = await db.select(db.sshKeys).get();
-
-        final sw = Stopwatch();
-        for (var r = 0; r < _repetitions; r++) {
-          await (db.update(db.sshKeys)
-                ..where((k) => k.id.equals(allKeys[0].id)))
-              .write(SshKeysCompanion(name: Value('key-renamed-$r')));
-
-          sw.start();
-          final keys = await repo.watchAll().first;
-          sw.stop();
-          expect(keys, hasLength(n));
-        }
-
-        final meanUs = sw.elapsedMicroseconds / _repetitions;
-        final meanUsPerItem = meanUs / n;
-        debugPrint(
-          '[decrypt-cost] KeyRepository.watchAll  n=$n  '
-          'mean-per-emit=${meanUs.round()}µs  '
-          'per-item=${meanUsPerItem.toStringAsFixed(1)}µs',
-        );
-
-        expect(meanUs, greaterThan(0));
-      },
-    );
-  });
 
   // ---------------------------------------------------------------------------
   // Cache correctness tests

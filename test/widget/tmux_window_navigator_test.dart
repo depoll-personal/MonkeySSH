@@ -303,37 +303,67 @@ void main() {
       ),
     ];
 
-    testWidgets('renders window list with correct statuses', (tester) async {
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(body: _MockWindowList(windows: windows)),
-        ),
-      );
-
-      expect(find.text('✨ Editing main.dart'), findsOneWidget);
-      expect(find.text('Claude Code'), findsOneWidget);
-      expect(find.text('bash'), findsOneWidget);
-      expect(find.text('htop'), findsOneWidget);
-      expect(find.text('running'), findsNWidgets(3));
-      expect(find.text('waiting'), findsOneWidget);
-    });
-
-    testWidgets('renders tmux badge with window chips', (tester) async {
-      await tester.pumpWidget(
-        MaterialApp(
-          theme: ThemeData(
-            colorSchemeSeed: const Color(0xFF00796B),
-            useMaterial3: true,
+    for (final windowId in <String?>['@9', null]) {
+      testWidgets('switch and close retain window ID $windowId', (
+        tester,
+      ) async {
+        final tmuxService = _MockTmuxService();
+        final presetService = _MockAgentLaunchPresetService();
+        final discoveryService = _MockAgentSessionDiscoveryService();
+        final session = SshSession(
+          connectionId: 1,
+          hostId: 1,
+          client: _MockSshClient(),
+          config: const SshConnectionConfig(
+            hostname: 'example.com',
+            port: 22,
+            username: 'demo',
           ),
-          home: Scaffold(body: _MockTmuxBadge(windows: windows.sublist(0, 3))),
-        ),
-      );
+        );
+        when(
+          () => presetService.getPresetForHost(session.hostId),
+        ).thenAnswer((_) async => null);
+        when(
+          () => tmuxService.watchWindowChanges(session, 'main'),
+        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        when(() => tmuxService.listWindows(session, 'main')).thenAnswer(
+          (_) async => [
+            windows.first,
+            TmuxWindow(index: 1, id: windowId, name: 'target', isActive: false),
+          ],
+        );
+        TmuxNavigatorAction? selected;
+        await _pumpNavigatorHost(
+          tester,
+          tmuxService: tmuxService,
+          presetService: presetService,
+          discoveryService: discoveryService,
+          session: session,
+          tmuxSessionName: 'main',
+          confirmWindowClose: true,
+          onActionSelected: (action) => selected = action,
+        );
+        await tester.tap(find.text('Open'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('target'));
+        await tester.pumpAndSettle();
+        expect(selected, isA<TmuxSwitchWindowAction>());
+        final switchAction = selected! as TmuxSwitchWindowAction;
+        expect(switchAction.windowIndex, 1);
+        expect(switchAction.windowId, windowId);
 
-      expect(find.text('tmux:'), findsOneWidget);
-      expect(find.text('✨ Editing main.dart'), findsOneWidget);
-      expect(find.text('Claude Code'), findsOneWidget);
-      expect(find.text('bash'), findsOneWidget);
-    });
+        await tester.tap(find.text('Open'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('Close window').last);
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(FilledButton, 'Close window'));
+        await tester.pumpAndSettle();
+        expect(selected, isA<TmuxCloseWindowAction>());
+        final closeAction = selected! as TmuxCloseWindowAction;
+        expect(closeAction.windowIndex, 1);
+        expect(closeAction.windowId, windowId);
+      });
+    }
 
     testWidgets('shows MonkeyMux terminal shortcuts', (tester) async {
       final tmuxService = _MockTmuxService();
@@ -388,34 +418,6 @@ void main() {
       await tester.tap(find.text('Cancel'));
       await tester.pumpAndSettle();
       expect(find.text('windows'), findsOneWidget);
-    });
-
-    testWidgets('recent session tile shows time ago', (tester) async {
-      final session = ToolSessionInfo(
-        toolName: 'Claude Code',
-        sessionId: 'abc123',
-        summary: 'Fix auth middleware',
-        lastActive: DateTime.now().subtract(const Duration(hours: 2)),
-      );
-
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: ListTile(
-              title: Text(session.summary!),
-              subtitle: Text('${session.toolName} · ${session.timeAgoLabel}'),
-              trailing: TextButton(
-                onPressed: () {},
-                child: const Text('Resume'),
-              ),
-            ),
-          ),
-        ),
-      );
-
-      expect(find.text('Fix auth middleware'), findsOneWidget);
-      expect(find.text('Claude Code · 2h ago'), findsOneWidget);
-      expect(find.text('Resume'), findsOneWidget);
     });
 
     testWidgets('new window picker stays above the visible keyboard', (
@@ -2058,101 +2060,3 @@ class _MockAgentSessionDiscoveryService extends Mock
     implements AgentSessionDiscoveryService {}
 
 class _MockSshClient extends Mock implements SSHClient {}
-
-class _MockWindowList extends StatelessWidget {
-  const _MockWindowList({required this.windows});
-  final List<TmuxWindow> windows;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return ListView(
-      children: windows
-          .map(
-            (w) => ListTile(
-              dense: true,
-              leading: Container(
-                width: 28,
-                height: 28,
-                decoration: BoxDecoration(
-                  color: w.isActive
-                      ? theme.colorScheme.primary
-                      : theme.colorScheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                alignment: Alignment.center,
-                child: Text(
-                  '${w.index}',
-                  style: theme.textTheme.labelMedium?.copyWith(
-                    color: w.isActive
-                        ? theme.colorScheme.onPrimary
-                        : theme.colorScheme.onSurfaceVariant,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-              title: Text(w.displayTitle),
-              trailing: Text(w.statusLabel),
-              selected: w.isActive,
-            ),
-          )
-          .toList(),
-    );
-  }
-}
-
-class _MockTmuxBadge extends StatelessWidget {
-  const _MockTmuxBadge({required this.windows});
-  final List<TmuxWindow> windows;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(56, 0, 16, 8),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: [
-            Icon(
-              Icons.window_outlined,
-              size: 14,
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-            const SizedBox(width: 4),
-            Text(
-              'tmux:',
-              style: theme.textTheme.labelSmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
-            const SizedBox(width: 6),
-            for (final window in windows) ...[
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: window.isActive
-                      ? theme.colorScheme.primaryContainer
-                      : theme.colorScheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Text(
-                  window.displayTitle,
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: window.isActive
-                        ? theme.colorScheme.onPrimaryContainer
-                        : theme.colorScheme.onSurfaceVariant,
-                    fontWeight: window.isActive
-                        ? FontWeight.bold
-                        : FontWeight.normal,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 4),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}

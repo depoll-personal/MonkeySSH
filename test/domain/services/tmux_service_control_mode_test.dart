@@ -1349,7 +1349,7 @@ void main() {
         const service = TmuxService();
         final execSession = _buildOpenExecSession(
           stdout:
-              '1|editor|1|vim|/tmp|*|vim-title|1712930000\n'
+              '1\x1feditor\x1f1\x1fvim\x1f/tmp\x1f*\x1fvim-title\x1f1712930000\n'
               '${_doneMarker()}',
         );
 
@@ -1372,7 +1372,7 @@ void main() {
       const service = TmuxService();
       final execSession = _buildOpenExecSession(
         stdout:
-            '1|editor|1|vim|/tmp|*|vim-title|1712930000\n'
+            '1\x1feditor\x1f1\x1fvim\x1f/tmp\x1f*\x1fvim-title\x1f1712930000\n'
             '${_doneMarker()}',
       );
 
@@ -1405,7 +1405,7 @@ void main() {
       final openCompleter = Completer<SSHSession>();
       final execSession = _buildOpenExecSession(
         stdout:
-            '1|editor|1|vim|/tmp|*|vim-title|1712930000\n'
+            '1\x1feditor\x1f1\x1fvim\x1f/tmp\x1f*\x1fvim-title\x1f1712930000\n'
             '${_doneMarker()}',
       );
 
@@ -1431,36 +1431,33 @@ void main() {
       verify(execSession.close).called(1);
     });
 
-    test(
-      'listWindows reads split markers and fragmented large output',
-      () async {
-        final client = _MockSshClient();
-        final session = _buildSession(client);
-        const service = TmuxService();
-        final title = 'x' * 100000;
-        final exec = _buildOpenExecSession();
-        final bytes = utf8.encode(
-          '1|editor|1|vim|/tmp|*|$title|1712930000\n${_doneMarker()}',
-        );
-        when(() => exec.stdout).thenAnswer(
-          (_) => Stream<Uint8List>.multi((controller) {
-            for (var offset = 0; offset < bytes.length; offset += 7) {
-              controller.add(
-                Uint8List.fromList(
-                  bytes.sublist(offset, (offset + 7).clamp(0, bytes.length)),
-                ),
-              );
-            }
-          }),
-        );
-        when(
-          () => client.execute(any(), pty: any(named: 'pty')),
-        ).thenAnswer((_) async => exec);
-        final windows = await service.listWindows(session, 'main');
-        expect(windows.single.paneTitle, title);
-        verify(exec.close).called(1);
-      },
-    );
+    test('listWindows reads split markers and fragmented large output', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client);
+      const service = TmuxService();
+      final title = 'x' * 100000;
+      final exec = _buildOpenExecSession();
+      final bytes = utf8.encode(
+        '1\x1feditor\x1f1\x1fvim\x1f/tmp\x1f*\x1f$title\x1f1712930000\n${_doneMarker()}',
+      );
+      when(() => exec.stdout).thenAnswer(
+        (_) => Stream<Uint8List>.multi((controller) {
+          for (var offset = 0; offset < bytes.length; offset += 7) {
+            controller.add(
+              Uint8List.fromList(
+                bytes.sublist(offset, (offset + 7).clamp(0, bytes.length)),
+              ),
+            );
+          }
+        }),
+      );
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => exec);
+      final windows = await service.listWindows(session, 'main');
+      expect(windows.single.paneTitle, title);
+      verify(exec.close).called(1);
+    });
 
     test('listWindows ignores done-marker text inside tmux fields', () async {
       final client = _MockSshClient();
@@ -1468,7 +1465,7 @@ void main() {
       const service = TmuxService();
       final execSession = _buildOpenExecSession(
         stdout:
-            '1|$_execDoneMarker|1|vim|/tmp|*|title $_execDoneMarker:1|1712930000\n'
+            '1\x1f$_execDoneMarker\x1f1\x1fvim\x1f/tmp\x1f*\x1ftitle $_execDoneMarker:1\x1f1712930000\n'
             '${_doneMarker()}',
       );
 
@@ -2154,6 +2151,26 @@ void main() {
       verify(
         () => client.execute(
           any(that: contains("tmux -u select-window -t '@12'")),
+          pty: any(named: 'pty'),
+        ),
+      ).called(1);
+    });
+
+    test('killWindow targets stable window IDs when provided', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client);
+      const service = TmuxService();
+      final execSession = _buildOpenExecSession(stdout: _doneMarker());
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSession);
+
+      await service.killWindow(session, 'main', 2, windowId: '@12');
+
+      verify(
+        () => client.execute(
+          any(that: contains("tmux -u kill-window -t '@12'")),
           pty: any(named: 'pty'),
         ),
       ).called(1);
