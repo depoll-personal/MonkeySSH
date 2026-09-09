@@ -645,6 +645,9 @@ func TestGCSocketFailures(t *testing.T) {
 		}
 	}
 	t.Run("unconfirmed failure", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Windows reports symlink loops as connection refused, a confirmed stale-socket error")
+		}
 		path := filepath.Join(dir, "monkeymux-loop.sock")
 		if err := os.Symlink(path, path); err != nil {
 			t.Skipf("symlink unavailable: %v", err)
