@@ -17,6 +17,7 @@ import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/services/auth_service.dart';
 import 'package:monkeyssh/domain/services/background_ssh_service.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
+import 'package:monkeyssh/domain/services/secure_transfer_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 import 'package:monkeyssh/presentation/screens/settings_screen.dart';
@@ -519,6 +520,7 @@ void main() {
     });
 
     testWidgets('displays font family option', (tester) async {
+      final semantics = tester.ensureSemantics();
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
 
@@ -535,6 +537,20 @@ void main() {
       expect(find.text('System Monospace'), findsOneWidget);
       await tester.tap(find.text('Font family'));
       await tester.pumpAndSettle();
+      expect(
+        tester.getSemantics(
+          find.descendant(
+            of: find.byType(AlertDialog),
+            matching: find.widgetWithText(ListTile, 'System Monospace'),
+          ),
+        ),
+        isSemantics(isSelected: true),
+      );
+      expect(
+        tester.getSemantics(find.widgetWithText(ListTile, 'JetBrains Mono')),
+        isSemantics(isSelected: false),
+      );
+      semantics.dispose();
       await tester.tap(find.text('JetBrains Mono'));
       await tester.pumpAndSettle();
       expect(find.byType(AlertDialog), findsNothing);
@@ -1207,7 +1223,7 @@ void main() {
       expect(find.byType(ListView), findsOneWidget);
     });
 
-    testWidgets('import app data invalidates shared entity providers', (
+    testWidgets('import refreshes settings and shared entity providers', (
       tester,
     ) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
@@ -1265,7 +1281,47 @@ void main() {
         tester.element(find.byType(EntityProviderProbe)),
       );
 
-      invalidateImportedEntityProviders(container.invalidate);
+      expect(
+        await container
+            .read(terminalNotificationsNotifierProvider.notifier)
+            .initializedValue(),
+        isTrue,
+      );
+      expect(
+        await container
+            .read(shellCompletionsNotifierProvider.notifier)
+            .initializedValue(),
+        isTrue,
+      );
+      await container
+          .read(secureTransferServiceProvider)
+          .importFullMigrationPayload(
+            payload: TransferPayload(
+              type: TransferPayloadType.fullMigration,
+              schemaVersion: 1,
+              createdAt: DateTime.utc(2026),
+              data: const {
+                'settings': {
+                  SettingKeys.terminalNotifications: 'false',
+                  SettingKeys.shellCompletions: 'false',
+                },
+              },
+            ),
+            mode: MigrationImportMode.replace,
+          );
+      invalidateSyncedDataProviders(container.invalidate);
+      expect(
+        await container
+            .read(terminalNotificationsNotifierProvider.notifier)
+            .initializedValue(),
+        isFalse,
+      );
+      expect(
+        await container
+            .read(shellCompletionsNotifierProvider.notifier)
+            .initializedValue(),
+        isFalse,
+      );
       container
         ..read(allHostsProvider)
         ..read(allKeysProvider)

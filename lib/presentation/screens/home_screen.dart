@@ -349,18 +349,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           if (mode == MigrationImportMode.replace) {
             await sessionsNotifier.disconnectAll();
           }
-          ref
-            ..invalidate(themeModeNotifierProvider)
-            ..invalidate(terminalThemesApplyToAppNotifierProvider)
-            ..invalidate(terminalThemesApplyToAppProvider)
-            ..invalidate(fontSizeNotifierProvider)
-            ..invalidate(fontFamilyNotifierProvider)
-            ..invalidate(cursorStyleNotifierProvider)
-            ..invalidate(bellSoundNotifierProvider)
-            ..invalidate(terminalThemeSettingsProvider)
-            ..invalidate(allTerminalThemesProvider)
-            ..invalidate(customTerminalThemesProvider);
-          invalidateImportedEntityProviders(ref.invalidate);
+          invalidateSyncedDataProviders(ref.invalidate);
           if (!mounted) {
             return;
           }

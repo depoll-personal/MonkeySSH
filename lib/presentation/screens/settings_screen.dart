@@ -1660,22 +1660,7 @@ class _ImportExportSection extends ConsumerWidget {
       if (mode == MigrationImportMode.replace) {
         await sessionsNotifier.disconnectAll();
       }
-      ref
-        ..invalidate(themeModeNotifierProvider)
-        ..invalidate(terminalThemesApplyToAppNotifierProvider)
-        ..invalidate(terminalThemesApplyToAppProvider)
-        ..invalidate(fontSizeNotifierProvider)
-        ..invalidate(fontFamilyNotifierProvider)
-        ..invalidate(cursorStyleNotifierProvider)
-        ..invalidate(bellSoundNotifierProvider)
-        ..invalidate(portForwardBrowserLinksNotifierProvider)
-        ..invalidate(shellCompletionsNotifierProvider)
-        ..invalidate(sharedClipboardNotifierProvider)
-        ..invalidate(sharedClipboardProvider)
-        ..invalidate(terminalThemeSettingsProvider)
-        ..invalidate(allTerminalThemesProvider)
-        ..invalidate(customTerminalThemesProvider);
-      invalidateImportedEntityProviders(ref.invalidate);
+      invalidateSyncedDataProviders(ref.invalidate);
 
       if (!context.mounted) {
         return;
