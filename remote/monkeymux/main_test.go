@@ -9901,16 +9901,19 @@ func TestDiscoverCodexSessionIDsFallsBackToRecentRolloutForCwd(t *testing.T) {
 	}
 }
 
-func TestDiscoverCodexSessionIDsSkipsAmbiguousCwdFallback(t *testing.T) {
+func TestDiscoverCodexSessionIDsSkipsUnknownProcessStart(t *testing.T) {
 	originalHome := os.Getenv("HOME")
 	originalOpenFiles := processOpenFilePathsForMetadata
 	originalWorkingDirectory := processWorkingDirectoryForMetadata
+	originalProcessStart := processStartedAtForMetadata
 	t.Cleanup(func() {
 		_ = os.Setenv("HOME", originalHome)
 		processOpenFilePathsForMetadata = originalOpenFiles
 		processWorkingDirectoryForMetadata = originalWorkingDirectory
+		processStartedAtForMetadata = originalProcessStart
 	})
 
+	processStartedAtForMetadata = func(int) time.Time { return time.Time{} }
 	home := t.TempDir()
 	if err := os.Setenv("HOME", home); err != nil {
 		t.Fatal(err)
@@ -9953,7 +9956,7 @@ func TestDiscoverCodexSessionIDsSkipsAmbiguousCwdFallback(t *testing.T) {
 	)
 
 	if len(sessions) != 0 {
-		t.Fatalf("codex sessions = %#v, want none for ambiguous cwd fallback", sessions)
+		t.Fatalf("codex sessions = %#v, want none without process start times", sessions)
 	}
 }
 
