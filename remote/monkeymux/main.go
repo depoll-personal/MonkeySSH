@@ -15858,6 +15858,11 @@ func (s *muxServer) close() {
 		controls = append(controls, control)
 	}
 	windows := append([]*muxWindow(nil), s.windows...)
+	// Read each pane's foreground process group while its pty is still open:
+	// an interactive pane shell keeps its jobs in their own groups, so a
+	// hangup-ignoring agent is only reachable through the terminal's
+	// foreground group, never through the shell's.
+	foregroundGroups := shutdownForegroundGroups(windows)
 	// Mark the windows closed while still holding s.mu. A watcher that outruns
 	// the bounded wait below then finds its window already closed and returns
 	// from markWindowClosed before touching any server state.
@@ -15886,8 +15891,20 @@ func (s *muxServer) close() {
 			window.proc.Hangup()
 		}
 		if window.pty != nil {
+			// Closing the master also hangs up the terminal's foreground
+			// group, which is how a cooperative agent under the pane shell's
+			// job control learns to exit.
 			_ = window.closePty(window.pty)
 		}
+	}
+	// A child that ignores SIGHUP (cursor-agent does) never lets its watcher
+	// finish, so close runs out the whole watcher bound below and the
+	// replacement helper's exit wait times out: the update is abandoned and the
+	// old server kept, every time. Give the hangups a moment to work, then
+	// force the survivors out; the restore snapshot already carries what they
+	// need to resume.
+	killSurvivingWindowProcesses(windows, foregroundGroups, windowHangupGrace)
+	for _, window := range windows {
 		if window.nativeAcpBridgeID != "" {
 			_ = requestAcpBridgeStopAndWait(window.nativeAcpBridgeID)
 		}
@@ -15914,6 +15931,50 @@ func (s *muxServer) close() {
 // finish immediately; the bound only exists so a child that ignores SIGHUP
 // cannot hang shutdown.
 const windowWatcherShutdownTimeout = 2 * time.Second
+
+// windowHangupGrace bounds how long close waits for hung-up children to exit
+// before killing their process groups. Cooperative children exit within a few
+// milliseconds, so the bound only matters for those that ignore SIGHUP.
+const windowHangupGrace = time.Second
+
+// shutdownForegroundGroups records each window's current foreground process
+// group. It must run while the ptys are still open.
+func shutdownForegroundGroups(windows []*muxWindow) map[*muxWindow]int {
+	groups := make(map[*muxWindow]int, len(windows))
+	for _, window := range windows {
+		if group := foregroundProcessGroupForWindow(window); group > 0 {
+			groups[window] = group
+		}
+	}
+	return groups
+}
+
+// killSurvivingWindowProcesses kills, for every window whose children are
+// still alive once the grace period has elapsed, the child's own process group
+// and the pane's foreground process group (an interactive pane shell keeps
+// its jobs in their own groups). Each liveness check runs right before its
+// kill so a group that already exited (and was reaped) is never signalled
+// through a recycled id.
+func killSurvivingWindowProcesses(windows []*muxWindow, foregroundGroups map[*muxWindow]int, grace time.Duration) {
+	deadline := time.Now().Add(grace)
+	for _, window := range windows {
+		leader, group := 0, foregroundGroups[window]
+		if window.proc != nil {
+			leader = window.proc.Pid()
+		}
+		leaderAlive := func() bool { return leader > 0 && processIDAlive(leader) }
+		groupAlive := func() bool { return group > 0 && group != leader && processIDAlive(group) }
+		for (leaderAlive() || groupAlive()) && time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+		}
+		if leaderAlive() {
+			window.proc.Kill()
+		}
+		if groupAlive() {
+			killProcessGroup(group)
+		}
+	}
+}
 
 func (s *muxServer) waitForWindowWatchers(timeout time.Duration) {
 	done := make(chan struct{})
@@ -16252,11 +16313,20 @@ func requestServerShutdown(session string) {
 	if err := dec.Decode(&ignored); err != nil {
 		return
 	}
-	_ = enc.Encode(controlMessage{
+	if err := enc.Encode(controlMessage{
 		ID:      strconv.FormatInt(time.Now().UnixNano(), 10),
 		Type:    "shutdown",
 		Session: session,
-	})
+	}); err != nil {
+		return
+	}
+	// Wait for the acknowledgement. The server may still be building the hello
+	// reply (a window's metadata refresh can take a few hundred milliseconds);
+	// closing this end before it has read the request makes that hello write
+	// fail, the handler give up, and the queued shutdown vanish, so a busy
+	// session then never stops and no helper update can replace it.
+	var ack controlResponse
+	_ = dec.Decode(&ack)
 }
 
 func waitForServerExit(session string, timeout time.Duration) bool {

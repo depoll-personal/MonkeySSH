@@ -395,6 +395,16 @@ var signalForegroundResize = func(processGroup int) {
 	_ = syscall.Kill(-processGroup, syscall.SIGWINCH)
 }
 
+// killProcessGroup force-terminates every process in processGroup. Shutdown
+// uses it for a pane's foreground group, which an interactive pane shell keeps
+// separate from its own group under job control.
+func killProcessGroup(processGroup int) {
+	if processGroup <= 0 {
+		return
+	}
+	_ = syscall.Kill(-processGroup, syscall.SIGKILL)
+}
+
 // attachOutputWriter returns w unchanged: POSIX pseudo-terminals do not
 // interpret win32-input-mode (DEC private mode 9001) requests, so the outer
 // conhost corruption the Windows implementation guards against cannot occur.

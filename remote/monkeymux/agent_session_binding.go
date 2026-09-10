@@ -122,8 +122,11 @@ func agentSessionOwnedElsewhere(tool, id string, windowPids map[int]struct{}) bo
 	default:
 		return false
 	}
-	for pid := range processes {
-		if !foreign(pid) {
+	for pid, info := range processes {
+		// Only the tool's own processes can hold its session files, and listing
+		// open files costs one lsof per process: never scan the whole machine.
+		if !foreign(pid) || (agentToolFromCommandName(info.comm) != tool &&
+			agentToolFromCommandName(agentCommandNameFromProcessArgs(info.args)) != tool) {
 			continue
 		}
 		for _, path := range processOpenFilePathsForMetadata(pid) {

@@ -803,6 +803,10 @@ const prefersVerticalForegroundRedrawResize = true
 // notifies the attached child of size changes.
 var signalForegroundResize = func(processGroup int) {}
 
+// killProcessGroup is a no-op on Windows: the window's process handle covers
+// the whole ConPTY job, so muxProcess.Kill already reaches every child.
+func killProcessGroup(processGroup int) {}
+
 // attachOutputWriter wraps the attach process's stdout so win32-input-mode
 // requests emitted by the window's child are hidden from the SSH server's own
 // ConPTY (conhost) that hosts this attach process. Without this, that conhost

@@ -919,7 +919,10 @@ func TestAgentSessionOwnershipExclusion(t *testing.T) {
 			cwd, write := bindingTestStore(t, tool)
 			now := time.Now()
 			home, _ := os.UserHomeDir()
-			processes := map[int]processInfo{101: {pid: 101, comm: tool}, 201: {pid: 201, comm: "worker"}}
+			// Only the tool's own processes are inspected for open session files,
+			// so the foreign owner runs the tool's executable too.
+			executable := agentCommands[tool].executable
+			processes := map[int]processInfo{101: {pid: 101, comm: tool}, 201: {pid: 201, comm: executable}}
 			files := map[int][]string{}
 			bindingTestProcesses(t, cwd, now.Add(-time.Minute), processes, files)
 			id := bindingTestIDs[0]
