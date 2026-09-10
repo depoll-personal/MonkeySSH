@@ -3,6 +3,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:cryptography/dart.dart' as cg;
+import 'package:dartssh2/dartssh2.dart';
 // The OpenSSH bcrypt-pbkdf key-derivation function is not exported from the
 // dartssh2 barrel, but it is the exact routine dartssh2 uses to *decrypt*
 // passphrase-protected keys. Reusing it guarantees the keys we generate here
@@ -13,6 +14,18 @@ import 'package:flutter/foundation.dart';
 import 'package:pointycastle/export.dart' as pc;
 
 import 'key_service.dart';
+
+/// Parses and decrypts PEM identities away from the UI isolate.
+Future<List<SSHKeyPair>> parseOpenSshPrivateKey(
+  String privateKey,
+  String? passphrase,
+) => compute(_parseOpenSshPrivateKey, (privateKey, passphrase));
+
+List<SSHKeyPair> _parseOpenSshPrivateKey((String, String?) params) =>
+    SSHKeyPair.fromPem(
+      params.$1,
+      (params.$2?.isEmpty ?? false) ? null : params.$2,
+    );
 
 /// Parameters passed to the background isolate that builds the key.
 typedef _GenerateParams = ({

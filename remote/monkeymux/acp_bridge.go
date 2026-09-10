@@ -344,20 +344,32 @@ func acpWaitCommand(args []string) {
 		acpUsageAndExit()
 	}
 	id := args[0]
-	info, err := acpBridgeStatus(id)
-	if err != nil {
-		fatal(errors.New("ACP bridge is not running"))
-	}
-	fmt.Printf("Native agent window: %s\r\n", info.Provider)
-	fmt.Print("Open this MonkeyMux window in MonkeySSH for the native interface.\r\n")
-	fmt.Print("The agent keeps running when this terminal disconnects.\r\n")
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
-	for range ticker.C {
+	introduced := false
+	for {
 		info, err := acpBridgeStatus(id)
-		if err != nil || (info.State != "starting" && info.State != "running") {
+		if err == nil {
+			if !introduced {
+				fmt.Printf("Native agent window: %s\r\n", info.Provider)
+				fmt.Print("Open this MonkeyMux window in MonkeySSH for the native interface.\r\n")
+				fmt.Print("The agent keeps running when this terminal disconnects.\r\n")
+				introduced = true
+			}
+			switch info.State {
+			case "exited", "stopped", "protocol_error":
+				return
+			}
+		} else if isStaleUnixSocketError(err) {
 			return
+		} else if errors.Is(err, os.ErrNotExist) {
+			if socket, resolveErr := acpSocketPath(id); resolveErr == nil {
+				if _, statErr := os.Stat(socket); errors.Is(statErr, os.ErrNotExist) {
+					return
+				}
+			}
 		}
+		<-ticker.C
 	}
 }
 
@@ -1094,8 +1106,9 @@ func (b *acpBridge) trimReplayLocked() {
 	remainingEvents := len(b.replay)
 	kept := 0
 	for _, event := range b.replay {
-		overLimit := remainingEvents > acpReplayMaxEvents ||
-			(b.replayBytes > acpReplayMaxBytes && remainingEvents > 1)
+		// Leave room for streaming appends before another pinned compaction.
+		overLimit := remainingEvents > acpReplayMaxEvents*7/8 ||
+			(b.replayBytes > acpReplayMaxBytes*7/8 && remainingEvents > 1)
 		// Unresolved provider requests must survive detachment verbatim.
 		if overLimit && event.pendingID == "" {
 			remainingEvents--

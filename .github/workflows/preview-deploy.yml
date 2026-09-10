@@ -532,7 +532,6 @@ jobs:
       ios-reuse-ipa-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-ios-artifact == 'true' && needs.resolve-preview-artifacts.outputs.ios-artifact-name || '' }}
       ios-reuse-ipa-is-unsigned: ${{ needs.resolve-preview-artifacts.outputs.reuse-ios-artifact == 'true' }}
       ios-reuse-source-sha: ${{ needs.resolve-preview-artifacts.outputs.reuse-ios-artifact == 'true' && needs.validate-pr.outputs.deploy-sha || '' }}
-      update-pr-deploy-comment: true
     secrets:
       ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}

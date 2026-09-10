@@ -14,18 +14,6 @@ import (
 	"time"
 )
 
-func newAuditAcpBridge() *acpBridge {
-	return &acpBridge{
-		id:                   "0123456789abcdef0123456789abcdef",
-		state:                "running",
-		clients:              make(map[string]*acpBridgeClient),
-		pendingRequests:      make(map[string]struct{}),
-		inFlightTurns:        make(map[string]struct{}),
-		sessionSetupRequests: make(map[string]string),
-		done:                 make(chan struct{}),
-	}
-}
-
 type auditAcpWriteCloser struct {
 	write func([]byte) (int, error)
 }
@@ -36,7 +24,7 @@ func (w auditAcpWriteCloser) Close() error                   { return nil }
 func TestAcpAuditFastProviderResponse(t *testing.T) {
 	for _, method := range []string{"initialize", "session/new", "session/load", "session/prompt"} {
 		t.Run(method, func(t *testing.T) {
-			bridge := newAuditAcpBridge()
+			bridge := newTestAcpBridge()
 			var input bytes.Buffer
 			bridge.stdin = auditAcpWriteCloser{write: func(data []byte) (int, error) {
 				input.Write(data)
@@ -63,16 +51,16 @@ func TestAcpAuditFastProviderResponse(t *testing.T) {
 
 func auditAcpSendAndStatus(t *testing.T, bridge *acpBridge, data json.RawMessage) *acpBridgeInfo {
 	t.Helper()
-	peer, reader := auditAcpAttach(t, bridge)
+	peer, reader, _ := auditAcpAttach(t, bridge)
 	if err := writeAcpWireFrame(peer, acpWireMessage{Version: 1, Type: "input", Data: data}); err != nil {
 		t.Fatal(err)
 	}
 	return auditAcpStatus(t, peer, reader)
 }
 
-func auditAcpAttach(t *testing.T, bridge *acpBridge) (net.Conn, *bufio.Reader) {
+func auditAcpAttach(t *testing.T, bridge *acpBridge) (net.Conn, *bufio.Reader, *deadlineRecordingConn) {
 	t.Helper()
-	server, peer := net.Pipe()
+	server, peer := newDeadlineTestPipe(t)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -94,7 +82,7 @@ func auditAcpAttach(t *testing.T, bridge *acpBridge) (net.Conn, *bufio.Reader) {
 	if _, err := readAcpWireFrame(reader); err != nil {
 		t.Fatal(err)
 	}
-	return peer, reader
+	return peer, reader, server
 }
 
 func auditAcpStatus(t *testing.T, peer net.Conn, reader *bufio.Reader) *acpBridgeInfo {
@@ -117,7 +105,7 @@ func TestAcpAuditFailedProviderWriteDoesNotRetainRequest(t *testing.T) {
 	for _, method := range []string{"initialize", "session/new", "session/load", "session/resume", "session/fork", "session/prompt"} {
 		for _, failOn := range []string{"payload", "newline"} {
 			t.Run(method+"/"+failOn, func(t *testing.T) {
-				bridge := newAuditAcpBridge()
+				bridge := newTestAcpBridge()
 				bridge.sessionID = "existing-session"
 				bridge.stdin = auditAcpWriteCloser{write: func(data []byte) (int, error) {
 					if failOn == "payload" || bytes.Equal(data, []byte{'\n'}) {
@@ -156,7 +144,7 @@ func TestAcpAuditSessionSetupCommitsOnlySuccessfulResponse(t *testing.T) {
 		for _, timing := range []string{"fast", "delayed"} {
 			for _, response := range responses {
 				t.Run(method+"/"+timing+"/"+response.name, func(t *testing.T) {
-					bridge := newAuditAcpBridge()
+					bridge := newTestAcpBridge()
 					bridge.sessionID = "existing-session"
 					rawResponse := json.RawMessage(`{"jsonrpc":"2.0","id":1,` + response.body + `}`)
 					bridge.stdin = auditAcpWriteCloser{write: func(data []byte) (int, error) {
@@ -166,7 +154,7 @@ func TestAcpAuditSessionSetupCommitsOnlySuccessfulResponse(t *testing.T) {
 						}
 						return len(data), nil
 					}}
-					peer, reader := auditAcpAttach(t, bridge)
+					peer, reader, _ := auditAcpAttach(t, bridge)
 					request := json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"` + method + `","params":{"sessionId":"requested-session"}}`)
 					if err := writeAcpWireFrame(peer, acpWireMessage{Version: 1, Type: "input", Data: request}); err != nil {
 						t.Fatal(err)
@@ -204,7 +192,7 @@ func TestAcpAuditSessionSetupCommitsOnlySuccessfulResponse(t *testing.T) {
 func TestAcpAuditStopInterruptsBlockedProviderWrite(t *testing.T) {
 	input, peer := net.Pipe()
 	defer peer.Close()
-	bridge := newAuditAcpBridge()
+	bridge := newTestAcpBridge()
 	bridge.stdin = input
 	writeDone := make(chan error, 1)
 	go func() { writeDone <- bridge.writeProvider(json.RawMessage(`{"method":"notification"}`)) }()
@@ -253,7 +241,7 @@ func TestAcpAuditOversizedFrameDoesNotDrain(t *testing.T) {
 }
 
 func TestAcpAuditReplayTrimWithinBudgetDoesNotAllocate(t *testing.T) {
-	bridge := newAuditAcpBridge()
+	bridge := newTestAcpBridge()
 	for i := 0; i < 1000; i++ {
 		bridge.appendReplayLocked(acpWireMessage{Sequence: uint64(i + 1)}, "")
 	}
@@ -265,20 +253,24 @@ func TestAcpAuditReplayTrimWithinBudgetDoesNotAllocate(t *testing.T) {
 func TestAcpAuditIncompleteHandshakeExpires(t *testing.T) {
 	for _, stopped := range []bool{false, true} {
 		t.Run(fmt.Sprint(stopped), func(t *testing.T) {
-			bridge := newAuditAcpBridge()
-			server, peer := net.Pipe()
+			bridge := newTestAcpBridge()
+			server, peer := newDeadlineTestPipe(t)
 			defer peer.Close()
 			done := make(chan struct{})
 			go func() { bridge.handleConnection(server); close(done) }()
 			if _, err := io.WriteString(peer, `{"version":1,"type":"hello"`); err != nil {
 				t.Fatal(err)
 			}
+			assertTestDeadline(t, server.readDeadlines, false)
 			if stopped {
 				bridge.stop()
 			}
+			if err := server.Conn.SetReadDeadline(time.Now().Add(-time.Second)); err != nil {
+				t.Fatal(err)
+			}
 			select {
 			case <-done:
-			case <-time.After(socketTimeout + time.Second):
+			case <-time.After(time.Second):
 				t.Fatal("incomplete handshake retained its connection")
 			}
 		})
@@ -286,9 +278,10 @@ func TestAcpAuditIncompleteHandshakeExpires(t *testing.T) {
 }
 
 func TestAcpAuditHandshakeDeadlineClearedAfterHello(t *testing.T) {
-	bridge := newAuditAcpBridge()
-	peer, reader := auditAcpAttach(t, bridge)
-	time.Sleep(socketTimeout + 50*time.Millisecond)
+	bridge := newTestAcpBridge()
+	peer, reader, conn := auditAcpAttach(t, bridge)
+	assertTestDeadline(t, conn.readDeadlines, false)
+	assertTestDeadline(t, conn.readDeadlines, true)
 	if status := auditAcpStatus(t, peer, reader); status.State != "running" {
 		t.Fatalf("attached bridge state = %q", status.State)
 	}

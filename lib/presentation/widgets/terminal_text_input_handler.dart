@@ -225,7 +225,6 @@ bool shouldRequestKeyboardForTerminalPointerUp({
   required int activeTouchPointers,
   required bool hadMultipleTouchPointers,
   required bool movedBeyondTapSlop,
-  required bool pressedBeyondLongPressTimeout,
   required bool readOnly,
   Duration? touchPressDuration,
 }) {
@@ -240,7 +239,6 @@ bool shouldRequestKeyboardForTerminalPointerUp({
   return activeTouchPointers == 1 &&
       !hadMultipleTouchPointers &&
       !movedBeyondTapSlop &&
-      !pressedBeyondLongPressTimeout &&
       (touchPressDuration == null ||
           touchPressDuration < terminalKeyboardTapLongPressTimeout);
 }
@@ -448,9 +446,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   final Set<int> _activeTouchPointers = <int>{};
   final Map<int, Offset> _touchPointerDownPositions = <int, Offset>{};
   final Map<int, Duration> _touchPointerDownTimestamps = <int, Duration>{};
-  final Map<int, Timer> _touchLongPressTimers = <int, Timer>{};
   final Set<int> _touchPointersMovedBeyondTapSlop = <int>{};
-  final Set<int> _touchPointersPressedBeyondLongPressTimeout = <int>{};
   bool _touchSequenceHadMultiplePointers = false;
   bool _skipNextTouchKeyboardRequest = false;
   bool _sawImeComposition = false;
@@ -566,15 +562,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     widget.focusNode.removeListener(_onFocusChange);
     _stopHardwareKeyRepeat();
     _cancelDeferredTrailingBackspaceImeClear();
-    for (final timer in _touchLongPressTimers.values) {
-      timer.cancel();
-    }
     _activeTouchPointers.clear();
     _touchPointerDownPositions.clear();
     _touchPointerDownTimestamps.clear();
-    _touchLongPressTimers.clear();
     _touchPointersMovedBeyondTapSlop.clear();
-    _touchPointersPressedBeyondLongPressTimeout.clear();
     _closeInputConnectionIfNeeded();
     _AndroidTerminalImeKeyBridge.detach(this);
     super.dispose();
@@ -615,27 +606,11 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _activeTouchPointers.add(event.pointer);
       _touchPointerDownPositions[event.pointer] = event.position;
       _touchPointerDownTimestamps[event.pointer] = event.timeStamp;
-      _touchLongPressTimers[event.pointer]?.cancel();
-      _touchLongPressTimers[event.pointer] = Timer(
-        terminalKeyboardTapLongPressTimeout,
-        () {
-          if (!_isTouchSelectionIntentCandidate(event.pointer)) {
-            return;
-          }
-          _touchPointersPressedBeyondLongPressTimeout.add(event.pointer);
-        },
-      );
       if (_activeTouchPointers.length > 1) {
         _touchSequenceHadMultiplePointers = true;
       }
     }
   }
-
-  bool _isTouchSelectionIntentCandidate(int pointer) =>
-      _activeTouchPointers.length == 1 &&
-      _activeTouchPointers.contains(pointer) &&
-      !_touchSequenceHadMultiplePointers &&
-      !_touchPointersMovedBeyondTapSlop.contains(pointer);
 
   void _handlePointerMove(PointerMoveEvent event) {
     if (event.kind != PointerDeviceKind.touch ||
@@ -662,9 +637,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       movedBeyondTapSlop: _touchPointersMovedBeyondTapSlop.contains(
         event.pointer,
       ),
-      pressedBeyondLongPressTimeout:
-          event.kind == PointerDeviceKind.touch &&
-          _touchPointersPressedBeyondLongPressTimeout.contains(event.pointer),
       readOnly: widget.readOnly,
       touchPressDuration: event.kind == PointerDeviceKind.touch
           ? _touchPressDuration(event)
@@ -703,9 +675,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _activeTouchPointers.remove(event.pointer);
     _touchPointerDownPositions.remove(event.pointer);
     _touchPointerDownTimestamps.remove(event.pointer);
-    _touchLongPressTimers.remove(event.pointer)?.cancel();
     _touchPointersMovedBeyondTapSlop.remove(event.pointer);
-    _touchPointersPressedBeyondLongPressTimeout.remove(event.pointer);
     if (_activeTouchPointers.isEmpty) {
       _touchSequenceHadMultiplePointers = false;
     }

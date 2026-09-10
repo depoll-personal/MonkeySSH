@@ -150,6 +150,9 @@ Generate:
 
 ```bash
 platform=both  # or ios|android from --platform
+if [ "$platform" != both ]; then
+  ./scripts/store_assets.sh download
+fi
 python3 scripts/generate_store_screenshots.py "$platform"
 python3 scripts/generate_store_demo_videos.py "$platform"
 ```
@@ -184,6 +187,9 @@ fi
 ```
 
 If media was generated in this run already, do **not** pass `--generate` again unless you intentionally want a second capture.
+For single-platform generation, restore the baseline in step 5 before capturing.
+Publishing existing local files validates both platforms; missing complementary
+media fails validation instead of restoring over fresh captures.
 
 Confirm:
 

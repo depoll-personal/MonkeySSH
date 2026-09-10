@@ -148,48 +148,24 @@ class MigrationPreview {
 /// Service that encrypts and imports offline transfer payloads.
 class SecureTransferService {
   /// Creates a new [SecureTransferService].
-  ///
-  /// [isolateAssemblyThresholdBytes] controls the serialized payload size (in
-  /// bytes) above which JSON/base64 assembly is offloaded to a background
-  /// isolate, avoiding platform-thread jank for large migration payloads.
-  /// Defaults to 64 KiB. Pass `0` to force the isolate path for all payloads
-  /// (useful in tests); pass a very large value to always use the inline path.
   SecureTransferService(
     this._db,
     this._keyRepository,
     this._hostRepository, {
-    int isolateAssemblyThresholdBytes = _defaultIsolateAssemblyThresholdBytes,
     DiagnosticsLogger diagnosticsLogger = const NoopDiagnosticsLogger(),
     Future<void> Function()? onHostsChanged,
-  }) : _isolateAssemblyThresholdBytes = isolateAssemblyThresholdBytes,
-       _diagnosticsLogger = diagnosticsLogger,
+  }) : _diagnosticsLogger = diagnosticsLogger,
        _onHostsChanged = onHostsChanged;
-
-  static const _defaultIsolateAssemblyThresholdBytes = 64 * 1024;
 
   final AppDatabase _db;
   final KeyRepository _keyRepository;
   final HostRepository _hostRepository;
-  final int _isolateAssemblyThresholdBytes;
   final DiagnosticsLogger _diagnosticsLogger;
   final Future<void> Function()? _onHostsChanged;
-  final _random = Random.secure();
-  final _aesGcm = AesGcm.with256bits();
-  final _sha256 = Sha256();
 
   static const _minEpochMilliseconds = -8640000000000000;
   static const _maxEpochMilliseconds = 8640000000000000;
-  static const _payloadPrefix = 'MSSH1:';
   static const _schemaVersion = 1;
-  static const _legacyEnvelopeVersion = 1;
-  static const _envelopeVersion = 2;
-  static const _saltBytes = 16;
-  static const _nonceBytes = 12;
-  static const _pbkdf2Iterations = 120000;
-  static const _maxPbkdf2Iterations = 1000000;
-  static const _argon2idIterations = 3;
-  static const _argon2idMemoryKiB = 32768;
-  static const _argon2idLanes = 1;
   static const _hostScopedSettingsKeys = {
     SettingKeys.agentLaunchPresets,
     SettingKeys.hostCliLaunchPreferences,
@@ -225,7 +201,7 @@ class SecureTransferService {
           'hostCliLaunchPreferences': cliLaunchPreferences.toJson(),
       },
     );
-    return _encryptPayload(payload, transferPassphrase);
+    return compute(_encryptTransferPayload, (payload, transferPassphrase));
   }
 
   /// Creates an encrypted SSH key transfer payload.
@@ -239,7 +215,7 @@ class SecureTransferService {
       createdAt: DateTime.now().toUtc(),
       data: {'key': key.toJson()},
     );
-    return _encryptPayload(payload, transferPassphrase);
+    return compute(_encryptTransferPayload, (payload, transferPassphrase));
   }
 
   /// Creates an encrypted full migration payload.
@@ -253,7 +229,7 @@ class SecureTransferService {
       data: await createMigrationData(),
     );
 
-    return _encryptPayload(payload, transferPassphrase);
+    return compute(_encryptTransferPayload, (payload, transferPassphrase));
   }
 
   /// Creates canonical migration data that can be reused by sync flows.
@@ -332,90 +308,7 @@ class SecureTransferService {
   Future<TransferPayload> decryptPayload({
     required String encodedPayload,
     required String transferPassphrase,
-  }) async {
-    final normalized = encodedPayload.trim();
-    if (normalized.isEmpty) {
-      throw const FormatException('Transfer payload is empty');
-    }
-
-    if (transferPassphrase.trim().isEmpty) {
-      throw const FormatException('Transfer passphrase is required');
-    }
-
-    final compactPayload = normalized.startsWith(_payloadPrefix)
-        ? normalized.substring(_payloadPrefix.length)
-        : normalized;
-    final envelopeJson = utf8.decode(
-      base64Url.decode(base64Url.normalize(compactPayload)),
-    );
-    final envelope = jsonDecode(envelopeJson);
-    if (envelope is! Map) {
-      throw const FormatException('Invalid transfer envelope');
-    }
-
-    final envelopeMap = Map<String, dynamic>.from(envelope);
-    final versionValue = envelopeMap['v'];
-    if (versionValue is! num) {
-      throw const FormatException('Unsupported transfer envelope version');
-    }
-    final envelopeVersion = versionValue.toInt();
-    if (envelopeVersion != _legacyEnvelopeVersion &&
-        envelopeVersion != _envelopeVersion) {
-      throw const FormatException('Unsupported transfer envelope version');
-    }
-
-    final salt = _decodeEnvelopeField(envelopeMap, 'salt');
-    final nonce = _decodeEnvelopeField(envelopeMap, 'nonce');
-    final cipherText = _decodeEnvelopeField(envelopeMap, 'ciphertext');
-    final macBytes = _decodeEnvelopeField(envelopeMap, 'mac');
-    if (salt.length != _saltBytes ||
-        nonce.length != _nonceBytes ||
-        macBytes.length < 16) {
-      throw const FormatException('Invalid transfer envelope');
-    }
-
-    final secretKey = await _deriveEnvelopeKey(
-      transferPassphrase: transferPassphrase,
-      salt: salt,
-      envelope: envelopeMap,
-      version: envelopeVersion,
-    );
-    final secretBox = SecretBox(cipherText, nonce: nonce, mac: Mac(macBytes));
-
-    late List<int> plaintext;
-    try {
-      plaintext = await _aesGcm.decrypt(secretBox, secretKey: secretKey);
-    } on SecretBoxAuthenticationError {
-      throw const FormatException('Invalid passphrase or transfer payload');
-    }
-
-    final expectedChecksumValue = envelopeMap['checksum'];
-    if (expectedChecksumValue != null) {
-      if (expectedChecksumValue is! String || expectedChecksumValue.isEmpty) {
-        throw const FormatException('Invalid transfer envelope');
-      }
-      final actualChecksum = await _sha256.hash(plaintext);
-      final encodedChecksum = base64Url.encode(actualChecksum.bytes);
-      if (encodedChecksum != expectedChecksumValue) {
-        throw const FormatException('Transfer payload checksum mismatch');
-      }
-    }
-
-    // For large payloads, offload JSON parsing to a background isolate to
-    // avoid blocking the platform thread during deserialization.
-    final Map<String, dynamic> payloadJsonMap;
-    if (plaintext.length >= _isolateAssemblyThresholdBytes) {
-      payloadJsonMap = await compute(_jsonDecodeFromBytes, plaintext);
-    } else {
-      final payloadJson = jsonDecode(utf8.decode(plaintext));
-      if (payloadJson is! Map) {
-        throw const FormatException('Invalid decrypted payload');
-      }
-      payloadJsonMap = Map<String, dynamic>.from(payloadJson);
-    }
-
-    return TransferPayload.fromJson(payloadJsonMap);
-  }
+  }) => compute(_decryptTransferPayload, (encodedPayload, transferPassphrase));
 
   /// Imports a host payload and returns the created host.
   Future<Host> importHostPayload(TransferPayload payload) async {
@@ -626,122 +519,6 @@ class SecureTransferService {
       );
     }
   }
-
-  Future<String> _encryptPayload(
-    TransferPayload payload,
-    String transferPassphrase,
-  ) async {
-    if (transferPassphrase.trim().isEmpty) {
-      throw const FormatException('Transfer passphrase is required');
-    }
-
-    final payloadBytes = Uint8List.fromList(
-      utf8.encode(jsonEncode(payload.toJson())),
-    );
-    final salt = _randomBytes(_saltBytes);
-    final nonce = _randomBytes(_nonceBytes);
-    final secretKey = await _deriveArgon2idKey(
-      transferPassphrase,
-      salt,
-      iterations: _argon2idIterations,
-      memoryKiB: _argon2idMemoryKiB,
-      lanes: _argon2idLanes,
-    );
-    final encryptedBox = await _aesGcm.encrypt(
-      payloadBytes,
-      secretKey: secretKey,
-      nonce: nonce,
-    );
-    final checksum = await _sha256.hash(payloadBytes);
-
-    final request = <String, Object>{
-      'prefix': _payloadPrefix,
-      'v': _envelopeVersion,
-      'alg': 'AES-GCM-256',
-      'kdf': 'Argon2id',
-      'iter': _argon2idIterations,
-      'mem': _argon2idMemoryKiB,
-      'lanes': _argon2idLanes,
-      'salt': salt,
-      'nonce': nonce,
-      'ciphertext': encryptedBox.cipherText,
-      'mac': encryptedBox.mac.bytes,
-      'checksum': checksum.bytes,
-    };
-    return payloadBytes.length >= _isolateAssemblyThresholdBytes
-        ? compute(_assembleTransferEnvelope, request)
-        : _assembleTransferEnvelope(request);
-  }
-
-  Future<SecretKey> _deriveEnvelopeKey({
-    required String transferPassphrase,
-    required List<int> salt,
-    required Map<String, dynamic> envelope,
-    required int version,
-  }) {
-    if (version == _legacyEnvelopeVersion) {
-      final iterations = _optionalInt(envelope['iter']) ?? _pbkdf2Iterations;
-      if (iterations <= 0 || iterations > _maxPbkdf2Iterations) {
-        throw const FormatException('Invalid transfer envelope');
-      }
-      return _derivePbkdf2Key(transferPassphrase, salt, iterations: iterations);
-    }
-
-    final iterations = _optionalInt(envelope['iter']) ?? _argon2idIterations;
-    final memoryKiB = _optionalInt(envelope['mem']) ?? _argon2idMemoryKiB;
-    final lanes = _optionalInt(envelope['lanes']) ?? _argon2idLanes;
-    if (iterations <= 0 ||
-        iterations > 10 ||
-        memoryKiB < 8192 ||
-        memoryKiB > 262144 ||
-        lanes <= 0 ||
-        lanes > 4) {
-      throw const FormatException('Invalid transfer envelope');
-    }
-
-    return _deriveArgon2idKey(
-      transferPassphrase,
-      salt,
-      iterations: iterations,
-      memoryKiB: memoryKiB,
-      lanes: lanes,
-    );
-  }
-
-  Future<SecretKey> _derivePbkdf2Key(
-    String passphrase,
-    List<int> salt, {
-    required int iterations,
-  }) {
-    final pbkdf2 = Pbkdf2(
-      macAlgorithm: Hmac.sha256(),
-      iterations: iterations,
-      bits: 256,
-    );
-    return pbkdf2.deriveKey(
-      secretKey: SecretKey(utf8.encode(passphrase)),
-      nonce: salt,
-    );
-  }
-
-  Future<SecretKey> _deriveArgon2idKey(
-    String passphrase,
-    List<int> salt, {
-    required int iterations,
-    required int memoryKiB,
-    required int lanes,
-  }) async => SecretKey(
-    await compute(_deriveArgon2idKeyBytes, {
-      'passphrase': passphrase,
-      'salt': salt,
-      'iterations': iterations,
-      'memoryKiB': memoryKiB,
-      'lanes': lanes,
-    }),
-  );
-
-  List<int> _randomBytes(int length) =>
-      List<int>.generate(length, (_) => _random.nextInt(256), growable: false);
 
   Future<SshKey> _importKeyMap(
     Map<String, dynamic> keyData, {
@@ -1408,16 +1185,6 @@ class SecureTransferService {
     return normalized;
   }
 
-  int? _optionalInt(Object? value) {
-    if (value is int) {
-      return value;
-    }
-    if (value is num) {
-      return value.toInt();
-    }
-    return int.tryParse(value?.toString() ?? '');
-  }
-
   DateTime? _optionalDateTime(Object? value) {
     if (value is DateTime) {
       return value;
@@ -1593,18 +1360,6 @@ class SecureTransferService {
     }
     return preferSecond ? secondFingerprint : firstFingerprint;
   }
-
-  List<int> _decodeEnvelopeField(Map<String, dynamic> envelope, String key) {
-    final value = envelope[key];
-    if (value is! String || value.isEmpty) {
-      throw const FormatException('Invalid transfer envelope');
-    }
-    try {
-      return base64Url.decode(base64Url.normalize(value));
-    } on FormatException {
-      throw const FormatException('Invalid transfer envelope');
-    }
-  }
 }
 
 class _ImportedKnownHost {
@@ -1650,12 +1405,209 @@ final secureTransferServiceProvider = Provider<SecureTransferService>(
   ),
 );
 
-List<int> _deriveArgon2idKeyBytes(Map<String, Object> request) {
-  final passphrase = request['passphrase']! as String;
-  final salt = request['salt']! as List<int>;
-  final iterations = request['iterations']! as int;
-  final memoryKiB = request['memoryKiB']! as int;
-  final lanes = request['lanes']! as int;
+const _payloadPrefix = 'MSSH1:';
+const _legacyEnvelopeVersion = 1;
+const _envelopeVersion = 2;
+const _saltBytes = 16;
+const _nonceBytes = 12;
+const _pbkdf2Iterations = 120000;
+const _maxPbkdf2Iterations = 1000000;
+const _argon2idIterations = 3;
+const _argon2idMemoryKiB = 32768;
+const _argon2idLanes = 1;
+
+Future<String> _encryptTransferPayload(
+  (TransferPayload, String) request,
+) async {
+  final (payload, transferPassphrase) = request;
+  if (transferPassphrase.trim().isEmpty) {
+    throw const FormatException('Transfer passphrase is required');
+  }
+
+  final payloadBytes = Uint8List.fromList(
+    utf8.encode(jsonEncode(payload.toJson())),
+  );
+  final random = Random.secure();
+  final salt = List<int>.generate(
+    _saltBytes,
+    (_) => random.nextInt(256),
+    growable: false,
+  );
+  final nonce = List<int>.generate(
+    _nonceBytes,
+    (_) => random.nextInt(256),
+    growable: false,
+  );
+  final secretKey = _deriveArgon2idKey(
+    transferPassphrase,
+    salt,
+    iterations: _argon2idIterations,
+    memoryKiB: _argon2idMemoryKiB,
+    lanes: _argon2idLanes,
+  );
+  final encryptedBox = await AesGcm.with256bits().encrypt(
+    payloadBytes,
+    secretKey: secretKey,
+    nonce: nonce,
+  );
+  final checksum = await Sha256().hash(payloadBytes);
+
+  final envelope = {
+    'v': _envelopeVersion,
+    'alg': 'AES-GCM-256',
+    'kdf': 'Argon2id',
+    'iter': _argon2idIterations,
+    'mem': _argon2idMemoryKiB,
+    'lanes': _argon2idLanes,
+    'salt': base64Url.encode(salt),
+    'nonce': base64Url.encode(nonce),
+    'ciphertext': base64Url.encode(encryptedBox.cipherText),
+    'mac': base64Url.encode(encryptedBox.mac.bytes),
+    'checksum': base64Url.encode(checksum.bytes),
+  };
+  return '$_payloadPrefix${base64Url.encode(utf8.encode(jsonEncode(envelope)))}';
+}
+
+Future<TransferPayload> _decryptTransferPayload(
+  (String, String) request,
+) async {
+  final (encodedPayload, transferPassphrase) = request;
+  final normalized = encodedPayload.trim();
+  if (normalized.isEmpty) {
+    throw const FormatException('Transfer payload is empty');
+  }
+
+  if (transferPassphrase.trim().isEmpty) {
+    throw const FormatException('Transfer passphrase is required');
+  }
+
+  final compactPayload = normalized.startsWith(_payloadPrefix)
+      ? normalized.substring(_payloadPrefix.length)
+      : normalized;
+  final envelopeJson = utf8.decode(
+    base64Url.decode(base64Url.normalize(compactPayload)),
+  );
+  final envelope = jsonDecode(envelopeJson);
+  if (envelope is! Map) {
+    throw const FormatException('Invalid transfer envelope');
+  }
+
+  final envelopeMap = Map<String, dynamic>.from(envelope);
+  final versionValue = envelopeMap['v'];
+  if (versionValue is! num) {
+    throw const FormatException('Unsupported transfer envelope version');
+  }
+  final envelopeVersion = versionValue.toInt();
+  if (envelopeVersion != _legacyEnvelopeVersion &&
+      envelopeVersion != _envelopeVersion) {
+    throw const FormatException('Unsupported transfer envelope version');
+  }
+
+  final salt = _decodeEnvelopeField(envelopeMap, 'salt');
+  final nonce = _decodeEnvelopeField(envelopeMap, 'nonce');
+  final cipherText = _decodeEnvelopeField(envelopeMap, 'ciphertext');
+  final macBytes = _decodeEnvelopeField(envelopeMap, 'mac');
+  if (salt.length != _saltBytes ||
+      nonce.length != _nonceBytes ||
+      macBytes.length < 16) {
+    throw const FormatException('Invalid transfer envelope');
+  }
+
+  final secretKey = await _deriveEnvelopeKey(
+    transferPassphrase: transferPassphrase,
+    salt: salt,
+    envelope: envelopeMap,
+    version: envelopeVersion,
+  );
+  final secretBox = SecretBox(cipherText, nonce: nonce, mac: Mac(macBytes));
+
+  late List<int> plaintext;
+  try {
+    plaintext = await AesGcm.with256bits().decrypt(
+      secretBox,
+      secretKey: secretKey,
+    );
+  } on SecretBoxAuthenticationError {
+    throw const FormatException('Invalid passphrase or transfer payload');
+  }
+
+  final expectedChecksumValue = envelopeMap['checksum'];
+  if (expectedChecksumValue != null) {
+    if (expectedChecksumValue is! String || expectedChecksumValue.isEmpty) {
+      throw const FormatException('Invalid transfer envelope');
+    }
+    final actualChecksum = await Sha256().hash(plaintext);
+    final encodedChecksum = base64Url.encode(actualChecksum.bytes);
+    if (encodedChecksum != expectedChecksumValue) {
+      throw const FormatException('Transfer payload checksum mismatch');
+    }
+  }
+
+  final payloadJson = jsonDecode(utf8.decode(plaintext));
+  if (payloadJson is! Map) {
+    throw const FormatException('Invalid decrypted payload');
+  }
+  return TransferPayload.fromJson(Map<String, dynamic>.from(payloadJson));
+}
+
+Future<SecretKey> _deriveEnvelopeKey({
+  required String transferPassphrase,
+  required List<int> salt,
+  required Map<String, dynamic> envelope,
+  required int version,
+}) async {
+  if (version == _legacyEnvelopeVersion) {
+    final iterations = _optionalInt(envelope['iter']) ?? _pbkdf2Iterations;
+    if (iterations <= 0 || iterations > _maxPbkdf2Iterations) {
+      throw const FormatException('Invalid transfer envelope');
+    }
+    return _derivePbkdf2Key(transferPassphrase, salt, iterations: iterations);
+  }
+
+  final iterations = _optionalInt(envelope['iter']) ?? _argon2idIterations;
+  final memoryKiB = _optionalInt(envelope['mem']) ?? _argon2idMemoryKiB;
+  final lanes = _optionalInt(envelope['lanes']) ?? _argon2idLanes;
+  if (iterations <= 0 ||
+      iterations > 10 ||
+      memoryKiB < 8192 ||
+      memoryKiB > 262144 ||
+      lanes <= 0 ||
+      lanes > 4) {
+    throw const FormatException('Invalid transfer envelope');
+  }
+
+  return _deriveArgon2idKey(
+    transferPassphrase,
+    salt,
+    iterations: iterations,
+    memoryKiB: memoryKiB,
+    lanes: lanes,
+  );
+}
+
+Future<SecretKey> _derivePbkdf2Key(
+  String passphrase,
+  List<int> salt, {
+  required int iterations,
+}) {
+  final pbkdf2 = Pbkdf2(
+    macAlgorithm: Hmac.sha256(),
+    iterations: iterations,
+    bits: 256,
+  );
+  return pbkdf2.deriveKey(
+    secretKey: SecretKey(utf8.encode(passphrase)),
+    nonce: salt,
+  );
+}
+
+SecretKey _deriveArgon2idKey(
+  String passphrase,
+  List<int> salt, {
+  required int iterations,
+  required int memoryKiB,
+  required int lanes,
+}) {
   final generator = Argon2BytesGenerator()
     ..init(
       Argon2Parameters(
@@ -1667,41 +1619,29 @@ List<int> _deriveArgon2idKeyBytes(Map<String, Object> request) {
         lanes: lanes,
       ),
     );
-  return generator.process(Uint8List.fromList(utf8.encode(passphrase)));
+  return SecretKey(
+    generator.process(Uint8List.fromList(utf8.encode(passphrase))),
+  );
 }
 
-/// Assembles the outer base64url-encoded transfer envelope string from raw
-/// encryption outputs.
-///
-/// Accepts a map with keys: `prefix` (String), `v`, `iter`, `mem`, `lanes`
-/// (int), `alg`, `kdf` (String), `salt`, `nonce`, `ciphertext`, `mac`,
-/// `checksum` (`List<int>`). Invoked via [compute] for large payloads.
-String _assembleTransferEnvelope(Map<String, Object> params) {
-  final prefix = params['prefix']! as String;
-  final envelope = {
-    'v': params['v'],
-    'alg': params['alg'],
-    'kdf': params['kdf'],
-    'iter': params['iter'],
-    'mem': params['mem'],
-    'lanes': params['lanes'],
-    'salt': base64Url.encode(params['salt']! as List<int>),
-    'nonce': base64Url.encode(params['nonce']! as List<int>),
-    'ciphertext': base64Url.encode(params['ciphertext']! as List<int>),
-    'mac': base64Url.encode(params['mac']! as List<int>),
-    'checksum': base64Url.encode(params['checksum']! as List<int>),
-  };
-  return '$prefix${base64Url.encode(utf8.encode(jsonEncode(envelope)))}';
-}
-
-/// Decodes UTF-8-encoded JSON bytes to a [Map].
-///
-/// Throws [FormatException] if the bytes do not decode to a JSON object.
-/// Invoked via [compute] for large payloads.
-Map<String, dynamic> _jsonDecodeFromBytes(List<int> bytes) {
-  final decoded = jsonDecode(utf8.decode(bytes));
-  if (decoded is! Map) {
-    throw const FormatException('Invalid decrypted payload');
+int? _optionalInt(Object? value) {
+  if (value is int) {
+    return value;
   }
-  return Map<String, dynamic>.from(decoded);
+  if (value is num) {
+    return value.toInt();
+  }
+  return int.tryParse(value?.toString() ?? '');
+}
+
+List<int> _decodeEnvelopeField(Map<String, dynamic> envelope, String key) {
+  final value = envelope[key];
+  if (value is! String || value.isEmpty) {
+    throw const FormatException('Invalid transfer envelope');
+  }
+  try {
+    return base64Url.decode(base64Url.normalize(value));
+  } on FormatException {
+    throw const FormatException('Invalid transfer envelope');
+  }
 }

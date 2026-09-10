@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -15,14 +16,31 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 	"unicode/utf8"
 
 	"github.com/creack/pty"
 )
+
+func assertInputActions(t *testing.T, routing attachInputRouting, want []attachInputAction) {
+	t.Helper()
+	if !reflect.DeepEqual(routing.actions, want) {
+		t.Fatalf("input actions = %#v, want %#v", routing.actions, want)
+	}
+	claimsFocus := false
+	for _, action := range want {
+		claimsFocus = claimsFocus || action.userInput
+	}
+	if routing.claimsFocus != claimsFocus {
+		t.Fatalf("claims focus = %v, want %v", routing.claimsFocus, claimsFocus)
+	}
+}
 
 func replayPrefixForTest(window *muxWindow) string {
 	return activeWindowReplayPrefix + string(terminalTitleReplaySequence(window))
@@ -201,19 +219,19 @@ func TestTerminalEnvironmentAddsTerminalCapabilityDefaults(t *testing.T) {
 
 	env := terminalEnvironment(base)
 
-	if !containsEnv(env, "TERM=xterm-256color") {
+	if !slices.Contains(env, "TERM=xterm-256color") {
 		t.Fatalf("terminal environment = %#v, want TERM=xterm-256color", env)
 	}
-	if !containsEnv(env, "COLORTERM=truecolor") {
+	if !slices.Contains(env, "COLORTERM=truecolor") {
 		t.Fatalf("terminal environment = %#v, want COLORTERM=truecolor", env)
 	}
-	if !containsEnv(env, "TERM_PROGRAM=kitty") {
+	if !slices.Contains(env, "TERM_PROGRAM=kitty") {
 		t.Fatalf("terminal environment = %#v, want TERM_PROGRAM=kitty", env)
 	}
-	if !containsEnv(env, "KITTY_WINDOW_ID=1") {
+	if !slices.Contains(env, "KITTY_WINDOW_ID=1") {
 		t.Fatalf("terminal environment = %#v, want KITTY_WINDOW_ID=1", env)
 	}
-	if !containsEnv(env, "FORCE_HYPERLINK=1") {
+	if !slices.Contains(env, "FORCE_HYPERLINK=1") {
 		t.Fatalf("terminal environment = %#v, want FORCE_HYPERLINK=1", env)
 	}
 	if !reflect.DeepEqual(base, []string{"USER=test"}) {
@@ -224,7 +242,7 @@ func TestTerminalEnvironmentAddsTerminalCapabilityDefaults(t *testing.T) {
 func TestTerminalEnvironmentPreservesExistingForceHyperlink(t *testing.T) {
 	env := terminalEnvironment([]string{"FORCE_HYPERLINK=0", "USER=test"})
 
-	if !containsEnv(env, "FORCE_HYPERLINK=0") {
+	if !slices.Contains(env, "FORCE_HYPERLINK=0") {
 		t.Fatalf(
 			"terminal environment = %#v, want existing FORCE_HYPERLINK=0 preserved",
 			env,
@@ -241,16 +259,16 @@ func TestTerminalEnvironmentPreservesExistingTrueColorHints(t *testing.T) {
 
 	env := terminalEnvironment(base)
 
-	if !containsEnv(env, "TERM=screen-256color") {
+	if !slices.Contains(env, "TERM=screen-256color") {
 		t.Fatalf("terminal environment = %#v, want existing TERM preserved", env)
 	}
-	if !containsEnv(env, "COLORTERM=24bit") {
+	if !slices.Contains(env, "COLORTERM=24bit") {
 		t.Fatalf("terminal environment = %#v, want existing COLORTERM preserved", env)
 	}
-	if !containsEnv(env, "TERM_PROGRAM=kitty") {
+	if !slices.Contains(env, "TERM_PROGRAM=kitty") {
 		t.Fatalf("terminal environment = %#v, want TERM_PROGRAM=kitty", env)
 	}
-	if !containsEnv(env, "KITTY_WINDOW_ID=1") {
+	if !slices.Contains(env, "KITTY_WINDOW_ID=1") {
 		t.Fatalf("terminal environment = %#v, want KITTY_WINDOW_ID=1", env)
 	}
 }
@@ -276,7 +294,7 @@ func TestTerminalEnvironmentReplacesUnusableTerminalHints(t *testing.T) {
 	if got := envValues(env, "KITTY_WINDOW_ID"); !reflect.DeepEqual(got, []string{"1"}) {
 		t.Fatalf("KITTY_WINDOW_ID values = %#v in %#v, want only 1", got, env)
 	}
-	if !containsEnv(env, "USER=test") {
+	if !slices.Contains(env, "USER=test") {
 		t.Fatalf("terminal environment = %#v, want USER preserved", env)
 	}
 }
@@ -371,15 +389,6 @@ func TestShellCommandForScriptUsesInteractiveLoginShellWithoutTypingCommand(t *t
 	if got := cmd.Args[3]; got != "codex --yolo" {
 		t.Fatalf("script = %q, want launch command", got)
 	}
-}
-
-func containsEnv(env []string, entry string) bool {
-	for _, candidate := range env {
-		if candidate == entry {
-			return true
-		}
-	}
-	return false
 }
 
 func envValues(env []string, key string) []string {
@@ -2812,7 +2821,7 @@ func TestTerminalResponseRoutesToOriginatingWindowAfterSwitch(t *testing.T) {
 	response := []byte("\x1b[?62;4c")
 
 	routing := client.routeInput(response)
-	for _, routed := range routing.responses {
+	for _, routed := range routing.actions {
 		if routed.windowID == "" {
 			server.writeActiveFromAttach(routed.data)
 		} else if err := server.writeWindow(routed.windowID, routed.data); err != nil {
@@ -2820,7 +2829,7 @@ func TestTerminalResponseRoutesToOriginatingWindowAfterSwitch(t *testing.T) {
 		}
 	}
 
-	if routing.claimsFocus || len(routing.passthrough) != 0 {
+	if routing.claimsFocus {
 		t.Fatalf("response routing = %#v, want response-only input", routing)
 	}
 	got := readPipeUntil(t, originReader, func(output string) bool {
@@ -2872,18 +2881,18 @@ func TestCoalescedTerminalResponsesRouteToEachOriginWindow(t *testing.T) {
 	}
 	routing := client.routeInput(bytes.Join(responses, nil))
 
-	if routing.claimsFocus || len(routing.passthrough) != 0 {
+	if routing.claimsFocus {
 		t.Fatalf("response routing = %#v, want response-only input", routing)
 	}
-	if len(routing.responses) != 3 {
+	if len(routing.actions) != 3 {
 		t.Fatalf(
 			"routed response count = %d, want 3",
-			len(routing.responses),
+			len(routing.actions),
 		)
 	}
 	wantWindows := []string{"@1", "@1", "@2"}
-	for index, routed := range routing.responses {
-		if routed.windowID != wantWindows[index] {
+	for index, routed := range routing.actions {
+		if routed.userInput || routed.windowID != wantWindows[index] {
 			t.Errorf(
 				"response %d window = %q, want %q",
 				index,
@@ -2957,12 +2966,11 @@ func TestSeparateTermcapResponsesStayWithOriginWindow(t *testing.T) {
 	for index, response := range responses {
 		routing := client.routeInput(response.data)
 		if routing.claimsFocus ||
-			len(routing.passthrough) != 0 ||
-			len(routing.responses) != 1 {
+			len(routing.actions) != 1 {
 			t.Fatalf("response %d routing = %#v", index, routing)
 		}
-		routed := routing.responses[0]
-		if routed.windowID != response.windowID ||
+		routed := routing.actions[0]
+		if routed.userInput || routed.windowID != response.windowID ||
 			!bytes.Equal(routed.data, response.data) {
 			t.Fatalf(
 				"response %d = %#v, want %s %q",
@@ -3006,16 +3014,14 @@ func TestCombinedTermcapResponseConsumesOriginExpectations(t *testing.T) {
 	)
 	routing := client.routeInput(combined)
 	if routing.claimsFocus ||
-		len(routing.passthrough) != 0 ||
-		len(routing.responses) != 1 ||
-		routing.responses[0].windowID != "@1" {
+		len(routing.actions) != 1 ||
+		routing.actions[0].userInput || routing.actions[0].windowID != "@1" {
 		t.Fatalf("combined termcap response routing = %#v", routing)
 	}
 	next := client.routeInput([]byte("\x1b[?62;4c"))
-	if len(next.responses) != 1 ||
-		next.responses[0].windowID != "@2" ||
-		next.claimsFocus ||
-		len(next.passthrough) != 0 {
+	if len(next.actions) != 1 ||
+		next.actions[0].userInput || next.actions[0].windowID != "@2" ||
+		next.claimsFocus {
 		t.Fatalf("next-window response routing = %#v", next)
 	}
 }
@@ -3030,13 +3036,13 @@ func TestExpiredTerminalResponseWindowsAreNotRevived(t *testing.T) {
 
 	routing := client.routeInput([]byte("\x1b[?62;4c"))
 
-	if len(routing.responses) != 1 {
-		t.Fatalf("routed response count = %d, want 1", len(routing.responses))
+	if len(routing.actions) != 1 {
+		t.Fatalf("routed response count = %d, want 1", len(routing.actions))
 	}
-	if routing.responses[0].windowID != "@2" {
+	if routing.actions[0].userInput || routing.actions[0].windowID != "@2" {
 		t.Fatalf(
 			"response window = %q, want @2",
-			routing.responses[0].windowID,
+			routing.actions[0].windowID,
 		)
 	}
 }
@@ -3054,8 +3060,8 @@ func TestRenewedTerminalResponseDeadlineReschedulesHeldPrefix(t *testing.T) {
 	client.terminalResponseUntil = time.Now().Add(40 * time.Millisecond)
 	client.activityMu.Unlock()
 	firstRouting := client.routeInput([]byte{'\x1b'})
-	if len(firstRouting.passthrough) != 0 {
-		t.Fatalf("held prefix passthrough = %q", firstRouting.passthrough)
+	if len(firstRouting.actions) != 0 {
+		t.Fatalf("held prefix actions = %#v", firstRouting.actions)
 	}
 	time.Sleep(10 * time.Millisecond)
 
@@ -3067,9 +3073,9 @@ func TestRenewedTerminalResponseDeadlineReschedulesHeldPrefix(t *testing.T) {
 	}
 
 	routing := client.routeInput([]byte("[?62;4c"))
-	if len(routing.responses) != 1 ||
-		routing.responses[0].windowID != "@1" ||
-		string(routing.responses[0].data) != "\x1b[?62;4c" {
+	if len(routing.actions) != 1 ||
+		routing.actions[0].userInput || routing.actions[0].windowID != "@1" ||
+		string(routing.actions[0].data) != "\x1b[?62;4c" {
 		t.Fatalf("renewed response routing = %#v", routing)
 	}
 	close(client.done)
@@ -3090,8 +3096,7 @@ func TestResponseCarryFragmentRenewsInactivityDeadline(t *testing.T) {
 
 	routing := client.routeInput([]byte("\x1b]52;c;AAAA"))
 
-	if len(routing.passthrough) != 0 ||
-		len(routing.responses) != 0 ||
+	if len(routing.actions) != 0 ||
 		routing.claimsFocus {
 		t.Fatalf("partial response routing = %#v, want held input", routing)
 	}
@@ -3107,9 +3112,9 @@ func TestResponseCarryFragmentRenewsInactivityDeadline(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 	routing = client.routeInput([]byte{'\a'})
-	if len(routing.responses) != 1 ||
-		routing.responses[0].windowID != "@1" ||
-		string(routing.responses[0].data) != "\x1b]52;c;AAAA\a" {
+	if len(routing.actions) != 1 ||
+		routing.actions[0].userInput || routing.actions[0].windowID != "@1" ||
+		string(routing.actions[0].data) != "\x1b]52;c;AAAA\a" {
 		t.Fatalf("completed response routing = %#v", routing)
 	}
 	close(client.done)
@@ -3128,10 +3133,9 @@ func TestStreamingResponseFragmentsRenewInactivityDeadline(t *testing.T) {
 
 	first := client.routeInput(largePrefix)
 
-	if len(first.responses) != 1 ||
-		first.responses[0].windowID != "@1" ||
-		first.claimsFocus ||
-		len(first.passthrough) != 0 {
+	if len(first.actions) != 1 ||
+		first.actions[0].userInput || first.actions[0].windowID != "@1" ||
+		first.claimsFocus {
 		t.Fatalf("large response prefix routing = %#v", first)
 	}
 	client.activityMu.Lock()
@@ -3144,10 +3148,9 @@ func TestStreamingResponseFragmentsRenewInactivityDeadline(t *testing.T) {
 
 	second := client.routeInput([]byte("BBBB"))
 
-	if len(second.responses) != 1 ||
-		second.responses[0].windowID != "@1" ||
-		second.claimsFocus ||
-		len(second.passthrough) != 0 {
+	if len(second.actions) != 1 ||
+		second.actions[0].userInput || second.actions[0].windowID != "@1" ||
+		second.claimsFocus {
 		t.Fatalf("streaming response continuation routing = %#v", second)
 	}
 	client.activityMu.Lock()
@@ -3161,10 +3164,9 @@ func TestStreamingResponseFragmentsRenewInactivityDeadline(t *testing.T) {
 		)
 	}
 	final := client.routeInput([]byte{'\a'})
-	if len(final.responses) != 1 ||
-		final.responses[0].windowID != "@1" ||
-		final.claimsFocus ||
-		len(final.passthrough) != 0 {
+	if len(final.actions) != 1 ||
+		final.actions[0].userInput || final.actions[0].windowID != "@1" ||
+		final.claimsFocus {
 		t.Fatalf("streaming response terminator routing = %#v", final)
 	}
 }
@@ -3178,8 +3180,8 @@ func TestExpiredHeldResponsePrefixIsPassedThroughBeforeRenewal(t *testing.T) {
 		},
 	}
 	client.expectTerminalResponses("@1", 1)
-	if routing := client.routeInput([]byte{'\x1b'}); len(routing.passthrough) != 0 {
-		t.Fatalf("held prefix passthrough = %q", routing.passthrough)
+	if routing := client.routeInput([]byte{'\x1b'}); len(routing.actions) != 0 {
+		t.Fatalf("held prefix actions = %#v", routing.actions)
 	}
 	client.activityMu.Lock()
 	client.terminalResponseUntil = time.Now().Add(-time.Second)
@@ -3196,8 +3198,8 @@ func TestExpiredHeldResponsePrefixIsPassedThroughBeforeRenewal(t *testing.T) {
 		t.Fatal("expired prefix was dropped")
 	}
 	routing := client.routeInput([]byte("\x1b[?62;4c"))
-	if len(routing.responses) != 1 ||
-		routing.responses[0].windowID != "@2" {
+	if len(routing.actions) != 1 ||
+		routing.actions[0].userInput || routing.actions[0].windowID != "@2" {
 		t.Fatalf("renewed response routing = %#v", routing)
 	}
 	close(client.done)
@@ -3302,10 +3304,9 @@ func enterStreamingTerminalResponseContinuation(
 		bytes.Repeat([]byte{'A'}, terminalResponseCarryLimitBytes+1)...,
 	)
 	routing := client.routeInput(prefix)
-	if len(routing.responses) != 1 ||
-		routing.responses[0].windowID != "@1" ||
-		!bytes.Equal(routing.responses[0].data, prefix) ||
-		len(routing.passthrough) != 0 {
+	if len(routing.actions) != 1 ||
+		routing.actions[0].userInput || routing.actions[0].windowID != "@1" ||
+		!bytes.Equal(routing.actions[0].data, prefix) {
 		t.Fatalf("streaming prefix routing = %#v", routing)
 	}
 	if client.terminalResponseContinuation != ']' {
@@ -3325,11 +3326,7 @@ func TestBracketedPastePassesThroughWhilePartialResponseHeld(t *testing.T) {
 	client.expectTerminalResponses("@1", 1)
 
 	held := client.routeInput([]byte("\x1b]11;rgb:1234/5678/9abc"))
-	if len(held.passthrough) != 0 ||
-		len(held.responses) != 0 ||
-		held.claimsFocus {
-		t.Fatalf("partial reply routing = %#v, want held input", held)
-	}
+	assertInputActions(t, held, nil)
 	client.activityMu.Lock()
 	heldCarry := len(client.terminalResponseCarry)
 	client.activityMu.Unlock()
@@ -3341,12 +3338,10 @@ func TestBracketedPastePassesThroughWhilePartialResponseHeld(t *testing.T) {
 		"\x1b[200~/home/u/.cache/monkeyssh/uploads/a.png\x1b[201~ ",
 	)
 	routing := client.routeInput(paste)
-	if !bytes.Equal(routing.passthrough, paste) {
-		t.Fatalf("paste passthrough = %q, want %q", routing.passthrough, paste)
-	}
-	if len(routing.responses) != 0 {
-		t.Fatalf("paste routed as response = %#v", routing.responses)
-	}
+	assertInputActions(t, routing, []attachInputAction{
+		{userInput: true, bracketedPaste: true, data: paste[:len(paste)-1]},
+		{userInput: true, data: []byte(" ")},
+	})
 	client.activityMu.Lock()
 	remainingCarry := len(client.terminalResponseCarry)
 	client.activityMu.Unlock()
@@ -3362,20 +3357,14 @@ func TestBracketedPastePassesThroughWhilePartialResponseHeld(t *testing.T) {
 	// plain input keeps flowing through to the pane.
 	reply := []byte("\x1b[?62;4c")
 	replyRouting := client.routeInput(reply)
-	if len(replyRouting.responses) != 1 ||
-		replyRouting.responses[0].windowID != "@1" ||
-		!bytes.Equal(replyRouting.responses[0].data, reply) {
-		t.Fatalf("post-paste reply routing = %#v, want @1 reply", replyRouting)
-	}
-	if len(replyRouting.passthrough) != 0 {
-		t.Fatalf("post-paste reply leaked to pane: %q", replyRouting.passthrough)
-	}
+	assertInputActions(t, replyRouting, []attachInputAction{
+		{windowID: "@1", data: reply},
+	})
 
 	typed := client.routeInput([]byte("ls\r"))
-	if !bytes.Equal(typed.passthrough, []byte("ls\r")) ||
-		len(typed.responses) != 0 {
-		t.Fatalf("post-paste typed input routing = %#v", typed)
-	}
+	assertInputActions(t, typed, []attachInputAction{
+		{userInput: true, data: []byte("ls\r")},
+	})
 }
 
 func TestSplitBracketedPastePassesThroughStreamingResponse(t *testing.T) {
@@ -3384,32 +3373,22 @@ func TestSplitBracketedPastePassesThroughStreamingResponse(t *testing.T) {
 	enterStreamingTerminalResponseContinuation(t, client)
 
 	first := client.routeInput([]byte("more-data\x1b[20"))
-	if len(first.responses) != 1 ||
-		first.responses[0].windowID != "@1" ||
-		!bytes.Equal(first.responses[0].data, []byte("more-data")) ||
-		len(first.passthrough) != 0 {
-		t.Fatalf("split paste prefix routing = %#v", first)
-	}
+	assertInputActions(t, first, []attachInputAction{
+		{windowID: "@1", data: []byte("more-data")},
+	})
 
 	pasteRemainder := []byte("0~/tmp/a.png\x1b[201~ ")
 	second := client.routeInput(pasteRemainder)
 	wantPaste := []byte("\x1b[200~/tmp/a.png\x1b[201~ ")
-	if !bytes.Equal(second.passthrough, wantPaste) ||
-		len(second.responses) != 0 {
-		t.Fatalf(
-			"split paste completion routing = %#v, want passthrough %q",
-			second,
-			wantPaste,
-		)
-	}
+	assertInputActions(t, second, []attachInputAction{
+		{userInput: true, bracketedPaste: true, data: wantPaste[:len(wantPaste)-1]},
+		{userInput: true, data: []byte(" ")},
+	})
 
 	terminator := client.routeInput([]byte{'\a'})
-	if len(terminator.responses) != 1 ||
-		terminator.responses[0].windowID != "@1" ||
-		!bytes.Equal(terminator.responses[0].data, []byte{'\a'}) ||
-		len(terminator.passthrough) != 0 {
-		t.Fatalf("post-paste continuation routing = %#v", terminator)
-	}
+	assertInputActions(t, terminator, []attachInputAction{
+		{windowID: "@1", data: []byte{'\a'}},
+	})
 }
 
 func TestSplitBracketedPasteAtStreamingTransition(t *testing.T) {
@@ -3422,24 +3401,17 @@ func TestSplitBracketedPasteAtStreamingTransition(t *testing.T) {
 	input := append(append([]byte(nil), responsePrefix...), []byte("\x1b[20")...)
 
 	first := client.routeInput(input)
-	if len(first.responses) != 1 ||
-		first.responses[0].windowID != "@1" ||
-		!bytes.Equal(first.responses[0].data, responsePrefix) ||
-		len(first.passthrough) != 0 {
-		t.Fatalf("streaming transition routing = %#v", first)
-	}
+	assertInputActions(t, first, []attachInputAction{
+		{windowID: "@1", data: responsePrefix},
+	})
 
 	remainder := []byte("0~/tmp/a.png\x1b[201~ ")
 	second := client.routeInput(remainder)
 	wantPaste := []byte("\x1b[200~/tmp/a.png\x1b[201~ ")
-	if !bytes.Equal(second.passthrough, wantPaste) ||
-		len(second.responses) != 0 {
-		t.Fatalf(
-			"transition paste routing = %#v, want passthrough %q",
-			second,
-			wantPaste,
-		)
-	}
+	assertInputActions(t, second, []attachInputAction{
+		{userInput: true, bracketedPaste: true, data: wantPaste[:len(wantPaste)-1]},
+		{userInput: true, data: []byte(" ")},
+	})
 }
 
 func TestStreamingResponseCompletesBeforePasteAndPreservesUserPrefix(
@@ -3452,19 +3424,12 @@ func TestStreamingResponseCompletesBeforePasteAndPreservesUserPrefix(
 	paste := []byte("\x1b[200~/tmp/a.png\x1b[201~ ")
 	input := append([]byte("\ahello "), paste...)
 	routing := client.routeInput(input)
-	if len(routing.responses) != 1 ||
-		routing.responses[0].windowID != "@1" ||
-		!bytes.Equal(routing.responses[0].data, []byte{'\a'}) {
-		t.Fatalf("completed continuation routing = %#v", routing.responses)
-	}
-	wantPassthrough := append([]byte("hello "), paste...)
-	if !bytes.Equal(routing.passthrough, wantPassthrough) {
-		t.Fatalf(
-			"user prefix + paste passthrough = %q, want %q",
-			routing.passthrough,
-			wantPassthrough,
-		)
-	}
+	assertInputActions(t, routing, []attachInputAction{
+		{windowID: "@1", data: []byte{'\a'}},
+		{userInput: true, data: []byte("hello ")},
+		{userInput: true, bracketedPaste: true, data: paste[:len(paste)-1]},
+		{userInput: true, data: []byte(" ")},
+	})
 }
 
 func TestStreamingResponseRoutesSecondReplyBeforePaste(t *testing.T) {
@@ -3477,16 +3442,12 @@ func TestStreamingResponseRoutesSecondReplyBeforePaste(t *testing.T) {
 	paste := []byte("\x1b[200~/tmp/a.png\x1b[201~ ")
 	input := append(append([]byte{'\a'}, secondReply...), paste...)
 	routing := client.routeInput(input)
-	if len(routing.responses) != 2 ||
-		routing.responses[0].windowID != "@1" ||
-		!bytes.Equal(routing.responses[0].data, []byte{'\a'}) ||
-		routing.responses[1].windowID != "@2" ||
-		!bytes.Equal(routing.responses[1].data, secondReply) {
-		t.Fatalf("two-response routing = %#v", routing.responses)
-	}
-	if !bytes.Equal(routing.passthrough, paste) {
-		t.Fatalf("paste passthrough = %q, want %q", routing.passthrough, paste)
-	}
+	assertInputActions(t, routing, []attachInputAction{
+		{windowID: "@1", data: []byte{'\a'}},
+		{windowID: "@2", data: secondReply},
+		{userInput: true, bracketedPaste: true, data: paste[:len(paste)-1]},
+		{userInput: true, data: []byte(" ")},
+	})
 }
 
 func TestResponseAfterPasteInSameReadIsRoutedAfterUserInput(t *testing.T) {
@@ -3497,20 +3458,10 @@ func TestResponseAfterPasteInSameReadIsRoutedAfterUserInput(t *testing.T) {
 	input := append(append([]byte(nil), paste...), response...)
 
 	routing := client.routeInput(input)
-	if !bytes.Equal(routing.passthrough, paste) ||
-		len(routing.responses) != 1 ||
-		routing.responses[0].windowID != "@1" ||
-		!bytes.Equal(routing.responses[0].data, response) {
-		t.Fatalf("paste then response routing = %#v", routing)
-	}
-	if len(routing.actions) != 2 ||
-		!routing.actions[0].userInput ||
-		!bytes.Equal(routing.actions[0].data, paste) ||
-		routing.actions[1].userInput ||
-		routing.actions[1].windowID != "@1" ||
-		!bytes.Equal(routing.actions[1].data, response) {
-		t.Fatalf("ordered paste/response actions = %#v", routing.actions)
-	}
+	assertInputActions(t, routing, []attachInputAction{
+		{userInput: true, bracketedPaste: true, data: paste},
+		{windowID: "@1", data: response},
+	})
 }
 
 func TestResponseAfterPasteSeparatorInSameReadIsRouted(t *testing.T) {
@@ -3521,12 +3472,11 @@ func TestResponseAfterPasteSeparatorInSameReadIsRouted(t *testing.T) {
 	input := append(append([]byte(nil), paste...), response...)
 
 	routing := client.routeInput(input)
-	if !bytes.Equal(routing.passthrough, paste) ||
-		len(routing.responses) != 1 ||
-		routing.responses[0].windowID != "@1" ||
-		!bytes.Equal(routing.responses[0].data, response) {
-		t.Fatalf("paste separator then response routing = %#v", routing)
-	}
+	assertInputActions(t, routing, []attachInputAction{
+		{userInput: true, bracketedPaste: true, data: paste[:len(paste)-1]},
+		{userInput: true, data: []byte(" ")},
+		{windowID: "@1", data: response},
+	})
 }
 
 func TestConsecutivePasteAfterCompletedPasteIsTracked(t *testing.T) {
@@ -3538,19 +3488,23 @@ func TestConsecutivePasteAfterCompletedPasteIsTracked(t *testing.T) {
 		secondPasteStart...,
 	)
 	first := client.routeInput(input)
-	if !bytes.Equal(first.passthrough, input) ||
-		len(first.responses) != 0 ||
-		!client.inputBracketedPasteActive {
-		t.Fatalf("consecutive paste start routing = %#v", first)
+	assertInputActions(t, first, []attachInputAction{
+		{userInput: true, bracketedPaste: true, data: firstPaste[:len(firstPaste)-1]},
+		{userInput: true, data: []byte(" ")},
+		{userInput: true, bracketedPaste: true, data: secondPasteStart},
+	})
+	if !client.inputBracketedPasteActive {
+		t.Fatal("unexpected paste tracking state")
 	}
 
 	client.expectTerminalResponses("@1", 1)
 	secondPasteEnd := []byte("\x1b[?62;4c.png\x1b[201~")
 	second := client.routeInput(secondPasteEnd)
-	if !bytes.Equal(second.passthrough, secondPasteEnd) ||
-		len(second.responses) != 0 ||
-		client.inputBracketedPasteActive {
-		t.Fatalf("consecutive paste completion routing = %#v", second)
+	assertInputActions(t, second, []attachInputAction{
+		{userInput: true, bracketedPaste: true, data: secondPasteEnd},
+	})
+	if client.inputBracketedPasteActive {
+		t.Fatal("unexpected paste tracking state")
 	}
 }
 
@@ -3558,24 +3512,20 @@ func TestResponseAfterMultiReadPasteEndIsRouted(t *testing.T) {
 	client := &attachClient{}
 	client.expectTerminalResponses("@1", 1)
 	start := []byte("\x1b[200~/tmp/a")
-	if first := client.routeInput(start); !bytes.Equal(
-		first.passthrough,
-		start,
-	) || len(first.responses) != 0 {
-		t.Fatalf("paste start routing = %#v", first)
-	}
+	first := client.routeInput(start)
+	assertInputActions(t, first, []attachInputAction{
+		{userInput: true, bracketedPaste: true, data: start},
+	})
 
 	end := []byte(".png\x1b[201~")
 	response := []byte("\x1b[?62;4c")
 	second := client.routeInput(
 		append(append([]byte(nil), end...), response...),
 	)
-	if !bytes.Equal(second.passthrough, end) ||
-		len(second.responses) != 1 ||
-		second.responses[0].windowID != "@1" ||
-		!bytes.Equal(second.responses[0].data, response) {
-		t.Fatalf("paste end then response routing = %#v", second)
-	}
+	assertInputActions(t, second, []attachInputAction{
+		{userInput: true, bracketedPaste: true, data: end},
+		{windowID: "@1", data: response},
+	})
 }
 
 func TestStreamingResponseTerminatorAfterPasteEndIsRouted(t *testing.T) {
@@ -3584,20 +3534,16 @@ func TestStreamingResponseTerminatorAfterPasteEndIsRouted(t *testing.T) {
 	enterStreamingTerminalResponseContinuation(t, client)
 
 	start := []byte("\x1b[200~/tmp/a")
-	if first := client.routeInput(start); !bytes.Equal(
-		first.passthrough,
-		start,
-	) || len(first.responses) != 0 {
-		t.Fatalf("paste start routing = %#v", first)
-	}
+	first := client.routeInput(start)
+	assertInputActions(t, first, []attachInputAction{
+		{userInput: true, bracketedPaste: true, data: start},
+	})
 	end := []byte(".png\x1b[201~")
 	second := client.routeInput(append(append([]byte(nil), end...), '\a'))
-	if !bytes.Equal(second.passthrough, end) ||
-		len(second.responses) != 1 ||
-		second.responses[0].windowID != "@1" ||
-		!bytes.Equal(second.responses[0].data, []byte{'\a'}) {
-		t.Fatalf("paste end then continuation routing = %#v", second)
-	}
+	assertInputActions(t, second, []attachInputAction{
+		{userInput: true, bracketedPaste: true, data: end},
+		{windowID: "@1", data: []byte{'\a'}},
+	})
 }
 
 func TestStreamingResponsePayloadAfterPasteEndIsRouted(t *testing.T) {
@@ -3606,23 +3552,20 @@ func TestStreamingResponsePayloadAfterPasteEndIsRouted(t *testing.T) {
 	enterStreamingTerminalResponseContinuation(t, client)
 
 	start := []byte("\x1b[200~/tmp/a")
-	if first := client.routeInput(start); !bytes.Equal(
-		first.passthrough,
-		start,
-	) || len(first.responses) != 0 {
-		t.Fatalf("paste start routing = %#v", first)
-	}
+	first := client.routeInput(start)
+	assertInputActions(t, first, []attachInputAction{
+		{userInput: true, bracketedPaste: true, data: start},
+	})
 	end := []byte(".png\x1b[201~ ")
 	responseTail := []byte("payload\a")
 	second := client.routeInput(
 		append(append([]byte(nil), end...), responseTail...),
 	)
-	if !bytes.Equal(second.passthrough, end) ||
-		len(second.responses) != 1 ||
-		second.responses[0].windowID != "@1" ||
-		!bytes.Equal(second.responses[0].data, responseTail) {
-		t.Fatalf("paste end then response payload routing = %#v", second)
-	}
+	assertInputActions(t, second, []attachInputAction{
+		{userInput: true, bracketedPaste: true, data: end[:len(end)-1]},
+		{userInput: true, data: []byte(" ")},
+		{windowID: "@1", data: responseTail},
+	})
 }
 
 func TestResponseLikeBytesInsideMultiReadPasteRemainOpaque(t *testing.T) {
@@ -3632,95 +3575,80 @@ func TestResponseLikeBytesInsideMultiReadPasteRemainOpaque(t *testing.T) {
 
 	firstPaste := []byte("\x1b[200~/tmp/")
 	first := client.routeInput(firstPaste)
-	if !bytes.Equal(first.passthrough, firstPaste) ||
-		len(first.responses) != 0 {
-		t.Fatalf("first paste chunk routing = %#v", first)
-	}
+	assertInputActions(t, first, []attachInputAction{
+		{userInput: true, bracketedPaste: true, data: firstPaste},
+	})
 
 	secondPaste := []byte("aÛ201~\x1b[?62;4c.png\x1b[201~ ")
 	second := client.routeInput(secondPaste)
-	if !bytes.Equal(second.passthrough, secondPaste) ||
-		len(second.responses) != 0 {
-		t.Fatalf("second paste chunk routing = %#v", second)
-	}
+	assertInputActions(t, second, []attachInputAction{
+		{userInput: true, bracketedPaste: true, data: secondPaste[:len(secondPaste)-1]},
+		{userInput: true, data: []byte(" ")},
+	})
 
 	terminator := client.routeInput([]byte{'\a'})
-	if len(terminator.responses) != 1 ||
-		terminator.responses[0].windowID != "@1" ||
-		!bytes.Equal(terminator.responses[0].data, []byte{'\a'}) {
-		t.Fatalf("reply after multi-read paste routing = %#v", terminator)
-	}
+	assertInputActions(t, terminator, []attachInputAction{
+		{windowID: "@1", data: []byte{'\a'}},
+	})
 }
 
 func TestCompletedCarriedReplyDoesNotLeakBeforePaste(t *testing.T) {
 	client := &attachClient{}
 	client.expectTerminalResponses("@1", 1)
 	client.expectTerminalResponses("@2", 1)
-	if held := client.routeInput([]byte("\x1b[?6")); len(
-		held.passthrough,
-	) != 0 {
-		t.Fatalf("partial reply passthrough = %q", held.passthrough)
-	}
+	held := client.routeInput([]byte("\x1b[?6"))
+	assertInputActions(t, held, nil)
 
 	secondReplyPrefix := []byte("\x1b]11;rgb:12")
 	paste := []byte("\x1b[200~x\x1b[201~")
 	input := append([]byte("2;4c"), secondReplyPrefix...)
 	input = append(input, paste...)
 	routing := client.routeInput(input)
-	if len(routing.responses) != 1 ||
-		routing.responses[0].windowID != "@1" ||
-		!bytes.Equal(routing.responses[0].data, []byte("\x1b[?62;4c")) {
-		t.Fatalf("completed carry response routing = %#v", routing.responses)
-	}
-	if !bytes.Equal(routing.passthrough, paste) {
-		t.Fatalf("paste passthrough = %q, want %q", routing.passthrough, paste)
-	}
+	assertInputActions(t, routing, []attachInputAction{
+		{windowID: "@1", data: []byte("\x1b[?62;4c")},
+		{userInput: true, bracketedPaste: true, data: paste},
+	})
 }
 
 func TestUserPrefixBeforePasteAfterHeldResponseIsPreserved(t *testing.T) {
 	client := &attachClient{}
 	client.expectTerminalResponses("@1", 1)
-	if held := client.routeInput([]byte("\x1b]11;rgb:12")); len(
-		held.passthrough,
-	) != 0 {
-		t.Fatalf("partial reply passthrough = %q", held.passthrough)
-	}
+	held := client.routeInput([]byte("\x1b]11;rgb:12"))
+	assertInputActions(t, held, nil)
 
 	input := []byte("abc\x1b[200~/tmp/a.png\x1b[201~ ")
 	routing := client.routeInput(input)
-	if !bytes.Equal(routing.passthrough, input) ||
-		len(routing.responses) != 0 {
-		t.Fatalf("user prefix + paste routing = %#v", routing)
-	}
+	assertInputActions(t, routing, []attachInputAction{
+		{userInput: true, data: input[:3]},
+		{userInput: true, bracketedPaste: true, data: input[3 : len(input)-1]},
+		{userInput: true, data: input[len(input)-1:]},
+	})
 }
 
 func TestSplitUtf8BeforeC1LikeTextDoesNotStartPaste(t *testing.T) {
 	client := &attachClient{}
 	client.expectTerminalResponses("@1", 1)
 	first := client.routeInput([]byte{0xc5})
-	if !bytes.Equal(first.passthrough, []byte{0xc5}) {
-		t.Fatalf("UTF-8 lead passthrough = %x", first.passthrough)
-	}
+	assertInputActions(t, first, []attachInputAction{
+		{userInput: true, data: []byte{0xc5}},
+	})
 	second := client.routeInput([]byte{0x9b, '2', '0', '0'})
-	if !bytes.Equal(
-		second.passthrough,
-		[]byte{0x9b, '2', '0', '0'},
-	) {
-		t.Fatalf("UTF-8 continuation passthrough = %x", second.passthrough)
-	}
+	assertInputActions(t, second, []attachInputAction{
+		{userInput: true, data: []byte{0x9b, '2', '0', '0'}},
+	})
 	third := client.routeInput([]byte{'~'})
-	if !bytes.Equal(third.passthrough, []byte{'~'}) ||
-		client.inputBracketedPasteActive {
-		t.Fatalf("C1-like UTF-8 text activated paste: %#v", third)
+	assertInputActions(t, third, []attachInputAction{
+		{userInput: true, data: []byte{'~'}},
+	})
+	if client.inputBracketedPasteActive {
+		t.Fatal("unexpected paste tracking state")
 	}
 
 	response := []byte("\x1b[?62;4c")
 	routing := client.routeInput(response)
-	if len(routing.responses) != 1 ||
-		routing.responses[0].windowID != "@1" ||
-		!bytes.Equal(routing.responses[0].data, response) {
-		t.Fatalf("response after UTF-8 text routing = %#v", routing)
-	}
+	assertInputActions(t, routing, []attachInputAction{
+		{windowID: "@1", data: response},
+	})
 }
 
 func TestSplitPasteStartAfterUserInputActivatesOpaquePaste(t *testing.T) {
@@ -3729,25 +3657,20 @@ func TestSplitPasteStartAfterUserInputActivatesOpaquePaste(t *testing.T) {
 
 	first := []byte("abc\x1b[20")
 	firstRouting := client.routeInput(first)
-	if !bytes.Equal(firstRouting.passthrough, []byte("abc")) ||
-		len(firstRouting.responses) != 0 {
-		t.Fatalf("partial user paste start routing = %#v", firstRouting)
-	}
+	assertInputActions(t, firstRouting, []attachInputAction{
+		{userInput: true, data: []byte("abc")},
+	})
 	second := []byte("0~/tmp/a")
 	secondRouting := client.routeInput(second)
 	wantSecond := []byte("\x1b[200~/tmp/a")
-	if !bytes.Equal(secondRouting.passthrough, wantSecond) ||
-		len(secondRouting.responses) != 0 ||
-		len(secondRouting.actions) != 1 ||
-		!secondRouting.actions[0].bracketedPaste {
-		t.Fatalf("completed user paste start routing = %#v", secondRouting)
-	}
+	assertInputActions(t, secondRouting, []attachInputAction{
+		{userInput: true, bracketedPaste: true, data: wantSecond},
+	})
 	fakeResponseAndEnd := []byte("\x1b[?62;4c.png\x1b[201~")
 	thirdRouting := client.routeInput(fakeResponseAndEnd)
-	if !bytes.Equal(thirdRouting.passthrough, fakeResponseAndEnd) ||
-		len(thirdRouting.responses) != 0 {
-		t.Fatalf("opaque split paste routing = %#v", thirdRouting)
-	}
+	assertInputActions(t, thirdRouting, []attachInputAction{
+		{userInput: true, bracketedPaste: true, data: fakeResponseAndEnd},
+	})
 }
 
 func TestPasteStartCarryFlushesOnResponseDeadline(t *testing.T) {
@@ -3764,10 +3687,9 @@ func TestPasteStartCarryFlushesOnResponseDeadline(t *testing.T) {
 	generationBefore := client.terminalResponseCarryGeneration
 	client.activityMu.Unlock()
 	routing := client.routeInput([]byte("more\x1b[20"))
-	if len(routing.responses) != 1 ||
-		!bytes.Equal(routing.responses[0].data, []byte("more")) {
-		t.Fatalf("partial paste start routing = %#v", routing)
-	}
+	assertInputActions(t, routing, []attachInputAction{
+		{windowID: "@1", data: []byte("more")},
+	})
 	client.activityMu.Lock()
 	generation := client.terminalResponseCarryGeneration
 	client.terminalResponseUntil = time.Now().Add(-time.Second)
@@ -3789,28 +3711,22 @@ func TestPasteStartCarryFlushesOnResponseDeadline(t *testing.T) {
 	client.expectTerminalResponses("@2", 1)
 	remainder := []byte("0~payload\x1b[?62;4c\x1b[201~")
 	pasteRouting := client.routeInput(remainder)
-	if !bytes.Equal(pasteRouting.passthrough, remainder) ||
-		len(pasteRouting.responses) != 0 {
-		t.Fatalf("flushed split paste routing = %#v", pasteRouting)
-	}
+	assertInputActions(t, pasteRouting, []attachInputAction{
+		{userInput: true, data: remainder},
+	})
 	response := []byte("\x1b[?62;4c")
 	responseRouting := client.routeInput(response)
-	if len(responseRouting.responses) != 1 ||
-		responseRouting.responses[0].windowID != "@2" ||
-		!bytes.Equal(responseRouting.responses[0].data, response) {
-		t.Fatalf("post-flush response routing = %#v", responseRouting)
-	}
+	assertInputActions(t, responseRouting, []attachInputAction{
+		{windowID: "@2", data: response},
+	})
 	close(client.done)
 }
 
 func TestExpiredCarryPreservesSplitBracketedPasteStart(t *testing.T) {
 	client := &attachClient{}
 	client.expectTerminalResponses("@1", 1)
-	if held := client.routeInput([]byte("\x1b]11;rgb:12\x1b[20")); len(
-		held.passthrough,
-	) != 0 {
-		t.Fatalf("partial reply passthrough = %q", held.passthrough)
-	}
+	held := client.routeInput([]byte("\x1b]11;rgb:12\x1b[20"))
+	assertInputActions(t, held, nil)
 	client.activityMu.Lock()
 	client.terminalResponseUntil = time.Now().Add(-time.Second)
 	client.activityMu.Unlock()
@@ -3818,19 +3734,11 @@ func TestExpiredCarryPreservesSplitBracketedPasteStart(t *testing.T) {
 	remainder := []byte("0~/tmp/a.png\x1b[201~ ")
 	routing := client.routeInput(remainder)
 	want := []byte("\x1b[200~/tmp/a.png\x1b[201~ ")
-	if !bytes.Equal(routing.passthrough, want) ||
-		len(routing.responses) != 1 ||
-		routing.responses[0].windowID != "@1" ||
-		!bytes.Equal(
-			routing.responses[0].data,
-			[]byte("\x1b]11;rgb:12"),
-		) {
-		t.Fatalf(
-			"expired split paste routing = %#v, want passthrough %q",
-			routing,
-			want,
-		)
-	}
+	assertInputActions(t, routing, []attachInputAction{
+		{windowID: "@1", data: []byte("\x1b]11;rgb:12")},
+		{userInput: true, bracketedPaste: true, data: want[:len(want)-1]},
+		{userInput: true, data: []byte(" ")},
+	})
 }
 
 // Content that trails the paste in the same read (after CSI 201~) must survive
@@ -3838,20 +3746,16 @@ func TestExpiredCarryPreservesSplitBracketedPasteStart(t *testing.T) {
 func TestTrailingInputAfterAbortingPasteIsPreserved(t *testing.T) {
 	client := &attachClient{}
 	client.expectTerminalResponses("@1", 1)
-	if held := client.routeInput([]byte("\x1b]11;rgb:12")); len(
-		held.passthrough,
-	) != 0 {
-		t.Fatalf("partial reply passthrough = %q", held.passthrough)
-	}
+	held := client.routeInput([]byte("\x1b]11;rgb:12"))
+	assertInputActions(t, held, nil)
 
 	input := []byte("\x1b[200~/tmp/a.png\x1b[201~ done\r")
 	routing := client.routeInput(input)
-	if !bytes.Equal(routing.passthrough, input) {
-		t.Fatalf("passthrough = %q, want %q", routing.passthrough, input)
-	}
-	if len(routing.responses) != 0 {
-		t.Fatalf("input routed as response = %#v", routing.responses)
-	}
+	assertInputActions(t, routing, []attachInputAction{
+		{userInput: true, bracketedPaste: true, data: input[:len(input)-6]},
+		{userInput: true, data: []byte(" ")},
+		{userInput: true, data: []byte("done\r")},
+	})
 }
 
 // A partial reply that expires while held must not prefix (and corrupt) a
@@ -3859,32 +3763,19 @@ func TestTrailingInputAfterAbortingPasteIsPreserved(t *testing.T) {
 func TestBracketedPasteAfterExpiredCarryHasNoStalePrefix(t *testing.T) {
 	client := &attachClient{}
 	client.expectTerminalResponses("@1", 1)
-	if held := client.routeInput([]byte("\x1b]11;rgb:12")); len(
-		held.passthrough,
-	) != 0 {
-		t.Fatalf("partial reply passthrough = %q", held.passthrough)
-	}
+	held := client.routeInput([]byte("\x1b]11;rgb:12"))
+	assertInputActions(t, held, nil)
 	client.activityMu.Lock()
 	client.terminalResponseUntil = time.Now().Add(-time.Second)
 	client.activityMu.Unlock()
 
 	paste := []byte("\x1b[200~/tmp/a.png\x1b[201~ ")
 	routing := client.routeInput(paste)
-	if !bytes.Equal(routing.passthrough, paste) {
-		t.Fatalf(
-			"expired-carry paste passthrough = %q, want %q",
-			routing.passthrough,
-			paste,
-		)
-	}
-	if len(routing.responses) != 1 ||
-		routing.responses[0].windowID != "@1" ||
-		!bytes.Equal(
-			routing.responses[0].data,
-			[]byte("\x1b]11;rgb:12"),
-		) {
-		t.Fatalf("expired-carry response routing = %#v", routing.responses)
-	}
+	assertInputActions(t, routing, []attachInputAction{
+		{windowID: "@1", data: []byte("\x1b]11;rgb:12")},
+		{userInput: true, bracketedPaste: true, data: paste[:len(paste)-1]},
+		{userInput: true, data: []byte(" ")},
+	})
 }
 
 // A query reply that completes before a paste in the same read is still routed
@@ -3896,14 +3787,11 @@ func TestCompleteResponseThenBracketedPasteRoutesBoth(t *testing.T) {
 	paste := []byte("\x1b[200~/tmp/a.png\x1b[201~ ")
 
 	routing := client.routeInput(append(append([]byte(nil), response...), paste...))
-	if len(routing.responses) != 1 ||
-		routing.responses[0].windowID != "@1" ||
-		!bytes.Equal(routing.responses[0].data, response) {
-		t.Fatalf("response routing = %#v", routing.responses)
-	}
-	if !bytes.Equal(routing.passthrough, paste) {
-		t.Fatalf("paste passthrough = %q, want %q", routing.passthrough, paste)
-	}
+	assertInputActions(t, routing, []attachInputAction{
+		{windowID: "@1", data: response},
+		{userInput: true, bracketedPaste: true, data: paste[:len(paste)-1]},
+		{userInput: true, data: []byte(" ")},
+	})
 }
 
 // Plain user input typed before a paste while a reply is expected must not be
@@ -3914,12 +3802,11 @@ func TestUserInputBeforeBracketedPasteIsPreserved(t *testing.T) {
 	input := []byte("abc\x1b[200~/tmp/a.png\x1b[201~ ")
 
 	routing := client.routeInput(input)
-	if !bytes.Equal(routing.passthrough, input) {
-		t.Fatalf("passthrough = %q, want %q", routing.passthrough, input)
-	}
-	if len(routing.responses) != 0 {
-		t.Fatalf("user input routed as response = %#v", routing.responses)
-	}
+	assertInputActions(t, routing, []attachInputAction{
+		{userInput: true, data: input[:3]},
+		{userInput: true, bracketedPaste: true, data: input[3 : len(input)-1]},
+		{userInput: true, data: input[len(input)-1:]},
+	})
 }
 
 func TestSplitTerminalResponseIntroducerIsRoutedOnce(t *testing.T) {
@@ -3954,8 +3841,7 @@ func TestSplitTerminalResponseIntroducerIsRoutedOnce(t *testing.T) {
 			client.expectTerminalResponses("@1", 1)
 
 			firstRouting := client.routeInput(test.first)
-			if len(firstRouting.passthrough) != 0 ||
-				len(firstRouting.responses) != 0 ||
+			if len(firstRouting.actions) != 0 ||
 				firstRouting.claimsFocus {
 				t.Fatalf(
 					"first fragment routing = %#v, want held input",
@@ -3963,16 +3849,15 @@ func TestSplitTerminalResponseIntroducerIsRoutedOnce(t *testing.T) {
 				)
 			}
 			secondRouting := client.routeInput(test.second)
-			if len(secondRouting.passthrough) != 0 ||
-				secondRouting.claimsFocus ||
-				len(secondRouting.responses) != 1 {
+			if secondRouting.claimsFocus ||
+				len(secondRouting.actions) != 1 {
 				t.Fatalf(
 					"completed response routing = %#v",
 					secondRouting,
 				)
 			}
-			routed := secondRouting.responses[0]
-			if routed.windowID != "@1" ||
+			routed := secondRouting.actions[0]
+			if routed.userInput || routed.windowID != "@1" ||
 				!bytes.Equal(routed.data, test.response) {
 				t.Fatalf(
 					"routed response = %#v, want @1 %q",
@@ -3990,17 +3875,13 @@ func TestSplitUtf8ContinuationIsNotTreatedAsC1Response(t *testing.T) {
 	encoded := []byte("丝")
 
 	firstRouting := client.routeInput(encoded[:2])
-	if !bytes.Equal(firstRouting.passthrough, encoded[:2]) ||
-		!firstRouting.claimsFocus ||
-		len(firstRouting.responses) != 0 {
-		t.Fatalf("UTF-8 prefix routing = %#v", firstRouting)
-	}
+	assertInputActions(t, firstRouting, []attachInputAction{
+		{userInput: true, data: encoded[:2]},
+	})
 	secondRouting := client.routeInput(encoded[2:])
-	if !bytes.Equal(secondRouting.passthrough, encoded[2:]) ||
-		!secondRouting.claimsFocus ||
-		len(secondRouting.responses) != 0 {
-		t.Fatalf("UTF-8 continuation routing = %#v", secondRouting)
-	}
+	assertInputActions(t, secondRouting, []attachInputAction{
+		{userInput: true, data: encoded[2:]},
+	})
 	client.activityMu.Lock()
 	carry := append([]byte(nil), client.terminalResponseCarry...)
 	client.activityMu.Unlock()
@@ -4016,16 +3897,12 @@ func TestTerminalResponseFollowedByInputRoutesBoth(t *testing.T) {
 
 	routing := client.routeInput(append(response, 'x'))
 
-	if len(routing.responses) != 1 {
-		t.Fatalf("routed response count = %d, want 1", len(routing.responses))
-	}
-	if routing.responses[0].windowID != "@1" ||
-		!bytes.Equal(routing.responses[0].data, response) {
-		t.Fatalf("routed response = %#v", routing.responses[0])
-	}
-	if !routing.claimsFocus || string(routing.passthrough) != "x" {
-		t.Fatalf("input routing = %#v, want focus-claiming x", routing)
-	}
+	assertInputActions(t, routing, []attachInputAction{
+
+		{windowID: "@1", data: response},
+
+		{userInput: true, data: []byte("x")},
+	})
 }
 
 func TestRealInputClaimsFocusDuringTerminalResponseGrace(t *testing.T) {
@@ -5489,6 +5366,10 @@ func TestHoldAgentWindowCommandWrapsFastFailure(t *testing.T) {
 }
 
 func TestCreateWindowHoldsAgentWindowOpenOnFastFailure(t *testing.T) {
+	setTestHomeDir(t, t.TempDir())
+	t.Setenv("SHELL", "/bin/sh")
+	t.Setenv("ENV", "")
+	t.Setenv("BASH_ENV", "")
 	server := newMuxServer("test")
 	t.Cleanup(server.close)
 
@@ -5502,105 +5383,26 @@ func TestCreateWindowHoldsAgentWindowOpenOnFastFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	deadline := time.Now().Add(1 * time.Second)
-	for time.Now().Before(deadline) {
-		server.mu.Lock()
-		closed := window.closed
-		server.mu.Unlock()
-		if closed {
-			t.Fatal("agent window closed after a fast failure; expected it to stay open")
-		}
-		time.Sleep(25 * time.Millisecond)
+	if err := server.writeWindow(window.id, []byte("printf '%s%s\\n' round4- ready\n")); err != nil {
+		t.Fatal(err)
 	}
-}
-
-// TestCreateWindowAfterCloseDoesNotLeakWindow pins the shutdown race: close
-// sets s.closed and snapshots s.windows under one lock, so a window published
-// after that point would never be torn down and its watchers would join the
-// wait group after close had already waited on it. createWindow must instead
-// refuse without starting a process.
-func TestCreateWindowAfterCloseDoesNotLeakWindow(t *testing.T) {
-	server := newMuxServer("test")
-	server.close()
-
-	window, err := server.createWindow(createWindowOptions{command: "sleep 30"})
-	if !errors.Is(err, errServerClosed) {
-		t.Fatalf("createWindow after close = (%v, %v), want errServerClosed", window, err)
-	}
-	if window != nil {
-		t.Fatalf("createWindow after close returned window %+v, want nil", window)
-	}
-
-	server.mu.Lock()
-	count := len(server.windows)
-	server.mu.Unlock()
-	if count != 0 {
-		t.Fatalf("closed server published %d windows, want 0", count)
-	}
-
-	// The watcher group must be balanced, so a second close returns promptly
-	// rather than blocking for windowWatcherShutdownTimeout.
-	start := time.Now()
-	server.waitForWindowWatchers(windowWatcherShutdownTimeout)
-	if elapsed := time.Since(start); elapsed >= windowWatcherShutdownTimeout {
-		t.Fatalf("waiting for watchers took %s; the group was left unbalanced", elapsed)
-	}
-}
-
-// TestConcurrentCloseWaitsForTeardown pins that a second close does not report
-// the server as torn down while the first is still tearing it down. Shutdown is
-// triggered concurrently (`go s.close()`) as well as from deferred calls, so a
-// caller returning early would let a test cleanup — or the process — finish
-// while watchers were still running.
-func TestConcurrentCloseWaitsForTeardown(t *testing.T) {
-	server := newMuxServer("test")
-	release := make(chan struct{})
-	server.windowWatchers.Add(1)
-	go func() {
-		<-release
-		server.windowWatchers.Done()
-	}()
-
-	firstReturned := make(chan struct{})
-	go func() {
-		server.close()
-		close(firstReturned)
-	}()
-
-	// Let the first caller reach its wait.
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(3 * time.Second)
 	for {
 		server.mu.Lock()
-		started := server.closed
+		closed := window.closed
+		history := string(window.history)
 		server.mu.Unlock()
-		if started {
-			break
+		if closed {
+			t.Fatal("agent window closed after a fast failure")
+		}
+		if strings.Contains(history, "round4-ready") {
+			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("first close never started")
+			t.Fatalf("fallback shell did not execute marker: %q", history)
 		}
 		time.Sleep(time.Millisecond)
 	}
-
-	secondReturned := make(chan struct{})
-	go func() {
-		server.close()
-		close(secondReturned)
-	}()
-
-	select {
-	case <-secondReturned:
-		t.Fatal("second close returned while the first was still tearing down")
-	case <-time.After(50 * time.Millisecond):
-	}
-
-	close(release)
-	select {
-	case <-secondReturned:
-	case <-time.After(windowWatcherShutdownTimeout + time.Second):
-		t.Fatal("second close did not return after teardown finished")
-	}
-	<-firstReturned
 }
 
 // TestCloseMarksWindowsClosedSoLateWatchersAreInert covers the bounded wait: a
@@ -6050,8 +5852,8 @@ func TestThemeChangedRedrawForcesForegroundRepaint(t *testing.T) {
 	logMu.Lock()
 	recorded := append([]string(nil), events...)
 	logMu.Unlock()
-	firstWrite := indexOfString(recorded, "hint-write")
-	danceIndex := indexOfString(recorded, "dance:@1:120x40")
+	firstWrite := slices.Index(recorded, "hint-write")
+	danceIndex := slices.Index(recorded, "dance:@1:120x40")
 	if firstWrite < 0 {
 		t.Fatalf("theme hint was not written to the pty; events = %#v", recorded)
 	}
@@ -6086,15 +5888,6 @@ func TestThemeChangedRedrawForcesForegroundRepaint(t *testing.T) {
 			)
 		}
 	}
-}
-
-func indexOfString(values []string, target string) int {
-	for i, v := range values {
-		if v == target {
-			return i
-		}
-	}
-	return -1
 }
 
 func TestThemeChangedRedrawSkipsPlainShell(t *testing.T) {
@@ -6768,75 +6561,6 @@ func TestBracketedPasteInputPreservesFocusReportBytes(t *testing.T) {
 
 	if got := string(output); got != "\x1b[200~typed\x1b[I\x1b[Oinput\x1b[201~" {
 		t.Fatalf("pty input = %q, want opaque bracketed paste", got)
-	}
-}
-
-func TestInjectInputControlPreservesBracketedPaste(t *testing.T) {
-	server := newMuxServer("test")
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reader.Close()
-	window := &muxWindow{id: "@1", index: 0, pty: wrapPty(t, writer), lastActivity: time.Now()}
-	server.windows = []*muxWindow{window}
-	server.activeID = "@1"
-	const paste = "\x1b[200~/tmp/image.png\x1b[201~ "
-
-	server.handleControlRequest(&controlClient{}, controlMessage{
-		Type:           "inject_input",
-		WindowID:       "@1",
-		Data:           paste,
-		BracketedPaste: true,
-	})
-	if err := window.pty.Close(); err != nil {
-		t.Fatal(err)
-	}
-	output, err := io.ReadAll(reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if got := string(output); got != paste {
-		t.Fatalf("injected PTY input = %q, want exact bracketed paste", got)
-	}
-}
-
-func TestInjectInputControlMarksBracketedPasteForWin32InputMode(t *testing.T) {
-	server := newMuxServer("test")
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reader.Close()
-	window := &muxWindow{
-		id:             "@1",
-		index:          0,
-		pty:            wrapPty(t, writer),
-		lastActivity:   time.Now(),
-		win32InputMode: true,
-	}
-	server.windows = []*muxWindow{window}
-	server.activeID = "@1"
-	const paste = "\x1b[200~/tmp/image.png\x1b[201~ "
-
-	server.handleControlRequest(&controlClient{}, controlMessage{
-		Type:           "inject_input",
-		WindowID:       "@1",
-		Data:           paste,
-		BracketedPaste: true,
-	})
-	if err := window.pty.Close(); err != nil {
-		t.Fatal(err)
-	}
-	output, err := io.ReadAll(reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	want := encodeBracketedPasteInputForWin32InputMode([]byte(paste))
-	if !bytes.Equal(output, want) {
-		t.Fatalf("injected PTY input = %q, want encoded bracketed paste %q", output, want)
 	}
 }
 
@@ -8274,240 +7998,6 @@ func TestActiveOutputStripsSplitLocallyAnsweredThemeQueryFromAttach(t *testing.T
 	}
 }
 
-func TestEncodeTerminalResponsesForWin32InputMode(t *testing.T) {
-	cases := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{name: "plain text passes through", input: "hello\r", want: "hello\r"},
-		{
-			name:  "csi passes through",
-			input: "\x1b[I\x1b[?997;2n",
-			want:  "\x1b[I\x1b[?997;2n",
-		},
-		{
-			name:  "osc with bel is encoded",
-			input: "\x1b]11;?\x07",
-			want: "\x1b[0;0;27;1;0;1_\x1b[0;0;93;1;0;1_\x1b[0;0;49;1;0;1_" +
-				"\x1b[0;0;49;1;0;1_\x1b[0;0;59;1;0;1_\x1b[0;0;63;1;0;1_" +
-				"\x1b[0;0;7;1;0;1_",
-		},
-		{
-			name:  "osc with st is encoded",
-			input: "\x1b]11;?\x1b\\",
-			want: "\x1b[0;0;27;1;0;1_\x1b[0;0;93;1;0;1_\x1b[0;0;49;1;0;1_" +
-				"\x1b[0;0;49;1;0;1_\x1b[0;0;59;1;0;1_\x1b[0;0;63;1;0;1_" +
-				"\x1b[0;0;27;1;0;1_\x1b[0;0;92;1;0;1_",
-		},
-		{
-			name:  "dcs is encoded",
-			input: "\x1bP>|mux\x1b\\",
-			want: "\x1b[0;0;27;1;0;1_\x1b[0;0;80;1;0;1_\x1b[0;0;62;1;0;1_" +
-				"\x1b[0;0;124;1;0;1_\x1b[0;0;109;1;0;1_\x1b[0;0;117;1;0;1_" +
-				"\x1b[0;0;120;1;0;1_\x1b[0;0;27;1;0;1_\x1b[0;0;92;1;0;1_",
-		},
-		{
-			name:  "mixed output only encodes the osc portion",
-			input: "a\x1b]10;rgb:aaaa/bbbb/cccc\x07\x1b[Ib",
-			want: "a" + win32EncodeSequence("\x1b]10;rgb:aaaa/bbbb/cccc\x07") +
-				"\x1b[Ib",
-		},
-	}
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			got := string(encodeTerminalResponsesForWin32InputMode(
-				[]byte(testCase.input),
-			))
-			if got != testCase.want {
-				t.Fatalf(
-					"encodeTerminalResponsesForWin32InputMode(%q) = %q, want %q",
-					testCase.input,
-					got,
-					testCase.want,
-				)
-			}
-		})
-	}
-}
-
-func win32EncodeSequence(sequence string) string {
-	var buffer bytes.Buffer
-	writeWin32InputModeKeyEvents(&buffer, []byte(sequence))
-	return buffer.String()
-}
-
-func TestEncodeTerminalInputForWin32InputMode(t *testing.T) {
-	cases := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{
-			name:  "bare escape becomes a key event",
-			input: "\x1b",
-			want:  "\x1b[27;1;27;1;0;1_\x1b[27;1;27;0;0;1_",
-		},
-		{name: "empty input passes through", input: "", want: ""},
-		{name: "cursor key passes through", input: "\x1b[A", want: "\x1b[A"},
-		{
-			name:  "modified cursor key passes through",
-			input: "\x1b[1;5C",
-			want:  "\x1b[1;5C",
-		},
-		{name: "alt chord passes through", input: "\x1bb", want: "\x1bb"},
-		{name: "double escape passes through", input: "\x1b\x1b", want: "\x1b\x1b"},
-		{name: "ctrl-c passes through", input: "\x03", want: "\x03"},
-		{name: "plain text passes through", input: "esc", want: "esc"},
-	}
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			got := string(encodeTerminalInputForWin32InputMode(
-				[]byte(testCase.input),
-			))
-			if got != testCase.want {
-				t.Fatalf(
-					"encodeTerminalInputForWin32InputMode(%q) = %q, want %q",
-					testCase.input,
-					got,
-					testCase.want,
-				)
-			}
-		})
-	}
-}
-
-func TestEncodeBracketedPasteInputForWin32InputMode(t *testing.T) {
-	input := "\x1b[200~hello\x1b[?62;4c\x1b[201~"
-	want := win32InputModeEscapeCharacterEvent + "[200~hello" +
-		win32InputModeEscapeCharacterEvent + "[?62;4c" +
-		win32InputModeEscapeCharacterEvent + "[201~"
-	got := string(encodeBracketedPasteInputForWin32InputMode([]byte(input)))
-	if got != want {
-		t.Fatalf(
-			"encodeBracketedPasteInputForWin32InputMode(%q) = %q, want %q",
-			input,
-			got,
-			want,
-		)
-	}
-}
-
-func TestStripWin32InputModeRequests(t *testing.T) {
-	cases := []struct {
-		name      string
-		prev      string
-		data      string
-		wantOut   string
-		wantCarry string
-	}{
-		{
-			name:    "strips enable request",
-			data:    "\x1b[?9001h",
-			wantOut: "",
-		},
-		{
-			name:    "strips disable request",
-			data:    "\x1b[?9001l",
-			wantOut: "",
-		},
-		{
-			name:    "keeps other private modes",
-			data:    "\x1b[?9001h\x1b[?1004h\x1b[?25l",
-			wantOut: "\x1b[?1004h\x1b[?25l",
-		},
-		{
-			name:    "leaves cursor key untouched",
-			data:    "\x1b[Aecho\r",
-			wantOut: "\x1b[Aecho\r",
-		},
-		{
-			name:    "leaves title osc untouched",
-			data:    "\x1b]0;title\x07",
-			wantOut: "\x1b]0;title\x07",
-		},
-		{
-			name:    "strips request between output",
-			data:    "before\x1b[?9001hafter",
-			wantOut: "beforeafter",
-		},
-		{
-			name:      "buffers split request prefix",
-			data:      "text\x1b[?90",
-			wantOut:   "text",
-			wantCarry: "\x1b[?90",
-		},
-		{
-			name:    "completes split request from carry",
-			prev:    "\x1b[?90",
-			data:    "01h\x1b[A",
-			wantOut: "\x1b[A",
-		},
-		{
-			name:    "flushes non-request escape prefix",
-			prev:    "\x1b[?90",
-			data:    "0m done",
-			wantOut: "\x1b[?900m done",
-		},
-	}
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			out, carry := stripWin32InputModeRequests(
-				[]byte(testCase.prev),
-				[]byte(testCase.data),
-			)
-			if string(out) != testCase.wantOut {
-				t.Fatalf("out = %q, want %q", out, testCase.wantOut)
-			}
-			if string(carry) != testCase.wantCarry {
-				t.Fatalf("carry = %q, want %q", carry, testCase.wantCarry)
-			}
-		})
-	}
-}
-
-func TestWin32InputModeRequestStripperWriteHandlesSplitAcrossWrites(t *testing.T) {
-	var sink bytes.Buffer
-	stripper := newWin32InputModeRequestStripper(&sink)
-	// A win32-input-mode request split across two writes must still be removed
-	// so the ConPTY hosting the attach process never sees it.
-	if _, err := stripper.Write([]byte("prompt\x1b[?90")); err != nil {
-		t.Fatalf("first write: %v", err)
-	}
-	if _, err := stripper.Write([]byte("01h\x1b[A")); err != nil {
-		t.Fatalf("second write: %v", err)
-	}
-	if got := sink.String(); got != "prompt\x1b[A" {
-		t.Fatalf("stripped output = %q, want %q", got, "prompt\x1b[A")
-	}
-}
-
-func TestWin32InputModeRequestStripperFlushEmitsUnterminatedCarry(t *testing.T) {
-	var sink bytes.Buffer
-	stripper := newWin32InputModeRequestStripper(&sink)
-	// A chunk ending on a partial request prefix is buffered, not emitted...
-	if _, err := stripper.Write([]byte("tail\x1b[?90")); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	if got := sink.String(); got != "tail" {
-		t.Fatalf("pre-flush output = %q, want %q", got, "tail")
-	}
-	// ...but if the stream ends there, Flush must not drop those bytes.
-	if err := stripper.Flush(); err != nil {
-		t.Fatalf("flush: %v", err)
-	}
-	if got := sink.String(); got != "tail\x1b[?90" {
-		t.Fatalf("post-flush output = %q, want %q", got, "tail\x1b[?90")
-	}
-	// Flush is idempotent once the carry is drained.
-	if err := stripper.Flush(); err != nil {
-		t.Fatalf("second flush: %v", err)
-	}
-	if got := sink.String(); got != "tail\x1b[?90" {
-		t.Fatalf("double-flush output = %q, want unchanged %q", got, "tail\x1b[?90")
-	}
-}
-
 func TestThemeHintRefreshDataSuppressesOscUnderWin32InputMode(t *testing.T) {
 	hint := []byte("\x1b]11;rgb:1111/2222/3333\x1b\\")
 
@@ -8607,81 +8097,6 @@ func TestWin32InputModeResetRestoresRawThemeAnswers(t *testing.T) {
 	})
 	if got != backgroundReport {
 		t.Fatalf("window pty got = %q, want raw background report %q", got, backgroundReport)
-	}
-}
-
-// TestWriteWindowEncodesBareEscapeUnderWin32InputMode verifies that a lone
-// Escape keystroke relayed to a Windows window is delivered as an explicit
-// win32-input-mode key event. ConPTY's input parser holds a bare ESC back until
-// later input disambiguates it, so relaying the raw byte leaves Escape looking
-// dead until the next keypress.
-func TestWriteWindowEncodesBareEscapeUnderWin32InputMode(t *testing.T) {
-	inputReader, inputWriter, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = inputReader.Close()
-		_ = inputWriter.Close()
-	})
-
-	window := &muxWindow{
-		id:             "@1",
-		pty:            wrapPty(t, inputWriter),
-		lastActivity:   time.Now(),
-		win32InputMode: true,
-	}
-	server := newMuxServer("test")
-	server.windows = []*muxWindow{window}
-	server.activeID = "@1"
-
-	if err := server.writeWindow("@1", []byte("\x1b")); err != nil {
-		t.Fatal(err)
-	}
-
-	got := readPipeUntil(t, inputReader, func(output string) bool {
-		return output == win32InputModeEscapeKeyEvents
-	})
-	if got != win32InputModeEscapeKeyEvents {
-		t.Fatalf(
-			"window pty got = %q, want %q",
-			got,
-			win32InputModeEscapeKeyEvents,
-		)
-	}
-}
-
-// TestWriteWindowKeepsBareEscapeRawWithoutWin32InputMode verifies that the
-// Escape rewrite is scoped to ConPTY: a POSIX window must still receive the raw
-// byte, which every other terminal delivers unambiguously.
-func TestWriteWindowKeepsBareEscapeRawWithoutWin32InputMode(t *testing.T) {
-	inputReader, inputWriter, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = inputReader.Close()
-		_ = inputWriter.Close()
-	})
-
-	window := &muxWindow{
-		id:           "@1",
-		pty:          wrapPty(t, inputWriter),
-		lastActivity: time.Now(),
-	}
-	server := newMuxServer("test")
-	server.windows = []*muxWindow{window}
-	server.activeID = "@1"
-
-	if err := server.writeWindow("@1", []byte("\x1b")); err != nil {
-		t.Fatal(err)
-	}
-
-	got := readPipeUntil(t, inputReader, func(output string) bool {
-		return output == "\x1b"
-	})
-	if got != "\x1b" {
-		t.Fatalf("window pty got = %q, want a raw escape byte", got)
 	}
 }
 
@@ -9837,14 +9252,19 @@ func TestWindowMetadataTracksSplitOscTitle(t *testing.T) {
 }
 
 func TestWindowMetadataTracksOsc7Path(t *testing.T) {
-	window := &muxWindow{cwd: "/tmp"}
-
-	window.observeTerminalMetadataLocked(
-		[]byte("\x1b]7;file://host/Users/depoll/Code/flutty\x1b\\"),
-	)
-
-	if window.cwd != "/Users/depoll/Code/flutty" {
-		t.Fatalf("cwd = %q, want OSC 7 path", window.cwd)
+	for _, test := range []struct{ url, want string }{
+		{"file://host/Users/depoll/Code/flutty", "/Users/depoll/Code/flutty"},
+		{"file:///tmp/100%25", "/tmp/100%"},
+		{"file:///tmp/a%2520b", "/tmp/a%20b"},
+		{"file:///tmp/a%20b", "/tmp/a b"},
+	} {
+		t.Run(test.url, func(t *testing.T) {
+			window := &muxWindow{cwd: "/tmp"}
+			window.observeTerminalMetadataLocked([]byte("\x1b]7;" + test.url + "\x1b\\"))
+			if window.cwd != test.want {
+				t.Fatalf("cwd = %q, want %q", window.cwd, test.want)
+			}
+		})
 	}
 }
 
@@ -10979,27 +10399,30 @@ func TestClaudeSessionMatchesWorkingDirectoryFallsBackForUnknownProjectDirName(t
 }
 
 func TestJSONStringFieldValuesFromFileEndsCoversBothEnds(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.jsonl")
-	filler := strings.Repeat("x", 2*sessionFileScanChunkBytes)
-	lines := []string{
-		`{"type":"user","cwd":"/work/project"}`,
-		`{"type":"user","cwd":"/work/ignored","filler":"` + filler + `"}`,
-		`{"type":"user","cwd":"/work/project/.claude/worktrees/feature"}`,
-	}
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	got := jsonStringFieldValuesFromFileEnds(path, "cwd")
-
-	want := []string{"/work/project", "/work/project/.claude/worktrees/feature"}
-	if len(got) != len(want) {
-		t.Fatalf("cwd values = %#v, want %#v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("cwd values = %#v, want %#v", got, want)
-		}
+	for _, size := range []int{
+		sessionFileScanChunkBytes / 2,
+		3 * sessionFileScanChunkBytes / 2,
+		2 * sessionFileScanChunkBytes,
+		3 * sessionFileScanChunkBytes,
+	} {
+		t.Run(strconv.Itoa(size), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "session.jsonl")
+			head := "{\"cwd\":\"/work/project\"}\n"
+			tail := "{\"cwd\":\"/work/project\"}\n{\"cwd\":\"/work/project/.claude/worktrees/feature\"}\n"
+			filler := "{\"filler\":\"" + strings.Repeat("x", size-len(head)-len(tail)-14) + "\"}\n"
+			contents := head + filler + tail
+			if len(contents) != size {
+				t.Fatalf("fixture size = %d, want %d", len(contents), size)
+			}
+			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got := jsonStringFieldValuesFromFileEnds(path, "cwd")
+			want := []string{"/work/project", "/work/project/.claude/worktrees/feature"}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("cwd values = %#v, want %#v", got, want)
+			}
+		})
 	}
 }
 
@@ -12084,28 +11507,14 @@ func TestThemeHintRefreshesAgentToolsWithoutColorSchemeUpdatesMode(t *testing.T)
 		{name: "claude mode only", command: "claude", hint: modeReport},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			inputReader, inputWriter, err := os.Pipe()
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				_ = inputReader.Close()
-				_ = inputWriter.Close()
-			})
-
 			window := &muxWindow{
 				id:                "@1",
 				foregroundCommand: tt.command,
-				pty:               wrapPty(t, inputWriter),
 			}
 			window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
 			if !window.themeHintFocusTransitionLocked() {
 				t.Fatalf("%s focus-aware window did not request focus transition", tt.command)
 			}
-			server := newMuxServer("test")
-			server.windows = []*muxWindow{window}
-			server.activeID = "@1"
-
 			hint := tt.hint
 			if hint == "" {
 				hint = modeReport + foregroundReport + backgroundReport + paletteReport
@@ -12114,35 +11523,12 @@ func TestThemeHintRefreshesAgentToolsWithoutColorSchemeUpdatesMode(t *testing.T)
 			if tt.backgroundReport != "" {
 				backgroundReport = tt.backgroundReport
 			}
-			if !server.sendThemeHint(hint) {
-				t.Fatal("theme hint was not sent")
-			}
-
-			got := readPipeUntil(t, inputReader, func(output string) bool {
-				if tt.wantBackground {
-					return strings.Contains(output, backgroundReport) &&
-						strings.Contains(output, "\x1b[I")
-				}
-				return strings.Contains(output, "\x1b[I")
-			})
-			if strings.Contains(got, modeReport) {
-				t.Fatalf("theme hint = %q, did not expect theme mode report without DEC 2031", got)
-			}
-			if strings.Contains(got, foregroundReport) {
-				t.Fatalf("theme hint = %q, did not expect foreground report", got)
-			}
-			if strings.Contains(got, paletteReport) {
-				t.Fatalf("theme hint = %q, did not expect palette report", got)
-			}
+			want := ""
 			if tt.wantBackground {
-				if !strings.Contains(got, backgroundReport) {
-					t.Fatalf("theme hint = %q, expected OSC 11 for coding agent", got)
-				}
-			} else if strings.Contains(got, backgroundReport) {
-				t.Fatalf("theme hint = %q, did not expect unsolicited OSC 11", got)
+				want = backgroundReport
 			}
-			if !strings.Contains(got, "\x1b[O") {
-				t.Fatalf("theme hint = %q, expected focus-lost report", got)
+			if got := string(window.themeHintRefreshDataLocked([]byte(hint))); got != want {
+				t.Fatalf("theme refresh = %q, want %q", got, want)
 			}
 		})
 	}
@@ -12181,59 +11567,25 @@ func TestThemeHintSendsModeReportWhenColorSchemeUpdatesMode(t *testing.T) {
 		{name: "claude-2031-only", command: "claude"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			inputReader, inputWriter, err := os.Pipe()
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				_ = inputReader.Close()
-				_ = inputWriter.Close()
-			})
-
 			window := &muxWindow{
 				id:                "@1",
 				foregroundCommand: tt.command,
-				pty:               wrapPty(t, inputWriter),
 			}
 			window.observeTerminalModesLocked([]byte("\x1b[?2031h"))
 			if tt.enableFocus {
 				window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
 			}
-			server := newMuxServer("test")
-			server.windows = []*muxWindow{window}
-			server.activeID = "@1"
-
 			const modeReport = "\x1b[?997;2n"
 			const backgroundReport = "\x1b]11;rgb:4444/5555/6666\x1b\\"
-			if !server.sendThemeHint(modeReport + backgroundReport) {
-				t.Fatal("theme hint was not sent")
-			}
-
-			got := readPipeUntil(t, inputReader, func(output string) bool {
-				if !strings.Contains(output, modeReport) {
-					return false
-				}
-				if tt.wantFocusTransition {
-					return strings.Contains(output, "\x1b[I")
-				}
-				return true
-			})
-			if !strings.Contains(got, modeReport) {
-				t.Fatalf("theme hint = %q, expected mode report for DEC 2031 window", got)
-			}
+			want := modeReport
 			if tt.wantBackground {
-				if !strings.Contains(got, backgroundReport) {
-					t.Fatalf("theme hint = %q, expected OSC 11 for focus-aware agent", got)
-				}
-			} else if strings.Contains(got, backgroundReport) {
-				t.Fatalf("theme hint = %q, did not expect unsolicited OSC 11", got)
+				want += backgroundReport
 			}
-			if tt.wantFocusTransition {
-				if !strings.Contains(got, "\x1b[O") {
-					t.Fatalf("theme hint = %q, expected focus-lost from 2031+focus capability", got)
-				}
-			} else if strings.Contains(got, "\x1b[O") {
-				t.Fatalf("theme hint = %q, did not expect focus-lost without focus mode", got)
+			if got := string(window.themeHintRefreshDataLocked([]byte(modeReport + backgroundReport))); got != want {
+				t.Fatalf("theme refresh = %q, want %q", got, want)
+			}
+			if got := window.themeHintFocusTransitionLocked(); got != tt.wantFocusTransition {
+				t.Fatalf("focus transition = %t, want %t", got, tt.wantFocusTransition)
 			}
 		})
 	}
@@ -12525,6 +11877,23 @@ func TestRunShellCommandBoundsOutput(t *testing.T) {
 
 func TestControlRunCommandRequestsRunInParallel(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
+	fifo := filepath.Join(t.TempDir(), "release")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	releasePipe, err := os.OpenFile(fifo, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			if _, err := releasePipe.WriteString("ready\n"); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	t.Cleanup(func() { release(); _ = releasePipe.Close() })
 	server := newMuxServer("test")
 	serverConn, clientConn := net.Pipe()
 	defer func() {
@@ -12568,7 +11937,7 @@ func TestControlRunCommandRequestsRunInParallel(t *testing.T) {
 	writeRequest(controlMessage{
 		ID:      "slow",
 		Type:    "run_command",
-		Command: "sleep 0.4; printf slow",
+		Command: "read -r release < " + shellQuote(fifo) + "; printf slow",
 	})
 	writeRequest(controlMessage{
 		ID:      "fast",
@@ -12579,6 +11948,7 @@ func TestControlRunCommandRequestsRunInParallel(t *testing.T) {
 	if response := readResponse(); response.ID != "fast" || response.Data != "fast" {
 		t.Fatalf("first command response = %#v, want fast command output", response)
 	}
+	release()
 	if response := readResponse(); response.ID != "slow" || response.Data != "slow" {
 		t.Fatalf("second command response = %#v, want slow command output", response)
 	}
@@ -12592,14 +11962,16 @@ func TestControlRunCommandRequestsRunInParallel(t *testing.T) {
 }
 
 func TestControlStartAcpBridgeHostsProviderInServer(t *testing.T) {
-	dir := testAcpRuntimeDirectory(t)
+	dir := shortUnixSocketDir(t)
 	t.Setenv("XDG_RUNTIME_DIR", dir)
 	t.Setenv("SHELL", "/bin/sh")
 	originalWindowArguments := nativeAcpWindowArguments
 	nativeAcpWindowArguments = func(string) ([]string, error) { return nil, nil }
 	t.Cleanup(func() { nativeAcpWindowArguments = originalWindowArguments })
 	server := newMuxServer("test")
+	t.Cleanup(server.close)
 	serverConn, clientConn := net.Pipe()
+	t.Cleanup(func() { _ = clientConn.Close(); _ = serverConn.Close() })
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -12673,6 +12045,7 @@ func TestControlStartAcpBridgeHostsProviderInServer(t *testing.T) {
 	}
 
 	serverConn2, clientConn2 := net.Pipe()
+	t.Cleanup(func() { _ = clientConn2.Close(); _ = serverConn2.Close() })
 	done2 := make(chan struct{})
 	go func() {
 		defer close(done2)
@@ -12711,7 +12084,7 @@ func TestStalledControlClientDoesNotBlockWindowOutput(t *testing.T) {
 	window := &muxWindow{id: "@1"}
 	server.windows = []*muxWindow{window}
 	server.activeID = window.id
-	conn, peer := net.Pipe()
+	conn, peer := newDeadlineTestPipe(t)
 	defer peer.Close()
 	_ = peer.SetDeadline(time.Now().Add(socketTimeout + time.Second))
 	handlerDone := make(chan struct{})
@@ -12721,6 +12094,7 @@ func TestStalledControlClientDoesNotBlockWindowOutput(t *testing.T) {
 	}()
 	decoder := json.NewDecoder(peer)
 	for range 2 {
+		assertTestDeadline(t, conn.writeDeadlines, false)
 		var response controlResponse
 		if err := decoder.Decode(&response); err != nil {
 			t.Fatal(err)
@@ -12732,11 +12106,15 @@ func TestStalledControlClientDoesNotBlockWindowOutput(t *testing.T) {
 		server.handleWindowOutput(window.id, []byte("first"))
 		server.handleWindowOutput(window.id, []byte("second"))
 	}()
+	assertTestDeadline(t, conn.writeDeadlines, false)
+	if err := conn.Conn.SetWriteDeadline(time.Now().Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	for _, done := range []chan struct{}{outputDone, handlerDone} {
 		select {
 		case <-done:
-		case <-time.After(socketTimeout + time.Second):
-			t.Fatal("stalled control client blocked output or cleanup")
+		case <-time.After(time.Second):
+			t.Fatal("expired control writer blocked output or cleanup")
 		}
 	}
 	server.mu.Lock()
@@ -13250,5 +12628,126 @@ func TestMetadataDiscoveryReleasesServerLockAndRejectsChangedProcess(t *testing.
 	}
 	if string(window.history) != "output" {
 		t.Fatalf("output after discovery = %q", window.history)
+	}
+}
+
+func TestUnansweredTerminalQueriesCloseDesynchronizedAttach(t *testing.T) {
+	for _, active := range []bool{false, true} {
+		t.Run(fmt.Sprintf("active=%v", active), func(t *testing.T) {
+			conn := &recordingConn{}
+			client := newAttachClient(conn, controlMessage{})
+			t.Cleanup(client.close)
+			query := []byte("\x1b[c")
+			for i := 0; i < terminalResponseMaxOutstanding; i++ {
+				completion, queued := client.enqueueTerminalQuery(query, true, "@1", 1)
+				if !queued || !client.waitForWrite(completion) {
+					t.Fatalf("query %d was rejected before the limit", i)
+				}
+				if active && i == 0 {
+					enterStreamingTerminalResponseContinuation(t, client)
+				}
+			}
+			completion, _ := client.enqueueTerminalQuery(query, true, "@2", 1)
+			client.waitForWrite(completion)
+			select {
+			case <-client.done:
+			case <-time.After(time.Second):
+				t.Fatal("unanswered queries did not close the attach")
+			}
+			client.activityMu.Lock()
+			outstanding := len(client.terminalResponseWindows)
+			if client.terminalResponseActiveWindow != "" {
+				outstanding++
+			}
+			client.activityMu.Unlock()
+			if outstanding != terminalResponseMaxOutstanding {
+				t.Fatalf("outstanding = %d, want %d", outstanding, terminalResponseMaxOutstanding)
+			}
+		})
+	}
+}
+
+func TestRunShellCommandCancellationBoundsInheritedPipes(t *testing.T) {
+	const helperEnv = "MONKEYMUX_TEST_ESCAPED_OUTPUT_PID"
+	if pidPath := os.Getenv(helperEnv); pidPath != "" {
+		child := exec.Command("sleep", "30")
+		child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		child.Stdout = os.Stdout
+		child.Stderr = os.Stderr
+		if err := child.Start(); err != nil {
+			os.Exit(2)
+		}
+		if err := os.WriteFile(pidPath+".pending", []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
+			_ = child.Process.Kill()
+			os.Exit(3)
+		}
+		if err := os.Rename(pidPath+".pending", pidPath); err != nil {
+			_ = child.Process.Kill()
+			os.Exit(3)
+		}
+		_ = child.Wait()
+		os.Exit(0)
+	}
+	pidPath := filepath.Join(t.TempDir(), "descendant.pid")
+	t.Setenv(helperEnv, pidPath)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	finished := make(chan error, 1)
+	go func() {
+		_, _, err := newMuxServer("test").runShellCommandContext(ctx,
+			shellQuote(executable)+" -test.run=^TestRunShellCommandCancellationBoundsInheritedPipes$")
+		finished <- err
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if data, err := os.ReadFile(pidPath); err == nil {
+			pid, err := strconv.Atoi(string(data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("escaped descendant did not start")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-finished:
+		if !errors.Is(err, errRunCommandCanceled) {
+			t.Fatalf("cancel error = %v, want canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancellation waited for escaped descendant's output pipe")
+	}
+}
+
+func TestThemeHintDeliversModeReportAndFocusPair(t *testing.T) {
+	const mode = "\x1b[?997;2n"
+	const background = "\x1b]11;rgb:4444/5555/6666\x1b\\"
+	for _, test := range []struct{ name, modes, want string }{
+		{"DEC 2031", "\x1b[?2031h", mode},
+		{"focus pair", "\x1b[?1004h", background + "\x1b[O\x1b[I"},
+		{"DEC 2031 and focus pair", "\x1b[?2031h\x1b[?1004h", mode + background + "\x1b[O\x1b[I"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			pty := &recordingPty{}
+			window := &muxWindow{id: "@1", foregroundCommand: "codex", pty: pty}
+			window.observeTerminalModesLocked([]byte(test.modes))
+			server := newMuxServer("test")
+			server.windows = []*muxWindow{window}
+			server.activeID = window.id
+			t.Cleanup(server.close)
+			if !server.sendThemeHint(mode + background) {
+				t.Fatal("theme hint was not sent")
+			}
+			waitForRecordedOutput(t, &pty.recordingConn, test.want)
+		})
 	}
 }

@@ -13,9 +13,9 @@ import (
 	"time"
 )
 
-func auditMuxConnection(t *testing.T, server *muxServer) net.Conn {
+func auditMuxConnection(t *testing.T, server *muxServer) (net.Conn, *deadlineRecordingConn) {
 	t.Helper()
-	conn, peer := net.Pipe()
+	conn, peer := newDeadlineTestPipe(t)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -30,12 +30,12 @@ func auditMuxConnection(t *testing.T, server *muxServer) net.Conn {
 		}
 	})
 	_ = peer.SetDeadline(time.Now().Add(3 * time.Second))
-	return peer
+	return peer, conn
 }
 
 func TestControlHelloAfterShutdownIsRejected(t *testing.T) {
 	server := newMuxServer("late-control")
-	peer := auditMuxConnection(t, server)
+	peer, _ := auditMuxConnection(t, server)
 	server.close()
 	if _, err := io.WriteString(peer, "{\"role\":\"control\"}\n"); err != nil {
 		t.Fatal(err)
@@ -55,7 +55,7 @@ func TestControlHelloAfterShutdownIsRejected(t *testing.T) {
 func TestMuxHelloRejectsOversizeWithoutWaitingForNewline(t *testing.T) {
 	server := newMuxServer("oversized-hello")
 	defer server.close()
-	peer := auditMuxConnection(t, server)
+	peer, _ := auditMuxConnection(t, server)
 	// Keep the peer open and omit the delimiter. Draining a rejected frame
 	// would let a stalled peer retain the handler indefinitely.
 	_, err := io.WriteString(peer, strings.Repeat("x", 1024*1024+8192))
@@ -69,11 +69,15 @@ func TestMuxHelloRejectsOversizeWithoutWaitingForNewline(t *testing.T) {
 
 func TestMuxIncompleteHelloExpiresAfterShutdown(t *testing.T) {
 	server := newMuxServer("incomplete-hello")
-	peer := auditMuxConnection(t, server)
+	peer, conn := auditMuxConnection(t, server)
 	if _, err := io.WriteString(peer, "{\"role\":"); err != nil {
 		t.Fatal(err)
 	}
+	assertTestDeadline(t, conn.readDeadlines, false)
 	server.close()
+	if err := conn.Conn.SetReadDeadline(time.Now().Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := bufio.NewReader(peer).ReadByte(); !errors.Is(err, io.EOF) {
 		t.Fatalf("incomplete hello read = %v, want EOF", err)
 	}
@@ -82,7 +86,7 @@ func TestMuxIncompleteHelloExpiresAfterShutdown(t *testing.T) {
 func TestMuxHelloPreservesBufferedControlRequest(t *testing.T) {
 	server := newMuxServer("buffered-control")
 	defer server.close()
-	peer := auditMuxConnection(t, server)
+	peer, conn := auditMuxConnection(t, server)
 	if _, err := io.WriteString(peer, "{\"role\":\"control\"}\n{\"type\":\"ping\",\"id\":\"probe\"}\n"); err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +103,8 @@ func TestMuxHelloPreservesBufferedControlRequest(t *testing.T) {
 			t.Errorf("pong ID = %q, want probe", response.ID)
 		}
 	}
-	time.Sleep(socketTimeout + 20*time.Millisecond)
+	assertTestDeadline(t, conn.readDeadlines, false)
+	assertTestDeadline(t, conn.readDeadlines, true)
 	_ = peer.SetDeadline(time.Now().Add(time.Second))
 	if _, err := io.WriteString(peer, "{\"type\":\"ping\",\"id\":\"after-handshake\"}\n"); err != nil {
 		t.Fatalf("handshake deadline was not cleared: %v", err)

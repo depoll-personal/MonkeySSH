@@ -12,7 +12,7 @@ import (
 func TestServeAcpBridgeStartupFailureStopsProvider(t *testing.T) {
 	for _, failure := range []string{"invalid_id", "runtime_directory", "listen"} {
 		t.Run(failure, func(t *testing.T) {
-			dir := testAcpRuntimeDirectory(t)
+			dir := shortUnixSocketDir(t)
 			t.Setenv("XDG_RUNTIME_DIR", dir)
 			id, err := newAcpBridgeID()
 			if err != nil {

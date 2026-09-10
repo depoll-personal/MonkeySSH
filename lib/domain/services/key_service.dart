@@ -36,9 +36,7 @@ class KeyService {
   }) async {
     try {
       // Parse the key to validate and extract public key
-      final keyPairs = passphrase != null && passphrase.isNotEmpty
-          ? SSHKeyPair.fromPem(privateKeyPem, passphrase)
-          : SSHKeyPair.fromPem(privateKeyPem);
+      final keyPairs = await parseOpenSshPrivateKey(privateKeyPem, passphrase);
 
       if (keyPairs.isEmpty) return null;
 

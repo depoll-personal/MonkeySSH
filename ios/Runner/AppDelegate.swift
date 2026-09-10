@@ -2,6 +2,7 @@ import Flutter
 import UIKit
 
 @main
+@MainActor
 // AppDelegate owns the existing iOS channel/document bridge surface until the
 // legacy bridge is split by domain.
 // swiftlint:disable:next type_body_length

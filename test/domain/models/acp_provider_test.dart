@@ -469,14 +469,6 @@ void main() {
       expect(terminalAuthCommand.executable, 'copilot');
       expect(terminalAuthCommand.arguments, ['login']);
     });
-
-    test('AcpBuiltinProviderView exposes the wrapped provider', () {
-      final view = AcpBuiltinProviderView(acpCopilotCliProvider);
-      expect(view.id, acpCopilotCliProvider.id);
-      expect(view.label, acpCopilotCliProvider.label);
-      expect(view.launchCommand, acpCopilotCliProvider.launchCommand);
-      expect(view.isCustom, isFalse);
-    });
   });
 
   group('AcpExecutableProbe', () {
@@ -820,21 +812,6 @@ void main() {
       expect(a, b);
       expect(a.hashCode, b.hashCode);
       expect(a == c, isFalse);
-    });
-  });
-
-  group('AcpProvider views', () {
-    test('AcpCustomProviderView exposes the wrapped definition', () {
-      final definition = AcpCustomProviderDefinition.create(
-        id: 'my-agent',
-        label: 'My Agent',
-        launchCommand: AcpLaunchCommand(executable: 'my-agent'),
-      );
-      final view = AcpCustomProviderView(definition);
-      expect(view.id, definition.id);
-      expect(view.label, definition.label);
-      expect(view.launchCommand, definition.launchCommand);
-      expect(view.isCustom, isTrue);
     });
   });
 }

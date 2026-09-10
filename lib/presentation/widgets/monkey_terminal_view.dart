@@ -1151,15 +1151,6 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     );
   }
 
-  /// Reports the current terminal theme colors to tmux.
-  void refreshThemeColorReports(TerminalThemeData theme) {
-    final reports = buildTerminalThemeRefreshReports(theme);
-    if (reports.isEmpty) {
-      return;
-    }
-    widget.terminal.onOutput?.call(reports);
-  }
-
   /// Reports the current default foreground/background colors to a TUI.
   void refreshThemeDefaultColorReports(TerminalThemeData theme) {
     final reports = buildTerminalThemeDefaultColorReports(theme);
@@ -3229,11 +3220,7 @@ class MonkeyRenderTerminal extends RenderBox
 
   void _onTerminalChange() {
     _terminalChangeCount++;
-    if (registrar != null && _hasSelectableTextSelection) {
-      _preserveSelectableSelectionAcrossTerminalChange();
-    } else {
-      _syncSelectableSelectionFromController();
-    }
+    _syncSelectableSelectionFromController(deferNotification: true);
     final lineCount = _terminal.buffer.lines.length;
     if (_forceLayoutOnTerminalChangeCount > 0) {
       _forceLayoutOnTerminalChangeCount -= 1;
@@ -3556,23 +3543,6 @@ class MonkeyRenderTerminal extends RenderBox
     _updateSelectionGeometry(forceNotify: true);
   }
 
-  void _preserveSelectableSelectionAcrossTerminalChange() {
-    if (_terminalSelectionContentLength <= 0) {
-      _clearSelectableTextSelection();
-      return;
-    }
-
-    final nextStart = _clampSelectionOffset(_selectionStartOffset!);
-    final nextEnd = _clampSelectionOffset(_selectionEndOffset!);
-    if (_selectionStartOffset != nextStart || _selectionEndOffset != nextEnd) {
-      _selectionStartOffset = nextStart;
-      _selectionEndOffset = nextEnd;
-      markNeedsPaint();
-    }
-    _syncControllerSelectionFromSelectableOffsets();
-    _updateSelectionGeometry(deferNotification: true, forceNotify: true);
-  }
-
   void _syncControllerSelectionFromSelectableOffsets() {
     final start = _selectionStartOffset;
     final end = _selectionEndOffset;
@@ -3601,26 +3571,37 @@ class MonkeyRenderTerminal extends RenderBox
     }
   }
 
-  void _syncSelectableSelectionFromController() {
+  void _syncSelectableSelectionFromController({
+    bool deferNotification = false,
+  }) {
     final selection = _controller.selection;
     if (selection == null) {
       if (_selectionStartOffset != null || _selectionEndOffset != null) {
         _selectionStartOffset = null;
         _selectionEndOffset = null;
         markNeedsPaint();
-        _updateSelectionGeometry(forceNotify: true);
+        _updateSelectionGeometry(
+          deferNotification: deferNotification,
+          forceNotify: true,
+        );
       }
       return;
     }
     final nextStart = _textOffsetForCell(selection.begin);
     final nextEnd = _textOffsetForCell(selection.end);
     if (_selectionStartOffset == nextStart && _selectionEndOffset == nextEnd) {
+      if (deferNotification) {
+        _updateSelectionGeometry(deferNotification: true, forceNotify: true);
+      }
       return;
     }
     _selectionStartOffset = nextStart;
     _selectionEndOffset = nextEnd;
     markNeedsPaint();
-    _updateSelectionGeometry(forceNotify: true);
+    _updateSelectionGeometry(
+      deferNotification: deferNotification,
+      forceNotify: true,
+    );
   }
 
   Offset _localPositionForTextOffset(int textOffset) {
@@ -4198,6 +4179,9 @@ class MonkeyRenderTerminal extends RenderBox
       pixelSize.width,
       pixelSize.height,
     );
+    // Terminal.resize does not notify listeners. Recompute text offsets from
+    // the reflowed anchors before layout updates the selection geometry.
+    _syncSelectableSelectionFromController(deferNotification: true);
   }
 
   void _notifyTerminalResize(

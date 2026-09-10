@@ -15,11 +15,12 @@ func TestAcpTrimReplayKeepsPendingAndNewestEvents(t *testing.T) {
 	}{
 		{"oldest", []int{20, 20, 20}, nil, []uint64{2, 3}},
 		{"pinned gaps", []int{10, 15, 10, 15, 10}, map[int]bool{0: true, 2: true}, []uint64{1, 3, 5}},
+		{"batch below ceiling", []int{5, 5, 5, 5, 5, 5, 5, 6}, map[int]bool{0: true}, []uint64{1, 4, 5, 6, 7, 8}},
 		{"only pending", []int{30, 30}, map[int]bool{0: true, 1: true}, []uint64{1, 2}},
 		{"one oversized", []int{1, 50}, nil, []uint64{2}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			bridge := newAuditAcpBridge()
+			bridge := newTestAcpBridge()
 			for i, weight := range test.weights {
 				event := acpReplayEvent{
 					message: acpWireMessage{Sequence: uint64(i + 1), Data: json.RawMessage(`{"result":{}}`)},
@@ -70,7 +71,7 @@ func TestAcpTrimReplayKeepsPendingAndNewestEvents(t *testing.T) {
 }
 
 func TestAcpTrimReplayDoesNotAllocatePerEviction(t *testing.T) {
-	bridge := newAuditAcpBridge()
+	bridge := newTestAcpBridge()
 	seed := []acpReplayEvent{
 		{bytes: acpReplayMaxBytes / 2},
 		{bytes: acpReplayMaxBytes / 2, pendingID: "permission"},
@@ -89,15 +90,27 @@ func TestAcpTrimReplayDoesNotAllocatePerEviction(t *testing.T) {
 }
 
 func BenchmarkAcpReplayFullBufferStreaming(b *testing.B) {
-	bridge := newAuditAcpBridge()
-	message := acpWireMessage{Type: "output", Data: json.RawMessage(`{"delta":"x"}`)}
-	retained := acpReplayMaxBytes / (len(message.Data) + acpReplayEventOverheadBytes)
-	for i := 0; i < retained; i++ {
-		bridge.appendReplayLocked(message, "")
-	}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		bridge.appendReplayLocked(message, "")
+	for _, pinned := range []bool{false, true} {
+		name := "unpinned"
+		if pinned {
+			name = "pinned"
+		}
+		b.Run(name, func(b *testing.B) {
+			bridge := newTestAcpBridge()
+			message := acpWireMessage{Type: "output", Data: json.RawMessage(`{"delta":"x"}`)}
+			retained := acpReplayMaxBytes / (len(message.Data) + acpReplayEventOverheadBytes)
+			for i := 0; i < retained; i++ {
+				pendingID := ""
+				if pinned && i == 0 {
+					pendingID = "permission"
+				}
+				bridge.appendReplayLocked(message, pendingID)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				bridge.appendReplayLocked(message, "")
+			}
+		})
 	}
 }

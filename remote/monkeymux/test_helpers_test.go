@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"io"
 	"net"
+	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -213,4 +215,92 @@ func waitForPendingQueryState(
 		inFlight,
 		pending,
 	)
+}
+
+// recordingPty captures synchronous writes to a window's child.
+type recordingPty struct{ recordingConn }
+
+func (p *recordingPty) Resize(int, int) error { return nil }
+func (p *recordingPty) Fd() uintptr           { return 0 }
+
+func newTestAcpBridge() *acpBridge {
+	now := time.Now()
+	return &acpBridge{
+		id:                   "0123456789abcdef0123456789abcdef",
+		done:                 make(chan struct{}),
+		state:                "running",
+		startedAt:            now,
+		lastActivity:         now,
+		clients:              map[string]*acpBridgeClient{},
+		pendingRequests:      map[string]struct{}{},
+		inFlightTurns:        map[string]struct{}{},
+		sessionSetupRequests: map[string]string{},
+	}
+}
+
+func shortUnixSocketDir(t *testing.T) string {
+	t.Helper()
+	// Keep the path well under the AF_UNIX sun_path limit. t.TempDir() on
+	// macOS lives under a long /var/folders prefix and bind() fails there.
+	root := os.TempDir()
+	if runtime.GOOS != "windows" {
+		if _, err := os.Stat("/tmp"); err == nil {
+			root = "/tmp"
+		}
+	}
+	dir, err := os.MkdirTemp(root, "mmx-")
+	if err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(dir)
+	})
+	return dir
+}
+
+func isolateTestRuntime(t *testing.T) {
+	t.Helper()
+	setTestHomeDir(t, t.TempDir())
+	t.Setenv("XDG_RUNTIME_DIR", "")
+}
+
+// deadlineRecordingConn forwards I/O and deadlines to a real pipe while making
+// deadline installation and clearing observable without waiting for wall time.
+type deadlineRecordingConn struct {
+	net.Conn
+	readDeadlines, writeDeadlines chan time.Time
+}
+
+func newDeadlineTestPipe(t *testing.T) (*deadlineRecordingConn, net.Conn) {
+	t.Helper()
+	conn, peer := net.Pipe()
+	t.Cleanup(func() { _ = conn.Close(); _ = peer.Close() })
+	if err := peer.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	return &deadlineRecordingConn{Conn: conn, readDeadlines: make(chan time.Time, 16), writeDeadlines: make(chan time.Time, 16)}, peer
+}
+
+func (c *deadlineRecordingConn) SetReadDeadline(deadline time.Time) error {
+	err := c.Conn.SetReadDeadline(deadline)
+	c.readDeadlines <- deadline
+	return err
+}
+
+func (c *deadlineRecordingConn) SetWriteDeadline(deadline time.Time) error {
+	err := c.Conn.SetWriteDeadline(deadline)
+	c.writeDeadlines <- deadline
+	return err
+}
+
+func assertTestDeadline(t *testing.T, deadlines <-chan time.Time, cleared bool) {
+	t.Helper()
+	select {
+	case deadline := <-deadlines:
+		if deadline.IsZero() != cleared || (!cleared && !deadline.After(time.Now())) {
+			t.Fatalf("deadline = %v, want cleared=%t or a future deadline", deadline, cleared)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("deadline was not set, want cleared=%t", cleared)
+	}
 }

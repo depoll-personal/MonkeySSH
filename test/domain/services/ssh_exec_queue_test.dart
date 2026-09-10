@@ -1,10 +1,52 @@
 import 'dart:async';
 
+import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
+
+class _MockExecSession extends Mock implements SSHSession {}
 
 void main() {
   tearDown(resetQueuedSshExecsForTesting);
+
+  for (final lateResult in ['never', 'channel', 'error']) {
+    test('bounded opens release queue slots with late $lateResult', () async {
+      final openings = [Completer<SSHSession>(), Completer<SSHSession>()];
+      final jobs = [
+        for (final opening in openings)
+          runQueuedSshExec(
+            5,
+            () => openSshExec(opening.future, const Duration(milliseconds: 10)),
+          ),
+      ];
+      final errors = [
+        for (final job in jobs)
+          expectLater(job, throwsA(isA<TimeoutException>())),
+      ];
+      final next = runQueuedSshExec(5, () async => 'next');
+      expect(activeQueuedSshExecCountForTesting(5), 2);
+      expect(pendingQueuedSshExecCountForTesting(5), 1);
+      await Future.wait(errors);
+      expect(await next, 'next');
+      expect(activeQueuedSshExecCountForTesting(5), 0);
+      expect(pendingQueuedSshExecCountForTesting(5), 0);
+      final channels = <SSHSession>[];
+      for (final opening in openings) {
+        if (lateResult == 'channel') {
+          final channel = _MockExecSession();
+          channels.add(channel);
+          opening.complete(channel);
+        } else if (lateResult == 'error') {
+          opening.completeError(StateError('late failure'));
+        }
+      }
+      await pumpEventQueue();
+      for (final channel in channels) {
+        verify(channel.close).called(1);
+      }
+    });
+  }
 
   test('limits normal exec jobs per connection', () async {
     final startedJobs = <int>[];

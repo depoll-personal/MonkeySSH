@@ -190,27 +190,11 @@ String _placeholderRow(int imageId, {required int row, required int cols}) {
 /// [rows] x [cols] cells, exactly as a kitty-aware client (e.g. Copilot CLI)
 /// emits them: a 24-bit foreground color carrying the image id, then a
 /// U+10EEEE cell per position carrying its row/column diacritics.
-String _placeholderGrid(int imageId, {required int cols, required int rows}) {
-  final placeholder = String.fromCharCode(kittyGraphicsPlaceholderCodePoint);
-  final r = (imageId >> 16) & 0xFF;
-  final g = (imageId >> 8) & 0xFF;
-  final b = imageId & 0xFF;
-  final buffer = StringBuffer();
-  for (var row = 0; row < rows; row++) {
-    buffer.write('\x1b[38;2;$r;$g;${b}m');
-    for (var col = 0; col < cols; col++) {
-      buffer
-        ..write(placeholder)
-        ..writeCharCode(_kittyDiacritics[row])
-        ..writeCharCode(_kittyDiacritics[col]);
-    }
-    buffer.write('\x1b[39m');
-    if (row < rows - 1) {
-      buffer.write('\r\n');
-    }
-  }
-  return buffer.toString();
-}
+String _placeholderGrid(int imageId, {required int cols, required int rows}) =>
+    List.generate(
+      rows,
+      (row) => _placeholderRow(imageId, row: row, cols: cols),
+    ).join('\r\n');
 
 /// Store-only (`a=t`) and virtual (`a=T,U=1`) images decode lazily, on the
 /// first paint that references them. In a real app that paint runs in the real
@@ -235,6 +219,13 @@ Future<void> _pumpUntilImagesDecoded(
       waited += 20;
     }
   });
+  for (final id in imageIds) {
+    expect(
+      terminal.graphics.imageById(id),
+      isNotNull,
+      reason: 'image $id must finish decoding before layout assertions',
+    );
+  }
   await tester.pump();
 }
 
@@ -362,22 +353,7 @@ void main() {
     final boundaryKey = GlobalKey();
     final terminal = Terminal();
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: Center(
-            child: SizedBox(
-              width: 400,
-              height: 300,
-              child: RepaintBoundary(
-                key: boundaryKey,
-                child: MonkeyTerminalView(terminal, hardwareKeyboardOnly: true),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
+    await tester.pumpWidget(_graphicsHost(boundaryKey, terminal));
     await tester.pump();
 
     await tester.runAsync(() async {
@@ -859,25 +835,7 @@ void main() {
       final boundaryKey = GlobalKey();
       final terminal = Terminal();
 
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: Center(
-              child: SizedBox(
-                width: 400,
-                height: 300,
-                child: RepaintBoundary(
-                  key: boundaryKey,
-                  child: MonkeyTerminalView(
-                    terminal,
-                    hardwareKeyboardOnly: true,
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
+      await tester.pumpWidget(_graphicsHost(boundaryKey, terminal));
       await tester.pump();
 
       await tester.runAsync(() async {
@@ -920,25 +878,7 @@ void main() {
       final boundaryKey = GlobalKey();
       final terminal = Terminal();
 
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: Center(
-              child: SizedBox(
-                width: 400,
-                height: 300,
-                child: RepaintBoundary(
-                  key: boundaryKey,
-                  child: MonkeyTerminalView(
-                    terminal,
-                    hardwareKeyboardOnly: true,
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
+      await tester.pumpWidget(_graphicsHost(boundaryKey, terminal));
       await tester.pump();
 
       // Copilot CLI emits the image with a virtual placement (U=1) and then
@@ -1012,14 +952,8 @@ void main() {
       terminal
         ..write('\x1b_Ga=T,U=1,i=$imageId,f=100,c=8,r=4,q=2;$png\x1b\\')
         ..write(_placeholderGrid(imageId, cols: 8, rows: 4));
-
-      var waited = 0;
-      while (terminal.graphics.imageById(imageId) == null && waited < 2000) {
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-        waited += 20;
-      }
     });
-    await tester.pump();
+    await _pumpUntilImagesDecoded(tester, terminal, [imageId]);
 
     final placeholdersBeforeScroll = terminal.graphics.placeholders.length;
     expect(
@@ -1054,22 +988,7 @@ void main() {
     final boundaryKey = GlobalKey();
     final terminal = Terminal();
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: Center(
-            child: SizedBox(
-              width: 400,
-              height: 300,
-              child: RepaintBoundary(
-                key: boundaryKey,
-                child: MonkeyTerminalView(terminal, hardwareKeyboardOnly: true),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
+    await tester.pumpWidget(_graphicsHost(boundaryKey, terminal));
     await tester.pump();
 
     const imageId = 0xA5E30B;
@@ -1255,81 +1174,6 @@ void main() {
   );
 
   testWidgets(
-    'Kitty same-id image: stale holey copy is dismissed, fresh copy renders',
-    (tester) async {
-      final boundaryKey = GlobalKey();
-      final terminal = Terminal(maxLines: 100);
-
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: Center(
-              child: SizedBox(
-                width: 400,
-                height: 520,
-                child: RepaintBoundary(
-                  key: boundaryKey,
-                  child: MonkeyTerminalView(
-                    terminal,
-                    hardwareKeyboardOnly: true,
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
-      await tester.pump();
-
-      const imageId = 0xA5E30B;
-      terminal
-        ..resize(8, 22)
-        ..write('\x1b[?1049h');
-      await tester.runAsync(() async {
-        final png = await _buildSolidPngBase64(const Color(0xFFFF0000), 24);
-        terminal.write('\x1b_Ga=T,U=1,i=$imageId,c=8,r=4,f=100,q=2;$png\x1b\\');
-        // Draw one display of the image near the top (rows 1-4)...
-        for (var row = 0; row < 4; row++) {
-          terminal
-            ..write('\x1b[${row + 1};1H')
-            ..write(_placeholderRow(imageId, row: row, cols: 8));
-        }
-        // ...then a second, fresh display lower down (rows 12-15).
-        for (var row = 0; row < 4; row++) {
-          terminal
-            ..write('\x1b[${row + 12};1H')
-            ..write(_placeholderRow(imageId, row: row, cols: 8));
-        }
-      });
-      await _pumpUntilImagesDecoded(tester, terminal, [imageId]);
-      expect(
-        await tester.runAsync(() => _boundaryRedPixelCount(boundaryKey)),
-        greaterThan(0),
-        reason: 'both displays of the image render initially',
-      );
-
-      // Tear down only the top display (the "closed" one): punch holes through
-      // its rows so it becomes a sparse ghost, while the lower display stays
-      // intact. The ghost must be dismissed; the fresh copy must still render.
-      for (var row = 0; row < 4; row++) {
-        terminal
-          ..write('\x1b[${row + 1};3H')
-          ..write('    ');
-      }
-      await tester.pump();
-
-      // The lower, intact display is a separate placement instance and must
-      // still render — proving the ghost is dismissed per-instance, not by
-      // hiding the whole image id.
-      expect(
-        await tester.runAsync(() => _boundaryHasRed(boundaryKey)),
-        isTrue,
-        reason: 'the intact lower copy must keep rendering',
-      );
-    },
-  );
-
-  testWidgets(
     'Kitty same-id image: only the most recent dense copy renders (ghost gone)',
     (tester) async {
       // Reproduces the full-screen-viewer ghost: an image is shown, then the
@@ -1407,6 +1251,31 @@ void main() {
         lessThan(100),
         reason: 'the older ghost copy of the same image must be dismissed',
       );
+      // Punch holes through the old copy while the current copy stays intact.
+      for (var row = 0; row < 4; row++) {
+        terminal
+          ..write('\x1b[${row + 1};3H')
+          ..write('    ');
+      }
+      await tester.pump();
+      expect(
+        await tester.runAsync(
+          () => _boundaryRedPixelCountInBand(boundaryKey, 0, topBandBottom),
+        ),
+        lessThan(100),
+        reason: 'the holey older copy must remain dismissed',
+      );
+      expect(
+        await tester.runAsync(
+          () => _boundaryRedPixelCountInBand(
+            boundaryKey,
+            topBandBottom,
+            height.round(),
+          ),
+        ),
+        greaterThan(100),
+        reason: 'the intact lower copy must keep rendering',
+      );
     },
   );
 
@@ -1416,25 +1285,7 @@ void main() {
       final boundaryKey = GlobalKey();
       final terminal = Terminal();
 
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: Center(
-              child: SizedBox(
-                width: 400,
-                height: 300,
-                child: RepaintBoundary(
-                  key: boundaryKey,
-                  child: MonkeyTerminalView(
-                    terminal,
-                    hardwareKeyboardOnly: true,
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
+      await tester.pumpWidget(_graphicsHost(boundaryKey, terminal));
       await tester.pump();
 
       await tester.runAsync(() async {
@@ -1483,22 +1334,7 @@ void main() {
     final boundaryKey = GlobalKey();
     final terminal = Terminal();
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: Center(
-            child: SizedBox(
-              width: 400,
-              height: 300,
-              child: RepaintBoundary(
-                key: boundaryKey,
-                child: MonkeyTerminalView(terminal, hardwareKeyboardOnly: true),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
+    await tester.pumpWidget(_graphicsHost(boundaryKey, terminal));
     await tester.pump();
 
     const imageId = 42 + (2 << 24);

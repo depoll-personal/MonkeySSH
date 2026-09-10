@@ -710,14 +710,46 @@ class LocalNotificationService {
   Future<void> clearTerminalNotification(int notificationId) =>
       _clearNotification(notificationId);
 
-  Future<void> _clearNotification(int notificationId) async {
-    if (!await initialize()) return;
-    try {
-      await _plugin.cancel(id: notificationId);
-    } on MissingPluginException {
-      // Widget and unit tests don't register platform notification plugins.
-    }
+  final _notificationOperations = <int, Future<void>>{};
+
+  /// Number of notification IDs with unfinished platform operations.
+  @visibleForTesting
+  int get pendingNotificationOperationCount => _notificationOperations.length;
+
+  Future<T> _enqueueNotification<T>(
+    int notificationId,
+    Future<T> Function() operation,
+  ) {
+    final previous =
+        _notificationOperations[notificationId] ?? Future<void>.value();
+    late final Future<void> completed;
+    final result = previous.then((_) async {
+      try {
+        return await operation();
+      } finally {
+        if (identical(_notificationOperations[notificationId], completed)) {
+          unawaited(_notificationOperations.remove(notificationId));
+        }
+      }
+    });
+    // Keep failures visible to the caller without blocking later cancellation.
+    completed = result.then<void>(
+      (_) {},
+      onError: (Object error, StackTrace stack) {},
+    );
+    _notificationOperations[notificationId] = completed;
+    return result;
   }
+
+  Future<void> _clearNotification(int notificationId) =>
+      _enqueueNotification(notificationId, () async {
+        if (!await initialize()) return;
+        try {
+          await _plugin.cancel(id: notificationId);
+        } on MissingPluginException {
+          // Widget and unit tests don't register platform notification plugins.
+        }
+      });
 
   /// Shows an ACP agent notification (completion or permission-needed).
   ///
@@ -767,7 +799,7 @@ class LocalNotificationService {
     required String payload,
     required NotificationDetails details,
     bool allowSound = false,
-  }) async {
+  }) => _enqueueNotification(notificationId, () async {
     if (!await initialize()) return false;
     if (!await _requestNotificationPermission(allowSound: allowSound)) {
       return false;
@@ -785,7 +817,7 @@ class LocalNotificationService {
       // Widget and unit tests don't register platform notification plugins.
       return false;
     }
-  }
+  });
 
   Future<bool> _initializeInternal() async {
     if (kIsWeb) return false;

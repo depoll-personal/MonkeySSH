@@ -14,6 +14,8 @@ import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/terminal_connection_backend_service.dart';
 
+import '../../helpers/powershell_test_helpers.dart';
+
 class _MockSshClient extends Mock implements SSHClient {}
 
 class _MockExecSession extends Mock implements SSHSession {}
@@ -40,20 +42,6 @@ Stream<Uint8List> _utf8Stream(String value) => value.isEmpty
     : Stream<Uint8List>.value(Uint8List.fromList(utf8.encode(value)));
 
 void _ignoreInvocation(Invocation _) {}
-
-/// Decodes a `powershell ... -EncodedCommand <base64>` command back to its
-/// UTF-16LE PowerShell script so Windows-path tests can route mock responses.
-String _decodeEncodedPowerShell(String command) {
-  const marker = '-EncodedCommand ';
-  final index = command.indexOf(marker);
-  if (index < 0) return command;
-  final bytes = base64.decode(command.substring(index + marker.length).trim());
-  final buffer = StringBuffer();
-  for (var i = 0; i + 1 < bytes.length; i += 2) {
-    buffer.writeCharCode(bytes[i] | (bytes[i + 1] << 8));
-  }
-  return buffer.toString();
-}
 
 SSHSession _buildExecSession({String stdout = '', String stderr = ''}) {
   final session = _MockExecSession();
@@ -688,6 +676,50 @@ branch refs/heads/fix/session-resumption
   });
 
   group('normalizeDiscoveredSessionInfo', () {
+    for (final (summaries, expected) in [
+      (
+        [
+          'Quoted "title"',
+          '"Quoted" title',
+          "Review 'title'",
+          "Review users'",
+          'Review `title`',
+        ],
+        'unchanged',
+      ),
+      (
+        [
+          '"Review title"',
+          "'Review title'",
+          '`Review title`',
+          '"`Review title`"',
+          '  "  Review   title  "  ',
+        ],
+        'Review title',
+      ),
+      (['"', "'", '`', "\"'`"], null),
+    ]) {
+      for (final summary in summaries) {
+        test('normalizes summary quotes: $summary', () {
+          final normalized = normalizeDiscoveredSessionInfo(
+            ToolSessionInfo(
+              toolName: 'Antigravity',
+              sessionId: 'example',
+              summary: summary,
+            ),
+          );
+          if (expected == null) {
+            expect(normalized, isNull);
+          } else {
+            expect(
+              normalized?.summary,
+              expected == 'unchanged' ? summary : expected,
+            );
+          }
+        });
+      }
+    }
+
     test('drops unnamed sessions without usable fallback context', () {
       const info = ToolSessionInfo(
         toolName: 'Copilot CLI',
@@ -1426,27 +1458,35 @@ cwd: /tmp/demo
       ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
 
       final issuedScripts = <String>[];
-      when(() => client.execute(any())).thenAnswer((invocation) async {
-        final command = invocation.positionalArguments.first as String;
-        final script = _decodeEncodedPowerShell(command);
+      _stubDiscoveryExec(client, (command) async {
+        final script = decodeEncodedPowerShell(command);
         issuedScripts.add(script);
         // Copilot workspace listing.
         if (script.contains('.copilot/session-state') &&
             !script.contains('[char]0x1f')) {
           return _buildExecSession(
-            stdout: 'C:/Users/demo/.copilot/session-state/abc/workspace.yaml\n',
+            stdout:
+                'C:/Users/demo/.copilot/session-state/newer/workspace.yaml\n'
+                'C:/Users/demo/.copilot/session-state/abc/workspace.yaml\n',
           );
         }
         // Snapshot read of the workspace.yaml.
         if (script.contains('[char]0x1f') &&
             script.contains('workspace.yaml')) {
-          final content = base64.encode(
-            utf8.encode('id: abc\ncwd: C:\\proj\nsummary: My session\n'),
-          );
           return _buildExecSession(
             stdout:
-                'C:/Users/demo/.copilot/session-state/abc/workspace.yaml'
-                '\x1f1700000000\x1f$content\n',
+                _remoteSnapshotLine(
+                  'C:/Users/demo/.copilot/session-state/newer/workspace.yaml',
+                  'id: newer\ncwd: C:\\other\nsummary: Other project\n'
+                      'updated_at: 2026-07-06T00:00:00Z\n',
+                  mtime: 1780000001,
+                ) +
+                _remoteSnapshotLine(
+                  'C:/Users/demo/.copilot/session-state/abc/workspace.yaml',
+                  'id: abc\ncwd: C:\\proj\nsummary: My session\n'
+                      'updated_at: 2026-07-05T00:00:00Z\n',
+                  mtime: 1780000000,
+                ),
           );
         }
         return _buildExecSession();
@@ -1454,7 +1494,29 @@ cwd: /tmp/demo
 
       final discovery = AgentSessionDiscoveryService();
       final session = _buildDiscoverySession(client);
-      final result = await discovery.discoverSessionsStream(session).last;
+      final results = await discovery
+          .discoverSessionsStream(
+            session,
+            workingDirectory: r'C:\proj',
+            maxPerTool: 1,
+          )
+          .toList();
+      final result = results.last;
+      final preview = results.firstWhere(
+        (result) =>
+            result.attemptedTools.length == 1 &&
+            result.attemptedTools.contains('Copilot CLI'),
+      );
+      expect(preview.sessions.single.sessionId, 'abc');
+      final finalOnly = await AgentSessionDiscoveryService()
+          .discoverSessionsStream(
+            session,
+            workingDirectory: r'C:\proj',
+            maxPerTool: 1,
+            toolName: 'Copilot CLI',
+          )
+          .last;
+      expect(finalOnly.sessions.single.sessionId, 'abc');
 
       // Every issued command is a PowerShell EncodedCommand, never POSIX.
       final commands = verify(
@@ -1494,9 +1556,8 @@ cwd: /tmp/demo
           'time': {'updated': 1770000000000},
         });
 
-        when(() => client.execute(any())).thenAnswer((invocation) async {
-          final command = invocation.positionalArguments.first as String;
-          final script = _decodeEncodedPowerShell(command);
+        _stubDiscoveryExec(client, (command) async {
+          final script = decodeEncodedPowerShell(command);
           if (script.contains('opencode session list --format json')) {
             return _buildExecSession();
           }
@@ -1548,9 +1609,8 @@ cwd: /tmp/demo
         'updatedAt': '2026-07-05T20:15:00.000Z',
       });
 
-      when(() => client.execute(any())).thenAnswer((invocation) async {
-        final command = invocation.positionalArguments.first as String;
-        final script = _decodeEncodedPowerShell(command);
+      _stubDiscoveryExec(client, (command) async {
+        final script = decodeEncodedPowerShell(command);
         if (script.contains('.antigravity/sessions') &&
             !script.contains('[char]0x1f')) {
           return _buildExecSession(stdout: '$antigravityPath\n');
@@ -1584,8 +1644,7 @@ cwd: /tmp/demo
       final client = _MockSshClient();
       final commands = <String>[];
       final requestedCwds = <String?>[];
-      when(() => client.execute(any())).thenAnswer((invocation) async {
-        final command = invocation.positionalArguments.first as String;
+      _stubDiscoveryExec(client, (command) async {
         commands.add(command);
         if (command.contains('worktree list --porcelain')) {
           return _buildExecSession(
@@ -1656,8 +1715,7 @@ branch refs/heads/feature
       () async {
         final client = _MockSshClient();
         final commands = <String>[];
-        when(() => client.execute(any())).thenAnswer((invocation) async {
-          final command = invocation.positionalArguments.first as String;
+        _stubDiscoveryExec(client, (command) async {
           commands.add(command);
           if (command.contains('worktree list --porcelain')) {
             return _buildExecSession(
@@ -1712,8 +1770,7 @@ branch refs/heads/main
         final client = _MockSshClient();
         final commands = <String>[];
         final requestedCwds = <String?>[];
-        when(() => client.execute(any())).thenAnswer((invocation) async {
-          final command = invocation.positionalArguments.first as String;
+        _stubDiscoveryExec(client, (command) async {
           commands.add(command);
           if (command.contains('worktree list --porcelain')) {
             return _buildExecSession(
@@ -1782,8 +1839,7 @@ branch refs/heads/main
     test('OpenCode discovery uses ACP session/list when available', () async {
       final client = _MockSshClient();
       final commands = <String>[];
-      when(() => client.execute(any())).thenAnswer((invocation) async {
-        final command = invocation.positionalArguments.first as String;
+      _stubDiscoveryExec(client, (command) async {
         commands.add(command);
         if (command.contains('worktree list --porcelain')) {
           return _buildExecSession(
@@ -1836,85 +1892,275 @@ branch refs/heads/main
       );
     });
 
-    test('Antigravity discovery uses unified Python script', () async {
-      final client = _MockSshClient();
-      final commands = <String>[];
-      when(() => client.execute(any())).thenAnswer((invocation) async {
-        final command = invocation.positionalArguments.first as String;
-        commands.add(command);
-        if (command.contains('worktree list --porcelain')) {
-          return _buildExecSession(
-            stdout: '''
-root=/Users/depoll/Code/flutty
-worktree /Users/depoll/Code/flutty
-HEAD afdab6c
-branch refs/heads/main
-''',
-          );
+    for (final windows in [false, true]) {
+      test('Antigravity snapshots preserve metadata precedence on '
+          '${windows ? 'Windows' : 'POSIX'}', () async {
+        final client = _MockSshClient();
+        if (windows) {
+          when(
+            () => client.remoteVersion,
+          ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
         }
-        if (command.contains('python3 -c')) {
-          return _buildExecSession(
-            stdout: '''
-[
-  {
-    "sessionId": "7b9feba4-ca71-4c6f-8b31-478231f7154d",
-    "summary": "Implement antigravity",
-    "workingDirectory": "/Users/depoll/Code/flutty",
-    "lastActive": "2026-05-22T21:45:35Z"
-  }
-]
-''',
-          );
+        final home = windows ? 'C:/Users/demo' : '/Users/demo';
+        final cwd = windows ? r'C:\audit\My Project' : '/audit/My Project';
+        final uri = windows
+            ? 'file:///C:/audit/My%20Project'
+            : 'file:///audit/My%20Project';
+        final root = '$home/.gemini/antigravity-cli';
+        final jsonPaths = [
+          "$home/.antigravity/sessions/encoded 'path.json",
+          '$home/.agy/sessions/broken.json',
+          '${windows ? home : '.'}/.antigravitycli/legacy.json',
+          '${windows ? home : '.'}/.agycli/partial.json',
+        ];
+        final conversations = [
+          '$root/conversations/encoded.pb',
+          '$root/conversations/history.pb',
+          '$root/implicit/history.pb',
+          '$root/implicit/annotation.pb',
+          '$root/conversations/fallback.pb',
+          '$root/conversations/contextless.pb',
+        ];
+        final contents = {
+          jsonPaths[0]: jsonEncode({
+            'id': 'encoded',
+            'summary': 'JSON wins',
+            'projectResources': {
+              'resources': [
+                {
+                  'gitFolder': {'folderUri': uri},
+                },
+              ],
+            },
+            'updatedAt': '2026-07-05T20:15:00Z',
+          }),
+          jsonPaths[1]: 'not JSON',
+          jsonPaths[2]: '{"id":"legacy","summary":"Legacy root"}',
+          jsonPaths[3]: '{"id":"partial","summary":"Truncated JSON",',
+          '$root/annotations/encoded.pbtxt': 'title: "Ignored annotation"',
+          '$root/annotations/history.pbtxt': 'title: "Old annotation"',
+          '$root/annotations/annotation.pbtxt': r'title: "Quoted \"title\""',
+          for (final path in conversations) path: '',
+        };
+        final commands = <String>[];
+        _stubDecodedDiscoveryExec(client, (command) async {
+          commands.add(command);
+          if (command.contains('[char]0x1f') || command.contains('SEP=')) {
+            return _buildExecSession(
+              stdout: contents.entries
+                  .where(
+                    (entry) => command.contains(
+                      entry.key.replaceAll("'", windows ? "''" : r"'\''"),
+                    ),
+                  )
+                  .map(
+                    (entry) => _remoteSnapshotLine(
+                      entry.key,
+                      entry.value,
+                      mtime: 1700000000,
+                    ),
+                  )
+                  .join(),
+            );
+          }
+          if (command.contains('.antigravity/sessions')) {
+            return _buildExecSession(stdout: jsonPaths.join('\n'));
+          }
+          if (command.contains('history.jsonl')) {
+            return _buildExecSession(
+              stdout: [
+                jsonEncode({
+                  'conversationId': 'history',
+                  'display': 'Old history',
+                }),
+                'malformed history',
+                jsonEncode({
+                  'conversationId': 'history',
+                  'display': 'Newest history',
+                  'workspace': cwd,
+                  'timestamp': 1780000000000,
+                }),
+                jsonEncode({
+                  'conversationId': 'encoded',
+                  'display': 'Ignored history',
+                }),
+                jsonEncode({'conversationId': 'fallback', 'workspace': cwd}),
+              ].join('\n'),
+            );
+          }
+          if (command.contains('antigravity-cli')) {
+            return _buildExecSession(stdout: conversations.join('\n'));
+          }
+          return _buildExecSession();
+        });
+        final session = _buildDiscoverySession(client);
+        final discovery = AgentSessionDiscoveryService();
+        final result = await discovery
+            .discoverSessionsStream(
+              session,
+              toolName: 'Antigravity',
+              maxPerTool: 20,
+            )
+            .last;
+        final byId = {for (final info in result.sessions) info.sessionId: info};
+        expect(
+          byId.keys,
+          unorderedEquals([
+            'encoded',
+            'legacy',
+            'partial',
+            'history',
+            'annotation',
+            'fallback',
+          ]),
+        );
+        expect(byId['encoded']!.workingDirectory, cwd);
+        expect(byId['encoded']!.summary, 'JSON wins');
+        expect(
+          byId['encoded']!.lastActive,
+          DateTime.parse('2026-07-05T20:15:00Z'),
+        );
+        expect(byId['history']!.summary, 'Newest history');
+        expect(
+          byId['history']!.lastActive,
+          DateTime.fromMillisecondsSinceEpoch(1780000000000),
+        );
+        expect(byId['annotation']!.summary, 'Quoted "title"');
+        expect(byId['fallback']!.summary, 'My Project');
+        expect(byId['fallback']!.workingDirectory, cwd);
+        expect(
+          byId['fallback']!.lastActive,
+          DateTime.fromMillisecondsSinceEpoch(1700000000000),
+        );
+        final scoped = await discovery
+            .discoverSessionsStream(
+              session,
+              workingDirectory: cwd,
+              toolName: 'Antigravity',
+              maxPerTool: 1,
+            )
+            .last;
+        expect(scoped.sessions.single.sessionId, 'encoded');
+        expect(scoped.sessions.single.workingDirectory, cwd);
+        if (!windows) {
+          expect(commands, anyElement(contains('./.antigravitycli ./.agycli')));
+          expect(commands, anyElement(contains('~/.agy/sessions')));
+          expect(commands, isNot(anyElement(contains('python3 -c'))));
         }
-        return _buildExecSession();
       });
 
-      final discovery = AgentSessionDiscoveryService();
-      final session = _buildDiscoverySession(client);
-      final result = await discovery
-          .discoverSessionsStream(
-            session,
-            workingDirectory: '/Users/depoll/Code/flutty',
-            toolName: 'Antigravity',
-          )
-          .last;
-
-      expect(result.sessions, hasLength(1));
-      expect(result.sessions.single.toolName, 'Antigravity');
-      expect(
-        result.sessions.single.sessionId,
-        '7b9feba4-ca71-4c6f-8b31-478231f7154d',
-      );
-      expect(result.sessions.single.summary, 'Implement antigravity');
-      expect(
-        result.sessions.single.workingDirectory,
-        '/Users/depoll/Code/flutty',
-      );
-      expect(
-        result.sessions.single.lastActive,
-        DateTime.parse('2026-05-22T21:45:35Z'),
-      );
-      final pythonCommand = commands.singleWhere(
-        (command) => command.contains('python3 -c'),
-      );
-      expect(
-        pythonCommand,
-        contains('summary = history_entry.get("display") or title'),
-      );
-
-      expect(
-        commands.where((command) => command.contains('python3 -c')),
-        hasLength(1),
-      );
-    });
+      for (final previewOnly in [true, false]) {
+        test(
+          'Antigravity ${previewOnly ? 'preview' : 'final'} bounds snapshot reads on '
+          '${windows ? 'Windows' : 'POSIX'}',
+          () async {
+            final readLimit = previewOnly ? 6 : 24;
+            final scanLimit = previewOnly ? 24 : 60;
+            final client = _MockSshClient();
+            if (windows) {
+              when(
+                () => client.remoteVersion,
+              ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
+            }
+            final home = windows ? 'C:/Users/demo' : '/Users/demo';
+            final jsonPaths = List.generate(
+              32,
+              (i) => '$home/.antigravity/sessions/json-$i.json',
+            );
+            final conversationPaths = List.generate(
+              32,
+              (i) => '$home/.gemini/antigravity-cli/conversations/conv-$i.pb',
+            );
+            final commands = <String>[];
+            _stubDecodedDiscoveryExec(client, (command) async {
+              commands.add(command);
+              if (command.contains('[char]0x1f') || command.contains('SEP=')) {
+                return _buildExecSession(
+                  stdout: [
+                    for (var i = 0; i < jsonPaths.length; i++)
+                      if (command.contains(jsonPaths[i]))
+                        _remoteSnapshotLine(
+                          jsonPaths[i],
+                          '{"id":"json-$i","summary":"Session $i"}',
+                          mtime: i,
+                        ),
+                    for (final path in conversationPaths)
+                      if (command.contains(path))
+                        _remoteSnapshotLine(path, '', mtime: 1),
+                  ].join(),
+                );
+              }
+              if (command.contains('.antigravity/sessions')) {
+                expect(
+                  command,
+                  contains(
+                    windows
+                        ? 'Select-Object -First $scanLimit'
+                        : 'head -n $scanLimit',
+                  ),
+                );
+                return _buildExecSession(stdout: jsonPaths.join('\n'));
+              }
+              if (command.contains('history.jsonl')) {
+                expect(
+                  command,
+                  contains(
+                    windows
+                        ? '-Tail ${scanLimit * 5}'
+                        : 'tail -n ${scanLimit * 5}',
+                  ),
+                );
+              } else if (command.contains('antigravity-cli')) {
+                return _buildExecSession(stdout: conversationPaths.join('\n'));
+              }
+              return _buildExecSession();
+            });
+            final results = await AgentSessionDiscoveryService()
+                .discoverSessionsStream(
+                  _buildDiscoverySession(client),
+                  maxPerTool: 1,
+                  toolName: previewOnly ? null : 'Antigravity',
+                )
+                .toList();
+            expect(
+              results.last.sessions
+                  .where((s) => s.toolName == 'Antigravity')
+                  .single
+                  .sessionId,
+              'json-${readLimit - 1}',
+            );
+            final snapshots = commands
+                .where(
+                  (command) =>
+                      command.contains('[char]0x1f') ||
+                      command.contains('SEP='),
+                )
+                .join('\n');
+            expect(
+              snapshots,
+              contains(windows ? 'byte[] 65536' : r'$HEAD_BIN -c 65536'),
+            );
+            expect(snapshots, contains(windows ? '-TotalCount 20' : "'1,20p'"));
+            expect(
+              snapshots,
+              contains(windows ? 'byte[] 0' : r'$HEAD_BIN -c 0'),
+            );
+            expect(snapshots, contains('json-${readLimit - 1}.json'));
+            expect(snapshots, contains('conv-${readLimit - 1}.pb'));
+            expect(snapshots, isNot(contains('json-$readLimit.json')));
+            expect(snapshots, isNot(contains('conv-$readLimit.pb')));
+            expect(snapshots, isNot(contains('conv-$readLimit.pbtxt')));
+          },
+        );
+      }
+    }
 
     test(
       'all-provider discovery skips ACP probes for fast panel loads',
       () async {
         final client = _MockSshClient();
         final commands = <String>[];
-        when(() => client.execute(any())).thenAnswer((invocation) async {
-          final command = invocation.positionalArguments.first as String;
+        _stubDiscoveryExec(client, (command) async {
           commands.add(command);
           if (command.contains('worktree list --porcelain')) {
             return _buildExecSession(
@@ -2103,8 +2349,7 @@ branch refs/heads/main
       () async {
         final client = _MockSshClient();
         final commands = <String>[];
-        when(() => client.execute(any())).thenAnswer((invocation) async {
-          final command = invocation.positionalArguments.first as String;
+        _stubDiscoveryExec(client, (command) async {
           commands.add(command);
           if (command.contains('~/.local/share/opencode/opencode.db')) {
             return _buildExecSession(
@@ -2168,8 +2413,7 @@ branch refs/heads/main
         'padding': List<String>.filled(9000, 'x').join(),
       });
 
-      when(() => client.execute(any())).thenAnswer((invocation) async {
-        final command = invocation.positionalArguments.first as String;
+      _stubDiscoveryExec(client, (command) async {
         if (command.contains('find ~/.cursor/chats')) {
           return _buildExecSession(stdout: metaPath);
         }
@@ -2208,8 +2452,7 @@ branch refs/heads/main
         'cwd': '/Users/depoll/Code/flutty',
       });
 
-      when(() => client.execute(any())).thenAnswer((invocation) async {
-        final command = invocation.positionalArguments.first as String;
+      _stubDiscoveryExec(client, (command) async {
         if (command.contains('find ~/.cursor/chats')) {
           return _buildOpenMarkerExecSession(stdout: metaPath);
         }
@@ -2249,8 +2492,7 @@ branch refs/heads/main
         'cwd': '/Users/depoll/Code/flutty',
       });
 
-      when(() => client.execute(any())).thenAnswer((invocation) async {
-        final command = invocation.positionalArguments.first as String;
+      _stubDiscoveryExec(client, (command) async {
         if (command.contains('find ~/.cursor/chats')) {
           return _buildOpenMarkerExecSession(stdout: metaPath, chunkSize: 1);
         }
@@ -2280,8 +2522,7 @@ branch refs/heads/main
     test('global discovery never probes Gemini CLI storage', () async {
       final client = _MockSshClient();
       final commands = <String>[];
-      when(() => client.execute(any())).thenAnswer((invocation) async {
-        final command = invocation.positionalArguments.first as String;
+      _stubDiscoveryExec(client, (command) async {
         commands.add(command);
         return _buildExecSession();
       });
@@ -2309,8 +2550,7 @@ branch refs/heads/main
     test('scoped discovery never probes Gemini CLI storage', () async {
       final client = _MockSshClient();
       final commands = <String>[];
-      when(() => client.execute(any())).thenAnswer((invocation) async {
-        final command = invocation.positionalArguments.first as String;
+      _stubDiscoveryExec(client, (command) async {
         commands.add(command);
         if (command.contains('worktree list --porcelain')) {
           return _buildExecSession(
@@ -2352,8 +2592,7 @@ branch refs/heads/main
     test('requesting the Gemini CLI provider yields no sessions', () async {
       final client = _MockSshClient();
       final commands = <String>[];
-      when(() => client.execute(any())).thenAnswer((invocation) async {
-        final command = invocation.positionalArguments.first as String;
+      _stubDiscoveryExec(client, (command) async {
         commands.add(command);
         return _buildExecSession();
       });
@@ -2379,8 +2618,7 @@ branch refs/heads/main
             'rollout-2026-04-26T15-44-01-'
             '019dcbf6-c80e-7c30-b7fa-3d352bda8c4d.jsonl';
         const sessionId = '019dcbf6-c80e-7c30-b7fa-3d352bda8c4d';
-        when(() => client.execute(any())).thenAnswer((invocation) async {
-          final command = invocation.positionalArguments.first as String;
+        _stubDiscoveryExec(client, (command) async {
           if (command.contains('find ~/.codex/sessions')) {
             return _buildExecSession(stdout: rolloutPath);
           }
@@ -2423,8 +2661,7 @@ branch refs/heads/main
           '/Users/demo/.cursor/chats/7fb0188e9fe01ef050275e8289ce9696/'
           'f21ed2df-500d-46a5-b55f-12b64268491f/meta.json';
       const chatId = 'f21ed2df-500d-46a5-b55f-12b64268491f';
-      when(() => client.execute(any())).thenAnswer((invocation) async {
-        final command = invocation.positionalArguments.first as String;
+      _stubDiscoveryExec(client, (command) async {
         if (command.contains('find ~/.cursor/chats')) {
           return _buildExecSession(stdout: metaPath);
         }
@@ -2467,8 +2704,7 @@ branch refs/heads/main
         const metaPath =
             '/Users/demo/.cursor/chats/workspace/'
             'bfc1447e-9184-4dcb-ad28-130dd28177d3/meta.json';
-        when(() => client.execute(any())).thenAnswer((invocation) async {
-          final command = invocation.positionalArguments.first as String;
+        _stubDiscoveryExec(client, (command) async {
           if (command.contains('find ~/.cursor/chats')) {
             return _buildExecSession(stdout: metaPath);
           }
@@ -2506,8 +2742,7 @@ branch refs/heads/main
           '/Users/demo/.grok/sessions/%2FUsers%2Fdepoll%2FCode%2Fflutty/'
           '019f6cb5-f7e4-7bc1-bb25-9985af59619e/summary.json';
       const sessionId = '019f6cb5-f7e4-7bc1-bb25-9985af59619e';
-      when(() => client.execute(any())).thenAnswer((invocation) async {
-        final command = invocation.positionalArguments.first as String;
+      _stubDiscoveryExec(client, (command) async {
         commands.add(command);
         if (command.contains('worktree list --porcelain')) {
           return _buildExecSession(
@@ -2586,9 +2821,8 @@ HEAD b
         const summaryPath =
             'C:/grok-home/sessions/C%3A%5Cwork%5Crepo/win-session/summary.json';
         final issuedScripts = <String>[];
-        when(() => client.execute(any())).thenAnswer((invocation) async {
-          final command = invocation.positionalArguments.first as String;
-          final script = _decodeEncodedPowerShell(command);
+        _stubDiscoveryExec(client, (command) async {
+          final script = decodeEncodedPowerShell(command);
           issuedScripts.add(script);
           if (script.contains('[char]0x1f') && script.contains(summaryPath)) {
             return _buildExecSession(
@@ -2646,8 +2880,7 @@ HEAD b
           '/Users/demo/.pi/agent/sessions/--Users-depoll-Code-flutty--/'
           '2026-04-12T21-07-44-781Z_01JYX7ABCD.jsonl';
       final commands = <String>[];
-      when(() => client.execute(any())).thenAnswer((invocation) async {
-        final command = invocation.positionalArguments.first as String;
+      _stubDiscoveryExec(client, (command) async {
         commands.add(command);
         if (command.contains(r"$SED_BIN -n '1,1p'") &&
             command.contains(sessionPath)) {
@@ -2716,8 +2949,7 @@ HEAD b
       const sessionPath =
           '/Users/demo/.pi/agent/sessions/--Users-depoll-Code-flutty--/'
           '2026-04-12T21-07-44-781Z_01JYX7HEADER.jsonl';
-      when(() => client.execute(any())).thenAnswer((invocation) async {
-        final command = invocation.positionalArguments.first as String;
+      _stubDiscoveryExec(client, (command) async {
         if (command.contains(r"$SED_BIN -n '1,1p'") &&
             command.contains(sessionPath)) {
           return _buildExecSession(
@@ -2752,8 +2984,7 @@ HEAD b
       const projectPath =
           '/Users/demo/.pi/agent/sessions/--Users-depoll-Code-flutty--/'
           '2026-04-12T21-07-44-781Z_01JYX7ABCD.jsonl';
-      when(() => client.execute(any())).thenAnswer((invocation) async {
-        final command = invocation.positionalArguments.first as String;
+      _stubDiscoveryExec(client, (command) async {
         if (command.contains(projectPath)) {
           return _buildExecSession(
             stdout: _remoteSnapshotLine(projectPath, '''
@@ -2795,8 +3026,7 @@ HEAD b
           '/Users/demo/.pi/agent/sessions/--Users-depoll-worktrees-feature--/'
           '2026-04-12T22-07-44-781Z_WORKTREE.jsonl';
       final commands = <String>[];
-      when(() => client.execute(any())).thenAnswer((invocation) async {
-        final command = invocation.positionalArguments.first as String;
+      _stubDiscoveryExec(client, (command) async {
         commands.add(command);
         if (command.contains('worktree list --porcelain')) {
           return _buildExecSession(
@@ -2851,8 +3081,7 @@ HEAD b
     test('Hermes discovery reads the state database', () async {
       final client = _MockSshClient();
       final commands = <String>[];
-      when(() => client.execute(any())).thenAnswer((invocation) async {
-        final command = invocation.positionalArguments.first as String;
+      _stubDiscoveryExec(client, (command) async {
         commands.add(command);
         if (command.contains('state.db')) {
           return _buildExecSession(
@@ -2898,8 +3127,7 @@ HEAD b
     test('toolName limits discovery to the requested provider', () async {
       final client = _MockSshClient();
       final commands = <String>[];
-      when(() => client.execute(any())).thenAnswer((invocation) async {
-        final command = invocation.positionalArguments.first as String;
+      _stubDiscoveryExec(client, (command) async {
         commands.add(command);
         if (command.contains('opencode session list --format json')) {
           return _buildExecSession(
@@ -2938,8 +3166,7 @@ HEAD b
     test('prefetchSessions warms the cache for the next visible load', () async {
       final client = _MockSshClient();
       final commands = <String>[];
-      when(() => client.execute(any())).thenAnswer((invocation) async {
-        final command = invocation.positionalArguments.first as String;
+      _stubDiscoveryExec(client, (command) async {
         commands.add(command);
         if (command.contains('opencode session list --format json')) {
           return _buildExecSession(
@@ -2966,8 +3193,7 @@ HEAD b
     test('reuses fresh results for repeated loads in the same scope', () async {
       final client = _MockSshClient();
       final commands = <String>[];
-      when(() => client.execute(any())).thenAnswer((invocation) async {
-        final command = invocation.positionalArguments.first as String;
+      _stubDiscoveryExec(client, (command) async {
         commands.add(command);
         if (command.contains('opencode session list --format json')) {
           return _buildExecSession(
@@ -3109,8 +3335,7 @@ HEAD b
       final oldProbeStarted = Completer<void>();
       final finishOldProbe = Completer<void>();
       var probes = 0;
-      when(() => client.execute(any())).thenAnswer((invocation) async {
-        final command = invocation.positionalArguments.first as String;
+      _stubDiscoveryExec(client, (command) async {
         if (command.contains('opencode session list --format json')) {
           final probe = ++probes;
           if (probe == 1) {
@@ -3157,8 +3382,7 @@ HEAD b
       () async {
         final client = _MockSshClient();
         final commands = <String>[];
-        when(() => client.execute(any())).thenAnswer((invocation) async {
-          final command = invocation.positionalArguments.first as String;
+        _stubDiscoveryExec(client, (command) async {
           commands.add(command);
           if (command.contains('worktree list --porcelain')) {
             return _buildExecSession(
@@ -3220,3 +3444,20 @@ branch refs/heads/main
     );
   });
 }
+
+void _stubDiscoveryExec(
+  SSHClient client,
+  FutureOr<SSHSession> Function(String) response,
+) {
+  when(() => client.execute(any())).thenAnswer(
+    (call) async => response(call.positionalArguments.single as String),
+  );
+}
+
+void _stubDecodedDiscoveryExec(
+  SSHClient client,
+  FutureOr<SSHSession> Function(String) response,
+) => _stubDiscoveryExec(
+  client,
+  (command) => response(decodeEncodedPowerShell(command)),
+);

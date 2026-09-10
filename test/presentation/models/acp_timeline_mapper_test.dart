@@ -3,6 +3,7 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/domain/models/acp_attachment.dart';
 import 'package:monkeyssh/domain/models/acp_content.dart';
 import 'package:monkeyssh/domain/models/acp_protocol.dart';
 import 'package:monkeyssh/domain/models/acp_session_keys.dart';
@@ -45,6 +46,25 @@ AcpSessionState _state({
     lastStopReason: lastStopReason,
     timeline: timeline,
   );
+}
+
+p.AcpImageContent _mapUserImage(AcpImageContent block) {
+  final entries = mapAcpSessionTimeline(
+    _state(
+      timeline: AcpTimeline(
+        entries: [
+          AcpMessageEntry(
+            role: AcpMessageRole.user,
+            order: 0,
+            content: [block],
+          ),
+        ],
+      ),
+    ),
+  );
+  return ((entries.single as p.AcpUserPromptEntry).parts.single
+          as p.AcpImagePart)
+      .image;
 }
 
 void main() {
@@ -151,7 +171,10 @@ void main() {
     expect(tool.toolCall.diffs.single.unifiedDiff, contains('-a'));
     expect(tool.toolCall.diffs.single.unifiedDiff, contains('+b'));
     expect(tool.toolCall.images, hasLength(1));
-    expect(tool.toolCall.images.single.bytes, isNotNull);
+    expect(
+      tool.toolCall.images.single.dataUri,
+      startsWith('data:image/png;base64,'),
+    );
 
     expect(
       entries.whereType<p.AcpPlanEntry>().single.plan.items.single.status,
@@ -243,7 +266,10 @@ void main() {
             as p.AcpToolCallEntry;
 
     expect(tool.toolCall.images, hasLength(1));
-    expect(tool.toolCall.images.single.bytes, utf8.encode('hi'));
+    expect(
+      tool.toolCall.images.single.dataUri,
+      'data:image/png;base64,$imageData',
+    );
     expect(tool.toolCall.rawOutput, 'Rendered image');
     expect(tool.toolCall.rawOutput, isNot(contains(imageData)));
   });
@@ -363,26 +389,15 @@ void main() {
     );
   });
 
-  test('falls back to a URI when image bytes are not decodable inline', () {
-    final timeline = AcpTimeline(
-      entries: [
-        AcpMessageEntry(
-          role: AcpMessageRole.user,
-          order: 0,
-          content: const [
-            AcpImageContent(
-              data: 'not-base64!!!',
-              mimeType: 'image/png',
-              uri: 'file:///pic.png',
-            ),
-          ],
-        ),
-      ],
+  test('retains malformed encoded data and its URI for widget fallback', () {
+    final image = _mapUserImage(
+      const AcpImageContent(
+        data: 'not-base64!!!',
+        mimeType: 'image/png',
+        uri: 'file:///pic.png',
+      ),
     );
-    final user =
-        mapAcpSessionTimeline(_state(timeline: timeline)).single
-            as p.AcpUserPromptEntry;
-    final image = (user.parts.single as p.AcpImagePart).image;
+    expect(image.dataUri, 'data:image/png;base64,not-base64!!!');
     expect(image.uri, 'file:///pic.png');
     expect(image.bytes, isNull);
   });
@@ -646,25 +661,6 @@ hidden: false
     );
   });
 
-  test('preserves inline image data as bytes when no URI is present', () {
-    final data = base64.encode(List<int>.filled(16, 1));
-    final timeline = AcpTimeline(
-      entries: [
-        AcpMessageEntry(
-          role: AcpMessageRole.user,
-          order: 0,
-          content: [AcpImageContent(data: data, mimeType: 'image/png')],
-        ),
-      ],
-    );
-    final user =
-        mapAcpSessionTimeline(_state(timeline: timeline)).single
-            as p.AcpUserPromptEntry;
-    final image = (user.parts.single as p.AcpImagePart).image;
-    expect(image.bytes, isNotNull);
-    expect(image.uri, isNull);
-  });
-
   test('embeds a bounded data URI for a URI-less assistant image', () {
     final data = base64.encode(List<int>.filled(16, 2));
     final timeline = AcpTimeline(
@@ -686,10 +682,56 @@ hidden: false
     expect(assistant.markdown, contains('data:image/png;base64,$data'));
   });
 
+  for (final (size, uri) in [
+    (16, null),
+    (6 * 1024 * 1024, 'attachment://local/large.png'),
+    (kAcpAttachmentImageDisplayMaxBytes, 'attachment://local/large.png'),
+  ]) {
+    test(
+      'preserves $size bytes of image data for users, tools, and assistants',
+      () {
+        final data = base64.encode(List<int>.filled(size, 1));
+        final block = AcpImageContent(data: data, mimeType: 'image/png');
+        final timeline = AcpTimeline(
+          entries: [
+            AcpMessageEntry(
+              role: AcpMessageRole.user,
+              order: 0,
+              content: [
+                AcpImageContent(data: data, mimeType: 'image/png', uri: uri),
+              ],
+            ),
+            AcpToolCallEntry(
+              toolCallId: 'image',
+              order: 1,
+              content: [AcpToolContentBlock(content: block)],
+            ),
+            AcpMessageEntry(
+              role: AcpMessageRole.agent,
+              order: 2,
+              content: [block],
+            ),
+          ],
+        );
+        final entries = mapAcpSessionTimeline(_state(timeline: timeline));
+        final user = entries[0] as p.AcpUserPromptEntry;
+        final tool = entries[1] as p.AcpToolCallEntry;
+        final assistant = entries[2] as p.AcpAssistantMessageEntry;
+        final dataUri = 'data:image/png;base64,$data';
+        final image = (user.parts.single as p.AcpImagePart).image;
+        expect(image.dataUri, dataUri);
+        expect(image.bytes, isNull);
+        expect(image.uri, uri);
+        expect(tool.toolCall.images.single.dataUri, dataUri);
+        expect(assistant.markdown, '\n\n![image]($dataUri)');
+      },
+    );
+  }
+
   test('drops oversized image data without a URI and never decodes it', () {
     // A base64 string whose *estimated* decoded size exceeds the inline bound;
     // the mapper must skip it via preflight rather than allocating/decoding.
-    final oversized = 'A' * (kAcpMapperMaxInlineImageBytes * 4 ~/ 3 + 8);
+    final oversized = 'A' * (kAcpAttachmentImageDisplayMaxBytes * 4 ~/ 3 + 8);
     final timeline = AcpTimeline(
       entries: [
         AcpMessageEntry(
@@ -713,26 +755,14 @@ hidden: false
   });
 
   test('falls back to the URI for an oversized image that has one', () {
-    final oversized = 'A' * (kAcpMapperMaxInlineImageBytes * 4 ~/ 3 + 8);
-    final timeline = AcpTimeline(
-      entries: [
-        AcpMessageEntry(
-          role: AcpMessageRole.user,
-          order: 0,
-          content: [
-            AcpImageContent(
-              data: oversized,
-              mimeType: 'image/png',
-              uri: 'file:///big.png',
-            ),
-          ],
-        ),
-      ],
+    final oversized = 'A' * (kAcpAttachmentImageDisplayMaxBytes * 4 ~/ 3 + 8);
+    final image = _mapUserImage(
+      AcpImageContent(
+        data: oversized,
+        mimeType: 'image/png',
+        uri: 'file:///big.png',
+      ),
     );
-    final user =
-        mapAcpSessionTimeline(_state(timeline: timeline)).single
-            as p.AcpUserPromptEntry;
-    final image = (user.parts.single as p.AcpImagePart).image;
     expect(image.uri, 'file:///big.png');
     expect(image.bytes, isNull);
   });

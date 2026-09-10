@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:collection';
 
+import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/foundation.dart';
 
 import 'diagnostics_log_service.dart';
@@ -35,6 +36,17 @@ Future<T> runQueuedSshExec<T>(
   );
   return queue.run(operation, priority: priority);
 }
+
+/// Bounds channel creation and closes channels that arrive after the deadline.
+/// Late opening failures are consumed without changing the timeout result.
+Future<SSHSession> openSshExec(Future<SSHSession> opening, Duration timeout) =>
+    opening.timeout(
+      timeout,
+      onTimeout: () {
+        opening.then((channel) => channel.close()).ignore();
+        throw TimeoutException('Timed out opening SSH exec channel', timeout);
+      },
+    );
 
 /// Clears queued exec state for tests.
 @visibleForTesting

@@ -105,6 +105,7 @@ class HostEditFixture {
 
   Future<void> pump(
     WidgetTester tester, {
+    bool createHost = false,
     List<Snippet> snippets = const [],
     List<Override> overrides = const [],
   }) async {
@@ -116,7 +117,8 @@ class HostEditFixture {
         ),
         GoRoute(
           path: '/edit',
-          builder: (context, state) => HostEditScreen(hostId: host.id),
+          builder: (context, state) =>
+              HostEditScreen(hostId: createHost ? null : host.id),
         ),
       ],
     );

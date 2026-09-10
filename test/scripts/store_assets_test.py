@@ -122,6 +122,74 @@ class StoreAssetsTest(unittest.TestCase):
                 self.assertNotIn('Restored store assets', result.stdout)
                 self.assertNotIn('Extracted ', result.stdout)
 
+    def publish(self, generate, platform, *, missing_screenshots=False):
+        events = self.root / 'publish-events'
+        events.write_text('')
+        env = dict(os.environ, TEST_EVENTS=str(events),
+                   TEST_MISSING='true' if missing_screenshots else 'false')
+        result = subprocess.run(
+            ['bash', '-c', '''
+source "$1" help >/dev/null
+shift
+repo_slug() { echo offline/fixture; }
+require_command() { :; }
+gh() { echo "gh $*" >> "$TEST_EVENTS"; }
+cmd_download() { echo restore >> "$TEST_EVENTS"; }
+python3() { echo "python $*" >> "$TEST_EVENTS"; }
+validation_python() { echo python3; }
+video_globs() { :; }
+git() { echo fixture-commit; }
+if [ "$TEST_MISSING" = true ]; then
+  count_media_files() { echo 1; }
+  assert_screenshots_present() {
+    echo "validate $*" >> "$TEST_EVENTS"
+    return 17
+  }
+else
+  cmd_package() { echo "package $*" >> "$TEST_EVENTS"; }
+fi
+cmd_publish "$@"
+''', 'store-assets-test', str(SCRIPT), '--generate', generate,
+             '--platform', platform, '--no-workflow',
+             '--output', str(self.root / 'store-assets.tar.gz')],
+            env=env, capture_output=True, text=True, timeout=15,
+        )
+        return result, events.read_text().splitlines()
+
+    def test_publish_restores_only_before_partial_generation(self):
+        for generate in ('none', 'screenshots', 'videos', 'all'):
+            for platform in ('ios', 'android', 'both'):
+                with self.subTest(generate=generate, platform=platform):
+                    result, events = self.publish(generate, platform)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    expected = []
+                    if generate != 'none' and (generate != 'all' or platform != 'both'):
+                        expected.append('restore')
+                    if generate in ('screenshots', 'all'):
+                        expected.append(f'python scripts/generate_store_screenshots.py {platform}')
+                    if generate in ('videos', 'all'):
+                        expected.append(f'python scripts/generate_store_demo_videos.py {platform}')
+                    package = (
+                        f'package -o {self.root}/store-assets.tar.gz '
+                        '--platform both --require-screenshots'
+                    )
+                    if generate in ('videos', 'all'):
+                        package += ' --require-videos'
+                    expected.append(package)
+                    self.assertEqual(
+                        [event for event in events if event == 'restore'
+                         or event.startswith('package ')
+                         or (event.startswith('python ') and '--gallery-only' not in event)],
+                        expected,
+                    )
+
+    def test_publish_local_media_fails_complete_validation_without_restoring(self):
+        for platform in ('ios', 'android', 'both'):
+            with self.subTest(platform=platform):
+                result, events = self.publish('none', platform, missing_screenshots=True)
+                self.assertEqual(result.returncode, 17, result.stdout + result.stderr)
+                self.assertEqual(events, ['validate both'])
+
     def test_failed_workflow_download_does_not_install_partial_artifact(self):
         files = {MEDIA: b'new screenshot'}
         archive = self.archive(files, self.manifest(files))

@@ -78,6 +78,8 @@ const (
 	runCommandTimeout                 = 20 * time.Second
 	socketTimeout                     = 2 * time.Second
 	attachWriteTimeout                = time.Second
+	attachTransitionTimeout           = 3 * time.Second
+	terminalResponseMaxOutstanding    = 64
 	attachWriteChunkBytes             = 32 * 1024
 	terminalResponseFocusGrace        = 2 * time.Second
 	focusInputCarryDelay              = 75 * time.Millisecond
@@ -863,11 +865,6 @@ type attachWriteGate struct {
 	deliver atomic.Bool
 }
 
-type routedTerminalResponse struct {
-	windowID string
-	data     []byte
-}
-
 type attachInputAction struct {
 	userInput      bool
 	bracketedPaste bool
@@ -877,8 +874,6 @@ type attachInputAction struct {
 
 type attachInputRouting struct {
 	claimsFocus bool
-	passthrough []byte
-	responses   []routedTerminalResponse
 	actions     []attachInputAction
 }
 
@@ -887,10 +882,6 @@ func (r *attachInputRouting) addResponse(windowID string, data []byte) {
 		return
 	}
 	copied := append([]byte(nil), data...)
-	r.responses = append(
-		r.responses,
-		routedTerminalResponse{windowID: windowID, data: copied},
-	)
 	r.actions = append(
 		r.actions,
 		attachInputAction{windowID: windowID, data: copied},
@@ -902,7 +893,6 @@ func (r *attachInputRouting) addUserInput(data []byte, bracketedPaste bool) {
 		return
 	}
 	copied := append([]byte(nil), data...)
-	r.passthrough = append(r.passthrough, copied...)
 	r.actions = append(
 		r.actions,
 		attachInputAction{
@@ -4079,41 +4069,11 @@ func piProcessesByPane(
 	panePids map[int]struct{},
 	knownPiPanePids map[int]struct{},
 ) map[int]processInfo {
-	selected := map[int]processInfo{}
-	depths := map[int]int{}
-	minimumDepthCount := map[int]int{}
-	for _, process := range processes {
-		panePid := ancestorPanePID(processes, process.pid, panePids)
-		if panePid <= 0 {
-			continue
-		}
-		command := commandNameFromProcessFields(process.comm, process.args)
+	return uniqueShallowestProcessesByPane(processes, panePids, func(panePid int, command string) bool {
 		_, knownPiPane := knownPiPanePids[panePid]
-		if agentToolFromCommandName(command) != "pi" &&
-			!(knownPiPane && isGenericRuntimeCommandName(command)) {
-			continue
-		}
-		depth := processDepthFromAncestor(processes, process.pid, panePid)
-		if depth < 0 {
-			continue
-		}
-		prior, exists := depths[panePid]
-		if !exists || depth < prior {
-			selected[panePid] = process
-			depths[panePid] = depth
-			minimumDepthCount[panePid] = 1
-			continue
-		}
-		if depth == prior {
-			minimumDepthCount[panePid]++
-		}
-	}
-	for panePid, count := range minimumDepthCount {
-		if count != 1 {
-			delete(selected, panePid)
-		}
-	}
-	return selected
+		return agentToolFromCommandName(command) == "pi" ||
+			(knownPiPane && isGenericRuntimeCommandName(command))
+	})
 }
 
 func processDepthFromAncestor(processes map[int]processInfo, pid int, ancestor int) int {
@@ -4820,6 +4780,16 @@ func agentProcessesByPane(
 	panePids map[int]struct{},
 	tool string,
 ) map[int]processInfo {
+	return uniqueShallowestProcessesByPane(processes, panePids, func(_ int, command string) bool {
+		return agentToolFromCommandName(command) == tool
+	})
+}
+
+func uniqueShallowestProcessesByPane(
+	processes map[int]processInfo,
+	panePids map[int]struct{},
+	match func(panePid int, command string) bool,
+) map[int]processInfo {
 	selected := map[int]processInfo{}
 	minimumDepth := map[int]int{}
 	minimumDepthCount := map[int]int{}
@@ -4829,7 +4799,7 @@ func agentProcessesByPane(
 			continue
 		}
 		command := commandNameFromProcessFields(process.comm, process.args)
-		if agentToolFromCommandName(command) != tool {
+		if !match(panePid, command) {
 			continue
 		}
 		depth := processDepthFromAncestor(processes, process.pid, panePid)
@@ -4955,7 +4925,7 @@ func codexRecentSessionIDForWorkingDirectory(
 		return ""
 	}
 	sessionsDir := filepath.Join(home, ".codex", "sessions")
-	for _, path := range recentCodexRolloutFiles(sessionsDir, 30) {
+	for _, path := range recentAgentSessionFiles(sessionsDir, 30, isCodexRolloutPath) {
 		info, err := os.Stat(path)
 		if err != nil || !sessionUpdatedDuringProcess(info.ModTime(), processStarted) {
 			continue
@@ -4968,42 +4938,6 @@ func codexRecentSessionIDForWorkingDirectory(
 		}
 	}
 	return ""
-}
-
-func recentCodexRolloutFiles(root string, limit int) []string {
-	type recentFile struct {
-		path    string
-		modTime time.Time
-	}
-	files := []recentFile{}
-	if limit <= 0 {
-		return nil
-	}
-	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil || entry == nil || entry.IsDir() {
-			return nil
-		}
-		if !isCodexRolloutPath(path) {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return nil
-		}
-		files = append(files, recentFile{path: path, modTime: info.ModTime()})
-		return nil
-	})
-	sort.Slice(files, func(i, j int) bool {
-		return files[i].modTime.After(files[j].modTime)
-	})
-	if len(files) > limit {
-		files = files[:limit]
-	}
-	paths := make([]string, 0, len(files))
-	for _, file := range files {
-		paths = append(paths, file.path)
-	}
-	return paths
 }
 
 func codexRolloutWorkingDirectory(path string) string {
@@ -5397,9 +5331,8 @@ func jsonStringFieldValuesFromFileEnds(path string, field string) []string {
 		}
 	}
 	collect(io.LimitReader(file, sessionFileScanChunkBytes), false)
-	// Below two chunks the head scan already covered the whole file, and a tail
-	// scan would only re-read records it has seen.
-	if info.Size() > 2*sessionFileScanChunkBytes {
+	// Scan the tail whenever the head did not cover the whole file.
+	if info.Size() > sessionFileScanChunkBytes {
 		if _, err := file.Seek(info.Size()-sessionFileScanChunkBytes, io.SeekStart); err == nil {
 			collect(file, true)
 		}
@@ -6722,6 +6655,12 @@ func (c *attachClient) writeLoop() {
 				write.responseWindowID,
 				write.responseCount,
 			)
+			select {
+			case <-c.done:
+				c.finishQueuedWrite(write, io.ErrClosedPipe)
+				return
+			default:
+			}
 		}
 		err := writeAttachConnection(c.conn, write.data)
 		_ = c.conn.SetWriteDeadline(time.Time{})
@@ -7057,6 +6996,18 @@ func (c *attachClient) expectTerminalResponses(windowID string, count int) {
 			passthrough = c.inputPassthrough
 		}
 		c.resetTerminalResponseStateLocked()
+	}
+	outstanding := len(c.terminalResponseWindows)
+	if c.terminalResponseActiveWindow != "" {
+		outstanding++
+	}
+	if count > terminalResponseMaxOutstanding-outstanding {
+		c.activityMu.Unlock()
+		if inputLocked {
+			c.inputMu.Unlock()
+		}
+		c.close()
+		return
 	}
 	c.terminalResponseUntil = now.Add(terminalResponseFocusGrace)
 	for range count {
@@ -8198,6 +8149,7 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 		}})
 	}
 	go s.runAttachInputActions(client)
+	transitionDeadline := time.Now().Add(attachTransitionTimeout)
 	s.attachTransitionMu.Lock()
 	attachTransitionLocked := true
 	defer func() {
@@ -8208,7 +8160,7 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 	transitionWindowID := ""
 	for {
 		s.mu.Lock()
-		if s.closed {
+		if s.closed || !time.Now().Before(transitionDeadline) {
 			s.attachViewportTransitionWindowID = ""
 			s.mu.Unlock()
 			client.close()
@@ -8228,7 +8180,7 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 		s.attachMu.Lock()
 		s.mu.Lock()
 		window = s.windowByIDLocked(s.activeID)
-		if !s.closed &&
+		if !s.closed && time.Now().Before(transitionDeadline) &&
 			s.activeID == transitionWindowID &&
 			terminalViewportTransitionSafe(window) {
 			break
@@ -9023,6 +8975,7 @@ func (s *muxServer) runShellCommandContext(
 	defer cancel()
 	output := newBoundedCommandOutput(runCommandOutputMaxBytes, cancel)
 	cmd := newRunCommand(command)
+	cmd.WaitDelay = 250 * time.Millisecond
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
@@ -13950,19 +13903,19 @@ type bracketedPasteStartMatch struct {
 	length int
 }
 
-func bracketedPasteStart(
-	data []byte,
+func matchBracketedPasteMarker(
+	data, sevenBit, eightBit []byte,
 	leadingUtf8Prefix int,
 ) bracketedPasteStartMatch {
 	match := bracketedPasteStartMatch{index: -1}
-	if index := bytes.Index(data, bracketedPasteStart7Bit); index >= 0 {
+	if index := bytes.Index(data, sevenBit); index >= 0 {
 		match = bracketedPasteStartMatch{
 			index:  index,
-			length: len(bracketedPasteStart7Bit),
+			length: len(sevenBit),
 		}
 	}
 	for offset := 0; offset < len(data); {
-		index := bytes.Index(data[offset:], bracketedPasteStart8Bit)
+		index := bytes.Index(data[offset:], eightBit)
 		if index < 0 {
 			break
 		}
@@ -13973,7 +13926,7 @@ func bracketedPasteStart(
 			if match.index < 0 || index < match.index {
 				match = bracketedPasteStartMatch{
 					index:  index,
-					length: len(bracketedPasteStart8Bit),
+					length: len(eightBit),
 				}
 			}
 			break
@@ -13983,14 +13936,14 @@ func bracketedPasteStart(
 	return match
 }
 
-func bracketedPasteStartSuffixLength(
-	data []byte,
+func bracketedPasteMarkerSuffixLength(
+	data, sevenBit, eightBit []byte,
 	leadingUtf8Prefix int,
 ) int {
 	longest := 0
 	for _, marker := range [][]byte{
-		bracketedPasteStart7Bit,
-		bracketedPasteStart8Bit,
+		sevenBit,
+		eightBit,
 	} {
 		maximum := min(len(data), len(marker)-1)
 		for length := maximum; length > longest; length-- {
@@ -14011,64 +13964,20 @@ func bracketedPasteStartSuffixLength(
 	return longest
 }
 
-func bracketedPasteEnd(
-	data []byte,
-	leadingUtf8Prefix int,
-) bracketedPasteStartMatch {
-	match := bracketedPasteStartMatch{index: -1}
-	if index := bytes.Index(data, bracketedPasteEnd7Bit); index >= 0 {
-		match = bracketedPasteStartMatch{
-			index:  index,
-			length: len(bracketedPasteEnd7Bit),
-		}
-	}
-	for offset := 0; offset < len(data); {
-		eightBit := bytes.Index(data[offset:], bracketedPasteEnd8Bit)
-		if eightBit < 0 {
-			break
-		}
-		eightBit += offset
-		if (eightBit >= leadingUtf8Prefix ||
-			data[eightBit]&0xc0 != 0x80) &&
-			!isUtf8ContinuationAt(data, eightBit) {
-			if match.index < 0 || eightBit < match.index {
-				match = bracketedPasteStartMatch{
-					index:  eightBit,
-					length: len(bracketedPasteEnd8Bit),
-				}
-			}
-			break
-		}
-		offset = eightBit + 1
-	}
-	return match
+func bracketedPasteStart(data []byte, leadingUtf8Prefix int) bracketedPasteStartMatch {
+	return matchBracketedPasteMarker(data, bracketedPasteStart7Bit, bracketedPasteStart8Bit, leadingUtf8Prefix)
 }
 
-func bracketedPasteEndSuffix(
-	data []byte,
-	leadingUtf8Prefix int,
-) []byte {
-	longest := 0
-	for _, marker := range [][]byte{
-		bracketedPasteEnd7Bit,
-		bracketedPasteEnd8Bit,
-	} {
-		maximum := min(len(data), len(marker)-1)
-		for length := maximum; length > longest; length-- {
-			start := len(data) - length
-			if !bytes.Equal(data[start:], marker[:length]) {
-				continue
-			}
-			if marker[0] == 0x9b &&
-				((start < leadingUtf8Prefix &&
-					data[start]&0xc0 == 0x80) ||
-					isUtf8ContinuationAt(data, start)) {
-				continue
-			}
-			longest = length
-			break
-		}
-	}
+func bracketedPasteEnd(data []byte, leadingUtf8Prefix int) bracketedPasteStartMatch {
+	return matchBracketedPasteMarker(data, bracketedPasteEnd7Bit, bracketedPasteEnd8Bit, leadingUtf8Prefix)
+}
+
+func bracketedPasteStartSuffixLength(data []byte, leadingUtf8Prefix int) int {
+	return bracketedPasteMarkerSuffixLength(data, bracketedPasteStart7Bit, bracketedPasteStart8Bit, leadingUtf8Prefix)
+}
+
+func bracketedPasteEndSuffix(data []byte, leadingUtf8Prefix int) []byte {
+	longest := bracketedPasteMarkerSuffixLength(data, bracketedPasteEnd7Bit, bracketedPasteEnd8Bit, leadingUtf8Prefix)
 	if longest == 0 {
 		return nil
 	}
@@ -15859,11 +15768,10 @@ func pathFromOsc7(value string) string {
 	if err != nil || parsed.Scheme != "file" {
 		return ""
 	}
-	path, err := url.PathUnescape(parsed.Path)
-	if err != nil || !strings.HasPrefix(path, "/") {
+	if !strings.HasPrefix(parsed.Path, "/") {
 		return ""
 	}
-	return path
+	return parsed.Path
 }
 
 func (s *muxServer) clearAlertsLocked(activeID string) {

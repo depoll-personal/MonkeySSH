@@ -1,7 +1,11 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/monetization.dart';
+import '../../domain/models/remote_multiplexer.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/home_screen_shortcut_service.dart';
 import '../../domain/services/monetization_service.dart';
@@ -227,3 +231,59 @@ final hostRowDataProvider = Provider.autoDispose
         hasHostThemeAccess: hasHostThemeAccess,
       );
     });
+
+/// Saved launch presets, decoded once for all visible host badges.
+final agentLaunchPresetMapProvider =
+    StreamProvider.autoDispose<Map<String, AgentLaunchPreset>>(
+      (ref) => ref
+          .watch(settingsServiceProvider)
+          .watchString(SettingKeys.agentLaunchPresets)
+          .distinct()
+          .map(_decodeAgentLaunchPresets),
+    );
+
+Map<String, AgentLaunchPreset> _decodeAgentLaunchPresets(String? value) {
+  if (value == null) return const {};
+  try {
+    final decoded = jsonDecode(value);
+    if (decoded is! Map<String, dynamic>) return const {};
+    final presets = <String, AgentLaunchPreset>{};
+    for (final entry in decoded.entries) {
+      final value = entry.value;
+      if (value is! Map<String, dynamic>) continue;
+      final preset = AgentLaunchPreset.tryFromJson(value);
+      if (preset != null) presets[entry.key] = preset;
+    }
+    return presets;
+  } on FormatException {
+    return const {};
+  }
+}
+
+/// Value-equal preset fields that affect a host's mux badge.
+typedef HostAgentBadgePreferences = ({
+  String? toolName,
+  RemoteMuxBackend? muxBackend,
+  String? sessionName,
+});
+
+/// Selects only the preset fields used by one host's mux badge.
+final hostAgentBadgePreferencesProvider = Provider.autoDispose
+    .family<AsyncValue<HostAgentBadgePreferences>, int>(
+      (ref, hostId) => ref.watch(
+        agentLaunchPresetMapProvider.select(
+          (presets) => presets.whenData((presets) {
+            final preset = presets[hostId.toString()];
+            final sessionName = preset?.tmuxSessionName?.trim();
+            final hasSessionName = sessionName?.isNotEmpty ?? false;
+            return (
+              toolName: preset?.tool.discoveredSessionToolName,
+              muxBackend: hasSessionName
+                  ? preset?.effectiveRemoteMuxBackend
+                  : null,
+              sessionName: hasSessionName ? sessionName : null,
+            );
+          }),
+        ),
+      ),
+    );

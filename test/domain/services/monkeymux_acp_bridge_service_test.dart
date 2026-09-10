@@ -22,6 +22,8 @@ import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/windows_remote_powershell.dart';
 
+import '../../helpers/powershell_test_helpers.dart';
+
 const _bridgeId = '0123456789abcdef0123456789abcdef';
 const _otherBridgeId = 'fedcba9876543210fedcba9876543210';
 const _commandHash =
@@ -224,17 +226,6 @@ Map<String, Object?> _decodeFrame(List<int> bytes) =>
       (key, value) => MapEntry(key.toString(), value),
     );
 
-String _decodePowerShellScript(String command) {
-  const marker = '-EncodedCommand ';
-  final encoded = command.substring(command.indexOf(marker) + marker.length);
-  final bytes = base64.decode(encoded.trim());
-  final units = <int>[];
-  for (var index = 0; index + 1 < bytes.length; index += 2) {
-    units.add(bytes[index] | (bytes[index + 1] << 8));
-  }
-  return String.fromCharCodes(units);
-}
-
 Future<void> _waitUntil(
   bool Function() condition, {
   Duration timeout = const Duration(seconds: 2),
@@ -277,7 +268,7 @@ void main() {
       "a'b",
       'x y',
     ], isWindows: true);
-    final script = _decodePowerShellScript(windows);
+    final script = decodeEncodedPowerShell(windows);
     expect(script, contains(powerShellProfilePathPreamble));
     expect(
       script,
@@ -598,7 +589,7 @@ void main() {
       ) async {
         final command = invocation.positionalArguments.single as String;
         commands.add(command);
-        final script = _decodePowerShellScript(command);
+        final script = decodeEncodedPowerShell(command);
         final channel = _TestChannel();
         scheduleMicrotask(() async {
           if (script.contains("'start'")) {
@@ -655,7 +646,7 @@ void main() {
       await service.stop(session, _bridgeId);
 
       expect(commands, hasLength(4));
-      final script = _decodePowerShellScript(commands.first);
+      final script = decodeEncodedPowerShell(commands.first);
       expect(
         script,
         contains(r"$__flAcpHelper='C:\Users\demo\.monkeyssh\monkeymux.exe'"),
@@ -663,7 +654,7 @@ void main() {
       expect(script, contains("'Copilot''s CLI'"));
       expect(script, contains(r"'C:\Users\demo\project folder'"));
       expect(
-        _decodePowerShellScript(commands.last),
+        decodeEncodedPowerShell(commands.last),
         contains("\$__flAcpArgs=@('acp','stop','$_bridgeId')"),
       );
     },

@@ -248,23 +248,27 @@ abstract class _AsyncSettingsNotifier<T> extends Notifier<T> {
 
   T get _defaultValue;
 
-  Future<T> _loadValue();
+  Future<T> _loadValue(SettingsService settings);
 
   @override
   T build() {
     _settings = ref.watch(settingsServiceProvider);
     _disposed = false;
     ref.onDispose(() => _disposed = true);
-    final initializationRevision = _stateRevision;
+    final initializationRevision = ++_stateRevision;
+    final settings = _settings;
     _initialization = Future<void>.microtask(
-      () => _init(initializationRevision),
+      () => _init(initializationRevision, settings),
     );
     return _defaultValue;
   }
 
-  Future<void> _init(int initializationRevision) async {
-    if (_disposed) return;
-    final value = await _loadValue();
+  Future<void> _init(
+    int initializationRevision,
+    SettingsService settings,
+  ) async {
+    if (_disposed || initializationRevision != _stateRevision) return;
+    final value = await _loadValue(settings);
     if (_disposed || initializationRevision != _stateRevision) return;
     state = value;
   }
@@ -285,6 +289,26 @@ abstract class _AsyncSettingsNotifier<T> extends Notifier<T> {
   }
 }
 
+abstract class _BooleanSettingsNotifier extends _AsyncSettingsNotifier<bool> {
+  _BooleanSettingsNotifier(this._key, {required bool defaultValue})
+    : _defaultValue = defaultValue;
+
+  final String _key;
+
+  @override
+  final bool _defaultValue;
+
+  @override
+  Future<bool> _loadValue(SettingsService settings) =>
+      settings.getBool(_key, defaultValue: _defaultValue);
+
+  /// Persists whether this setting is enabled.
+  Future<void> setEnabled({required bool enabled}) async {
+    await _settingsService.setBool(_key, value: enabled);
+    _setPersistedState(enabled);
+  }
+}
+
 /// Notifier for the app-wide coding-agent window default.
 class AgentWindowModePreferenceNotifier
     extends _AsyncSettingsNotifier<AgentWindowModePreference> {
@@ -293,10 +317,11 @@ class AgentWindowModePreferenceNotifier
       AgentWindowModePreference.askEveryTime;
 
   @override
-  Future<AgentWindowModePreference> _loadValue() async =>
-      AgentWindowModePreferencePresentation.fromStorageValue(
-        await _settingsService.getString(SettingKeys.agentWindowModePreference),
-      );
+  Future<AgentWindowModePreference> _loadValue(
+    SettingsService settings,
+  ) async => AgentWindowModePreferencePresentation.fromStorageValue(
+    await settings.getString(SettingKeys.agentWindowModePreference),
+  );
 
   /// Persists the default used by ordinary taps on ACP-capable agents.
   Future<void> setPreference(AgentWindowModePreference preference) async {
@@ -321,9 +346,8 @@ class ThemeModeNotifier extends _AsyncSettingsNotifier<ThemeMode> {
   ThemeMode get _defaultValue => ThemeMode.system;
 
   @override
-  Future<ThemeMode> _loadValue() async {
-    final value =
-        await _settingsService.getString(SettingKeys.themeMode) ?? 'system';
+  Future<ThemeMode> _loadValue(SettingsService settings) async {
+    final value = await settings.getString(SettingKeys.themeMode) ?? 'system';
     return _parseThemeMode(value);
   }
 
@@ -349,35 +373,11 @@ class ThemeModeNotifier extends _AsyncSettingsNotifier<ThemeMode> {
 final themeModeNotifierProvider =
     NotifierProvider<ThemeModeNotifier, ThemeMode>(ThemeModeNotifier.new);
 
-/// Provider for terminal themes applying to app chrome.
-final terminalThemesApplyToAppProvider = FutureProvider<bool>((ref) async {
-  final settings = ref.watch(settingsServiceProvider);
-  return settings.getBool(
-    SettingKeys.terminalThemesApplyToApp,
-    defaultValue: true,
-  );
-});
-
 /// Notifier for terminal themes applying to app chrome.
-class TerminalThemesApplyToAppNotifier extends _AsyncSettingsNotifier<bool> {
-  @override
-  bool get _defaultValue => true;
-
-  @override
-  Future<bool> _loadValue() => _settingsService.getBool(
-    SettingKeys.terminalThemesApplyToApp,
-    defaultValue: true,
-  );
-
-  /// Set whether terminal themes also style app chrome.
-  Future<void> setEnabled({required bool enabled}) async {
-    await _settingsService.setBool(
-      SettingKeys.terminalThemesApplyToApp,
-      value: enabled,
-    );
-    _setPersistedState(enabled);
-    ref.invalidate(terminalThemesApplyToAppProvider);
-  }
+class TerminalThemesApplyToAppNotifier extends _BooleanSettingsNotifier {
+  /// Creates the notifier for [SettingKeys.terminalThemesApplyToApp].
+  TerminalThemesApplyToAppNotifier()
+    : super(SettingKeys.terminalThemesApplyToApp, defaultValue: true);
 }
 
 /// Provider for terminal themes applying to app chrome with write capability.
@@ -395,8 +395,8 @@ class FontSizeNotifier extends _AsyncSettingsNotifier<double> {
   double get _defaultValue => 14;
 
   @override
-  Future<double> _loadValue() async {
-    final value = await _settingsService.getInt(SettingKeys.terminalFontSize);
+  Future<double> _loadValue(SettingsService settings) async {
+    final value = await settings.getInt(SettingKeys.terminalFontSize);
     return value?.toDouble() ?? 14.0;
   }
 
@@ -426,8 +426,8 @@ class FontFamilyNotifier extends _AsyncSettingsNotifier<String> {
   String get _defaultValue => 'monospace';
 
   @override
-  Future<String> _loadValue() async =>
-      await _settingsService.getString(SettingKeys.terminalFont) ?? 'monospace';
+  Future<String> _loadValue(SettingsService settings) async =>
+      await settings.getString(SettingKeys.terminalFont) ?? 'monospace';
 
   /// Set the font family.
   Future<void> setFontFamily(String family) async {
@@ -447,8 +447,8 @@ class AutoLockTimeoutNotifier extends _AsyncSettingsNotifier<int> {
   int get _defaultValue => 5;
 
   @override
-  Future<int> _loadValue() async =>
-      await _settingsService.getInt(SettingKeys.autoLockTimeout) ?? 5;
+  Future<int> _loadValue(SettingsService settings) async =>
+      await settings.getInt(SettingKeys.autoLockTimeout) ?? 5;
 
   /// Set the auto-lock timeout in minutes.
   Future<void> setTimeout(int minutes) async {
@@ -462,24 +462,10 @@ final autoLockTimeoutNotifierProvider =
     NotifierProvider<AutoLockTimeoutNotifier, int>(AutoLockTimeoutNotifier.new);
 
 /// Notifier for mux window close confirmations.
-class ConfirmMuxWindowCloseNotifier extends _AsyncSettingsNotifier<bool> {
-  @override
-  bool get _defaultValue => true;
-
-  @override
-  Future<bool> _loadValue() => _settingsService.getBool(
-    SettingKeys.confirmMuxWindowClose,
-    defaultValue: true,
-  );
-
-  /// Sets whether closing a mux terminal window requires confirmation.
-  Future<void> setEnabled({required bool enabled}) async {
-    await _settingsService.setBool(
-      SettingKeys.confirmMuxWindowClose,
-      value: enabled,
-    );
-    _setPersistedState(enabled);
-  }
+class ConfirmMuxWindowCloseNotifier extends _BooleanSettingsNotifier {
+  /// Creates the notifier for [SettingKeys.confirmMuxWindowClose].
+  ConfirmMuxWindowCloseNotifier()
+    : super(SettingKeys.confirmMuxWindowClose, defaultValue: true);
 }
 
 /// Provider for mux window close confirmations.
@@ -494,8 +480,8 @@ class CursorStyleNotifier extends _AsyncSettingsNotifier<String> {
   String get _defaultValue => 'block';
 
   @override
-  Future<String> _loadValue() async =>
-      await _settingsService.getString(SettingKeys.cursorStyle) ?? 'block';
+  Future<String> _loadValue(SettingsService settings) async =>
+      await settings.getString(SettingKeys.cursorStyle) ?? 'block';
 
   /// Set the cursor style.
   Future<void> setCursorStyle(String style) async {
@@ -509,19 +495,9 @@ final cursorStyleNotifierProvider =
     NotifierProvider<CursorStyleNotifier, String>(CursorStyleNotifier.new);
 
 /// Notifier for bell sound with write capability.
-class BellSoundNotifier extends _AsyncSettingsNotifier<bool> {
-  @override
-  bool get _defaultValue => true;
-
-  @override
-  Future<bool> _loadValue() =>
-      _settingsService.getBool(SettingKeys.bellSound, defaultValue: true);
-
-  /// Set bell sound enabled.
-  Future<void> setEnabled({required bool enabled}) async {
-    await _settingsService.setBool(SettingKeys.bellSound, value: enabled);
-    _setPersistedState(enabled);
-  }
+class BellSoundNotifier extends _BooleanSettingsNotifier {
+  /// Creates the notifier for [SettingKeys.bellSound].
+  BellSoundNotifier() : super(SettingKeys.bellSound, defaultValue: true);
 }
 
 /// Provider for bell sound with write capability.
@@ -531,24 +507,10 @@ final bellSoundNotifierProvider = NotifierProvider<BellSoundNotifier, bool>(
 
 /// Notifier for terminal desktop notifications (OSC 9/777/99) with write
 /// capability.
-class TerminalNotificationsNotifier extends _AsyncSettingsNotifier<bool> {
-  @override
-  bool get _defaultValue => true;
-
-  @override
-  Future<bool> _loadValue() => _settingsService.getBool(
-    SettingKeys.terminalNotifications,
-    defaultValue: true,
-  );
-
-  /// Sets whether the remote shell may post desktop notifications.
-  Future<void> setEnabled({required bool enabled}) async {
-    await _settingsService.setBool(
-      SettingKeys.terminalNotifications,
-      value: enabled,
-    );
-    _setPersistedState(enabled);
-  }
+class TerminalNotificationsNotifier extends _BooleanSettingsNotifier {
+  /// Creates the notifier for [SettingKeys.terminalNotifications].
+  TerminalNotificationsNotifier()
+    : super(SettingKeys.terminalNotifications, defaultValue: true);
 }
 
 /// Provider for terminal desktop notifications with write capability.
@@ -558,24 +520,10 @@ final terminalNotificationsNotifierProvider =
     );
 
 /// Notifier for coding-agent update indicators.
-class AgentUpdateNotificationsNotifier extends _AsyncSettingsNotifier<bool> {
-  @override
-  bool get _defaultValue => true;
-
-  @override
-  Future<bool> _loadValue() => _settingsService.getBool(
-    SettingKeys.agentUpdateNotifications,
-    defaultValue: true,
-  );
-
-  /// Sets whether active terminals show agent update indicators.
-  Future<void> setEnabled({required bool enabled}) async {
-    await _settingsService.setBool(
-      SettingKeys.agentUpdateNotifications,
-      value: enabled,
-    );
-    _setPersistedState(enabled);
-  }
+class AgentUpdateNotificationsNotifier extends _BooleanSettingsNotifier {
+  /// Creates the notifier for [SettingKeys.agentUpdateNotifications].
+  AgentUpdateNotificationsNotifier()
+    : super(SettingKeys.agentUpdateNotifications, defaultValue: true);
 }
 
 /// Provider for coding-agent update indicators.
@@ -585,22 +533,10 @@ final agentUpdateNotificationsNotifierProvider =
     );
 
 /// Notifier for terminal wake lock with write capability.
-class TerminalWakeLockNotifier extends _AsyncSettingsNotifier<bool> {
-  @override
-  bool get _defaultValue => false;
-
-  @override
-  Future<bool> _loadValue() =>
-      _settingsService.getBool(SettingKeys.terminalWakeLock);
-
-  /// Set terminal wake lock enabled.
-  Future<void> setEnabled({required bool enabled}) async {
-    await _settingsService.setBool(
-      SettingKeys.terminalWakeLock,
-      value: enabled,
-    );
-    _setPersistedState(enabled);
-  }
+class TerminalWakeLockNotifier extends _BooleanSettingsNotifier {
+  /// Creates the notifier for [SettingKeys.terminalWakeLock].
+  TerminalWakeLockNotifier()
+    : super(SettingKeys.terminalWakeLock, defaultValue: false);
 }
 
 /// Provider for terminal wake lock with write capability.
@@ -610,24 +546,10 @@ final terminalWakeLockNotifierProvider =
     );
 
 /// Notifier for terminal file path links with write capability.
-class TerminalPathLinksNotifier extends _AsyncSettingsNotifier<bool> {
-  @override
-  bool get _defaultValue => true;
-
-  @override
-  Future<bool> _loadValue() => _settingsService.getBool(
-    SettingKeys.terminalPathLinks,
-    defaultValue: true,
-  );
-
-  /// Sets terminal file path linking.
-  Future<void> setEnabled({required bool enabled}) async {
-    await _settingsService.setBool(
-      SettingKeys.terminalPathLinks,
-      value: enabled,
-    );
-    _setPersistedState(enabled);
-  }
+class TerminalPathLinksNotifier extends _BooleanSettingsNotifier {
+  /// Creates the notifier for [SettingKeys.terminalPathLinks].
+  TerminalPathLinksNotifier()
+    : super(SettingKeys.terminalPathLinks, defaultValue: true);
 }
 
 /// Provider for terminal file path links with write capability.
@@ -637,24 +559,10 @@ final terminalPathLinksNotifierProvider =
     );
 
 /// Notifier for terminal file path underlines with write capability.
-class TerminalPathLinkUnderlinesNotifier extends _AsyncSettingsNotifier<bool> {
-  @override
-  bool get _defaultValue => true;
-
-  @override
-  Future<bool> _loadValue() => _settingsService.getBool(
-    SettingKeys.terminalPathLinkUnderlines,
-    defaultValue: true,
-  );
-
-  /// Sets terminal file path underlines.
-  Future<void> setEnabled({required bool enabled}) async {
-    await _settingsService.setBool(
-      SettingKeys.terminalPathLinkUnderlines,
-      value: enabled,
-    );
-    _setPersistedState(enabled);
-  }
+class TerminalPathLinkUnderlinesNotifier extends _BooleanSettingsNotifier {
+  /// Creates the notifier for [SettingKeys.terminalPathLinkUnderlines].
+  TerminalPathLinkUnderlinesNotifier()
+    : super(SettingKeys.terminalPathLinkUnderlines, defaultValue: true);
 }
 
 /// Provider for terminal file path underlines with write capability.
@@ -664,24 +572,10 @@ final terminalPathLinkUnderlinesNotifierProvider =
     );
 
 /// Notifier for forwarded localhost links with write capability.
-class PortForwardBrowserLinksNotifier extends _AsyncSettingsNotifier<bool> {
-  @override
-  bool get _defaultValue => true;
-
-  @override
-  Future<bool> _loadValue() => _settingsService.getBool(
-    SettingKeys.portForwardBrowserLinks,
-    defaultValue: true,
-  );
-
-  /// Sets forwarded localhost link handling.
-  Future<void> setEnabled({required bool enabled}) async {
-    await _settingsService.setBool(
-      SettingKeys.portForwardBrowserLinks,
-      value: enabled,
-    );
-    _setPersistedState(enabled);
-  }
+class PortForwardBrowserLinksNotifier extends _BooleanSettingsNotifier {
+  /// Creates the notifier for [SettingKeys.portForwardBrowserLinks].
+  PortForwardBrowserLinksNotifier()
+    : super(SettingKeys.portForwardBrowserLinks, defaultValue: true);
 }
 
 /// Provider for forwarded localhost links with write capability.
@@ -691,24 +585,10 @@ final portForwardBrowserLinksNotifierProvider =
     );
 
 /// Notifier for terminal shell completion popups with write capability.
-class ShellCompletionsNotifier extends _AsyncSettingsNotifier<bool> {
-  @override
-  bool get _defaultValue => true;
-
-  @override
-  Future<bool> _loadValue() => _settingsService.getBool(
-    SettingKeys.shellCompletions,
-    defaultValue: true,
-  );
-
-  /// Sets terminal shell completion popups.
-  Future<void> setEnabled({required bool enabled}) async {
-    await _settingsService.setBool(
-      SettingKeys.shellCompletions,
-      value: enabled,
-    );
-    _setPersistedState(enabled);
-  }
+class ShellCompletionsNotifier extends _BooleanSettingsNotifier {
+  /// Creates the notifier for [SettingKeys.shellCompletions].
+  ShellCompletionsNotifier()
+    : super(SettingKeys.shellCompletions, defaultValue: true);
 }
 
 /// Provider for terminal shell completion popups with write capability.
@@ -749,14 +629,12 @@ class TerminalThemeSettingsNotifier
   );
 
   @override
-  Future<TerminalThemeSettings> _loadValue() async {
-    final light = await _settingsService.getString(
+  Future<TerminalThemeSettings> _loadValue(SettingsService settings) async {
+    final light = await settings.getString(
       SettingKeys.defaultTerminalThemeLight,
     );
-    final dark = await _settingsService.getString(
-      SettingKeys.defaultTerminalThemeDark,
-    );
-    final customThemeIds = await _getCustomTerminalThemeIds();
+    final dark = await settings.getString(SettingKeys.defaultTerminalThemeDark);
+    final customThemeIds = await _getCustomTerminalThemeIds(settings);
     final lightThemeId = _normalizeThemeId(
       light,
       brightness: Brightness.light,
@@ -769,11 +647,13 @@ class TerminalThemeSettingsNotifier
     );
     if (_isDisposed) return state;
     await _persistNormalizedThemeId(
+      settings,
       key: SettingKeys.defaultTerminalThemeLight,
       storedThemeId: light,
       normalizedThemeId: lightThemeId,
     );
     await _persistNormalizedThemeId(
+      settings,
       key: SettingKeys.defaultTerminalThemeDark,
       storedThemeId: dark,
       normalizedThemeId: darkThemeId,
@@ -784,10 +664,10 @@ class TerminalThemeSettingsNotifier
     );
   }
 
-  Future<Set<String>> _getCustomTerminalThemeIds() async {
-    final json = await _settingsService.getString(
-      SettingKeys.customTerminalThemes,
-    );
+  Future<Set<String>> _getCustomTerminalThemeIds(
+    SettingsService settings,
+  ) async {
+    final json = await settings.getString(SettingKeys.customTerminalThemes);
     if (json == null || json.isEmpty) {
       return const {};
     }
@@ -832,13 +712,14 @@ class TerminalThemeSettingsNotifier
     return defaultThemeId;
   }
 
-  Future<void> _persistNormalizedThemeId({
+  Future<void> _persistNormalizedThemeId(
+    SettingsService settings, {
     required String key,
     required String? storedThemeId,
     required String normalizedThemeId,
   }) async {
     if (storedThemeId != null && storedThemeId != normalizedThemeId) {
-      await _settingsService.setString(key, normalizedThemeId);
+      await settings.setString(key, normalizedThemeId);
     }
   }
 
@@ -869,30 +750,30 @@ final terminalThemeSettingsProvider =
 
 /// Provider for shared clipboard setting.
 final sharedClipboardProvider = FutureProvider<bool>((ref) async {
-  final settings = ref.watch(settingsServiceProvider);
-  return settings.getBool(SettingKeys.sharedClipboard);
+  final value = await ref
+      .watch(sharedClipboardNotifierProvider.notifier)
+      .initializedValue();
+  // Watching the default before initialization can invalidate a pending read
+  // with no listeners, leaving its future waiting for a rebuild indefinitely.
+  if (!ref.mounted) return value;
+  return ref.watch(sharedClipboardNotifierProvider);
 });
 
 /// Provider for local clipboard read sharing setting.
 final sharedClipboardLocalReadProvider = FutureProvider<bool>((ref) async {
-  final settings = ref.watch(settingsServiceProvider);
-  return settings.getBool(SettingKeys.sharedClipboardLocalRead);
+  final value = await ref
+      .watch(sharedClipboardLocalReadNotifierProvider.notifier)
+      .initializedValue();
+  // Subscribe to changes only after the persisted value has been loaded.
+  if (!ref.mounted) return value;
+  return ref.watch(sharedClipboardLocalReadNotifierProvider);
 });
 
 /// Notifier for shared clipboard remote-to-local writes.
-class SharedClipboardNotifier extends _AsyncSettingsNotifier<bool> {
-  @override
-  bool get _defaultValue => false;
-
-  @override
-  Future<bool> _loadValue() =>
-      _settingsService.getBool(SettingKeys.sharedClipboard);
-
-  /// Set shared clipboard enabled.
-  Future<void> setEnabled({required bool enabled}) async {
-    await _settingsService.setBool(SettingKeys.sharedClipboard, value: enabled);
-    _setPersistedState(enabled);
-  }
+class SharedClipboardNotifier extends _BooleanSettingsNotifier {
+  /// Creates the notifier for [SettingKeys.sharedClipboard].
+  SharedClipboardNotifier()
+    : super(SettingKeys.sharedClipboard, defaultValue: false);
 }
 
 /// Provider for shared clipboard setting with write capability.
@@ -902,22 +783,10 @@ final sharedClipboardNotifierProvider =
     );
 
 /// Notifier for local clipboard reads from the remote side.
-class SharedClipboardLocalReadNotifier extends _AsyncSettingsNotifier<bool> {
-  @override
-  bool get _defaultValue => false;
-
-  @override
-  Future<bool> _loadValue() =>
-      _settingsService.getBool(SettingKeys.sharedClipboardLocalRead);
-
-  /// Set whether the remote side can read the local clipboard.
-  Future<void> setEnabled({required bool enabled}) async {
-    await _settingsService.setBool(
-      SettingKeys.sharedClipboardLocalRead,
-      value: enabled,
-    );
-    _setPersistedState(enabled);
-  }
+class SharedClipboardLocalReadNotifier extends _BooleanSettingsNotifier {
+  /// Creates the notifier for [SettingKeys.sharedClipboardLocalRead].
+  SharedClipboardLocalReadNotifier()
+    : super(SettingKeys.sharedClipboardLocalRead, defaultValue: false);
 }
 
 /// Provider for local clipboard read sharing with write capability.
@@ -927,24 +796,10 @@ final sharedClipboardLocalReadNotifierProvider =
     );
 
 /// Notifier for tap-to-show-keyboard with write capability.
-class TapToShowKeyboardNotifier extends _AsyncSettingsNotifier<bool> {
-  @override
-  bool get _defaultValue => true;
-
-  @override
-  Future<bool> _loadValue() => _settingsService.getBool(
-    SettingKeys.tapToShowKeyboard,
-    defaultValue: true,
-  );
-
-  /// Set tap-to-show-keyboard enabled.
-  Future<void> setEnabled({required bool enabled}) async {
-    await _settingsService.setBool(
-      SettingKeys.tapToShowKeyboard,
-      value: enabled,
-    );
-    _setPersistedState(enabled);
-  }
+class TapToShowKeyboardNotifier extends _BooleanSettingsNotifier {
+  /// Creates the notifier for [SettingKeys.tapToShowKeyboard].
+  TapToShowKeyboardNotifier()
+    : super(SettingKeys.tapToShowKeyboard, defaultValue: true);
 }
 
 /// Provider for tap-to-show-keyboard setting with write capability.

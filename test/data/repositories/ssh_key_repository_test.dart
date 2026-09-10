@@ -38,6 +38,7 @@ void main() {
           keyType: 'ed25519',
           publicKey: 'ssh-ed25519 AAAA...',
           privateKey: 'fixture-open-ssh-material...',
+          fingerprint: const Value('SHA256:DE:AD:BE:EF'),
         ),
       );
 
@@ -47,6 +48,10 @@ void main() {
       expect(keys, hasLength(1));
       expect(keys.first.name, 'My Key');
       expect(keys.first.keyType, 'ed25519');
+      expect(keys.first.id, id);
+      expect(keys.first.publicKey, 'ssh-ed25519 AAAA...');
+      expect(keys.first.privateKey, 'fixture-open-ssh-material...');
+      expect(keys.first.fingerprint, 'SHA256:DE:AD:BE:EF');
     });
 
     test('insert encrypts private key and passphrase at rest', () async {

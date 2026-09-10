@@ -52,9 +52,7 @@ class AcpCodeBlock extends StatefulWidget {
     super.key,
     this.language,
     this.syntaxTheme,
-    this.showCopyButton = true,
     this.onCopy,
-    this.semanticLabel,
   });
 
   /// The code to display.
@@ -66,14 +64,8 @@ class AcpCodeBlock extends StatefulWidget {
   /// Optional highlight.js theme map; defaults to a brightness-appropriate map.
   final Map<String, TextStyle>? syntaxTheme;
 
-  /// Whether to show the copy button.
-  final bool showCopyButton;
-
   /// Optional callback invoked (with the copied code) after a successful copy.
   final ValueChanged<String>? onCopy;
-
-  /// Optional semantic label describing the block (defaults to language).
-  final String? semanticLabel;
 
   @override
   State<AcpCodeBlock> createState() => _AcpCodeBlockState();
@@ -107,11 +99,9 @@ class _AcpCodeBlockState extends State<AcpCodeBlock> {
     final language = widget.language;
 
     return Semantics(
-      label:
-          widget.semanticLabel ??
-          (language != null && language.isNotEmpty
-              ? 'Code block, $language'
-              : 'Code block'),
+      label: language != null && language.isNotEmpty
+          ? 'Code block, $language'
+          : 'Code block',
       container: true,
       child: DecoratedBox(
         decoration: BoxDecoration(
@@ -123,14 +113,11 @@ class _AcpCodeBlockState extends State<AcpCodeBlock> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (language != null && language.isNotEmpty ||
-                widget.showCopyButton)
-              _CodeBlockHeader(
-                language: language,
-                showCopyButton: widget.showCopyButton,
-                copied: _copied,
-                onCopy: _copy,
-              ),
+            _CodeBlockHeader(
+              language: language,
+              copied: _copied,
+              onCopy: _copy,
+            ),
             Padding(
               padding: const EdgeInsets.fromLTRB(
                 FluttyTheme.spacingMd,
@@ -162,13 +149,11 @@ class _AcpCodeBlockState extends State<AcpCodeBlock> {
 class _CodeBlockHeader extends StatelessWidget {
   const _CodeBlockHeader({
     required this.language,
-    required this.showCopyButton,
     required this.copied,
     required this.onCopy,
   });
 
   final String? language;
-  final bool showCopyButton;
   final bool copied;
   final Future<void> Function() onCopy;
 
@@ -192,23 +177,22 @@ class _CodeBlockHeader extends StatelessWidget {
               ).copyWith(fontSize: 11, color: scheme.onSurfaceVariant),
             ),
           ),
-          if (showCopyButton)
-            Tooltip(
-              message: copied ? 'Copied' : 'Copy code',
-              child: InkWell(
-                onTap: onCopy,
-                borderRadius: BorderRadius.circular(FluttyTheme.radiusSm),
-                child: Padding(
-                  padding: const EdgeInsets.all(FluttyTheme.spacingSm),
-                  child: Icon(
-                    copied ? Icons.check : Icons.copy_rounded,
-                    size: 18,
-                    color: copied ? scheme.primary : scheme.onSurfaceVariant,
-                    semanticLabel: copied ? 'Copied' : 'Copy code',
-                  ),
+          Tooltip(
+            message: copied ? 'Copied' : 'Copy code',
+            child: InkWell(
+              onTap: onCopy,
+              borderRadius: BorderRadius.circular(FluttyTheme.radiusSm),
+              child: Padding(
+                padding: const EdgeInsets.all(FluttyTheme.spacingSm),
+                child: Icon(
+                  copied ? Icons.check : Icons.copy_rounded,
+                  size: 18,
+                  color: copied ? scheme.primary : scheme.onSurfaceVariant,
+                  semanticLabel: copied ? 'Copied' : 'Copy code',
                 ),
               ),
             ),
+          ),
         ],
       ),
     );

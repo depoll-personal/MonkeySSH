@@ -553,9 +553,6 @@ class TerminalThemeData {
     Color? brightMagenta,
     Color? brightCyan,
     Color? brightWhite,
-    Color? searchHitBackground,
-    Color? searchHitBackgroundCurrent,
-    Color? searchHitForeground,
     Map<int, Color>? paletteOverrides,
   }) => TerminalThemeData(
     id: id ?? this.id,
@@ -583,10 +580,9 @@ class TerminalThemeData {
     brightCyan: brightCyan ?? this.brightCyan,
     brightWhite: brightWhite ?? this.brightWhite,
     paletteOverrides: paletteOverrides ?? this.paletteOverrides,
-    searchHitBackground: searchHitBackground ?? this.searchHitBackground,
-    searchHitBackgroundCurrent:
-        searchHitBackgroundCurrent ?? this.searchHitBackgroundCurrent,
-    searchHitForeground: searchHitForeground ?? this.searchHitForeground,
+    searchHitBackground: searchHitBackground,
+    searchHitBackgroundCurrent: searchHitBackgroundCurrent,
+    searchHitForeground: searchHitForeground,
   );
 
   /// Converts this theme to a JSON map for storage.

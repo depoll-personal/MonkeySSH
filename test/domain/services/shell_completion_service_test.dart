@@ -9,6 +9,8 @@ import 'package:monkeyssh/domain/services/shell_completion_service.dart';
 import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 
+import '../../helpers/powershell_test_helpers.dart';
+
 class _MockSshClient extends Mock implements ssh.SSHClient {}
 
 class _MockSshExecSession extends Mock implements ssh.SSHSession {}
@@ -29,20 +31,6 @@ SshSession _buildShellCompletionSession(
     username: 'tester',
   ),
 );
-
-/// Decodes a `powershell ... -EncodedCommand <base64>` command back to its
-/// UTF-16LE PowerShell script so Windows-path tests can route mock responses.
-String _decodeEncodedPowerShell(String command) {
-  const marker = '-EncodedCommand ';
-  final index = command.indexOf(marker);
-  if (index < 0) return command;
-  final bytes = base64.decode(command.substring(index + marker.length).trim());
-  final buffer = StringBuffer();
-  for (var i = 0; i + 1 < bytes.length; i += 2) {
-    buffer.writeCharCode(bytes[i] | (bytes[i + 1] << 8));
-  }
-  return buffer.toString();
-}
 
 void _stubHistoryExec(ssh.SSHClient client, List<String> commands) {
   final exec = _MockSshExecSession();
@@ -144,15 +132,7 @@ void main() {
           when(() => exec.done).thenAnswer((_) => Future<void>.value());
           return exec;
         });
-        const invocation = ShellCompletionInvocation(
-          commandLine: 'é',
-          cursorOffset: 1,
-          token: 'é',
-          tokenStart: 0,
-          mode: ShellCompletionMode.command,
-          words: ['é'],
-          workingDirectory: '/repo',
-        );
+        final invocation = _commandInvocation('é', '/repo');
         final suggestions = await service.complete(session, invocation);
         expect(suggestions.map((entry) => entry.label), [command]);
         for (final exec in execs) {
@@ -187,15 +167,7 @@ void main() {
         when(() => exec.done).thenAnswer((_) => Completer<void>().future);
         return exec;
       });
-      const invocation = ShellCompletionInvocation(
-        commandLine: 'xyz',
-        cursorOffset: 3,
-        token: 'xyz',
-        tokenStart: 0,
-        mode: ShellCompletionMode.command,
-        words: ['xyz'],
-        workingDirectory: '/repo',
-      );
+      final invocation = _commandInvocation('xyz', '/repo');
       await expectLater(
         service.complete(session, invocation),
         throwsA(isA<TimeoutException>()),
@@ -206,6 +178,52 @@ void main() {
       }
     },
   );
+
+  for (final lateResult in ['never', 'channel', 'error']) {
+    test('history and completion opens time out with late $lateResult', () async {
+      final service = ShellCompletionService(
+        timeout: const Duration(milliseconds: 10),
+        historyTimeout: const Duration(milliseconds: 10),
+      );
+      final client = _MockSshClient();
+      final session = _buildShellCompletionSession(
+        client,
+        connectionId: 104,
+        hostId: 104,
+      );
+      final openings = <Completer<ssh.SSHSession>>[];
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((_) {
+        final opening = Completer<ssh.SSHSession>();
+        openings.add(opening);
+        return opening.future;
+      });
+      final invocation = _commandInvocation('xyz', '/repo');
+      // Repeating the exact request also proves neither in-flight entry sticks.
+      for (var attempt = 0; attempt < 2; attempt++) {
+        await expectLater(
+          service.complete(session, invocation),
+          throwsA(isA<TimeoutException>()),
+        );
+        expect(activeQueuedSshExecCountForTesting(104), 0);
+        expect(pendingQueuedSshExecCountForTesting(104), 0);
+      }
+      expect(openings, hasLength(4));
+      final channels = <ssh.SSHSession>[];
+      for (final opening in openings) {
+        if (lateResult == 'channel') {
+          final channel = _MockSshExecSession();
+          channels.add(channel);
+          opening.complete(channel);
+        } else if (lateResult == 'error') {
+          opening.completeError(StateError('late failure'));
+        }
+      }
+      await pumpEventQueue();
+      for (final channel in channels) {
+        verify(channel.close).called(1);
+      }
+    });
+  }
 
   for (final stdinCloseHangs in [false, true]) {
     test('interactive collector subscribes before writing and closes once '
@@ -653,15 +671,7 @@ void main() {
     );
 
     test('buildShellHistorySuggestions filters encoded command names', () {
-      const invocation = ShellCompletionInvocation(
-        commandLine: 'tmu',
-        cursorOffset: 3,
-        token: 'tmu',
-        tokenStart: 0,
-        mode: ShellCompletionMode.command,
-        words: ['tmu'],
-        workingDirectory: '/Users/depoll/project',
-      );
+      final invocation = _commandInvocation('tmu', '/Users/depoll/project');
 
       final suggestions = buildShellHistorySuggestions([
         'tmux%20new-session%20-A%20-s%20monkeyssh',
@@ -749,7 +759,7 @@ void main() {
           invocation,
         ) async {
           final command = invocation.positionalArguments.first as String;
-          final script = _decodeEncodedPowerShell(command);
+          final script = decodeEncodedPowerShell(command);
           final output = script.contains('ConsoleHost_history')
               ? '__FLUTTY_HISTORY_START__\n__FLUTTY_HISTORY_DONE__\n'
               : 'command\tgit\ncommand\tgitk\n';
@@ -807,7 +817,7 @@ void main() {
         invocation,
       ) async {
         final command = invocation.positionalArguments.first as String;
-        final script = _decodeEncodedPowerShell(command);
+        final script = decodeEncodedPowerShell(command);
         final output = script.contains('HistorySavePath')
             ? '__FLUTTY_HISTORY_START__\n__FLUTTY_HISTORY_DONE__\n'
             : 'argument\tcheckout\nargument\tcherry-pick\n';
@@ -848,7 +858,7 @@ void main() {
         () => client.execute(captureAny(), pty: any(named: 'pty')),
       ).captured.cast<String>();
       final completionScript = commands
-          .map(_decodeEncodedPowerShell)
+          .map(decodeEncodedPowerShell)
           .singleWhere((script) => script.contains('TabExpansion2'));
       expect(completionScript, contains(r"$__flShell='powershell'"));
       expect(completionScript, contains(r'TabExpansion2 $__flCommandLine'));
@@ -1040,3 +1050,14 @@ void main() {
     },
   );
 }
+
+ShellCompletionInvocation _commandInvocation(String token, String cwd) =>
+    ShellCompletionInvocation(
+      commandLine: token,
+      cursorOffset: token.length,
+      token: token,
+      tokenStart: 0,
+      mode: ShellCompletionMode.command,
+      words: [token],
+      workingDirectory: cwd,
+    );

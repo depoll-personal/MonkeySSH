@@ -69,7 +69,7 @@ class MonetizationService {
   bool _restoreInFlight = false;
   bool _restoreObservedPurchaseUpdate = false;
   Future<void>? _initializationFuture;
-  // Serializes async per-purchase handlers so that a batch of restore
+  // Serializes entitlement clears and per-purchase handlers so a batch of restore
   // updates (e.g. an old subscription transaction + a redeemed lifetime
   // transaction delivered together by StoreKit) is processed in order.
   // Without this, multiple `_handleSuccessfulPurchase` calls race and
@@ -400,6 +400,14 @@ class MonetizationService {
       if (kDebugMode) {
         debugPrint('restorePurchases failed: $error\n$stackTrace');
       }
+      if (_pendingPurchaseResult == completer) {
+        const message = 'Could not restore purchases. Try again.';
+        _emit(_state.copyWith(isLoading: false, lastError: message));
+        _resolvePendingPurchase(
+          const MonetizationActionResult.failure(message),
+        );
+      }
+      return completer.future;
     }
 
     // StoreKit has finished the restore/sync by the time the call above
@@ -414,23 +422,16 @@ class MonetizationService {
     return completer.future.timeout(
       _restoreTimeout,
       onTimeout: () async {
-        _restoreEmptyResultTimer?.cancel();
-        _restoreEmptyResultTimer = null;
-        _pendingPurchaseResult = null;
-        _pendingOfferId = null;
-        _pendingPurchaseFlowStarted = false;
-        _pendingPurchaseObservedUpdate = false;
-        final restoreObservedPurchaseUpdate = _restoreObservedPurchaseUpdate;
-        _restoreInFlight = false;
-        _restoreObservedPurchaseUpdate = false;
-        if (!restoreObservedPurchaseUpdate) {
-          await _clearCachedStoreEntitlement(preserveLifetime: true);
-        } else {
+        await _finishRestoreWithoutPurchases(completer);
+        if (_pendingPurchaseResult == completer) {
           _emit(_state.copyWith(isLoading: false));
+          _resolvePendingPurchase(
+            const MonetizationActionResult.failure(
+              _noActiveStorePurchaseMessage,
+            ),
+          );
         }
-        return const MonetizationActionResult.failure(
-          _noActiveStorePurchaseMessage,
-        );
+        return completer.future;
       },
     );
   }
@@ -438,11 +439,14 @@ class MonetizationService {
   void _scheduleEmptyRestoreFinalization(
     Completer<MonetizationActionResult> completer,
   ) {
+    if (_pendingPurchaseResult != completer) {
+      return;
+    }
     _restoreEmptyResultTimer?.cancel();
     _restoreEmptyResultTimer = Timer(_restoreEmptyResultGracePeriod, () {
       _restoreEmptyResultTimer = null;
       if (_pendingPurchaseResult == completer) {
-        unawaited(_finishRestoreWithoutPurchases());
+        unawaited(_finishRestoreWithoutPurchases(completer));
       }
     });
   }
@@ -453,25 +457,31 @@ class MonetizationService {
   /// unlock) and completes the pending action with the no-purchase message.
   /// No-ops if a purchase update was already observed so the normal
   /// purchase-handling path can resolve the restore instead.
-  Future<void> _finishRestoreWithoutPurchases() async {
-    _restoreEmptyResultTimer?.cancel();
-    _restoreEmptyResultTimer = null;
-    final completer = _pendingPurchaseResult;
+  Future<void> _finishRestoreWithoutPurchases(
+    Completer<MonetizationActionResult>? completer,
+  ) async {
     if (completer == null ||
+        _pendingPurchaseResult != completer ||
         completer.isCompleted ||
         !_restoreInFlight ||
         _restoreObservedPurchaseUpdate) {
       return;
     }
-    await _clearCachedStoreEntitlement(preserveLifetime: true);
-    // A restored transaction may have arrived while clearing; if so, let the
-    // purchase-handling path resolve the restore with the real entitlement.
-    if (_restoreObservedPurchaseUpdate) {
-      return;
-    }
-    _resolvePendingPurchase(
-      const MonetizationActionResult.failure(_noActiveStorePurchaseMessage),
-    );
+    await _enqueuePurchaseHandler(() async {
+      if (_pendingPurchaseResult != completer ||
+          !_restoreInFlight ||
+          _restoreObservedPurchaseUpdate) {
+        return;
+      }
+      await _clearCachedStoreEntitlement(preserveLifetime: true);
+      // Transactions arriving during clearing run next in the same queue.
+      if (_pendingPurchaseResult == completer &&
+          !_restoreObservedPurchaseUpdate) {
+        _resolvePendingPurchase(
+          const MonetizationActionResult.failure(_noActiveStorePurchaseMessage),
+        );
+      }
+    });
   }
 
   /// Enables or disables the debug-only local unlock.
@@ -515,7 +525,7 @@ class MonetizationService {
       // StoreKit1 emits an empty list when a restore finishes with no
       // transactions to restore. Resolve the pending restore right away
       // instead of waiting for the restore timeout to elapse.
-      unawaited(_finishRestoreWithoutPurchases());
+      unawaited(_finishRestoreWithoutPurchases(_pendingPurchaseResult));
       return;
     }
     for (final purchase in purchases) {
@@ -535,7 +545,9 @@ class MonetizationService {
           if (_restoreInFlight) {
             _restoreObservedPurchaseUpdate = true;
           }
-          unawaited(_enqueueSuccessfulPurchase(purchase));
+          unawaited(
+            _enqueuePurchaseHandler(() => _handleSuccessfulPurchase(purchase)),
+          );
           break;
         case PurchaseStatus.error:
           unawaited(_completePurchaseIfNeeded(purchase));
@@ -555,10 +567,8 @@ class MonetizationService {
     }
   }
 
-  Future<void> _enqueueSuccessfulPurchase(PurchaseDetails purchase) {
-    final next = _purchaseHandlerChain.then(
-      (_) => _handleSuccessfulPurchase(purchase),
-    );
+  Future<void> _enqueuePurchaseHandler(Future<void> Function() action) {
+    final next = _purchaseHandlerChain.then((_) => action());
     // Swallow errors so one bad handler doesn't break the chain for
     // subsequent purchases. Errors are already surfaced via state.
     _purchaseHandlerChain = next.catchError((Object _) {});

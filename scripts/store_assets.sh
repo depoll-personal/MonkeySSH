@@ -631,7 +631,7 @@ ensure_canonical_output_name() {
 restore_current_release_if_present() {
   local repo="$1"
   if gh release view "$RELEASE_TAG" --repo "$repo" >/dev/null 2>&1; then
-    echo "Restoring current $RELEASE_TAG release before partial generation/publish..."
+    echo "Restoring current $RELEASE_TAG release before partial generation..."
     if ! cmd_download --repo "$repo"; then
       echo "warning: could not restore current $RELEASE_TAG release; continuing with local media only" >&2
     fi
@@ -708,9 +708,9 @@ cmd_publish() {
   local repo
   repo="$(repo_slug)"
 
-  # Partial generation/platform must start from the current complete archive so
-  # we never clobber the rolling release with a one-platform subset.
-  if [ "$generate" != none ] || [ "$platform" != both ]; then
+  # Restore only before partial generation here; local captures must survive
+  # publishing without generation. Packaging validates the complete archive.
+  if [ "$generate" != none ] && { [ "$generate" != all ] || [ "$platform" != both ]; }; then
     restore_current_release_if_present "$repo"
   fi
 

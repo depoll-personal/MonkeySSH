@@ -224,37 +224,25 @@ class TmuxWindow {
     String? id,
     int? panePid,
     bool? isActive,
-    String? name,
     String? currentCommand,
-    String? currentPath,
     String? flags,
-    String? paneTitle,
-    String? paneStartCommand,
     AgentLaunchTool? agentTool,
     bool? hasUnsupportedAgentTool,
     String? activeAgentSessionId,
     String? agentSessionTitle,
     AgentSessionConfidence? activeAgentSessionConfidence,
-    String? nativeAcpBridgeId,
-    String? nativeAcpProviderId,
-    bool? terminalReportsMouseWheel,
-    bool? terminalMouseReportSgr,
-    bool? terminalBracketedPasteMode,
-    TerminalProgress? terminalProgress,
-    bool clearTerminalProgress = false,
     bool clearActiveAgentSessionMetadata = false,
-    int? lastActivityEpochSeconds,
   }) => TmuxWindow(
     index: index,
     id: id ?? this.id,
     panePid: panePid ?? this.panePid,
-    name: name ?? this.name,
+    name: name,
     isActive: isActive ?? this.isActive,
     currentCommand: currentCommand ?? this.currentCommand,
-    currentPath: currentPath ?? this.currentPath,
+    currentPath: currentPath,
     flags: flags ?? this.flags,
-    paneTitle: paneTitle ?? this.paneTitle,
-    paneStartCommand: paneStartCommand ?? this.paneStartCommand,
+    paneTitle: paneTitle,
+    paneStartCommand: paneStartCommand,
     agentTool: agentTool ?? this.agentTool,
     hasUnsupportedAgentTool:
         hasUnsupportedAgentTool ??
@@ -268,20 +256,14 @@ class TmuxWindow {
     activeAgentSessionConfidence: clearActiveAgentSessionMetadata
         ? null
         : activeAgentSessionConfidence ?? this.activeAgentSessionConfidence,
-    nativeAcpBridgeId: nativeAcpBridgeId ?? this.nativeAcpBridgeId,
-    nativeAcpProviderId: nativeAcpProviderId ?? this.nativeAcpProviderId,
-    terminalReportsMouseWheel:
-        terminalReportsMouseWheel ?? this.terminalReportsMouseWheel,
-    terminalMouseReportSgr:
-        terminalMouseReportSgr ?? this.terminalMouseReportSgr,
-    terminalBracketedPasteMode:
-        terminalBracketedPasteMode ?? this.terminalBracketedPasteMode,
-    terminalProgress: clearTerminalProgress
-        ? null
-        : terminalProgress ?? this.terminalProgress,
+    nativeAcpBridgeId: nativeAcpBridgeId,
+    nativeAcpProviderId: nativeAcpProviderId,
+    terminalReportsMouseWheel: terminalReportsMouseWheel,
+    terminalMouseReportSgr: terminalMouseReportSgr,
+    terminalBracketedPasteMode: terminalBracketedPasteMode,
+    terminalProgress: terminalProgress,
     idleSeconds: _snapshotIdleSeconds,
-    lastActivityEpochSeconds:
-        lastActivityEpochSeconds ?? this.lastActivityEpochSeconds,
+    lastActivityEpochSeconds: lastActivityEpochSeconds,
   );
 
   /// A best-effort coding-agent session identifier found in tmux metadata.
@@ -439,9 +421,8 @@ class TmuxWindow {
   /// are useful and distinct.
   String? get secondaryTitle {
     final display = displayTitle;
-    final sessionDisplayTitle = agentSessionDisplayTitle;
     final sessionTitle = _normalizedTmuxTitle(agentSessionTitle);
-    if (sessionDisplayTitle != null) {
+    if (sessionTitle != null) {
       final toolLabel = foregroundAgentTool?.label;
       final tmuxTitle = _tmuxSecondaryTitleForAgentSession;
       final secondaryParts = <String>[
@@ -466,25 +447,11 @@ class TmuxWindow {
       stripPlaceholderPrefix: true,
     );
     final sessionLabel = agentSessionLabel;
-    if (sessionLabel != null &&
-        sessionTitle != null &&
-        sessionTitle.isNotEmpty &&
-        sessionLabel != display) {
-      if (_titlesMatch(sessionTitle, display) ||
-          _titlesMatch(sessionTitle, normalizedPaneTitle) ||
-          _titlesMatch(sessionTitle, normalizedName)) {
-        final toolLabel = foregroundAgentTool?.label;
-        return _titlesMatch(toolLabel, display) ? null : toolLabel;
-      }
-      return sessionLabel;
-    }
     final agentTitle = agentContextTitle;
     if (agentTitle != null && display == agentTitle) {
       return sessionLabel == display ? null : sessionLabel;
     }
-    if (sessionLabel != null &&
-        sessionTitle == null &&
-        sessionLabel != display) {
+    if (sessionLabel != null && sessionLabel != display) {
       final toolLabel = foregroundAgentTool?.label;
       final secondaryParts = <String>[
         if (toolLabel != null && !_titlesMatch(toolLabel, display)) toolLabel,

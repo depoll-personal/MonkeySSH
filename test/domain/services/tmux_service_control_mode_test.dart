@@ -415,9 +415,7 @@ void main() {
       const service = TmuxService();
       final execSession = _buildOpenExecSession(stdout: _doneMarker());
 
-      when(
-        () => client.execute(any(), pty: any(named: 'pty')),
-      ).thenAnswer((_) async => execSession);
+      _stubExec(client, (_) async => execSession);
 
       final first = await service.detectInstalledAgentTools(session);
       final second = await service.detectInstalledAgentTools(session);
@@ -432,9 +430,7 @@ void main() {
       final session = _buildSession(client, connectionId: 22);
       const service = TmuxService();
       var call = 0;
-      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
-        _,
-      ) async {
+      _stubExec(client, (_) async {
         call += 1;
         return _buildOpenExecSession(
           stdout: call == 1
@@ -473,6 +469,12 @@ void main() {
           );
           addTearDown(() => service.clearCache(23));
           final old = service.detectInstalledAgentTools(session);
+          final oldResult = expectLater(
+            old,
+            clearConnection
+                ? throwsA(isA<TmuxCommandException>())
+                : completion({AgentLaunchTool.claudeCode}),
+          );
           await untilCalled(
             () => client.execute(any(), pty: any(named: 'pty')),
           );
@@ -484,10 +486,12 @@ void main() {
           expect(await service.detectInstalledAgentTools(session), {
             AgentLaunchTool.openCode,
           });
-          pending.complete(
-            _buildOpenExecSession(stdout: '/bin/claude\n${_doneMarker()}'),
+          final lateSession = _buildOpenExecSession(
+            stdout: '/bin/claude\n${_doneMarker()}',
           );
-          expect(await old, {AgentLaunchTool.claudeCode});
+          pending.complete(lateSession);
+          await oldResult;
+          verify(lateSession.close).called(1);
           expect(await service.detectInstalledAgentTools(session), {
             AgentLaunchTool.openCode,
           });
@@ -504,9 +508,7 @@ void main() {
         stdout: '/opt/homebrew/bin/codex\n${_doneMarker()}',
       );
 
-      when(
-        () => client.execute(any(), pty: any(named: 'pty')),
-      ).thenAnswer((_) async => execSession);
+      _stubExec(client, (_) async => execSession);
 
       await service.prefetchInstalledAgentTools(session);
       final tools = await service.detectInstalledAgentTools(session);
@@ -528,9 +530,7 @@ void main() {
           stdout: 'C:/Users/demo/AppData/Roaming/npm/copilot.cmd\n',
         );
 
-        when(
-          () => client.execute(any(), pty: any(named: 'pty')),
-        ).thenAnswer((_) async => execSession);
+        _stubExec(client, (_) async => execSession);
 
         final tools = await service.detectInstalledAgentTools(session);
 
@@ -563,9 +563,7 @@ void main() {
         );
         final execSession = _buildOpenExecSession();
 
-        when(
-          () => client.execute(any(), pty: any(named: 'pty')),
-        ).thenAnswer((_) async => execSession);
+        _stubExec(client, (_) async => execSession);
 
         final first = await service.detectInstalledAgentTools(session);
         final second = await service.detectInstalledAgentTools(session);
@@ -581,15 +579,11 @@ void main() {
       final client = _MockSshClient();
       final session = _buildSession(client, connectionId: 22);
       const service = TmuxService();
-      final execSessions = Queue<SSHSession>.of([
+      _queueExec(client, [
         _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
         _buildOpenExecSession(stdout: _doneMarker()),
         _buildOpenExecSession(stdout: _doneMarker()),
       ]);
-
-      when(
-        () => client.execute(any(), pty: any(named: 'pty')),
-      ).thenAnswer((_) async => execSessions.removeFirst());
 
       final active = await service.isTmuxActiveOrThrow(session);
 
@@ -643,14 +637,10 @@ void main() {
         final client = _MockSshClient();
         final session = _buildSession(client, connectionId: 23);
         const service = TmuxService();
-        final execSessions = Queue<SSHSession>.of([
+        _queueExec(client, [
           _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
           _buildOpenExecSession(stdout: _doneMarker()),
         ]);
-
-        when(
-          () => client.execute(any(), pty: any(named: 'pty')),
-        ).thenAnswer((_) async => execSessions.removeFirst());
 
         final sessionName = await service.foregroundSessionNameOrThrow(session);
 
@@ -677,18 +667,15 @@ void main() {
       final client = _MockSshClient();
       final session = _buildSession(client, connectionId: 24);
       const service = TmuxService();
-      final execSessions = Queue<SSHSession>.of([
+      final execSessions = _queueExec(client, [
         _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
         _buildOpenExecSession(stdout: 'work\n${_doneMarker()}'),
       ]);
 
-      when(
-        () => client.execute(any(), pty: any(named: 'pty')),
-      ).thenAnswer((_) async => execSessions.removeFirst());
-
       final sessionName = await service.currentSessionName(session);
 
       expect(sessionName, 'work');
+      expect(execSessions, isEmpty);
       verify(
         () => client.execute(
           any(that: contains('list-clients')),
@@ -709,16 +696,12 @@ void main() {
         final client = _MockSshClient();
         final session = _buildSession(client, connectionId: 30);
         const service = TmuxService();
-        final execSessions = Queue<SSHSession>.of([
+        _queueExec(client, [
           _buildOpenExecSession(
             stdout: 'bash\n/usr/bin/tmux\n${_doneMarker()}',
           ),
           _buildOpenExecSession(stdout: '0\n${_doneMarker()}'),
         ]);
-
-        when(
-          () => client.execute(any(), pty: any(named: 'pty')),
-        ).thenAnswer((_) async => execSessions.removeFirst());
 
         final exists = await service.hasSessionOrThrow(session, 'missing');
 
@@ -738,16 +721,12 @@ void main() {
         final client = _MockSshClient();
         final session = _buildSession(client, connectionId: 31);
         const service = TmuxService();
-        final execSessions = Queue<SSHSession>.of([
+        _queueExec(client, [
           _buildOpenExecSession(
             stdout: 'bash\n/usr/bin/tmux\n${_doneMarker()}',
           ),
           _buildOpenExecSession(stdout: _doneMarker(2)),
         ]);
-
-        when(
-          () => client.execute(any(), pty: any(named: 'pty')),
-        ).thenAnswer((_) async => execSessions.removeFirst());
 
         await expectLater(
           service.hasSessionOrThrow(session, 'work'),
@@ -760,14 +739,10 @@ void main() {
       final client = _MockSshClient();
       final session = _buildSession(client, connectionId: 33);
       const service = TmuxService();
-      final execSessions = Queue<SSHSession>.of([
+      _queueExec(client, [
         _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
         _buildOpenExecSession(stdout: '1\n${_doneMarker()}'),
       ]);
-
-      when(
-        () => client.execute(any(), pty: any(named: 'pty')),
-      ).thenAnswer((_) async => execSessions.removeFirst());
 
       final results = await Future.wait([
         service.hasSessionOrThrow(session, 'work'),
@@ -814,9 +789,7 @@ void main() {
           stdout: '$windowLine\n${_doneMarker()}',
         );
 
-        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
-          _,
-        ) async {
+        _stubExec(client, (_) async {
           executeCalls += 1;
           if (executeCalls == 1) {
             return execSession;
@@ -845,38 +818,32 @@ void main() {
         const service = TmuxService();
         var executeCalls = 0;
 
-        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
-          _,
-        ) async {
+        _stubExec(client, (_) async {
           executeCalls += 1;
           return Future<SSHSession>.error(
             SSHChannelOpenError(2, 'open failed'),
           );
         });
 
-        try {
-          await expectLater(
-            service.listWindows(session, 'main'),
-            throwsA(isA<SSHChannelOpenError>()),
-          );
-          await Future<void>.delayed(Duration.zero);
+        await expectLater(
+          service.listWindows(session, 'main'),
+          throwsA(isA<SSHChannelOpenError>()),
+        );
+        await Future<void>.delayed(Duration.zero);
 
-          await expectLater(
-            service.listWindows(session, 'main'),
-            throwsA(
-              predicate<Object>(
-                (error) => error is! SSHChannelOpenError,
-                'does not open another SSH channel',
-              ),
+        await expectLater(
+          service.listWindows(session, 'main'),
+          throwsA(
+            predicate<Object>(
+              (error) => error is! SSHChannelOpenError,
+              'does not open another SSH channel',
             ),
-          );
+          ),
+        );
 
-          expect(executeCalls, 1);
-          expect(TmuxService.hasExecChannelBackoffEntry(35), true);
-          expect(TmuxService.execChannelBackoffFailureCountForTesting(35), 1);
-        } finally {
-          await service.clearCache(35);
-        }
+        expect(executeCalls, 1);
+        expect(TmuxService.hasExecChannelBackoffEntry(35), true);
+        expect(TmuxService.execChannelBackoffFailureCountForTesting(35), 1);
       },
     );
 
@@ -886,9 +853,7 @@ void main() {
       const service = TmuxService();
       var executeCalls = 0;
 
-      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
-        _,
-      ) async {
+      _stubExec(client, (_) async {
         executeCalls += 1;
         return _buildOpenExecSession(
           stdout:
@@ -896,19 +861,15 @@ void main() {
         );
       });
 
-      try {
-        await service.listWindows(session, 'main');
+      await service.listWindows(session, 'main');
 
-        final path = await service.currentPanePath(session, 'main');
-        final context = await service.currentPaneContext(session, 'main');
+      final path = await service.currentPanePath(session, 'main');
+      final context = await service.currentPaneContext(session, 'main');
 
-        expect(path, '/tmp/project');
-        expect(context?.currentPath, '/tmp/project');
-        expect(context?.currentCommand, 'copilot');
-        expect(executeCalls, 1);
-      } finally {
-        await service.clearCache(37);
-      }
+      expect(path, '/tmp/project');
+      expect(context?.currentPath, '/tmp/project');
+      expect(context?.currentCommand, 'copilot');
+      expect(executeCalls, 1);
     });
 
     test('listWindows debounces Copilot metadata refresh bursts', () async {
@@ -923,10 +884,7 @@ void main() {
         _tmuxWindowLine(id: '@88', panePid: 88, title: 'Second'),
       ]);
 
-      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
-        invocation,
-      ) async {
-        final command = invocation.positionalArguments.first as String;
+      _stubExec(client, (command) async {
         commands.add(command);
         if (command.contains('list-windows')) {
           return _buildOpenExecSession(
@@ -936,26 +894,22 @@ void main() {
         return _buildOpenExecSession(stdout: _doneMarker());
       });
 
-      try {
-        await service.listWindows(session, 'main');
-        await service.listWindows(session, 'main');
+      await service.listWindows(session, 'main');
+      await service.listWindows(session, 'main');
 
-        expect(
-          commands.where(_isCopilotMetadataCommand),
-          isEmpty,
-          reason: 'metadata refresh should wait for the debounce window',
-        );
+      expect(
+        commands.where(_isCopilotMetadataCommand),
+        isEmpty,
+        reason: 'metadata refresh should wait for the debounce window',
+      );
 
-        await Future<void>.delayed(const Duration(milliseconds: 80));
+      await Future<void>.delayed(const Duration(milliseconds: 80));
 
-        final metadataCommands = commands
-            .where(_isCopilotMetadataCommand)
-            .toList(growable: false);
-        expect(metadataCommands, hasLength(1));
-        expect(metadataCommands.single, contains("pane_pids='42 88'"));
-      } finally {
-        await service.clearCache(session.connectionId);
-      }
+      final metadataCommands = commands
+          .where(_isCopilotMetadataCommand)
+          .toList(growable: false);
+      expect(metadataCommands, hasLength(1));
+      expect(metadataCommands.single, contains("pane_pids='42 88'"));
     });
 
     test('agent session metadata refreshes periodically for watches', () async {
@@ -967,10 +921,7 @@ void main() {
       );
       final commands = <String>[];
 
-      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
-        invocation,
-      ) async {
-        final command = invocation.positionalArguments.first as String;
+      _stubExec(client, (command) async {
         commands.add(command);
         if (command.contains('list-windows')) {
           return _buildOpenExecSession(
@@ -981,22 +932,18 @@ void main() {
         return _buildOpenExecSession(stdout: _doneMarker());
       });
 
-      try {
-        service.watchWindowChanges(session, 'main');
-        await service.listWindows(session, 'main');
-        await Future<void>.delayed(const Duration(milliseconds: 25));
+      service.watchWindowChanges(session, 'main');
+      await service.listWindows(session, 'main');
+      await Future<void>.delayed(const Duration(milliseconds: 25));
 
-        expect(commands.where(_isCopilotMetadataCommand), hasLength(1));
+      expect(commands.where(_isCopilotMetadataCommand), hasLength(1));
 
-        await Future<void>.delayed(const Duration(milliseconds: 80));
+      await Future<void>.delayed(const Duration(milliseconds: 80));
 
-        expect(
-          commands.where(_isCopilotMetadataCommand).length,
-          greaterThanOrEqualTo(2),
-        );
-      } finally {
-        await service.clearCache(session.connectionId);
-      }
+      expect(
+        commands.where(_isCopilotMetadataCommand).length,
+        greaterThanOrEqualTo(2),
+      );
     });
 
     test('Copilot metadata refreshes wait for exec channel backoff', () async {
@@ -1007,10 +954,7 @@ void main() {
       );
       var metadataAttempts = 0;
 
-      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
-        invocation,
-      ) async {
-        final command = invocation.positionalArguments.first as String;
+      _stubExec(client, (command) async {
         if (command.contains('list-windows')) {
           return _buildOpenExecSession(
             stdout:
@@ -1029,35 +973,31 @@ void main() {
         return _buildOpenExecSession(stdout: _doneMarker());
       });
 
-      try {
-        await service.listWindows(session, 'main');
-        await Future<void>.delayed(const Duration(milliseconds: 80));
+      await service.listWindows(session, 'main');
+      await Future<void>.delayed(const Duration(milliseconds: 80));
 
-        expect(metadataAttempts, 1);
-        expect(
-          TmuxService.hasExecChannelBackoffEntry(session.connectionId),
-          true,
-        );
+      expect(metadataAttempts, 1);
+      expect(
+        TmuxService.hasExecChannelBackoffEntry(session.connectionId),
+        true,
+      );
 
-        await service.listWindows(session, 'main');
-        await Future<void>.delayed(const Duration(milliseconds: 500));
+      await service.listWindows(session, 'main');
+      await Future<void>.delayed(const Duration(milliseconds: 500));
 
-        expect(
-          metadataAttempts,
-          1,
-          reason: 'metadata refreshes should not hammer SSH during backoff',
-        );
+      expect(
+        metadataAttempts,
+        1,
+        reason: 'metadata refreshes should not hammer SSH during backoff',
+      );
 
-        await Future<void>.delayed(const Duration(milliseconds: 1800));
+      await Future<void>.delayed(const Duration(milliseconds: 1800));
 
-        expect(metadataAttempts, 2);
-        expect(
-          TmuxService.hasExecChannelBackoffEntry(session.connectionId),
-          false,
-        );
-      } finally {
-        await service.clearCache(session.connectionId);
-      }
+      expect(metadataAttempts, 2);
+      expect(
+        TmuxService.hasExecChannelBackoffEntry(session.connectionId),
+        false,
+      );
     });
   });
 
@@ -1271,14 +1211,10 @@ void main() {
         final client = _MockSshClient();
         final session = _buildSession(client, connectionId: 24);
         const service = TmuxService();
-        final execSessions = Queue<SSHSession>.of([
+        final execSessions = _queueExec(client, [
           _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
           _buildOpenExecSession(stdout: 'other\n${_doneMarker()}'),
         ]);
-
-        when(
-          () => client.execute(any(), pty: any(named: 'pty')),
-        ).thenAnswer((_) async => execSessions.removeFirst());
 
         final hasForegroundClient = await service.hasForegroundClient(
           session,
@@ -1286,6 +1222,7 @@ void main() {
         );
 
         expect(hasForegroundClient, isFalse);
+        expect(execSessions, isEmpty);
         final foregroundCommand =
             verify(
                   () => client.execute(
@@ -1310,14 +1247,10 @@ void main() {
         () => client.execute(any(), pty: any(named: 'pty')),
       ).thenAnswer((_) => Completer<SSHSession>().future);
 
-      try {
-        await expectLater(
-          service.listWindows(session, 'main'),
-          throwsA(isA<TimeoutException>()),
-        );
-      } finally {
-        await service.clearCache(36);
-      }
+      await expectLater(
+        service.listWindows(session, 'main'),
+        throwsA(isA<TimeoutException>()),
+      );
     });
 
     test(
@@ -1332,9 +1265,7 @@ void main() {
               '${_doneMarker()}',
         );
 
-        when(
-          () => client.execute(any(), pty: any(named: 'pty')),
-        ).thenAnswer((_) async => execSession);
+        _stubExec(client, (_) async => execSession);
 
         final windows = await service.listWindows(session, 'main');
 
@@ -1355,9 +1286,7 @@ void main() {
             '${_doneMarker()}',
       );
 
-      when(
-        () => client.execute(any(), pty: any(named: 'pty')),
-      ).thenAnswer((_) async => execSession);
+      _stubExec(client, (_) async => execSession);
 
       await service.listWindows(
         session,
@@ -1430,9 +1359,7 @@ void main() {
           }
         }),
       );
-      when(
-        () => client.execute(any(), pty: any(named: 'pty')),
-      ).thenAnswer((_) async => exec);
+      _stubExec(client, (_) async => exec);
       final windows = await service.listWindows(session, 'main');
       expect(windows.single.paneTitle, title);
       verify(exec.close).called(1);
@@ -1448,9 +1375,7 @@ void main() {
             '${_doneMarker()}',
       );
 
-      when(
-        () => client.execute(any(), pty: any(named: 'pty')),
-      ).thenAnswer((_) async => execSession);
+      _stubExec(client, (_) async => execSession);
 
       final windows = await service.listWindows(session, 'main');
 
@@ -1466,15 +1391,12 @@ void main() {
         final client = _MockSshClient();
         final session = _buildSession(client);
         const service = TmuxService();
-        final execSessions = Queue<SSHSession>.from([
+        final commandSession = _buildOpenExecSession(stdout: _doneMarker());
+        _queueExec(client, [
           _buildOpenExecSession(stdout: '4\n${_doneMarker()}'),
           _buildOpenExecSession(stdout: _doneMarker()),
-          _buildOpenExecSession(),
+          commandSession,
         ]);
-
-        when(
-          () => client.execute(any(), pty: any(named: 'pty')),
-        ).thenAnswer((_) async => execSessions.removeFirst());
 
         await service.createWindow(
           session,
@@ -1483,6 +1405,7 @@ void main() {
           name: 'copilot',
           workingDirectory: '/tmp/project',
         );
+        await untilCalled(commandSession.close);
 
         verify(
           () => client.execute(
@@ -1534,14 +1457,11 @@ void main() {
         final client = _MockSshClient();
         final session = _buildSession(client);
         const service = TmuxService();
-        final execSessions = Queue<SSHSession>.from([
+        final commandSession = _buildOpenExecSession(stdout: _doneMarker());
+        _queueExec(client, [
           _buildOpenExecSession(stdout: '4\n${_doneMarker()}'),
-          _buildOpenExecSession(),
+          commandSession,
         ]);
-
-        when(
-          () => client.execute(any(), pty: any(named: 'pty')),
-        ).thenAnswer((_) async => execSessions.removeFirst());
 
         await service.createWindow(
           session,
@@ -1550,6 +1470,7 @@ void main() {
           name: 'gemini',
           workingDirectory: '/tmp/project',
         );
+        await untilCalled(commandSession.close);
 
         verify(
           () => client.execute(
@@ -1601,14 +1522,10 @@ void main() {
             }
           },
         );
-        final execSessions = Queue<SSHSession>.from([
+        _queueExec(client, [
           _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
           controlSession,
         ]);
-
-        when(
-          () => client.execute(any(), pty: any(named: 'pty')),
-        ).thenAnswer((_) async => execSessions.removeFirst());
 
         final subscription = service
             .watchWindowChanges(
@@ -1670,14 +1587,10 @@ void main() {
             }
           },
         );
-        final execSessions = Queue<SSHSession>.from([
+        _queueExec(client, [
           _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
           controlSession,
         ]);
-
-        when(
-          () => client.execute(any(), pty: any(named: 'pty')),
-        ).thenAnswer((_) async => execSessions.removeFirst());
 
         final subscription = service
             .watchWindowChanges(session, 'main')
@@ -1716,9 +1629,7 @@ void main() {
           oldControl,
           newControl,
         ]);
-        when(
-          () => client.execute(any(), pty: any(named: 'pty')),
-        ).thenAnswer((_) async => sessions.removeFirst());
+        _stubExec(client, (_) async => sessions.removeFirst());
         final first = service
             .watchWindowChanges(session, 'main')
             .listen((_) {});
@@ -1774,14 +1685,10 @@ void main() {
             }
           },
         );
-        final execSessions = Queue<SSHSession>.from([
+        _queueExec(client, [
           _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
           controlSession,
         ]);
-
-        when(
-          () => client.execute(any(), pty: any(named: 'pty')),
-        ).thenAnswer((_) async => execSessions.removeFirst());
 
         final subscription = service
             .watchWindowChanges(session, 'main')
@@ -1874,9 +1781,11 @@ void main() {
         await clearCacheFuture;
 
         expect(clearCacheCompleted, isTrue);
-        expect(writes, contains('detach-client -P\n\n'));
+        expect(writes, ['detach-client -P\n\n']);
         expect(executeCalls, 2);
         verify(controlSession.close).called(1);
+        verifyNever(() => controlSession.stdout);
+        expect(TmuxService.hasConnectionStateForTesting(75), isFalse);
       },
     );
 
@@ -1900,14 +1809,10 @@ void main() {
           }
         },
       );
-      final execSessions = Queue<SSHSession>.from([
+      _queueExec(client, [
         _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
         controlSession,
       ]);
-
-      when(
-        () => client.execute(any(), pty: any(named: 'pty')),
-      ).thenAnswer((_) async => execSessions.removeFirst());
 
       final subscription = service
           .watchWindowChanges(session, 'main')
@@ -1927,6 +1832,59 @@ void main() {
       await subscription.cancel();
       await stdoutController.close();
     });
+
+    test(
+      'createWindow falls back to exec while watcher open is pending',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 4010);
+        const service = TmuxService();
+        final opening = Completer<SSHSession>();
+        final watcherStarted = Completer<void>();
+        final commands = <String>[];
+        _stubExec(client, (command) async {
+          commands.add(command);
+          if (command.contains('command -v tmux')) {
+            return _buildOpenExecSession(
+              stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}',
+            );
+          }
+          if (command.contains('-CC attach-session')) {
+            watcherStarted.complete();
+            return opening.future;
+          }
+          return _buildOpenExecSession(stdout: '4\n${_doneMarker()}');
+        });
+        final subscription = service
+            .watchWindowChanges(session, 'main')
+            .listen((_) {});
+        await watcherStarted.future;
+        await service.createWindow(session, 'main', command: 'echo ready');
+        await pumpEventQueue();
+        expect(
+          commands.where((command) => command.contains('new-window')),
+          hasLength(1),
+        );
+        expect(
+          commands.where((command) => command.contains('send-keys')),
+          hasLength(1),
+        );
+        expect(
+          commands.singleWhere((command) => command.contains('send-keys')),
+          contains("send-keys -t 'main:4' 'echo ready' Enter"),
+        );
+        final cleanup = service.clearCache(session.connectionId);
+        final lateChannel = _buildOpenExecSession();
+        opening.complete(lateChannel);
+        await cleanup;
+        await subscription.cancel();
+        verify(lateChannel.close).called(1);
+        expect(
+          TmuxService.hasConnectionStateForTesting(session.connectionId),
+          isFalse,
+        );
+      },
+    );
 
     test('createWindow uses an active control-mode watcher', () async {
       final client = _MockSshClient();
@@ -1960,14 +1918,10 @@ void main() {
           }
         },
       );
-      final execSessions = Queue<SSHSession>.from([
+      _queueExec(client, [
         _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
         controlSession,
       ]);
-
-      when(
-        () => client.execute(any(), pty: any(named: 'pty')),
-      ).thenAnswer((_) async => execSessions.removeFirst());
 
       final subscription = service
           .watchWindowChanges(session, 'main')
@@ -2060,9 +2014,7 @@ void main() {
         );
         var executeCalls = 0;
 
-        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
-          _,
-        ) async {
+        _stubExec(client, (_) async {
           executeCalls += 1;
           if (executeCalls == 1) {
             return _buildOpenExecSession(
@@ -2154,9 +2106,7 @@ void main() {
         final client = _MockSshClient();
         final session = _buildSession(client);
         final execSession = _buildOpenExecSession(stdout: _doneMarker());
-        when(
-          () => client.execute(any(), pty: any(named: 'pty')),
-        ).thenAnswer((_) async => execSession);
+        _stubExec(client, (_) async => execSession);
         await action(session, 'main', 2, extraFlags: flags, windowId: id);
         verify(
           () => client.execute(
@@ -2174,9 +2124,7 @@ void main() {
       const service = TmuxService();
       final execSession = _buildClosedExecSession(stdout: 'tmux failed\n');
 
-      when(
-        () => client.execute(any(), pty: any(named: 'pty')),
-      ).thenAnswer((_) async => execSession);
+      _stubExec(client, (_) async => execSession);
 
       await expectLater(
         service.killWindow(session, 'main', 2),
@@ -2197,9 +2145,7 @@ void main() {
       const service = TmuxService();
       final execSession = _buildOpenExecSession(stdout: _doneMarker(1));
 
-      when(
-        () => client.execute(any(), pty: any(named: 'pty')),
-      ).thenAnswer((_) async => execSession);
+      _stubExec(client, (_) async => execSession);
 
       await expectLater(
         service.killWindow(session, 'main', 2),
@@ -2220,9 +2166,7 @@ void main() {
       const service = TmuxService(execOutputTimeout: Duration(milliseconds: 1));
       final execSession = _buildOpenExecSession();
 
-      when(
-        () => client.execute(any(), pty: any(named: 'pty')),
-      ).thenAnswer((_) async => execSession);
+      _stubExec(client, (_) async => execSession);
 
       await expectLater(
         service.detectInstalledAgentTools(session),
@@ -2239,9 +2183,7 @@ void main() {
         const service = TmuxService();
         final execSession = _buildClosedExecSession(stdout: 'partial output\n');
 
-        when(
-          () => client.execute(any(), pty: any(named: 'pty')),
-        ).thenAnswer((_) async => execSession);
+        _stubExec(client, (_) async => execSession);
 
         await expectLater(
           service.detectInstalledAgentTools(session),
@@ -2261,9 +2203,7 @@ void main() {
           stdout: '/opt/homebrew/bin/claude\n${_doneMarker()}',
         );
 
-        when(
-          () => client.execute(any(), pty: any(named: 'pty')),
-        ).thenAnswer((_) async => execSession);
+        _stubExec(client, (_) async => execSession);
 
         final tools = await service.detectInstalledAgentTools(session);
 
@@ -2414,6 +2354,116 @@ void main() {
     // Connection IDs 60-69 reserved for this group to avoid static-cache
     // collisions with other groups in the same test run.
 
+    for (final pathProbe in [true, false]) {
+      for (final openingPending in [true, false]) {
+        for (final fails in [true, false]) {
+          test('clear pending ${pathProbe ? 'path' : 'windows'} '
+              '${openingPending ? 'open' : 'output'}, fails=$fails', () async {
+            const service = TmuxService();
+            final client = _MockSshClient();
+            final session = _buildSession(client, connectionId: 4000);
+            final otherClient = _MockSshClient();
+            final other = _buildSession(otherClient, connectionId: 4001);
+            when(
+              () => otherClient.execute(any(), pty: any(named: 'pty')),
+            ).thenAnswer(
+              (_) async => _buildOpenExecSession(
+                stdout: '/usr/bin/codex\n${_doneMarker()}',
+              ),
+            );
+            await service.detectInstalledAgentTools(other);
+            final opening = Completer<SSHSession>();
+            final output = StreamController<Uint8List>();
+            final exec = _buildOpenExecSession();
+            when(() => exec.stdout).thenAnswer((_) => output.stream);
+            when(
+              () => client.execute(any(), pty: any(named: 'pty')),
+            ).thenAnswer((_) => opening.future);
+            final request = pathProbe
+                ? service.hasSessionOrThrow(session, 'main')
+                : service.listWindows(session, 'main');
+            final result = pathProbe || openingPending || fails
+                ? expectLater(
+                    request,
+                    throwsA(
+                      pathProbe || !fails
+                          ? isA<TmuxCommandException>()
+                          : isA<SSHChannelOpenError>(),
+                    ),
+                  )
+                : expectLater(request, completion(isA<List<TmuxWindow>>()));
+            await untilCalled(
+              () => client.execute(any(), pty: any(named: 'pty')),
+            );
+            if (!openingPending) {
+              opening.complete(exec);
+              await untilCalled(() => exec.stdout);
+            }
+            await service.clearCache(session.connectionId);
+            expect(TmuxService.hasConnectionStateForTesting(4000), isFalse);
+            if (openingPending) {
+              if (fails) {
+                opening.completeError(SSHChannelOpenError(2, 'open failed'));
+              } else {
+                opening.complete(exec);
+              }
+            } else if (fails) {
+              output.addError(SSHChannelOpenError(2, 'output failed'));
+            } else {
+              output.add(
+                _utf8Bytes(
+                  pathProbe
+                      ? 'zsh\n/usr/bin/tmux\n${_doneMarker()}'
+                      : '${_tmuxWindowLine(id: '@42', panePid: 42)}\n${_doneMarker()}',
+                ),
+              );
+            }
+            await result;
+            await pumpEventQueue();
+            expect(TmuxService.hasConnectionStateForTesting(4000), isFalse);
+            expect(TmuxService.hasTmuxPathCacheEntry(4000), isFalse);
+            expect(TmuxService.hasWindowSnapshotCacheEntry(4000), isFalse);
+            expect(TmuxService.hasExecChannelBackoffEntry(4000), isFalse);
+            expect(TmuxService.hasInstalledAgentToolsCacheEntry(4001), isTrue);
+            if (!openingPending || !fails) verify(exec.close).called(1);
+            if (!openingPending) await output.close();
+            await service.clearCache(other.connectionId);
+          });
+        }
+      }
+    }
+
+    test(
+      'late metadata open failure cannot schedule recovery after clear',
+      () async {
+        const service = TmuxService(
+          agentSessionMetadataRefreshDebounce: Duration.zero,
+        );
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 4002);
+        final metadataOpen = Completer<SSHSession>();
+        final metadataStarted = Completer<void>();
+        _stubExec(client, (command) async {
+          if (_isCopilotMetadataCommand(command)) {
+            metadataStarted.complete();
+            return metadataOpen.future;
+          }
+          return _buildOpenExecSession(
+            stdout:
+                '${_tmuxWindowLine(id: '@42', panePid: 42)}\n${_doneMarker()}',
+          );
+        });
+        await service.listWindows(session, 'main');
+        await metadataStarted.future;
+        await service.clearCache(session.connectionId);
+        metadataOpen.completeError(SSHChannelOpenError(2, 'open failed'));
+        await pumpEventQueue();
+        expect(TmuxService.hasConnectionStateForTesting(4002), isFalse);
+        expect(TmuxService.hasExecChannelBackoffEntry(4002), isFalse);
+        verify(() => client.execute(any(), pty: any(named: 'pty'))).called(2);
+      },
+    );
+
     test(
       'clears installed agent tools cache so subsequent call re-probes SSH',
       () async {
@@ -2458,9 +2508,7 @@ void main() {
           _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
           _buildOpenExecSession(stdout: '1\n${_doneMarker()}'),
         ]);
-        when(
-          () => client.execute(any(), pty: any(named: 'pty')),
-        ).thenAnswer((_) async => execQueue.removeFirst());
+        _stubExec(client, (_) async => execQueue.removeFirst());
 
         // Seed the path cache via a method that calls _cacheTmuxPath.
         await service.hasSessionOrThrow(session, 'work');
@@ -2577,17 +2625,19 @@ void main() {
   });
 }
 
-SshSession _buildSession(SSHClient client, {int connectionId = 1}) =>
-    SshSession(
-      connectionId: connectionId,
-      hostId: 1,
-      client: client,
-      config: const SshConnectionConfig(
-        hostname: 'example.com',
-        port: 22,
-        username: 'tester',
-      ),
-    );
+SshSession _buildSession(SSHClient client, {int connectionId = 1}) {
+  addTearDown(() => const TmuxService().clearCache(connectionId));
+  return SshSession(
+    connectionId: connectionId,
+    hostId: 1,
+    client: client,
+    config: const SshConnectionConfig(
+      hostname: 'example.com',
+      port: 22,
+      username: 'tester',
+    ),
+  );
+}
 
 String _tmuxWindowLine({
   required String id,
@@ -2683,4 +2733,19 @@ SSHSession _buildInteractiveExecSession({
     onWrite?.call(utf8.decode(data));
   });
   return session;
+}
+
+void _stubExec(
+  SSHClient client,
+  FutureOr<SSHSession> Function(String) response,
+) {
+  when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer(
+    (call) async => response(call.positionalArguments.single as String),
+  );
+}
+
+Queue<SSHSession> _queueExec(SSHClient client, List<SSHSession> responses) {
+  final queue = Queue<SSHSession>.of(responses);
+  _stubExec(client, (_) => queue.removeFirst());
+  return queue;
 }

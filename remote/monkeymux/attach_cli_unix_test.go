@@ -30,12 +30,7 @@ func TestAttachCLI(t *testing.T) {
 			name = "restore_terminal_after_output_error"
 		}
 		t.Run(name, func(t *testing.T) {
-			// Keep Unix socket paths below the macOS limit.
-			dir, err := os.MkdirTemp("/tmp", "mm-")
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer os.RemoveAll(dir)
+			dir := shortUnixSocketDir(t)
 			t.Setenv("XDG_RUNTIME_DIR", dir)
 			path, err := socketPath("audit")
 			if err != nil {

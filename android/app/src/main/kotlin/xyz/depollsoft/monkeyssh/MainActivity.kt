@@ -3,7 +3,6 @@ package xyz.depollsoft.monkeyssh
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.database.Cursor
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -16,6 +15,7 @@ import androidx.core.view.WindowInsetsCompat
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import io.flutter.plugin.common.StandardMethodCodec
 import java.io.ByteArrayOutputStream
 import java.util.Locale
 
@@ -76,6 +76,8 @@ class MainActivity : FlutterFragmentActivity() {
             MethodChannel(
                 flutterEngine.dartExecutor.binaryMessenger,
                 clipboardChannel,
+                StandardMethodCodec.INSTANCE,
+                flutterEngine.dartExecutor.binaryMessenger.makeBackgroundTaskQueue(),
             )
         clipboardMethodChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
@@ -388,17 +390,19 @@ class MainActivity : FlutterFragmentActivity() {
             return true
         }
         val displayName =
-            runCatching { resolveContentDisplayName(sourceUri) }
+            runCatching { resolveContentMetadata(sourceUri)?.displayName }
                 .getOrNull()
                 ?.lowercase(Locale.ROOT)
         return displayName == null || displayName.endsWith(MONKEYSSH_TRANSFER_EXTENSION)
     }
 
     private fun readClipboardContentUri(uri: Uri): Map<String, Any> {
-        val displayName = resolveDisplayName(uri) ?: "clipboard-file"
+        val metadata = resolveContentMetadata(uri)
+        val displayName =
+            metadata?.displayName ?: uri.lastPathSegment?.substringAfterLast('/') ?: "clipboard-file"
         val limitMessage =
             "Clipboard content exceeds ${MAX_CLIPBOARD_CONTENT_URI_BYTES / 1024} KB limit"
-        val contentLength = resolveContentLength(uri)
+        val contentLength = metadata?.size
         if (contentLength != null && contentLength > MAX_CLIPBOARD_CONTENT_URI_BYTES) {
             throw IllegalStateException(limitMessage)
         }
@@ -411,32 +415,23 @@ class MainActivity : FlutterFragmentActivity() {
         )
     }
 
-    private fun resolveContentLength(uri: Uri): Long? =
-        queryOpenableColumn(uri, OpenableColumns.SIZE) { cursor, columnIndex ->
-            if (cursor.isNull(columnIndex)) null else cursor.getLong(columnIndex)
-        }
+    private data class ContentMetadata(val displayName: String?, val size: Long?)
 
-    private fun resolveDisplayName(uri: Uri): String? =
-        resolveContentDisplayName(uri) ?: uri.lastPathSegment?.substringAfterLast('/')
-
-    private fun resolveContentDisplayName(uri: Uri): String? =
-        queryOpenableColumn(uri, OpenableColumns.DISPLAY_NAME) { cursor, columnIndex ->
-            cursor.getString(columnIndex)
-        }
-
-    /** Reads one [OpenableColumns] value from a content URI's first row. */
-    private fun <T> queryOpenableColumn(
-        uri: Uri,
-        column: String,
-        read: (Cursor, Int) -> T?,
-    ): T? {
+    private fun resolveContentMetadata(uri: Uri): ContentMetadata? {
         if (uri.scheme != "content") {
             return null
         }
-        contentResolver.query(uri, arrayOf(column), null, null, null)?.use { cursor ->
-            val columnIndex = cursor.getColumnIndex(column)
-            if (columnIndex >= 0 && cursor.moveToFirst()) {
-                return read(cursor, columnIndex)
+        val columns = arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE)
+        contentResolver.query(uri, columns, null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                return ContentMetadata(
+                    displayName = if (nameIndex >= 0) cursor.getString(nameIndex) else null,
+                    size =
+                        if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) cursor.getLong(sizeIndex)
+                        else null,
+                )
             }
         }
         return null

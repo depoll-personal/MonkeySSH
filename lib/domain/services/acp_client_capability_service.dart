@@ -83,10 +83,6 @@ final class AcpSftpRemoteFileSystem implements AcpRemoteFileSystem {
   /// Creates an SFTP-backed filesystem.
   AcpSftpRemoteFileSystem(this._sftp);
 
-  /// Creates a filesystem using the active SSH session's SFTP channel.
-  factory AcpSftpRemoteFileSystem.fromSshSession(SshSession session) =>
-      AcpSftpRemoteFileSystem(session.sftp);
-
   final Future<SftpClient> Function() _sftp;
 
   @override
@@ -227,15 +223,17 @@ abstract interface class AcpTerminalExecutor {
 
 /// SSH implementation of [AcpTerminalExecutor].
 final class AcpSshTerminalExecutor implements AcpTerminalExecutor {
-  /// Creates a terminal executor over [session].
-  const AcpSshTerminalExecutor(this.session);
+  /// Creates a terminal executor that resolves the active same-host session.
+  const AcpSshTerminalExecutor(this._session, {required this.remoteIsWindows});
 
-  /// Active SSH session for the same remote host as ACP.
-  final SshSession session;
+  final Future<SshSession> Function() _session;
+
+  /// Whether the remote host requires Windows command syntax.
+  final bool remoteIsWindows;
 
   @override
   Future<AcpTerminalProcess> start(String command) async =>
-      _SshAcpTerminalProcess(await session.execute(command));
+      _SshAcpTerminalProcess(await (await _session()).execute(command));
 }
 
 /// Terminal exit status returned by ACP terminal methods.
@@ -879,9 +877,7 @@ final class AcpClientCapabilityService {
       arguments: arguments,
       environment: environment,
       cwd: cwd,
-      windows:
-          executor is AcpSshTerminalExecutor &&
-          executor.session.remoteIsWindows,
+      windows: executor is AcpSshTerminalExecutor && executor.remoteIsWindows,
     );
     if (remoteCommand.length > limits.maxCommandCharacters) {
       throw const AcpLimitExceededException(

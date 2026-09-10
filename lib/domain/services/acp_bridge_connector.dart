@@ -18,9 +18,8 @@ final class AcpWorkingDirectoryException implements Exception {
 /// Bundles the same-host filesystem and terminal implementations used to
 /// answer ACP client-capability requests (`fs/*`, `terminal/*`).
 ///
-/// Resolved once per bridge attachment against the SSH session active at
-/// attach/reconnect time, so a later SSH reconnect on the same host is picked
-/// up the next time the attachment (re)initializes.
+/// New operations resolve the active SSH session for the same host, so these
+/// bindings remain usable when a capability service survives an SSH reconnect.
 final class AcpHostCapabilityBinding {
   /// Creates a capability binding.
   const AcpHostCapabilityBinding({
@@ -271,8 +270,13 @@ final class MonkeyMuxAcpBridgeConnector implements AcpBridgeConnector {
       return null;
     }
     return AcpHostCapabilityBinding(
-      fileSystem: AcpSftpRemoteFileSystem.fromSshSession(session),
-      terminalExecutor: AcpSshTerminalExecutor(session),
+      fileSystem: AcpSftpRemoteFileSystem(
+        () async => (await _sessionResolver(hostId)).sftp(),
+      ),
+      terminalExecutor: AcpSshTerminalExecutor(
+        () => _sessionResolver(hostId),
+        remoteIsWindows: session.remoteIsWindows,
+      ),
     );
   }
 }

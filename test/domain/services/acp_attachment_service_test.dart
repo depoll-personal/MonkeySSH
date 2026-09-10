@@ -9,68 +9,9 @@ import 'package:monkeyssh/domain/models/acp_attachment.dart';
 import 'package:monkeyssh/domain/models/acp_content.dart';
 import 'package:monkeyssh/domain/models/acp_protocol.dart';
 import 'package:monkeyssh/domain/services/acp_attachment_service.dart';
-import 'package:monkeyssh/domain/services/diagnostics_log_service.dart';
 import 'package:monkeyssh/domain/services/remote_file_service.dart';
 
-class _RecordingDiagnostics implements DiagnosticsLogger {
-  final events =
-      <
-        ({
-          String level,
-          String category,
-          String message,
-          Map<String, Object?> fields,
-        })
-      >[];
-
-  @override
-  void debug(
-    String category,
-    String message, {
-    Map<String, Object?> fields = const <String, Object?>{},
-  }) => events.add((
-    level: 'debug',
-    category: category,
-    message: message,
-    fields: fields,
-  ));
-
-  @override
-  void error(
-    String category,
-    String message, {
-    Map<String, Object?> fields = const <String, Object?>{},
-  }) => events.add((
-    level: 'error',
-    category: category,
-    message: message,
-    fields: fields,
-  ));
-
-  @override
-  void info(
-    String category,
-    String message, {
-    Map<String, Object?> fields = const <String, Object?>{},
-  }) => events.add((
-    level: 'info',
-    category: category,
-    message: message,
-    fields: fields,
-  ));
-
-  @override
-  void warning(
-    String category,
-    String message, {
-    Map<String, Object?> fields = const <String, Object?>{},
-  }) => events.add((
-    level: 'warning',
-    category: category,
-    message: message,
-    fields: fields,
-  ));
-}
+import '../../helpers/recording_diagnostics_logger.dart';
 
 class _RecordingUploader implements AcpAttachmentUploader {
   final uploadedBytes = <int>[];
@@ -367,6 +308,28 @@ void main() {
         AcpAttachmentFailure.invalidMimeType,
       );
     });
+
+    for (final size in [6 * 1024 * 1024, kAcpAttachmentImageDisplayMaxBytes]) {
+      test('accepts a $size byte image for inline display', () async {
+        final bytes = Uint8List(size)
+          ..setRange(0, _pngHeader.length, _pngHeader);
+        final blocks = await const AcpAttachmentPreparationService().prepare(
+          draft: AcpPromptDraft([
+            AcpAttachmentDraft(
+              candidate: AcpAttachmentCandidate.memory(
+                name: 'large.png',
+                bytes: bytes,
+              ),
+            ),
+          ]),
+          capabilities: const AcpPromptCapabilities(image: true),
+        );
+        expect(
+          base64Decode((blocks.single as AcpImageContent).data).length,
+          size,
+        );
+      });
+    }
 
     test('enforces the 10 MiB image display cap', () async {
       final bytes = Uint8List(kAcpAttachmentImageDisplayMaxBytes + 1)
@@ -743,7 +706,7 @@ void main() {
     });
 
     test('diagnostics contain no names, paths, or content', () async {
-      final diagnostics = _RecordingDiagnostics();
+      final diagnostics = RecordingDiagnosticsLogger();
       await AcpAttachmentPreparationService(diagnostics: diagnostics).prepare(
         draft: AcpPromptDraft(const [
           AcpPromptTextDraft('PRIVATE PROMPT'),
@@ -759,13 +722,12 @@ void main() {
         capabilities: const AcpPromptCapabilities(),
       );
 
+      expect(
+        diagnostics.events.map((event) => event.message),
+        contains('prepare_completed'),
+      );
       final logged = diagnostics.events
-          .map(
-            (event) =>
-                '${event.category} ${event.message} '
-                '${event.fields.keys.join(' ')} '
-                '${event.fields.values.join(' ')}',
-          )
+          .map((event) => event.searchableText)
           .join('\n');
       expect(logged, isNot(contains('PRIVATE PROMPT')));
       expect(logged, isNot(contains('secret-name')));

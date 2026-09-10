@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -417,6 +418,47 @@ int countTerminalAttachmentPastePaths(Iterable<String> remotePaths) =>
         )
         .length;
 
+/// Signals cancellation to active remote file downloads.
+class RemoteFileDownloadCancelToken {
+  final _callbacks = <void Function()>[];
+  var _isCancelled = false;
+
+  /// Cancels current and future downloads using this token.
+  void cancel() {
+    if (_isCancelled) return;
+    _isCancelled = true;
+    for (final callback in _callbacks) {
+      callback();
+    }
+  }
+
+  /// Throws if cancellation has been requested.
+  void throwIfCancelled() {
+    if (_isCancelled) throw const RemoteFileDownloadCancelledException();
+  }
+}
+
+/// A remote file download was cancelled.
+class RemoteFileDownloadCancelledException implements Exception {
+  /// Creates a cancellation exception.
+  const RemoteFileDownloadCancelledException();
+
+  @override
+  String toString() => 'Download cancelled';
+}
+
+/// A download exceeded its configured byte limit.
+class RemoteFileDownloadLimitException implements Exception {
+  /// Creates an exception with the observed byte count.
+  const RemoteFileDownloadLimitException(this.byteCount);
+
+  /// Number of bytes received, including the chunk exceeding the limit.
+  final int byteCount;
+
+  @override
+  String toString() => 'Download exceeds byte limit';
+}
+
 /// Shared helpers for remote file transfers over SFTP.
 final remoteFileServiceProvider = Provider<RemoteFileService>(
   (ref) => const RemoteFileService(),
@@ -483,24 +525,48 @@ class RemoteFileService {
   }
 
   /// Downloads a remote file to a local path.
+  ///
+  /// Progress reports bytes written to disk. The caller owns partial-file
+  /// cleanup on failure. Completion includes closing both file handles.
   Future<void> downloadFile({
     required SftpClient sftp,
     required String remotePath,
     required String localPath,
+    FutureOr<void> Function(int downloadedBytes)? onProgress,
+    int? maxBytes,
+    RemoteFileDownloadCancelToken? cancelToken,
   }) async {
+    cancelToken?.throwIfCancelled();
     final remoteFile = await sftp.open(remotePath);
+    Future<void>? closing;
+    Future<void> closeRemote() => closing ??= Future.sync(remoteFile.close);
+    void cancel() => closeRemote().ignore();
+    cancelToken?._callbacks.add(cancel);
     try {
+      cancelToken?.throwIfCancelled();
       final localFile = await File(localPath).open(mode: FileMode.write);
       try {
+        cancelToken?.throwIfCancelled();
+        var downloadedBytes = 0;
         await for (final chunk in remoteFile.read()) {
+          cancelToken?.throwIfCancelled();
+          final nextBytes = downloadedBytes + chunk.length;
+          if (maxBytes != null && nextBytes > maxBytes) {
+            throw RemoteFileDownloadLimitException(nextBytes);
+          }
           await localFile.writeFrom(chunk);
+          downloadedBytes = nextBytes;
+          await onProgress?.call(downloadedBytes);
         }
+        cancelToken?.throwIfCancelled();
       } finally {
         await localFile.close();
       }
     } finally {
-      await remoteFile.close();
+      cancelToken?._callbacks.remove(cancel);
+      await closeRemote();
     }
+    cancelToken?.throwIfCancelled();
   }
 
   /// Uploads a stream into a remote file path.

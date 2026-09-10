@@ -118,49 +118,27 @@ class _AgentManagementScreenState extends ConsumerState<AgentManagementScreen> {
       }
     });
     final failures = <String>[];
-    for (final runtime in updates) {
-      if (!mounted || !await _canManageAgents() || !mounted) break;
-      final id = runtime.definition.id;
-      setState(() {
-        _queuedActions.remove(id);
-        _runningActions.add(id);
-      });
-      try {
-        final result = await _service.installOrUpdate(
-          widget.session,
-          runtime.definition,
-          update: true,
-          current: runtime,
-          onOutput: (chunk) {
-            if (!mounted) return;
-            setState(() {
-              final combined = '${_actionOutput[id] ?? ''}$chunk';
-              _actionOutput[id] = combined.length <= 1200
-                  ? combined
-                  : combined.substring(combined.length - 1200);
-            });
-          },
-        );
+    try {
+      for (final runtime in updates) {
+        if (!mounted || !await _canManageAgents() || !mounted) break;
+        final result = await _executeAction(runtime, refreshAfterAction: false);
         if (!result.succeeded) failures.add(runtime.definition.label);
-      } on Object {
-        failures.add(runtime.definition.label);
-      } finally {
-        if (mounted) {
+        if (mounted) setState(() => _completedUpdates++);
+      }
+    } finally {
+      if (mounted) {
+        try {
           await _refresh(afterAction: true);
+        } finally {
           if (mounted) {
             setState(() {
-              _runningActions.remove(id);
-              _completedUpdates++;
+              _updatingAll = false;
+              _queuedActions.clear();
             });
           }
         }
       }
     }
-    if (!mounted) return;
-    setState(() {
-      _updatingAll = false;
-      _queuedActions.clear();
-    });
     if (!mounted || failures.isEmpty) return;
     await showDialog<void>(
       context: context,
@@ -183,10 +161,20 @@ class _AgentManagementScreenState extends ConsumerState<AgentManagementScreen> {
 
   Future<void> _runAction(AgentRuntimeInfo runtime) async {
     if (!await _canManageAgents() || !mounted) return;
-    final id = runtime.definition.id;
     if (_busy || _refreshing) return;
+    final result = await _executeAction(runtime);
+    if (!mounted) return;
+    if (!result.succeeded) await _showActionResult(runtime, result);
+  }
+
+  Future<AgentRuntimeActionResult> _executeAction(
+    AgentRuntimeInfo runtime, {
+    bool refreshAfterAction = true,
+  }) async {
+    final id = runtime.definition.id;
     final update = runtime.status == AgentRuntimeStatus.updateAvailable;
     setState(() {
+      _queuedActions.remove(id);
       _runningActions.add(id);
       _actionOutput[id] = '';
     });
@@ -215,15 +203,11 @@ class _AgentManagementScreenState extends ConsumerState<AgentManagementScreen> {
       );
     } finally {
       if (mounted) {
-        await _refresh(afterAction: true);
+        if (refreshAfterAction) await _refresh(afterAction: true);
         if (mounted) setState(() => _runningActions.remove(id));
       }
     }
-    if (!mounted) return;
-    if (!result.succeeded) {
-      await _showActionResult(runtime, result);
-      if (!mounted) return;
-    }
+    return result;
   }
 
   Future<void> _recheck(AgentRuntimeInfo runtime) async {

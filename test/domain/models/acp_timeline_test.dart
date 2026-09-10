@@ -311,7 +311,7 @@ void main() {
     test('keeps a safe pasted image instead of replacing it with a marker', () {
       final builder = AcpTimelineBuilder(
         limits: const AcpTimelineLimits(
-          maxEntryBytes: 16,
+          maxEntryBytes: 512,
           maxRetainedImageBytes: 2 * 1024 * 1024,
           maxTotalBytes: 8 * 1024 * 1024,
         ),
@@ -332,7 +332,7 @@ void main() {
     test('keeps an image while bounding accompanying pasted text', () {
       final builder = AcpTimelineBuilder(
         limits: const AcpTimelineLimits(
-          maxEntryBytes: 32,
+          maxEntryBytes: 512,
           maxRetainedImageBytes: 2048,
           maxTotalBytes: 8192,
         ),
@@ -347,6 +347,132 @@ void main() {
       expect(
         content.whereType<AcpTextContent>().single.text,
         contains('truncated'),
+      );
+    });
+
+    for (final field in ['annotations', 'meta', 'extensions']) {
+      for (final image in [true, false]) {
+        test('bounds ${image ? 'image' : 'text'} $field', () {
+          final large = {'payload': 'x' * 4096};
+          final meta = field == 'meta' ? large : <String, Object?>{};
+          final extensions = field == 'extensions'
+              ? large
+              : <String, Object?>{};
+          final annotations = field != 'annotations'
+              ? null
+              : image
+              ? AcpAnnotations(extensions: large)
+              : AcpAnnotations(meta: large);
+          final content = image
+              ? AcpImageContent(
+                  data: 'AAAA',
+                  mimeType: 'image/png',
+                  annotations: annotations,
+                  meta: meta,
+                  extensions: extensions,
+                )
+              : AcpTextContent(
+                  'short',
+                  annotations: annotations,
+                  meta: meta,
+                  extensions: extensions,
+                );
+          if (image) {
+            expect(approximateContentBlockBytes(content), greaterThan(4096));
+          }
+          final builder = AcpTimelineBuilder(
+            limits: const AcpTimelineLimits(maxEntryBytes: 512),
+          )..appendLocalUserPrompt([content]);
+          final entry = _expectBounded(builder) as AcpMessageEntry;
+          if (!image) {
+            final text = entry.content.single as AcpTextContent;
+            expect(text.text, 'short');
+            expect(text.annotations, isNull);
+            expect(text.meta, isEmpty);
+            expect(text.extensions, isEmpty);
+          }
+        });
+      }
+    }
+
+    for (final field in ['meta', 'extensions']) {
+      for (final kind in ['content', 'diff', 'terminal']) {
+        test('bounds tool $kind wrapper $field', () {
+          final large = {'payload': 'x' * 4096};
+          final meta = field == 'meta' ? large : <String, Object?>{};
+          final extensions = field == 'extensions'
+              ? large
+              : <String, Object?>{};
+          final content = switch (kind) {
+            'diff' => AcpToolDiff(
+              path: '/file',
+              newText: 'x',
+              meta: meta,
+              extensions: extensions,
+            ),
+            'terminal' => AcpToolTerminal(
+              terminalId: 't1',
+              meta: meta,
+              extensions: extensions,
+            ),
+            _ => AcpToolContentBlock(
+              content: const AcpTextContent('short'),
+              meta: meta,
+              extensions: extensions,
+            ),
+          };
+          final builder =
+              AcpTimelineBuilder(
+                limits: const AcpTimelineLimits(maxEntryBytes: 512),
+              )..apply(
+                AcpToolCallUpdate(
+                  toolCallId: 'tool',
+                  isInitial: true,
+                  content: [content],
+                ),
+              );
+          _expectBounded(builder);
+        });
+      }
+    }
+
+    test('bounds a single image message to the total budget', () {
+      final builder =
+          AcpTimelineBuilder(
+            limits: const AcpTimelineLimits(
+              maxEntryBytes: 8192,
+              maxTotalBytes: 512,
+            ),
+          )..appendLocalUserPrompt([
+            AcpImageContent(data: 'A' * 4096, mimeType: 'image/png'),
+          ]);
+      _expectBounded(builder);
+    });
+
+    test('retained image metadata counts toward the total budget', () {
+      final builder = AcpTimelineBuilder(
+        limits: const AcpTimelineLimits(
+          maxEntryBytes: 2048,
+          maxTotalBytes: 4096,
+        ),
+      );
+      for (var index = 0; index < 10; index++) {
+        builder.appendLocalUserPrompt([
+          AcpImageContent(
+            data: 'AAAA',
+            mimeType: 'image/png',
+            meta: {'payload': '$index${'x' * 1024}'},
+          ),
+        ]);
+      }
+      final timeline = builder.snapshot();
+      expect(timeline.droppedEntryCount, greaterThan(0));
+      expect(
+        timeline.entries.fold<int>(
+          0,
+          (sum, entry) => sum + approximateTimelineEntryBytes(entry),
+        ),
+        lessThanOrEqualTo(4096),
       );
     });
 
@@ -582,4 +708,12 @@ void main() {
       },
     );
   });
+}
+
+AcpTimelineEntry _expectBounded(AcpTimelineBuilder builder) {
+  final timeline = builder.snapshot();
+  expect(timeline.overflowed, isTrue);
+  final entry = timeline.entries.single;
+  expect(approximateTimelineEntryBytes(entry), lessThanOrEqualTo(512));
+  return entry;
 }

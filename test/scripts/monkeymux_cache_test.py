@@ -98,6 +98,13 @@ class MonkeyMuxCacheTest(unittest.TestCase):
             self.assertEqual(before, self.fingerprint())
         self.assertEqual(self.builder().returncode, 0)
 
+    def test_conpty_files_remain_packaged_even_with_test_or_documentation_names(self):
+        for name in ['payload_test.go', 'README.md']:
+            with self.subTest(name=name):
+                before = self.fingerprint()
+                (self.remote / 'conpty' / name).write_text('packaged input')
+                self.assertNotEqual(before, self.fingerprint())
+
     def test_app_only_edits_and_checkout_location_do_not_invalidate(self):
         before = self.fingerprint()
         (self.root / 'lib').mkdir()
