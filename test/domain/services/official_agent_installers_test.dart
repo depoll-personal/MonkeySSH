@@ -12,7 +12,32 @@ String _decodeInstaller(String command) {
   return utf8.decode(gzip.decode(base64.decode(payload)));
 }
 
+// Locate Git Bash relative to git.exe on PATH rather than assuming a global
+// Program Files install. Do not accidentally select Windows' WSL bash shim:
+// these fixtures pass native host paths, not paths inside a Linux VM.
+Future<String?> _findFixtureBash() async {
+  if (!Platform.isWindows) return 'bash';
+  try {
+    final result = await Process.run('where.exe', ['git.exe']);
+    for (final line in (result.stdout as String).split(RegExp(r'[\r\n]+'))) {
+      if (line.trim().isEmpty) continue;
+      var directory = File(line.trim()).parent;
+      for (var depth = 0; depth < 3; depth++) {
+        for (final relative in ['bin/bash.exe', 'usr/bin/bash.exe']) {
+          final candidate = File('${directory.path}/$relative');
+          if (candidate.existsSync()) return candidate.path;
+        }
+        directory = directory.parent;
+      }
+    }
+  } on ProcessException {
+    // Git is optional for Windows developers; Linux CI still runs the fixtures.
+  }
+  return null;
+}
+
 void main() {
+  final fixtureBash = _findFixtureBash();
   test('every supported runtime has an installer on both platforms', () {
     for (final definition in [
       ...agentCliRuntimeDefinitions,
@@ -118,9 +143,13 @@ curl() {
   return ${scenario == 'download-failure' ? 22 : 0}
 }
 ''';
-          final bash = Platform.isWindows
-              ? '${Platform.environment['ProgramFiles']}/Git/bin/bash.exe'
-              : 'bash';
+          final bash = await fixtureBash;
+          if (bash == null) {
+            markTestSkipped(
+              'Git Bash is required for POSIX fixtures on Windows',
+            );
+            return;
+          }
           final result = await Process.run(bash, [
             '-c',
             '$mock\n$body',
