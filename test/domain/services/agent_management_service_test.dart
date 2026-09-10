@@ -1355,6 +1355,24 @@ esac
     });
   });
 
+  test('Windows installers suppress progress and request plain text', () {
+    for (final definition in agentRuntimeDefinitions) {
+      for (final update in [false, true]) {
+        final command = buildAgentInstallCommand(
+          definition,
+          windows: true,
+          update: update,
+        );
+        if (command == null) continue;
+        expect(command, contains('-OutputFormat Text'));
+        expect(
+          _decodePowerShellCommand(command),
+          startsWith(r"$ProgressPreference = 'SilentlyContinue';"),
+        );
+      }
+    }
+  });
+
   group('batch probes', () {
     test(
       'Windows management commands fit cmd.exe and CreateProcess limits',

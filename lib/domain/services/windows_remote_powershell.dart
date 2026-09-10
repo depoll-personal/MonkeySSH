@@ -51,9 +51,16 @@ String buildWindowsPowerShellCommand(String script) =>
 /// payload is gzip-compressed UTF-8. The fixed ASCII bootstrap contains only a
 /// base64 literal, so it is safe through both cmd.exe and PowerShell. Keep small
 /// scripts in the usual form to avoid unnecessary decompression.
-String buildCompactWindowsPowerShellCommand(String script) {
+///
+/// Set [plainTextOutput] for streamed installer output. Windows PowerShell 5.1
+/// serializes stderr as CLIXML with EncodedCommand even with OutputFormat Text,
+/// so installers must use the Command bootstrap even for small scripts.
+String buildCompactWindowsPowerShellCommand(
+  String script, {
+  bool plainTextOutput = false,
+}) {
   final command = buildWindowsPowerShellCommand(script);
-  if (command.length < 7500) return command;
+  if (!plainTextOutput && command.length < 7500) return command;
   final payload = base64.encode(
     GZipCodec(level: 9).encode(utf8.encode(script)),
   );
@@ -63,7 +70,7 @@ String buildCompactWindowsPowerShellCommand(String script) {
   // Generated PowerShell intentionally joins adjacent tokens.
   return 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass '
       // ignore: missing_whitespace_between_adjacent_strings
-      '-Command "& ([scriptblock]::Create([IO.StreamReader]::new('
+      '-OutputFormat Text -Command "& ([scriptblock]::Create([IO.StreamReader]::new('
       '[IO.Compression.GZipStream]::new([IO.MemoryStream]::new('
       '[Convert]::FromBase64String(\'$payload\')),'
       '[IO.Compression.CompressionMode]::Decompress)).ReadToEnd()))"';
@@ -131,6 +138,9 @@ String powerShellUtf8OutputScript(String body) =>
 /// the caller's stdout, and the preferences are re-asserted afterwards in case a
 /// profile changed them.
 const String powerShellProfilePathPreamble =
+    // Module auto-loading while evaluating profiles can emit CLIXML progress
+    // before the preferences at the end of this preamble take effect.
+    r"$ProgressPreference = 'SilentlyContinue'; "
     r'$__flProfilePaths = @($PROFILE.AllUsersAllHosts, '
     r'$PROFILE.AllUsersCurrentHost, $PROFILE.CurrentUserAllHosts, '
     r'$PROFILE.CurrentUserCurrentHost) | Where-Object { $_ } | '

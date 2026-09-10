@@ -454,6 +454,7 @@ String? buildAgentInstallCommand(
         '$powerShellProfilePathPreamble& node -e '
         '${powerShellSingleQuote(_openCodeRepairScript)} '
         '${powerShellSingleQuote(executablePath)}; exit \u0024LASTEXITCODE',
+        plainTextOutput: true,
       );
     }
     return '${_profilePrefix}node -e ${_shellQuote(_openCodeRepairScript)} '
@@ -467,6 +468,7 @@ String? buildAgentInstallCommand(
           .join(' ');
       return buildCompactWindowsPowerShellCommand(
         '$powerShellProfilePathPreamble& $executable $arguments; exit \u0024LASTEXITCODE',
+        plainTextOutput: true,
       );
     }
     return '$_profilePrefix${_shellQuote(executablePath)} '
@@ -514,7 +516,9 @@ String? buildAgentInstallCommand(
       ].join(),
       null => null,
     };
-    return script == null ? null : buildCompactWindowsPowerShellCommand(script);
+    return script == null
+        ? null
+        : buildCompactWindowsPowerShellCommand(script, plainTextOutput: true);
   }
   return switch (definition.registry) {
     AgentPackageRegistry.npm =>

@@ -59,6 +59,59 @@ void main() {
     });
   });
 
+  test('profile probes suppress progress before loading modules', () {
+    expect(
+      powerShellProfilePathPreamble,
+      startsWith(r"$ProgressPreference = 'SilentlyContinue';"),
+    );
+  });
+
+  for (final large in [false, true]) {
+    test(
+      'Windows output is plain text and retains errors, large=$large',
+      () async {
+        final root = await Directory.systemTemp.createTemp(
+          'powershell-output-',
+        );
+        addTearDown(() => root.delete(recursive: true));
+        // No user profiles or real installers: exercise small and large scripts
+        // with the same progress, success, PowerShell error and native error streams.
+        final script =
+            r'''
+$ProgressPreference = 'SilentlyContinue';
+Write-Progress -Activity 'Preparing modules for first use' -Status 'fixture';
+Write-Output 'installer stdout';
+Write-Error 'installer PowerShell error' -ErrorAction Continue;
+[Console]::Error.WriteLine('installer native stderr');
+exit 7;
+''' +
+            (large ? '# padding\n' * 1500 : '');
+        final command = buildCompactWindowsPowerShellCommand(
+          script,
+          plainTextOutput: true,
+        );
+        expect(command, contains('-OutputFormat Text'));
+        expect(command, contains('GZipStream'));
+        final batch = File('${root.path}/probe.cmd');
+        await batch.writeAsString('@echo off\r\n$command\r\n');
+        final result = await Process.run('cmd.exe', [
+          '/d',
+          '/c',
+          batch.path,
+        ]).timeout(const Duration(seconds: 20));
+        expect(result.exitCode, 7);
+        expect(result.stdout, contains('installer stdout'));
+        expect(result.stderr, contains('installer PowerShell error'));
+        expect(result.stderr, contains('installer native stderr'));
+        final output = '${result.stdout}\n${result.stderr}';
+        expect(output, isNot(contains('#< CLIXML')));
+        expect(output, isNot(contains('<Objs')));
+        expect(output, isNot(contains('<PR ')));
+      },
+      skip: !Platform.isWindows,
+    );
+  }
+
   group('powerShellSingleQuote', () {
     test('wraps in single quotes and doubles embedded quotes', () {
       expect(powerShellSingleQuote('plain'), "'plain'");
