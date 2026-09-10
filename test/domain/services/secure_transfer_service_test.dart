@@ -207,6 +207,256 @@ void main() {
   }
 
   group('SecureTransferService', () {
+    group('unreadable secrets during export', () {
+      const unreadableSecret = 'ENCv1:unreadable-secret';
+
+      Matcher unreadableExport(List<String> descriptions) => throwsA(
+        isA<FormatException>().having(
+          (error) => error.message,
+          'message',
+          allOf([
+            contains('Cannot export'),
+            for (final description in descriptions) contains(description),
+            contains('Re-enter these secrets before exporting'),
+          ]),
+        ),
+      );
+
+      for (final export in ['migration data', 'full migration', 'host']) {
+        test('$export fails naming the unreadable host password', () async {
+          final hostId = await db
+              .into(db.hosts)
+              .insert(
+                HostsCompanion.insert(
+                  label: 'Production server',
+                  hostname: 'example.com',
+                  username: 'demo',
+                  password: const Value(unreadableSecret),
+                ),
+              );
+
+          final Future<Object> result;
+          switch (export) {
+            case 'migration data':
+              result = transferService.createMigrationData();
+            case 'full migration':
+              result = transferService.createFullMigrationPayload(
+                transferPassphrase: 'test',
+              );
+            default:
+              final host = (await hostRepository.getById(hostId))!;
+              expect(host.password, isNull);
+              result = transferService.createHostPayload(
+                host: host,
+                transferPassphrase: 'test',
+              );
+          }
+
+          await expectLater(
+            result,
+            unreadableExport(['password for host "Production server"']),
+          );
+          expect(
+            (await db.select(db.hosts).getSingle()).password,
+            unreadableSecret,
+          );
+        });
+      }
+
+      for (final secret in ['private key', 'passphrase']) {
+        for (final export in [
+          'migration data',
+          'full migration',
+          'key',
+          'referenced key',
+        ]) {
+          test('$export fails naming the unreadable $secret', () async {
+            final keyId = await db
+                .into(db.sshKeys)
+                .insert(
+                  SshKeysCompanion.insert(
+                    name: 'Deploy key',
+                    keyType: 'ed25519',
+                    publicKey: _publicKeyA,
+                    privateKey: secret == 'private key' ? unreadableSecret : '',
+                    passphrase: Value(
+                      secret == 'passphrase' ? unreadableSecret : null,
+                    ),
+                  ),
+                );
+
+            final Future<Object> result;
+            switch (export) {
+              case 'migration data':
+                result = transferService.createMigrationData();
+              case 'full migration':
+                result = transferService.createFullMigrationPayload(
+                  transferPassphrase: 'test',
+                );
+              case 'key':
+                final key = (await keyRepository.getById(keyId))!;
+                expect(key.privateKey, isEmpty);
+                expect(key.passphrase, isNull);
+                result = transferService.createKeyPayload(
+                  key: key,
+                  transferPassphrase: 'test',
+                );
+              default:
+                final hostId = await hostRepository.insert(
+                  HostsCompanion.insert(
+                    label: 'Production server',
+                    hostname: 'example.com',
+                    username: 'demo',
+                    keyId: Value(keyId),
+                  ),
+                );
+                result = transferService.createHostPayload(
+                  host: (await hostRepository.getById(hostId))!,
+                  transferPassphrase: 'test',
+                  includeReferencedKey: true,
+                );
+            }
+
+            await expectLater(
+              result,
+              unreadableExport(['$secret for SSH key "Deploy key"']),
+            );
+            final storedKey = await db.select(db.sshKeys).getSingle();
+            expect(
+              secret == 'private key'
+                  ? storedKey.privateKey
+                  : storedKey.passphrase,
+              unreadableSecret,
+            );
+          });
+        }
+      }
+
+      test('migration reports every affected host and key', () async {
+        for (final label in ['Production server', 'Staging server']) {
+          await db
+              .into(db.hosts)
+              .insert(
+                HostsCompanion.insert(
+                  label: label,
+                  hostname: 'example.com',
+                  username: 'demo',
+                  password: const Value(unreadableSecret),
+                ),
+              );
+        }
+        await db
+            .into(db.sshKeys)
+            .insert(
+              SshKeysCompanion.insert(
+                name: 'Deploy key',
+                keyType: 'ed25519',
+                publicKey: _publicKeyA,
+                privateKey: unreadableSecret,
+                passphrase: const Value(unreadableSecret),
+              ),
+            );
+
+        await expectLater(
+          transferService.createMigrationData(),
+          unreadableExport([
+            'password for host "Production server"',
+            'password for host "Staging server"',
+            'private key for SSH key "Deploy key"',
+            'passphrase for SSH key "Deploy key"',
+          ]),
+        );
+      });
+
+      test('host export can omit an unreadable referenced key', () async {
+        final keyId = await db
+            .into(db.sshKeys)
+            .insert(
+              SshKeysCompanion.insert(
+                name: 'Deploy key',
+                keyType: 'ed25519',
+                publicKey: _publicKeyA,
+                privateKey: unreadableSecret,
+              ),
+            );
+        await keyRepository.getById(keyId);
+        final hostId = await hostRepository.insert(
+          HostsCompanion.insert(
+            label: 'Production server',
+            hostname: 'example.com',
+            username: 'demo',
+            keyId: Value(keyId),
+          ),
+        );
+        final encoded = await transferService.createHostPayload(
+          host: (await hostRepository.getById(hostId))!,
+          transferPassphrase: 'test',
+        );
+        final payload = await transferService.decryptPayload(
+          encodedPayload: encoded,
+          transferPassphrase: 'test',
+        );
+        expect(payload.data['referencedKey'], isNull);
+        expect((payload.data['host'] as Map)['keyId'], isNull);
+      });
+
+      test('healthy secrets survive every export path', () async {
+        final keyId = await keyRepository.insert(
+          SshKeysCompanion.insert(
+            name: 'Deploy key',
+            keyType: 'ed25519',
+            publicKey: _publicKeyA,
+            privateKey: 'private-key-material',
+            passphrase: const Value('key-passphrase'),
+          ),
+        );
+        final hostId = await hostRepository.insert(
+          HostsCompanion.insert(
+            label: 'Production server',
+            hostname: 'example.com',
+            username: 'demo',
+            password: const Value('host-password'),
+            keyId: Value(keyId),
+          ),
+        );
+        final host = (await hostRepository.getById(hostId))!;
+        final key = (await keyRepository.getById(keyId))!;
+        final data = await transferService.createMigrationData();
+        expect((data['hosts'] as List).single, host.toJson());
+        expect((data['keys'] as List).single, key.toJson());
+
+        for (final export in ['full migration', 'host', 'key']) {
+          final encoded = await switch (export) {
+            'full migration' => transferService.createFullMigrationPayload(
+              transferPassphrase: 'test',
+            ),
+            'host' => transferService.createHostPayload(
+              host: host,
+              transferPassphrase: 'test',
+              includeReferencedKey: true,
+            ),
+            _ => transferService.createKeyPayload(
+              key: key,
+              transferPassphrase: 'test',
+            ),
+          };
+          final payload = await transferService.decryptPayload(
+            encodedPayload: encoded,
+            transferPassphrase: 'test',
+          );
+          switch (export) {
+            case 'full migration':
+              expect(payload.data, data);
+            case 'host':
+              expect(payload.data['host'], host.toJson());
+              expect(payload.data['referencedKey'], key.toJson());
+            default:
+              expect(payload.data['key'], key.toJson());
+          }
+        }
+      });
+    });
+
     test(
       'imports a public-only key payload without inventing a private key',
       () async {

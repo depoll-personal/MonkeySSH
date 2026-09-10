@@ -39,11 +39,14 @@ Future<SshConnectionResult> connectToHostWithProgressDialog(
       useHostThemeOverrides: useHostThemeOverrides,
     );
   } catch (error, stackTrace) {
-    // Authentication and transport failures already have an in-app result.
+    // Everything caught here comes from connect, so raw transport failures
+    // are expected even when their stack has no SSH frame.
     final expectedFailure =
-        isExpectedSshOperationError(error) ||
+        isExpectedSshOperationError(error, stackTrace) ||
         error is SocketException ||
         error is HandshakeException ||
+        error is TlsException ||
+        error is OSError ||
         error is SshConnectionCancelledException;
     if (!expectedFailure) {
       FlutterError.reportError(

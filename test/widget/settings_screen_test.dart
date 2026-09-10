@@ -101,10 +101,15 @@ class _ThrowingChangePinAuthService extends FakeAuthService {
 
 class _MockMonetizationService extends Mock implements MonetizationService {}
 
+class _MockSecureTransferService extends Mock
+    implements SecureTransferService {}
+
 Future<void> _pumpSettingsScreen(
   WidgetTester tester, {
   required AppDatabase db,
   bool? pro,
+  SecureTransferService? transferService,
+  bool settle = true,
 }) async {
   final access = MonetizationState.initial(debugUnlockAvailable: false)
       .copyWith(
@@ -117,10 +122,15 @@ Future<void> _pumpSettingsScreen(
   when(
     () => billing.canUseFeature(MonetizationFeature.agentManagement),
   ).thenAnswer((_) async => pro ?? false);
+  when(
+    () => billing.canUseFeature(MonetizationFeature.migrationImportExport),
+  ).thenAnswer((_) async => pro ?? false);
   await tester.pumpWidget(
     ProviderScope(
       overrides: [
         databaseProvider.overrideWithValue(db),
+        if (transferService != null)
+          secureTransferServiceProvider.overrideWithValue(transferService),
         if (pro != null) ...[
           monetizationServiceProvider.overrideWithValue(billing),
           monetizationStateProvider.overrideWith((ref) => Stream.value(access)),
@@ -132,7 +142,12 @@ Future<void> _pumpSettingsScreen(
     ),
   );
 
-  await tester.pumpAndSettle();
+  if (settle) {
+    await tester.pumpAndSettle();
+  } else {
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+  }
 }
 
 void main() {
@@ -1285,6 +1300,93 @@ void main() {
       expect(find.text('Export app data'), findsOneWidget);
       expect(find.text('Import app data'), findsOneWidget);
     });
+
+    testWidgets(
+      'app data export shows unreadable secrets without reporting an error',
+      (tester) async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        const message =
+            'Cannot export: re-enter the password for host "Alpha" '
+            'and the private key for SSH key "Alpha key".';
+        final transferService = _MockSecureTransferService();
+        when(
+          () => transferService.createFullMigrationPayload(
+            transferPassphrase: 'transfer-passphrase',
+          ),
+        ).thenAnswer((_) async => throw const FormatException(message));
+        try {
+          await _pumpSettingsScreen(
+            tester,
+            db: db,
+            pro: true,
+            transferService: transferService,
+            settle: false,
+          );
+          await tester.scrollUntilVisible(
+            find.text('Export app data'),
+            300,
+            scrollable: find.byType(Scrollable).first,
+          );
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 300));
+          await tester.tap(find.text('Export app data'));
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 300));
+          expect(find.text('Export passphrase'), findsOneWidget);
+          await tester.enterText(
+            find.widgetWithText(TextField, 'Transfer passphrase'),
+            'transfer-passphrase',
+          );
+          final reportedErrors = <FlutterErrorDetails>[];
+          final originalOnError = FlutterError.onError;
+          addTearDown(() => FlutterError.onError = originalOnError);
+          FlutterError.onError = reportedErrors.add;
+          try {
+            await tester.tap(find.widgetWithText(FilledButton, 'Continue'));
+            await tester.pump();
+            // Exercise a frame during dismissal, when the TextField still needs
+            // its controller, then finish the dialog and SnackBar animations.
+            await tester.pump(const Duration(milliseconds: 100));
+            await tester.pump(const Duration(milliseconds: 200));
+            await tester.pump();
+          } finally {
+            FlutterError.onError = originalOnError;
+          }
+
+          expect(
+            reportedErrors,
+            isEmpty,
+            reason: reportedErrors.map((error) => error.toString()).join('\n'),
+          );
+
+          verify(
+            () => transferService.createFullMigrationPayload(
+              transferPassphrase: 'transfer-passphrase',
+            ),
+          ).called(1);
+          expect(find.widgetWithText(SnackBar, message), findsOneWidget);
+          expect(find.text('Export failed. Try again.'), findsNothing);
+          expect(find.byType(AlertDialog), findsNothing);
+          expect(find.byType(SettingsScreen), findsOneWidget);
+          expect(tester.takeException(), isNull);
+        } finally {
+          // Pump cleanup inside the test's fake async zone, before database
+          // teardown, and resolve any dialog left open by a failed assertion.
+          final navigators = find.byType(Navigator);
+          if (navigators.evaluate().isNotEmpty) {
+            tester
+                .state<NavigatorState>(navigators)
+                .popUntil((route) => route.isFirst);
+            await tester.pump();
+            await tester.pump(const Duration(milliseconds: 300));
+          }
+          await tester.pumpWidget(const SizedBox.shrink());
+          await tester.pump();
+        }
+      },
+      timeout: const Timeout(Duration(seconds: 30)),
+    );
 
     testWidgets('has scrollable ListView', (tester) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());

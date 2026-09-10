@@ -205,6 +205,7 @@ class SecureTransferService {
     if (includeReferencedKey && host.keyId != null) {
       referencedKey = await _keyRepository.getById(host.keyId!);
     }
+    _ensureExportableSecrets(hosts: [host], keys: [?referencedKey]);
     final cliLaunchPreferences = await _hostCliLaunchPreferencesService
         .getPreferencesForHost(host.id);
 
@@ -233,6 +234,7 @@ class SecureTransferService {
     required SshKey key,
     required String transferPassphrase,
   }) async {
+    _ensureExportableSecrets(keys: [key]);
     final payload = TransferPayload(
       type: TransferPayloadType.key,
       schemaVersion: _schemaVersion,
@@ -262,6 +264,7 @@ class SecureTransferService {
     final groups = await _db.select(_db.groups).get();
     final keys = await _keyRepository.getAll();
     final hosts = await _hostRepository.getAll();
+    _ensureExportableSecrets(hosts: hosts, keys: keys);
     final snippetFolders =
         await (_db.select(_db.snippetFolders)..orderBy([
               (folder) => OrderingTerm.asc(folder.sortOrder),
@@ -326,6 +329,33 @@ class SecureTransferService {
       ),
       'knownHosts': _sortedJsonRecords(knownHosts.map((item) => item.toJson())),
     };
+  }
+
+  // Repository reads retain rows with unreadable secrets but return null/empty
+  // placeholders. Exporting those placeholders would erase secrets on import.
+  // Keep using strict getAll reads above: tolerant loaders can omit failed rows.
+  void _ensureExportableSecrets({
+    Iterable<Host> hosts = const [],
+    Iterable<SshKey> keys = const [],
+  }) {
+    final unreadableSecrets = <String>[
+      for (final host in hosts)
+        if (_hostRepository.hasUnreadablePassword(host.id))
+          'password for host "${host.label}"',
+      for (final key in keys) ...[
+        if (_keyRepository.hasUnreadablePrivateKey(key.id))
+          'private key for SSH key "${key.name}"',
+        if (_keyRepository.hasUnreadablePassphrase(key.id))
+          'passphrase for SSH key "${key.name}"',
+      ],
+    ];
+    if (unreadableSecrets.isNotEmpty) {
+      throw FormatException(
+        'Cannot export because saved secrets could not be read: '
+        '${unreadableSecrets.join('; ')}. '
+        'Re-enter these secrets before exporting.',
+      );
+    }
   }
 
   /// Decrypts and parses an encrypted payload.

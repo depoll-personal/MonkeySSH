@@ -99,6 +99,8 @@ void main() {
       'SSH socket': SSHSocketError(const SocketException('Disconnected')),
       'socket': const SocketException('Disconnected'),
       'TLS handshake': const HandshakeException('Handshake failed'),
+      'TLS': const TlsException('TLS connection failed'),
+      'OS': const OSError('Connection refused', 61),
       'unexpected state': StateError('Unexpected connection state'),
     }.entries) {
       testWidgets('${failure.key} uses the connection failure dialog', (
@@ -141,13 +143,16 @@ void main() {
         final previousOnError = FlutterError.onError;
         FlutterError.onError = reports.add;
         addTearDown(() => FlutterError.onError = previousOnError);
-        sessions.result.completeError(failure.value, StackTrace.current);
+        final stackTrace = StackTrace.current;
+        sessions.result.completeError(failure.value, stackTrace);
         await tester.pumpAndSettle();
 
         FlutterError.onError = previousOnError;
         if (failure.value is StateError) {
           expect(reports, hasLength(1));
           expect(reports.single.exception, same(failure.value));
+          expect(reports.single.stack, same(stackTrace));
+          expect(reports.single.library, 'connection_attempt_dialog');
         } else {
           expect(reports, isEmpty);
         }

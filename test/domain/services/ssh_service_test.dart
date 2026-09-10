@@ -5843,14 +5843,19 @@ LISTEN ::1:4201
             scenario == 'sink closes during flush') {
           // All writes precede remote closure. The server may still have
           // unread request bytes when it closes, which can produce a reset
-          // on macOS even after its write side has closed gracefully.
+          // (macOS) or a broken pipe (Linux) even after its write side has
+          // closed gracefully.
           expect(
             socketErrors,
             everyElement(
               isA<SocketException>().having(
                 (error) => error.osError?.errorCode,
-                'connection reset error code',
-                Platform.isWindows ? 10054 : (Platform.isMacOS ? 54 : 104),
+                'connection reset or broken pipe error code',
+                isIn(
+                  Platform.isWindows
+                      ? const [10053, 10054]
+                      : (Platform.isMacOS ? const [32, 54] : const [32, 104]),
+                ),
               ),
             ),
           );

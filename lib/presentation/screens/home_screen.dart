@@ -1624,28 +1624,51 @@ class _HostRow extends ConsumerWidget {
       return;
     }
 
-    final payload = await ref
-        .read(secureTransferServiceProvider)
-        .createHostPayload(
-          host: host,
-          transferPassphrase: transferPassphrase,
-          includeReferencedKey: host.keyId != null,
-        );
+    try {
+      final payload = await ref
+          .read(secureTransferServiceProvider)
+          .createHostPayload(
+            host: host,
+            transferPassphrase: transferPassphrase,
+            includeReferencedKey: host.keyId != null,
+          );
 
-    if (!context.mounted) {
-      return;
+      if (!context.mounted) {
+        return;
+      }
+
+      final defaultFileName = sanitizeTransferFileBaseName(
+        'host-${host.label.toLowerCase().replaceAll(' ', '-')}',
+      );
+
+      await saveTransferPayloadToFile(
+        context: context,
+        payload: payload,
+        defaultFileName: defaultFileName,
+        sharePositionOrigin: shareOriginFromContext(context),
+      );
+    } on FormatException catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.message)));
+    } on Exception catch (error) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: error,
+          library: 'home',
+          context: ErrorDescription('while exporting host data'),
+        ),
+      );
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Export failed. Try again.')),
+      );
     }
-
-    final defaultFileName = sanitizeTransferFileBaseName(
-      'host-${host.label.toLowerCase().replaceAll(' ', '-')}',
-    );
-
-    await saveTransferPayloadToFile(
-      context: context,
-      payload: payload,
-      defaultFileName: defaultFileName,
-      sharePositionOrigin: shareOriginFromContext(context),
-    );
   }
 
   Future<void> _confirmDelete(BuildContext context, WidgetRef ref) async {
@@ -2152,24 +2175,50 @@ class _KeyRow extends ConsumerWidget {
       return;
     }
 
-    final payload = await ref
-        .read(secureTransferServiceProvider)
-        .createKeyPayload(key: sshKey, transferPassphrase: transferPassphrase);
+    try {
+      final payload = await ref
+          .read(secureTransferServiceProvider)
+          .createKeyPayload(
+            key: sshKey,
+            transferPassphrase: transferPassphrase,
+          );
 
-    if (!context.mounted) {
-      return;
+      if (!context.mounted) {
+        return;
+      }
+
+      final defaultFileName = sanitizeTransferFileBaseName(
+        'key-${sshKey.name.toLowerCase().replaceAll(' ', '-')}',
+      );
+
+      await saveTransferPayloadToFile(
+        context: context,
+        payload: payload,
+        defaultFileName: defaultFileName,
+        sharePositionOrigin: shareOriginFromContext(context),
+      );
+    } on FormatException catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.message)));
+    } on Exception catch (error) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: error,
+          library: 'home',
+          context: ErrorDescription('while exporting key data'),
+        ),
+      );
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Export failed. Try again.')),
+      );
     }
-
-    final defaultFileName = sanitizeTransferFileBaseName(
-      'key-${sshKey.name.toLowerCase().replaceAll(' ', '-')}',
-    );
-
-    await saveTransferPayloadToFile(
-      context: context,
-      payload: payload,
-      defaultFileName: defaultFileName,
-      sharePositionOrigin: shareOriginFromContext(context),
-    );
   }
 
   void _showKeyDetails(BuildContext context) {
