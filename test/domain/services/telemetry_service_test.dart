@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/native.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -11,6 +13,304 @@ import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/telemetry_service.dart';
 
 void main() {
+  group('absorbed crash reporting', () {
+    late Duration elapsed;
+    late AbsorbedErrorRateLimiter limiter;
+    late _FakeCrashReporter reporter;
+    late TelemetryService service;
+
+    setUp(() {
+      elapsed = Duration.zero;
+      limiter = AbsorbedErrorRateLimiter(elapsed: () => elapsed);
+      reporter = _FakeCrashReporter();
+      service = TelemetryService(
+        status: TelemetryServiceStatus.ready,
+        collectionEnabled: true,
+        diagnosticsLogger: const NoopDiagnosticsLogger(),
+        analyticsClient: _FakeAnalyticsClient(),
+        crashReporter: reporter,
+        absorbedErrorRateLimiter: limiter,
+      );
+    });
+
+    test('allows three per type, then one per ten minutes without a reset', () {
+      expect(List.generate(4, (_) => limiter.shouldRecord(StateError)), [
+        true,
+        true,
+        true,
+        false,
+      ]);
+      expect(limiter.shouldRecord(SocketException), isTrue);
+      elapsed = const Duration(minutes: 9, seconds: 59);
+      expect(limiter.shouldRecord(StateError), isFalse);
+      elapsed = const Duration(minutes: 10);
+      expect(limiter.shouldRecord(StateError), isTrue);
+      expect(limiter.shouldRecord(StateError), isFalse);
+      elapsed = const Duration(hours: 1);
+      expect(limiter.shouldRecord(StateError), isTrue);
+      expect(limiter.shouldRecord(StateError), isFalse);
+    });
+
+    test(
+      'retry storms retain stacks, stay non-fatal, and do not limit bugs',
+      () async {
+        final stack = StackTrace.fromString(
+          '#0 SSHTransport.sendPacket (package:dartssh2/src/ssh_transport.dart:1:2)\n'
+          '#1 SshSession.execute (package:monkeyssh/domain/services/ssh_service.dart:42:5)',
+        );
+        await Future.wait(
+          List.generate(
+            100,
+            (_) => service.recordError(
+              SSHStateError('Transport is closed'),
+              stack,
+              fatal: true,
+              absorbed: true,
+            ),
+          ),
+        );
+        expect(reporter.recordedErrors, hasLength(3));
+        for (final report in reporter.recordedErrors) {
+          expect(report.fatal, isFalse);
+          expect(report.stackTrace, same(stack));
+          expect(report.keys['error_absorbed'], isTrue);
+          expect(report.keys['error_type'], 'SSHStateError');
+          expect(
+            report.keys['top_app_frame'],
+            'SshSession.execute (package:monkeyssh/domain/services/ssh_service.dart:42:5)',
+          );
+          expect(report.reason, 'SSHStateError: Transport is closed');
+        }
+        elapsed = const Duration(minutes: 10);
+        await service.recordError(
+          SSHStateError('Transport is closed'),
+          stack,
+          fatal: false,
+          absorbed: true,
+        );
+        expect(reporter.recordedErrors, hasLength(4));
+        await Future.wait(
+          List.generate(
+            5,
+            (_) => service.recordError(StateError('bug'), stack, fatal: true),
+          ),
+        );
+        expect(reporter.recordedErrors.skip(4).every((e) => e.fatal), isTrue);
+        expect(reporter.recordedErrors, hasLength(9));
+      },
+    );
+
+    test(
+      'opt-out neither reports nor consumes the initial allowance',
+      () async {
+        await service.setCollectionEnabled(enabled: false);
+        for (var i = 0; i < 5; i++) {
+          await service.recordError(
+            SSHStateError('Transport is closed'),
+            StackTrace.empty,
+            fatal: false,
+            absorbed: true,
+          );
+        }
+        expect(reporter.recordedErrors, isEmpty);
+        expect(reporter.customKeys, isEmpty);
+        await service.setCollectionEnabled(enabled: true);
+        for (var i = 0; i < 4; i++) {
+          await service.recordError(
+            SSHStateError('Transport is closed'),
+            StackTrace.empty,
+            fatal: false,
+            absorbed: true,
+          );
+        }
+        expect(reporter.recordedErrors, hasLength(3));
+        expect(reporter.customKeys, containsPair('flutter_mode', 'debug'));
+        expect(reporter.customKeys, contains('platform'));
+        expect(reporter.customKeys, contains('diagnostics_enabled'));
+      },
+    );
+
+    test(
+      'concurrent reports keep their own keys and reset missing frames',
+      () async {
+        await Future.wait([
+          service.recordError(
+            SSHStateError('Transport is closed'),
+            StackTrace.fromString(
+              '#0 SshSession.close (package:monkeyssh/domain/services/ssh_service.dart:20:3)',
+            ),
+            fatal: false,
+            absorbed: true,
+          ),
+          service.recordError(
+            ArgumentError('private'),
+            StackTrace.empty,
+            fatal: true,
+          ),
+        ]);
+        expect(reporter.recordedErrors[0].keys['error_type'], 'SSHStateError');
+        expect(reporter.recordedErrors[0].keys['error_absorbed'], isTrue);
+        expect(reporter.recordedErrors[1].keys['error_type'], 'ArgumentError');
+        expect(reporter.recordedErrors[1].keys['error_absorbed'], isFalse);
+        expect(reporter.recordedErrors[1].keys['top_app_frame'], 'unknown');
+      },
+    );
+
+    test('Flutter reports retain safe reason, stack, and exception key', () async {
+      final stack = StackTrace.fromString(
+        '#0 build (package:monkeyssh/presentation/screens/home_screen.dart:20:3)',
+      );
+      await service.recordFlutterError(
+        FlutterErrorDetails(
+          exception: StateError('Stream has already been listened to.\nsecret'),
+          stack: stack,
+          library: 'private library',
+          context: ErrorDescription('password=hunter2'),
+        ),
+      );
+      final report = reporter.recordedFlutterErrors.single;
+      expect(report.stack, same(stack));
+      expect(
+        report.context.toString(),
+        'StateError: Stream has already been listened to [redacted]',
+      );
+      expect(report.library, 'flutter');
+      expect(reporter.customKeys['flutter_error_exception'], 'StateError');
+      expect(reporter.customKeys['error_absorbed'], isFalse);
+      expect(
+        reporter.customKeys['top_app_frame'],
+        'build (package:monkeyssh/presentation/screens/home_screen.dart:20:3)',
+      );
+    });
+
+    test(
+      'reason keeps known failure text but redacts all dynamic contents',
+      () {
+        const secrets =
+            'alice@secret.example.com 192.0.2.4 [2001:db8::1] '
+            '/home/alice/id_rsa key.pem password=hunter2 token=abcd '
+            'ssh user@host clipboard-content -----BEGIN PRIVATE KEY-----';
+        final error = SanitizedTelemetryError.from(
+          const SocketException(
+            'Connection reset by peer $secrets\nmore-private-data',
+          ),
+        );
+        expect(
+          error.reason,
+          'SocketException: Connection reset by peer [redacted]',
+        );
+        expect(
+          SanitizedTelemetryError.from(Exception(secrets)).reason,
+          'Exception: [redacted]',
+        );
+        expect(
+          SanitizedTelemetryError.from(
+            Exception('secret\nPermission denied'),
+          ).reason,
+          'Exception: [redacted]',
+        );
+        expect(
+          SanitizedTelemetryError.from(_ThrowingToStringError()).reason,
+          'ThrowingToStringError: [unavailable]',
+        );
+        expect(
+          SanitizedTelemetryError.from(SSHChannelOpenError(1, secrets)).reason,
+          'SSHChannelOpenError: code 1: [redacted]',
+        );
+        expect(
+          SanitizedTelemetryError.from(SSHChannelOpenError(4, secrets)).reason,
+          'SSHChannelOpenError: code 4: [redacted]',
+        );
+        expect(
+          SanitizedTelemetryError.from(
+            SftpStatusError(
+              SftpStatusCode.permissionDenied,
+              'Permission denied $secrets',
+            ),
+          ).reason,
+          'SftpStatusError: code 3: Permission denied [redacted]',
+        );
+      },
+    );
+
+    test('default rate limit is shared across service instances', () async {
+      for (var i = 0; i < 5; i++) {
+        final telemetry = TelemetryService(
+          status: TelemetryServiceStatus.ready,
+          collectionEnabled: true,
+          diagnosticsLogger: const NoopDiagnosticsLogger(),
+          crashReporter: reporter,
+        );
+        await telemetry.recordError(
+          const _CustomTelemetryException(),
+          StackTrace.empty,
+          fatal: false,
+          absorbed: true,
+        );
+      }
+      expect(reporter.recordedErrors, hasLength(3));
+    });
+
+    test('top app frame ignores filesystem paths and reporter frames', () async {
+      await service.recordError(
+        StateError('bug'),
+        StackTrace.fromString(
+          '#0 privateFunction (file:///home/alice/private.dart:1:2)\n'
+          '#1 TelemetryService.recordError (package:monkeyssh/domain/services/telemetry_service.dart:1:2)\n'
+          '#2 installTelemetryErrorHandlers.<anonymous closure> (package:monkeyssh/main.dart:1:2)',
+        ),
+        fatal: true,
+      );
+      expect(reporter.recordedErrors.single.keys['top_app_frame'], 'unknown');
+    });
+
+    test('metadata failure does not prevent submitting the report', () async {
+      final failingReporter = _FailingMetadataCrashReporter();
+      final telemetry = TelemetryService(
+        status: TelemetryServiceStatus.ready,
+        collectionEnabled: true,
+        diagnosticsLogger: const NoopDiagnosticsLogger(),
+        crashReporter: failingReporter,
+      );
+      await telemetry.recordError(
+        StateError('bug'),
+        StackTrace.empty,
+        fatal: true,
+      );
+      expect(failingReporter.recordedErrors, hasLength(1));
+    });
+
+    test(
+      'opt-out during metadata cancels current and queued reports',
+      () async {
+        final delayed = _DelayedMetadataCrashReporter();
+        final telemetry = TelemetryService(
+          status: TelemetryServiceStatus.ready,
+          collectionEnabled: true,
+          diagnosticsLogger: const NoopDiagnosticsLogger(),
+          analyticsClient: _FakeAnalyticsClient(),
+          crashReporter: delayed,
+        );
+        final first = telemetry.recordError(
+          StateError('bug'),
+          StackTrace.empty,
+          fatal: true,
+        );
+        final second = telemetry.recordError(
+          ArgumentError('bug'),
+          StackTrace.empty,
+          fatal: true,
+        );
+        await delayed.started.future;
+        await telemetry.setCollectionEnabled(enabled: false);
+        delayed.finish.complete();
+        await Future.wait([first, second]);
+        expect(delayed.recordedErrors, isEmpty);
+        expect(delayed.deleteUnsentReportsCount, 1);
+      },
+    );
+  });
+
   group('TelemetryService', () {
     test('does not send analytics until collection is enabled', () async {
       final analytics = _FakeAnalyticsClient();
@@ -1042,7 +1342,12 @@ class _FakeCrashReporter implements TelemetryCrashReporter {
     required bool fatal,
   }) async {
     recordedErrors.add(
-      _RecordedError(error: error, stackTrace: stackTrace, fatal: fatal),
+      _RecordedError(
+        error: error,
+        stackTrace: stackTrace,
+        fatal: fatal,
+        keys: Map.of(customKeys),
+      ),
     );
   }
 
@@ -1074,9 +1379,38 @@ class _RecordedError {
     required this.error,
     required this.stackTrace,
     required this.fatal,
+    required this.keys,
   });
 
   final Object error;
   final StackTrace stackTrace;
   final bool fatal;
+  final Map<String, Object> keys;
+  String get reason => (error as SanitizedTelemetryError).reason;
+}
+
+class _ThrowingToStringError {
+  @override
+  String toString() => throw StateError('cannot stringify');
+}
+
+class _FailingMetadataCrashReporter extends _FakeCrashReporter {
+  @override
+  Future<void> setCustomKey(String key, Object value) async {
+    throw StateError('metadata unavailable');
+  }
+}
+
+class _DelayedMetadataCrashReporter extends _FakeCrashReporter {
+  final started = Completer<void>();
+  final finish = Completer<void>();
+
+  @override
+  Future<void> setCustomKey(String key, Object value) async {
+    if (!started.isCompleted) {
+      started.complete();
+      await finish.future;
+    }
+    await super.setCustomKey(key, value);
+  }
 }

@@ -586,10 +586,7 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.byType(AlertDialog), findsOneWidget);
         final preview = tester.widget<Text>(find.text('AaBbCc 0123 {}[]'));
-        expect(
-          preview.style!.fontFamily,
-          family == 'JetBrains Mono' ? contains('JetBrainsMono') : family,
-        );
+        expect(preview.style!.fontFamily, family);
         expect(preview.style!.fontSize, 14);
       });
     }

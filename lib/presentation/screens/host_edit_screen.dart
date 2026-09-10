@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:drift/drift.dart' show InvalidDataException;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -469,6 +470,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                               if (value == null || value.isEmpty) {
                                 return 'Please enter a label';
                               }
+                              if (value.length > 255) {
+                                return 'Label must be 255 characters or fewer';
+                              }
                               return null;
                             },
                           ),
@@ -493,6 +497,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                             validator: (value) {
                               if (value == null || value.isEmpty) {
                                 return 'Please enter a hostname';
+                              }
+                              if (value.length > 255) {
+                                return 'Hostname must be 255 characters or fewer';
                               }
                               return null;
                             },
@@ -546,6 +553,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                               if (value == null || value.isEmpty) {
                                 return 'Please enter a username';
                               }
+                              if (value.length > 255) {
+                                return 'Username must be 255 characters or fewer';
+                              }
                               return null;
                             },
                           ),
@@ -583,6 +593,14 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                           decoration: InputDecoration(
                             labelText: 'Password (optional)',
                             hintText: 'Leave empty for key-only auth',
+                            helperText:
+                                widget.hostId != null &&
+                                    ref
+                                        .read(hostRepositoryProvider)
+                                        .hasUnreadablePassword(widget.hostId!)
+                                ? 'Saved password could not be read. Re-enter it to connect.'
+                                : null,
+                            helperMaxLines: _hostFieldHelperMaxLines,
                             prefixIcon: const Icon(Icons.lock),
                             suffixIcon: IconButton(
                               icon: Icon(
@@ -1549,6 +1567,26 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           message: '${e.message}. Choose a different proxy domain.',
         ));
       }
+    } on InvalidDataException {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Couldn’t save this host. Check the field values and try again.',
+            ),
+          ),
+        );
+      }
+    } on FormatException {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Couldn’t read the saved credentials. Re-enter the password or import the SSH key again.',
+            ),
+          ),
+        );
+      }
     } on Exception catch (e) {
       FlutterError.reportError(
         FlutterErrorDetails(
@@ -1604,6 +1642,34 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
 
   ({GlobalKey locationKey, FocusNode focusNode, String message})?
   _firstInvalidHostField() {
+    for (final field in [
+      (
+        controller: _labelController,
+        locationKey: _labelFieldLocationKey,
+        focusNode: _labelFocusNode,
+        label: 'Label',
+      ),
+      (
+        controller: _hostnameController,
+        locationKey: _hostnameFieldLocationKey,
+        focusNode: _hostnameFocusNode,
+        label: 'Hostname',
+      ),
+      (
+        controller: _usernameController,
+        locationKey: _usernameFieldLocationKey,
+        focusNode: _usernameFocusNode,
+        label: 'Username',
+      ),
+    ]) {
+      if (field.controller.text.length > 255) {
+        return (
+          locationKey: field.locationKey,
+          focusNode: field.focusNode,
+          message: '${field.label} must be 255 characters or fewer',
+        );
+      }
+    }
     final issue = ref
         .read(hostEditViewModelProvider(widget.hostId).notifier)
         .validateDraft(_currentDraft());

@@ -2,6 +2,7 @@
 
 import 'dart:async';
 
+import 'package:drift/drift.dart' show InvalidDataException;
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -108,6 +109,28 @@ MonetizationService _buildProMonetizationService() {
   return service;
 }
 
+class _RejectingHostRepository extends FakeHostRepository {
+  _RejectingHostRepository({
+    required super.host,
+    required super.database,
+    required super.encryptionService,
+    required this.saveError,
+    required this.unreadablePassword,
+  });
+
+  final Exception? saveError;
+  final bool unreadablePassword;
+
+  @override
+  bool hasUnreadablePassword(int hostId) => unreadablePassword;
+
+  @override
+  Future<int> insert(HostsCompanion host) async {
+    if (saveError case final error?) throw error;
+    return super.insert(host);
+  }
+}
+
 class _HostEditTestHarness {
   const _HostEditTestHarness({required this.hostRepository});
 
@@ -117,6 +140,8 @@ class _HostEditTestHarness {
 Future<_HostEditTestHarness> _pumpHostCreateScreen(
   WidgetTester tester, {
   bool hasPro = false,
+  Exception? saveError,
+  bool unreadablePassword = false,
   List<Snippet> snippets = const [],
 }) async {
   final database = AppDatabase.forTesting(NativeDatabase.memory());
@@ -125,7 +150,9 @@ Future<_HostEditTestHarness> _pumpHostCreateScreen(
   addTearDown(() => tester.binding.setSurfaceSize(null));
   await tester.binding.setSurfaceSize(const Size(420, 900));
 
-  final hostRepository = FakeHostRepository(
+  final hostRepository = _RejectingHostRepository(
+    saveError: saveError,
+    unreadablePassword: unreadablePassword,
     host: _testHost(
       id: 1,
       label: 'Unused Host',
@@ -151,7 +178,8 @@ Future<_HostEditTestHarness> _pumpHostCreateScreen(
       ),
       GoRoute(
         path: '/add',
-        builder: (context, state) => const HostEditScreen(),
+        builder: (context, state) =>
+            HostEditScreen(hostId: unreadablePassword ? 1 : null),
       ),
     ],
   );
@@ -297,6 +325,82 @@ void main() {
         expect(harness.hostRepository.insertedHost, isNull);
       },
     );
+
+    testWidgets('prompts to re-enter an unreadable saved password', (
+      tester,
+    ) async {
+      await _pumpHostCreateScreen(tester, unreadablePassword: true);
+      expect(
+        find.text('Saved password could not be read. Re-enter it to connect.'),
+        findsOneWidget,
+      );
+      final passwordField = tester.widget<TextFormField>(
+        find.ancestor(
+          of: find.text('Password (optional)'),
+          matching: find.byType(TextFormField),
+        ),
+      );
+      expect(passwordField.controller!.text, isEmpty);
+      expect(tester.takeException(), isNull);
+    });
+
+    for (final field in ['label', 'hostname', 'username']) {
+      testWidgets('rejects an oversized $field before persistence', (
+        tester,
+      ) async {
+        final harness = await _pumpHostCreateScreen(tester);
+        await _fillRequiredHostFields(tester);
+        final fieldKey = Key('host-$field-field');
+        await tester.enterText(find.byKey(fieldKey), 'a' * 255 + ' ');
+
+        await _tapBottomSave(tester);
+
+        final label = '${field[0].toUpperCase()}${field.substring(1)}';
+        expect(
+          find.text('$label must be 255 characters or fewer'),
+          findsWidgets,
+        );
+        expect(_textFieldHasFocus(tester, fieldKey), isTrue);
+        expect(harness.hostRepository.insertedHost, isNull);
+        expect(tester.takeException(), isNull);
+
+        // The database boundary is inclusive, and correcting the input works.
+        await tester.enterText(find.byKey(fieldKey), 'a' * 255);
+        await _tapBottomSave(tester);
+        expect(harness.hostRepository.insertedHost, isNotNull);
+      });
+    }
+
+    for (final error in <Exception>[
+      InvalidDataException('invalid stored data'),
+      const FormatException('invalid saved credential'),
+    ]) {
+      testWidgets(
+        'shows save validation for ${error.runtimeType} without reporting a framework error',
+        (tester) async {
+          final harness = await _pumpHostCreateScreen(tester, saveError: error);
+          await _fillRequiredHostFields(tester);
+
+          await _tapBottomSave(tester);
+
+          expect(tester.takeException(), isNull);
+          expect(find.byType(HostEditScreen), findsOneWidget);
+          expect(harness.hostRepository.insertedHost, isNull);
+          expect(
+            find.text(
+              error is InvalidDataException
+                  ? 'Couldn’t save this host. Check the field values and try again.'
+                  : 'Couldn’t read the saved credentials. Re-enter the password or import the SSH key again.',
+            ),
+            findsOneWidget,
+          );
+          final saveButton = tester.widget<FilledButton>(
+            find.byKey(const Key('host-save-button')),
+          );
+          expect(saveButton.onPressed, isNotNull);
+        },
+      );
+    }
 
     testWidgets('saves automatic forwarding and a custom proxy domain', (
       tester,

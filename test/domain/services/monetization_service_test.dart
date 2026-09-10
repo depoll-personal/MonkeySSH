@@ -4,6 +4,7 @@ import 'dart:async';
 
 import 'package:drift/native.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:in_app_purchase_android/billing_client_wrappers.dart';
@@ -1091,11 +1092,13 @@ void main() {
           () => inAppPurchase.completePurchase(purchase),
         ).thenAnswer((_) async {});
 
+        final diagnostics = _CapturingDiagnosticsLogger();
         final service = MonetizationService(
           settings,
           inAppPurchase: inAppPurchase,
           androidPlatformAddition: androidPlatformAddition,
           allowDebugUnlock: false,
+          diagnostics: diagnostics,
         );
         addTearDown(service.dispose);
 
@@ -1111,7 +1114,10 @@ void main() {
             purchaseParam: any(named: 'purchaseParam'),
           ),
         ).thenThrow(StateError('Store launch failed'));
-        expect((await service.purchaseOffer(annualOfferId)).success, isFalse);
+        await expectLater(
+          service.purchaseOffer(annualOfferId),
+          throwsStateError,
+        );
         expect(service.currentState.isLoading, isFalse);
         when(
           () => inAppPurchase.buyNonConsumable(
@@ -1123,6 +1129,28 @@ void main() {
           'Could not start the purchase flow.',
         );
         expect(service.currentState.isLoading, isFalse);
+        when(
+          () => inAppPurchase.buyNonConsumable(
+            purchaseParam: any(named: 'purchaseParam'),
+          ),
+        ).thenAnswer(
+          (_) async => throw PlatformException(
+            code: 'ERROR',
+            message: 'Billing activity unavailable',
+          ),
+        );
+        final launchFailure = await service.purchaseOffer(annualOfferId);
+        expect(launchFailure.success, isFalse);
+        expect(launchFailure.cancelled, isFalse);
+        expect(launchFailure.message, 'Could not start the purchase flow.');
+        expect(service.currentState.isLoading, isFalse);
+        expect(service.currentState.lastError, launchFailure.message);
+        expect(service.currentState.isProUnlocked, isFalse);
+        final diagnostic = diagnostics.entries.singleWhere(
+          (entry) => entry.message == 'purchase_launch_failed',
+        );
+        expect(diagnostic.category, 'billing');
+        expect(diagnostic.fields, isEmpty);
         when(
           () => inAppPurchase.buyNonConsumable(
             purchaseParam: any(named: 'purchaseParam'),

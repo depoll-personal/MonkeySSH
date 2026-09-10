@@ -1252,111 +1252,108 @@ class _HostRow extends ConsumerWidget {
       return;
     }
 
+    // The sheet can rebuild after this host row has been removed.
+    final connectionStates = ref.read(activeSessionsProvider);
+    final terminalThemeSettings = ref.read(terminalThemeSettingsProvider);
+    final terminalThemes =
+        ref.read(allTerminalThemesProvider).asData?.value ?? TerminalThemes.all;
     final selection = await showModalBottomSheet<String>(
       context: context,
-      builder: (context) {
-        final connectionStates = ref.read(activeSessionsProvider);
-        final terminalThemeSettings = ref.read(terminalThemeSettingsProvider);
-        final terminalThemes =
-            ref.read(allTerminalThemesProvider).asData?.value ??
-            TerminalThemes.all;
-        return SafeArea(
-          child: ListView.builder(
-            shrinkWrap: true,
-            itemCount: connectionIds.length + 2,
-            itemBuilder: (context, index) {
-              if (index == 0) {
-                return ListTile(
-                  title: Text(host.label),
-                  subtitle: Text('${connectionIds.length} active connections'),
-                );
-              }
-              if (index == connectionIds.length + 1) {
-                return ListTile(
-                  leading: const Icon(Icons.add),
-                  title: const Text('New connection'),
-                  onTap: () => Navigator.pop(context, 'new'),
-                );
-              }
-              final connectionId = connectionIds[connectionIds.length - index];
-              final connection = sessionsNotifier.getActiveConnection(
-                connectionId,
-              );
-              final createdAt = sessionsNotifier
-                  .getSession(connectionId)
-                  ?.createdAt;
-              final endpoint = '${host.username}@${host.hostname}:${host.port}';
-              final subtitle = createdAt == null
-                  ? endpoint
-                  : '$endpoint\nOpened ${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}';
-              final terminalTheme =
-                  connection?.terminalTheme ??
-                  resolveConnectionPreviewTheme(
-                    brightness: Theme.of(context).brightness,
-                    themeSettings: terminalThemeSettings,
-                    availableThemes: terminalThemes,
-                    lightThemeId:
-                        connection?.terminalThemeLightId ??
-                        host.terminalThemeLightId,
-                    darkThemeId:
-                        connection?.terminalThemeDarkId ??
-                        host.terminalThemeDarkId,
-                  );
+      builder: (context) => SafeArea(
+        child: ListView.builder(
+          shrinkWrap: true,
+          itemCount: connectionIds.length + 2,
+          itemBuilder: (context, index) {
+            if (index == 0) {
               return ListTile(
-                contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 8,
-                ),
-                minTileHeight: 64,
-                minVerticalPadding: 10,
-                leading: const Icon(Icons.terminal),
-                title: Text(
-                  'Connection #$connectionId',
-                  style: FluttyTheme.displayMono(
-                    fontSize: 15,
-                    color: Theme.of(context).colorScheme.onSurface,
-                  ),
-                ),
-                subtitle: ConnectionPreviewSnippet(
-                  endpoint: subtitle,
-                  endpointStyle: FluttyTheme.monoStyle.copyWith(
-                    fontSize: 12,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-                  preview: connection?.preview,
-                  previewSnapshot: connection?.previewSnapshot,
-                  nativeAcpPreviewSnapshot:
-                      connection?.nativeAcpPreviewSnapshot,
-                  sessionTitle: connection?.sessionTitle,
-                  windowTitle: connection?.windowTitle,
-                  iconName: connection?.iconName,
-                  workingDirectory: connection?.workingDirectory,
-                  shellStatus: connection?.shellStatus,
-                  lastExitCode: connection?.lastExitCode,
-                  terminalTheme: terminalTheme,
-                ),
-                isThreeLine: connection?.preview?.trim().isNotEmpty ?? false,
-                trailing: Text(
-                  switch (connectionStates[connectionId] ??
-                      SshConnectionState.disconnected) {
-                    SshConnectionState.connected => 'Connected',
-                    SshConnectionState.connecting => 'Connecting',
-                    SshConnectionState.authenticating => 'Auth',
-                    SshConnectionState.reconnecting => 'Reconnecting',
-                    SshConnectionState.error => 'Error',
-                    SshConnectionState.disconnected => 'Disconnected',
-                  },
-                  style: FluttyTheme.monoStyle.copyWith(
-                    fontSize: 12,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-                ),
-                onTap: () => Navigator.pop(context, 'connection:$connectionId'),
+                title: Text(host.label),
+                subtitle: Text('${connectionIds.length} active connections'),
               );
-            },
-          ),
-        );
-      },
+            }
+            if (index == connectionIds.length + 1) {
+              return ListTile(
+                leading: const Icon(Icons.add),
+                title: const Text('New connection'),
+                onTap: () => Navigator.pop(context, 'new'),
+              );
+            }
+            final connectionId = connectionIds[connectionIds.length - index];
+            final connection = sessionsNotifier.getActiveConnection(
+              connectionId,
+            );
+            final createdAt = sessionsNotifier
+                .getSession(connectionId)
+                ?.createdAt;
+            final endpoint = '${host.username}@${host.hostname}:${host.port}';
+            final subtitle = createdAt == null
+                ? endpoint
+                : '$endpoint\nOpened ${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}';
+            final terminalTheme =
+                connection?.terminalTheme ??
+                resolveConnectionPreviewTheme(
+                  brightness: Theme.of(context).brightness,
+                  themeSettings: terminalThemeSettings,
+                  availableThemes: terminalThemes,
+                  lightThemeId:
+                      connection?.terminalThemeLightId ??
+                      host.terminalThemeLightId,
+                  darkThemeId:
+                      connection?.terminalThemeDarkId ??
+                      host.terminalThemeDarkId,
+                );
+            return ListTile(
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 16,
+                vertical: 8,
+              ),
+              minTileHeight: 64,
+              minVerticalPadding: 10,
+              leading: const Icon(Icons.terminal),
+              title: Text(
+                'Connection #$connectionId',
+                style: FluttyTheme.displayMono(
+                  fontSize: 15,
+                  color: Theme.of(context).colorScheme.onSurface,
+                ),
+              ),
+              subtitle: ConnectionPreviewSnippet(
+                endpoint: subtitle,
+                endpointStyle: FluttyTheme.monoStyle.copyWith(
+                  fontSize: 12,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+                preview: connection?.preview,
+                previewSnapshot: connection?.previewSnapshot,
+                nativeAcpPreviewSnapshot: connection?.nativeAcpPreviewSnapshot,
+                sessionTitle: connection?.sessionTitle,
+                windowTitle: connection?.windowTitle,
+                iconName: connection?.iconName,
+                workingDirectory: connection?.workingDirectory,
+                shellStatus: connection?.shellStatus,
+                lastExitCode: connection?.lastExitCode,
+                terminalTheme: terminalTheme,
+              ),
+              isThreeLine: connection?.preview?.trim().isNotEmpty ?? false,
+              trailing: Text(
+                switch (connectionStates[connectionId] ??
+                    SshConnectionState.disconnected) {
+                  SshConnectionState.connected => 'Connected',
+                  SshConnectionState.connecting => 'Connecting',
+                  SshConnectionState.authenticating => 'Auth',
+                  SshConnectionState.reconnecting => 'Reconnecting',
+                  SshConnectionState.error => 'Error',
+                  SshConnectionState.disconnected => 'Disconnected',
+                },
+                style: FluttyTheme.monoStyle.copyWith(
+                  fontSize: 12,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+              onTap: () => Navigator.pop(context, 'connection:$connectionId'),
+            );
+          },
+        ),
+      ),
     );
 
     if (!context.mounted || selection == null) {

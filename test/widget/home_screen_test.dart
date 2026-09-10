@@ -1067,6 +1067,56 @@ void main() {
 
       expect(openedRoutes, ['/terminal/1?connectionId=7']);
     });
+    testWidgets('connection chooser rebuilds after its host row is removed', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final hosts = StreamController<List<Host>>();
+      addTearDown(hosts.close);
+      final sessions = _MutableActiveSessionsNotifier(
+        initialConnections: [
+          for (var id = 1; id <= 2; id++)
+            _buildActiveConnection(
+              connectionId: id,
+              hostId: 1,
+              state: SshConnectionState.connecting,
+            ),
+        ],
+      );
+      await tester.pumpWidget(
+        buildMobileHomeScreen(
+          db: db,
+          overrides: [
+            activeSessionsProvider.overrideWith(() => sessions),
+            allHostsProvider.overrideWith((ref) => hosts.stream),
+          ],
+        ),
+      );
+      await tester.pump();
+      hosts.add([_buildHost(id: 1, label: 'Alpha', sortOrder: 0)]);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      final row = tester.element(find.text('Alpha'));
+      await tester.tap(find.text('Alpha'));
+      await tester.pumpAndSettle();
+      expect(find.text('2 active connections'), findsOneWidget);
+
+      hosts.add([]);
+      await tester.pumpAndSettle();
+      expect(row.mounted, isFalse);
+      // Re-run the route builder after the originating Consumer is disposed.
+      tester.element(find.byType(BottomSheet)).markNeedsBuild();
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+      expect(find.text('Connection #1'), findsOneWidget);
+      expect(find.text('Connection #2'), findsOneWidget);
+      await tester.tap(find.text('Connection #1'));
+      await tester.pumpAndSettle();
+      expect(find.byType(BottomSheet), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets(
       'connection chooser scrolls to old connections on a short viewport',
       (tester) async {

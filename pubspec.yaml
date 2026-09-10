@@ -149,5 +149,18 @@ flutter:
     - assets/monkeymux/bin/windows-arm64/
     - remote/monkeymux/conpty/LICENSE.microsoft-terminal
     - assets/version_codenames.json
+    - assets/fonts/OFL-Inter.txt
+    - assets/fonts/OFL-JetBrainsMono.txt
     # - assets/icons/
-    # - assets/fonts/
+
+  fonts:
+    - family: Inter
+      fonts:
+        - asset: assets/fonts/Inter.ttf
+        - asset: assets/fonts/Inter-Italic.ttf
+          style: italic
+    - family: JetBrains Mono
+      fonts:
+        - asset: assets/fonts/JetBrainsMono.ttf
+        - asset: assets/fonts/JetBrainsMono-Italic.ttf
+          style: italic

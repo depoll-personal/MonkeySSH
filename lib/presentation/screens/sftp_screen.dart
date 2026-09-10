@@ -2219,7 +2219,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
               title: const Text('Rename'),
               onTap: () {
                 Navigator.pop(context);
-                _showRenameDialog(file);
+                unawaited(_showRenameDialog(file));
               },
             ),
             ListTile(
@@ -2233,7 +2233,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
               ),
               onTap: () {
                 Navigator.pop(context);
-                _deleteFile(file);
+                unawaited(_deleteFile(file));
               },
             ),
           ],
@@ -2373,7 +2373,11 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           rethrow;
         }
         _showSftpFailureSnackBar(
-          message: 'Could not delete item. Check permissions and try again.',
+          message: e is SftpStatusError && e.code == SftpStatusCode.noSuchFile
+              ? 'Item no longer exists. Refresh the folder and try again.'
+              : file.attr.isDirectory
+              ? 'Could not delete folder. Make sure it is empty and you have permission.'
+              : 'Could not delete item. Check permissions and try again.',
           eventName: 'delete_failed',
           error: e,
         );
@@ -2531,6 +2535,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         sizeBytes: sizeBytes,
       ),
     );
+    var uploadedFileCount = 0;
     try {
       for (final file in selectedFiles) {
         await remoteFileService.uploadStream(
@@ -2538,30 +2543,11 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           remotePath: joinRemotePath(destinationDirectory, file.name),
           stream: file.readAsByteStream(),
         );
+        uploadedFileCount++;
       }
-      if (mounted) {
-        await _loadDirectory(_currentPath);
-        if (mounted) {
-          final message = selectedFiles.length == 1
-              ? 'Uploaded "${selectedFiles.single.name}"'
-              : 'Uploaded ${selectedFiles.length} files';
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text(message)));
-        }
-      }
-      unawaited(
-        telemetryService.logSftpTransferCompleted(
-          direction: 'upload',
-          fileCount: selectedFiles.length,
-          sizeBytes: sizeBytes,
-          duration: DateTime.now().difference(startedAt),
-        ),
-      );
     } on Object catch (e) {
-      if (e is! Exception && !isExpectedSshOperationError(e)) {
-        rethrow;
-      }
+      // Remote file implementations can throw Error subtypes as well as
+      // SSH/SFTP errors. Stop the batch and report the failed transfer.
       unawaited(
         telemetryService.logSftpTransferFailed(
           direction: 'upload',
@@ -2571,24 +2557,59 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           failureCategory: _sftpTelemetryFailureCategory(e),
         ),
       );
+      if (uploadedFileCount > 0 && mounted) {
+        await _loadDirectory(_currentPath);
+      }
       _showSftpFailureSnackBar(
-        message: 'Upload failed. Check the connection and try again.',
+        message: uploadedFileCount == 0
+            ? 'Upload failed. Check the connection and try again.'
+            : 'Uploaded $uploadedFileCount of ${selectedFiles.length} files. '
+                  'Upload failed. Check the connection and try again.',
         eventName: 'upload_failed',
         error: e,
       );
+      return;
     }
+    if (mounted) {
+      await _loadDirectory(_currentPath);
+      if (mounted) {
+        final message = selectedFiles.length == 1
+            ? 'Uploaded "${selectedFiles.single.name}"'
+            : 'Uploaded ${selectedFiles.length} files';
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(message)));
+      }
+    }
+    unawaited(
+      telemetryService.logSftpTransferCompleted(
+        direction: 'upload',
+        fileCount: selectedFiles.length,
+        sizeBytes: sizeBytes,
+        duration: DateTime.now().difference(startedAt),
+      ),
+    );
   }
 
   Future<void> _copyRemotePath(SftpName file) async {
     final remotePath = joinRemotePath(_currentPath, file.filename);
-    await Clipboard.setData(
-      ClipboardData(
-        text: buildSftpCopyPathClipboardText(
-          directory: _currentPath,
-          filename: file.filename,
+    try {
+      await Clipboard.setData(
+        ClipboardData(
+          text: buildSftpCopyPathClipboardText(
+            directory: _currentPath,
+            filename: file.filename,
+          ),
         ),
-      ),
-    );
+      );
+    } on Exception catch (error) {
+      _showSftpFailureSnackBar(
+        message: 'Could not copy the path. Try again.',
+        eventName: 'copy_path_failed',
+        error: error,
+      );
+      return;
+    }
     if (!mounted) {
       return;
     }
@@ -2820,6 +2841,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
     SftpFile? remoteFile;
     IOSink? sink;
+    Future<void>? closingRemoteFile;
     var downloadedBytes = 0;
     var completed = false;
 
@@ -2828,7 +2850,19 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       cancelToken.onCancel(() {
         final openFile = remoteFile;
         if (openFile != null) {
-          unawaited(openFile.close());
+          closingRemoteFile ??= Future<void>.sync(openFile.close);
+          unawaited(
+            closingRemoteFile!.then<void>(
+              (_) {},
+              onError: (Object error, StackTrace _) {
+                DiagnosticsLogService.instance.warning(
+                  'sftp.preview',
+                  'cancel_close_failed',
+                  fields: {'errorType': error.runtimeType},
+                );
+              },
+            ),
+          );
         }
       });
       sink = cacheFile.openWrite();
@@ -2875,13 +2909,19 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         downloadedBytes: downloadedBytes,
       );
     } finally {
-      await sink?.close();
-      await remoteFile?.close();
-      if (!completed) {
+      try {
         try {
-          await cacheFile.delete();
-        } on FileSystemException {
-          // Best-effort cleanup; failed preview caches live in temp storage.
+          await sink?.close();
+        } finally {
+          await (closingRemoteFile ?? remoteFile?.close());
+        }
+      } finally {
+        if (!completed) {
+          try {
+            await cacheFile.delete();
+          } on FileSystemException {
+            // Best-effort cleanup; failed preview caches live in temp storage.
+          }
         }
       }
     }
@@ -3566,22 +3606,26 @@ class _RemoteVideoCachingDialog extends StatefulWidget {
 }
 
 class _RemoteVideoCachingDialogState extends State<_RemoteVideoCachingDialog> {
+  var _isClosing = false;
+
   @override
   void initState() {
     super.initState();
     widget.downloadFuture.then<void>(
       (cacheResult) {
-        if (!mounted) {
+        if (!mounted || _isClosing) {
           return;
         }
+        _isClosing = true;
         Navigator.of(
           context,
         ).pop(_RemoteVideoCacheDialogResult.success(cacheResult));
       },
       onError: (Object error, StackTrace _) {
-        if (!mounted) {
+        if (!mounted || _isClosing) {
           return;
         }
+        _isClosing = true;
         Navigator.of(context).pop(_RemoteVideoCacheDialogResult.failure(error));
       },
     );
@@ -3617,7 +3661,18 @@ class _RemoteVideoCachingDialogState extends State<_RemoteVideoCachingDialog> {
       ),
     ),
     actions: [
-      TextButton(onPressed: widget.onCancel, child: const Text('Cancel')),
+      TextButton(
+        onPressed: () {
+          if (_isClosing) {
+            return;
+          }
+          // Cleanup can finish while the cancelled dialog is still mounted
+          // during its exit animation. Its future must not pop another route.
+          _isClosing = true;
+          widget.onCancel();
+        },
+        child: const Text('Cancel'),
+      ),
     ],
   );
 }
