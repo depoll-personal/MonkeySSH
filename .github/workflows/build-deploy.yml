@@ -999,10 +999,9 @@ jobs:
             COMMIT_SUBJECT="$(git log -1 --format=%s 2>/dev/null || true)"
             FLUTTY_BRANCH_NAME="${FLUTTY_SOURCE_BRANCH:-$GITHUB_REF_NAME}"
             export FLUTTY_BRANCH_NAME
-            if [ -z "${FLUTTY_PR_COMMITS:-}" ]; then
-              FLUTTY_LAST_COMMIT="$(printf '%.7s %s' "$FLUTTY_SOURCE_SHA" "$COMMIT_SUBJECT")"
-              export FLUTTY_LAST_COMMIT
-            fi
+            # Record the built revision even when the PR commit list is available.
+            FLUTTY_LAST_COMMIT="$(printf '%.7s %s' "$FLUTTY_SOURCE_SHA" "$COMMIT_SUBJECT")"
+            export FLUTTY_LAST_COMMIT
           fi
           cd android
           SKIP_META=${{ inputs.sync-metadata && 'false' || 'true' }}
@@ -1408,10 +1407,9 @@ jobs:
             COMMIT_SUBJECT="$(git log -1 --format=%s 2>/dev/null || true)"
             FLUTTY_BRANCH_NAME="${FLUTTY_SOURCE_BRANCH:-$GITHUB_REF_NAME}"
             export FLUTTY_BRANCH_NAME
-            if [ -z "${FLUTTY_PR_COMMITS:-}" ]; then
-              FLUTTY_LAST_COMMIT="$(printf '%.7s %s' "$FLUTTY_SOURCE_SHA" "$COMMIT_SUBJECT")"
-              export FLUTTY_LAST_COMMIT
-            fi
+            # Record the built revision even when the PR commit list is available.
+            FLUTTY_LAST_COMMIT="$(printf '%.7s %s' "$FLUTTY_SOURCE_SHA" "$COMMIT_SUBJECT")"
+            export FLUTTY_LAST_COMMIT
           fi
           cd ios
           SCHEME="${{ inputs.flavor == 'private' && 'Private' || 'Production' }}"

@@ -3,40 +3,8 @@ name: Deploy Private
 on:
   push:
     branches: [main]
-    paths:
-      - 'lib/**'
-      - 'pubspec.yaml'
-      - 'pubspec.lock'
-      - 'assets/**'
-      - 'remote/monkeymux/**'
-      - '!remote/monkeymux/**/*_test.go'
-      - 'remote/monkeymux/conpty/**'
-      - '!remote/monkeymux/README.md'
-      - 'third_party/**'
-      - 'android/**'
-      - '!android/fastlane/metadata-*/**'
-      - 'ios/**'
-      - '!ios/fastlane/metadata-*/**'
-      - 'scripts/build_monkeymux_assets.sh'
-      - 'scripts/deterministic_gzip.go'
-      - 'scripts/ensure_monkeymux_assets.sh'
-      - 'scripts/verify_monkeymux_assets.py'
-      - 'scripts/cache_sqlite3_native_assets.sh'
-      - 'scripts/version_codename.py'
-      - 'scripts/preview_release_notes.rb'
-      - 'scripts/preview_build_number.py'
-      - 'scripts/store_metadata.rb'
-      - 'scripts/match_git_persistence.rb'
-      - 'scripts/testflight_delivery.rb'
-      - 'Gemfile'
-      - 'Gemfile.lock'
-      - '.github/workflows/build-deploy.yml'
-      - '.github/workflows/deploy-private.yml'
-      - '.github/workflows/firebase-distribution.yml'
-      - '.github/workflows/preview.yml'
-      - '.github/workflows/preview-ios.yml'
-      - '.github/actions/apple-cache-restore/**'
-      - '.github/actions/apple-cache-save/**'
+
+# Distribute every main revision, including merges that only change docs or tests.
 
 concurrency:
   group: deploy-private
@@ -90,10 +58,12 @@ jobs:
                 per_page: 100,
               },
             );
+            const mergedPulls = pulls.filter((candidate) =>
+              candidate.merged_at && candidate.base?.ref === 'main',
+            );
             const pull =
-              pulls.find((candidate) => candidate.merge_commit_sha === context.sha) ??
-              pulls.find((candidate) => candidate.merged_at) ??
-              pulls[0];
+              mergedPulls.find((candidate) => candidate.merge_commit_sha === context.sha) ??
+              mergedPulls[0];
             core.setOutput('pr-number', pull ? String(pull.number) : '');
             core.setOutput('pr-title', pull?.title ?? '');
 
