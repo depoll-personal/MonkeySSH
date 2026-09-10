@@ -14,11 +14,12 @@ import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
-import 'package:monkeyssh/domain/services/diagnostics_log_service.dart';
 import 'package:monkeyssh/domain/services/host_cli_launch_preferences_service.dart';
 import 'package:monkeyssh/domain/services/host_key_verification.dart';
 import 'package:monkeyssh/domain/services/secure_transfer_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
+
+import '../../helpers/recording_diagnostics_logger.dart';
 
 const _publicKeyA =
     'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOwEkW+K+T0BVhCHT/6o4p9FdlaUJD/yPJfHziYQuwnK a';
@@ -29,74 +30,26 @@ const _publicKeyB =
 const _publicKeyBFingerprint =
     'SHA256:v6rpW34v6+w8LPSvW6v1+Dm8Z6sRf/VNAFNbr8FG3sg';
 
-class _RecordedDiagnosticsEvent {
-  const _RecordedDiagnosticsEvent(
-    this.level,
-    this.category,
-    this.message,
-    this.fields,
-  );
-
-  final DiagnosticsLogLevel level;
-  final String category;
-  final String message;
-  final Map<String, Object?> fields;
-
-  String get searchableText => [
-    level.name,
-    category,
-    message,
-    for (final entry in fields.entries) '${entry.key}=${entry.value}',
-  ].join(' ');
-}
-
-class _RecordingDiagnosticsLogger implements DiagnosticsLogger {
-  final events = <_RecordedDiagnosticsEvent>[];
-
-  @override
-  void debug(
-    String category,
-    String message, {
-    Map<String, Object?> fields = const <String, Object?>{},
-  }) => _record(DiagnosticsLogLevel.debug, category, message, fields);
-
-  @override
-  void error(
-    String category,
-    String message, {
-    Map<String, Object?> fields = const <String, Object?>{},
-  }) => _record(DiagnosticsLogLevel.error, category, message, fields);
-
-  @override
-  void info(
-    String category,
-    String message, {
-    Map<String, Object?> fields = const <String, Object?>{},
-  }) => _record(DiagnosticsLogLevel.info, category, message, fields);
-
-  @override
-  void warning(
-    String category,
-    String message, {
-    Map<String, Object?> fields = const <String, Object?>{},
-  }) => _record(DiagnosticsLogLevel.warning, category, message, fields);
-
-  void _record(
-    DiagnosticsLogLevel level,
-    String category,
-    String message,
-    Map<String, Object?> fields,
-  ) {
-    events.add(
-      _RecordedDiagnosticsEvent(
-        level,
-        category,
-        message,
-        Map<String, Object?>.from(fields),
-      ),
-    );
-  }
-}
+// Fixed PBKDF2 v1 and pre-refactor v2 envelopes using deterministic test entropy.
+const _v1EnvelopeFixture =
+    'MSSH1:eyJ2IjoxLCJhbGciOiJBRVMtR0NNLTI1NiIsImtkZiI6IlBCS0RGMi1ITUFDLVNIQTI1Ni'
+    'IsIml0ZXIiOjEyMDAwMCwic2FsdCI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHc9PSIsIm5vbmNlIj'
+    'oiRUJFU0V4UVZGaGNZR1JvYiIsImNpcGhlcnRleHQiOiJldlhucm1JWnNCRENHeG53S252aHN6c1'
+    'dENEIwU0lrN3JkRHVET3dTRnh5SHZpcThfRnJqbG54VmtyMUcyUWE1LWFBTVRMQVBJVnJyRXZRNW'
+    'xfTmlVTmVGUk14RG1ZVFF0U1hpYVZzaWR0RWdwZVpMVk1aWXZvN3AwWTNSaGVCSXdvcURwYkVCd3'
+    'JUQklNbV9QVFExd21iNWxvZWY4T185VUNYellvQXBWa2czV05FbW1pYVlKVll3NjVPMXFEZEFiY1'
+    'ZMejFWV3Q3ZEpQaXprIiwibWFjIjoiWHd0WFcxa3VZNjNKWHJoLU1RcGZFdz09IiwiY2hlY2tzdW'
+    '0iOiJsWWtwUGRCQkwxOFhTU0NwV1VGRURuUklaR0ZTTHZGZEpPQm9IRkpodGNjPSJ9';
+const _v2EnvelopeFixture =
+    'MSSH1:eyJ2IjoyLCJhbGciOiJBRVMtR0NNLTI1NiIsImtkZiI6IkFyZ29uMmlkIiwiaXRlciI6My'
+    'wibWVtIjozMjc2OCwibGFuZXMiOjEsInNhbHQiOiJNNjdFWGJWb2p6MHd1UF9rTTNOTkdnPT0iLC'
+    'Jub25jZSI6InAxbm5ycVFhVHlCYVpHNVEiLCJjaXBoZXJ0ZXh0IjoiYlp3TkJaMFhTRjZ0Q2Ntdj'
+    'J2clh5QWhiNzhXODZkZTlHVU5HY1ZWUVg1WEVBc0VNeldjbExRZEJJMWJudV9GSW8yWEdKT0J6bE'
+    'IyN2h2dEJzWTREYnIzakdQNGtXemxQYnZ0ZDBUYWJVall5RW42WndtZjluWm9MMzg0dGcyOVhwVU'
+    'VUcm55YWZReW5jLUxic1ZmTkJOVm9tTVJxR3FXclVSWmRpQmdNTEJEZFVxM0YwSXRHSFh4YjhuX2'
+    '1wWGpVbEVFYURXTGZ4RmFvWHo0TiIsIm1hYyI6IkFFTndaSHhRWVNWdjl2WVhSbkZFQlE9PSIsIm'
+    'NoZWNrc3VtIjoibFlrcFBkQkJMMThYU1NDcFdVRkVEblJJWkdGU0x2RmRKT0JvSEZKaHRjYz0ifQ'
+    '==';
 
 void main() {
   late AppDatabase db;
@@ -579,116 +532,112 @@ void main() {
       });
     }
 
-    for (final (
-          writerThreshold,
-          readerThreshold,
-          label,
-          hostname,
-          username,
-          passphrase,
-        )
-        in [
-          (null, null, 'Production', 'prod.example.com', 'root', '1234'),
-          (
-            0,
-            0,
-            'Threshold Test Host',
-            'threshold.example.com',
-            'user',
-            'pass',
-          ),
-          (
-            0x7fffffffffffffff,
-            0x7fffffffffffffff,
-            'Inline Threshold Host',
-            'inline.example.com',
-            'user',
-            'pass',
-          ),
-          (
-            0,
-            0x7fffffffffffffff,
-            'Interop Host',
-            'interop.example.com',
-            'user',
-            'pass',
-          ),
-          (
-            0x7fffffffffffffff,
-            0,
-            'Interop Host',
-            'interop.example.com',
-            'user',
-            'pass',
-          ),
-        ]) {
-      test('encrypts and decrypts $label host payload '
-          '(writer=$writerThreshold, reader=$readerThreshold)', () async {
-        final writer = writerThreshold == null
-            ? transferService
-            : SecureTransferService(
-                db,
-                keyRepository,
-                hostRepository,
-                isolateAssemblyThresholdBytes: writerThreshold,
-              );
-        final reader = readerThreshold == null
-            ? transferService
-            : SecureTransferService(
-                db,
-                keyRepository,
-                hostRepository,
-                isolateAssemblyThresholdBytes: readerThreshold,
-              );
-        final snippetId = await db
-            .into(db.snippets)
-            .insert(
-              SnippetsCompanion.insert(
-                name: 'Attach tmux',
-                command: 'tmux new -As MonkeySSH',
-              ),
-            );
-        final hostId = await db
-            .into(db.hosts)
-            .insert(
-              HostsCompanion.insert(
-                label: label,
-                hostname: hostname,
-                username: username,
-                password: const Value('secret'),
-                skipJumpHostOnSsids: const Value('Home WiFi\nOffice WiFi'),
-                autoConnectCommand: const Value('tmux new -As MonkeySSH'),
-                autoConnectSnippetId: Value(snippetId),
-                autoForwardPorts: const Value(true),
-                portProxyName: const Value('production'),
-              ),
-            );
-        final host = await (db.select(
-          db.hosts,
-        )..where((h) => h.id.equals(hostId))).getSingle();
+    test('encrypts and decrypts host payload', () async {
+      final snippetId = await db
+          .into(db.snippets)
+          .insert(
+            SnippetsCompanion.insert(
+              name: 'Attach tmux',
+              command: 'tmux new -As MonkeySSH',
+            ),
+          );
+      final hostId = await db
+          .into(db.hosts)
+          .insert(
+            HostsCompanion.insert(
+              label: 'Production',
+              hostname: 'prod.example.com',
+              username: 'root',
+              password: const Value('secret'),
+              skipJumpHostOnSsids: const Value('Home WiFi\nOffice WiFi'),
+              autoConnectCommand: const Value('tmux new -As MonkeySSH'),
+              autoConnectSnippetId: Value(snippetId),
+              autoForwardPorts: const Value(true),
+              portProxyName: const Value('production'),
+            ),
+          );
+      final host = await (db.select(
+        db.hosts,
+      )..where((h) => h.id.equals(hostId))).getSingle();
 
-        final encodedPayload = await writer.createHostPayload(
-          host: host,
-          transferPassphrase: passphrase,
-        );
-        final decrypted = await reader.decryptPayload(
-          encodedPayload: encodedPayload,
-          transferPassphrase: passphrase,
-        );
+      final encodedPayload = await transferService.createHostPayload(
+        host: host,
+        transferPassphrase: '1234',
+      );
+      final decrypted = await transferService.decryptPayload(
+        encodedPayload: encodedPayload,
+        transferPassphrase: '1234',
+      );
 
-        expect(decrypted.type, TransferPayloadType.host);
-        final hostData = Map<String, dynamic>.from(
-          decrypted.data['host'] as Map,
-        );
-        expect(hostData['label'], label);
-        expect(hostData['hostname'], hostname);
-        expect(hostData['autoConnectCommand'], 'tmux new -As MonkeySSH');
-        expect(hostData['autoConnectSnippetId'], isNull);
-        expect(hostData['skipJumpHostOnSsids'], 'Home WiFi\nOffice WiFi');
-        expect(hostData['autoForwardPorts'], isTrue);
-        expect(hostData['portProxyName'], 'production');
+      expect(decrypted.type, TransferPayloadType.host);
+      final hostData = Map<String, dynamic>.from(decrypted.data['host'] as Map);
+      expect(hostData['label'], 'Production');
+      expect(hostData['hostname'], 'prod.example.com');
+      expect(hostData['autoConnectCommand'], 'tmux new -As MonkeySSH');
+      expect(hostData['autoConnectSnippetId'], isNull);
+      expect(hostData['skipJumpHostOnSsids'], 'Home WiFi\nOffice WiFi');
+      expect(hostData['autoForwardPorts'], isTrue);
+      expect(hostData['portProxyName'], 'production');
+    });
+
+    for (final (version, fixture) in [
+      (1, _v1EnvelopeFixture),
+      (2, _v2EnvelopeFixture),
+    ]) {
+      test('decrypts the fixed v$version envelope', () async {
+        for (final encoded in [fixture, '  ${fixture.substring(6)}\n']) {
+          final payload = await transferService.decryptPayload(
+            encodedPayload: encoded,
+            transferPassphrase: 'fixture passphrase 🔐',
+          );
+          expect(payload.type, TransferPayloadType.host);
+          expect(payload.schemaVersion, 1);
+          expect(payload.createdAt, DateTime.utc(2026, 1, 2));
+          expect(payload.data, {
+            'host': {
+              'label': 'Fixture 🐒',
+              'hostname': 'example.com',
+              'username': 'user',
+            },
+          });
+        }
       });
     }
+
+    test('round-trips a large migration payload', () async {
+      final command = List.filled(2048, 'echo "migration 🐒"\n').join();
+      await db.batch((batch) {
+        batch.insertAll(db.snippets, [
+          for (var i = 0; i < 32; i++)
+            SnippetsCompanion.insert(name: 'Snippet $i', command: command),
+        ]);
+      });
+      final expected = await transferService.createMigrationData();
+      expect(
+        utf8.encode(jsonEncode(expected)).length,
+        greaterThan(1024 * 1024),
+      );
+
+      final encoded = await transferService.createFullMigrationPayload(
+        transferPassphrase: 'large migration 🔐',
+      );
+      final decoded = await transferService.decryptPayload(
+        encodedPayload: encoded,
+        transferPassphrase: 'large migration 🔐',
+      );
+
+      expect(decoded.type, TransferPayloadType.fullMigration);
+      expect(decoded.schemaVersion, 1);
+      expect(decoded.data, expected);
+      await transferService.importFullMigrationPayload(
+        payload: decoded,
+        mode: MigrationImportMode.replace,
+      );
+      final imported = await db.select(db.snippets).get();
+      expect(imported, hasLength(32));
+      expect(imported.every((snippet) => snippet.command == command), isTrue);
+      expect(hostsChangedCount, 1);
+    });
 
     test(
       'migration records use canonical JSON lexicographic ordering',
@@ -757,7 +706,7 @@ void main() {
               ),
             );
 
-        final diagnosticsLogger = _RecordingDiagnosticsLogger();
+        final diagnosticsLogger = RecordingDiagnosticsLogger();
         final exportingService = SecureTransferService(
           db,
           keyRepository,
@@ -1135,42 +1084,32 @@ void main() {
       },
     );
 
-    for (final threshold in [null, 0]) {
-      test('rejects invalid passphrase (threshold=$threshold)', () async {
-        final service = threshold == null
-            ? transferService
-            : SecureTransferService(
-                db,
-                keyRepository,
-                hostRepository,
-                isolateAssemblyThresholdBytes: threshold,
-              );
-        final hostId = await db
-            .into(db.hosts)
-            .insert(
-              HostsCompanion.insert(
-                label: 'Host',
-                hostname: 'example.com',
-                username: 'user',
-              ),
-            );
-        final host = await (db.select(
-          db.hosts,
-        )..where((h) => h.id.equals(hostId))).getSingle();
-        final encodedPayload = await service.createHostPayload(
-          host: host,
-          transferPassphrase: 'correct',
-        );
+    test('rejects invalid passphrase', () async {
+      final hostId = await db
+          .into(db.hosts)
+          .insert(
+            HostsCompanion.insert(
+              label: 'Host',
+              hostname: 'example.com',
+              username: 'user',
+            ),
+          );
+      final host = await (db.select(
+        db.hosts,
+      )..where((h) => h.id.equals(hostId))).getSingle();
+      final encodedPayload = await transferService.createHostPayload(
+        host: host,
+        transferPassphrase: 'correct',
+      );
 
-        await expectLater(
-          service.decryptPayload(
-            encodedPayload: encodedPayload,
-            transferPassphrase: 'wrong',
-          ),
-          throwsFormatException,
-        );
-      });
-    }
+      await expectLater(
+        transferService.decryptPayload(
+          encodedPayload: encodedPayload,
+          transferPassphrase: 'wrong',
+        ),
+        throwsFormatException,
+      );
+    });
 
     for (final (name, field, value) in [
       ('invalid component lengths', 'salt', base64Url.encode(const [1, 2, 3])),
@@ -1179,30 +1118,19 @@ void main() {
       ('excessive iteration count', 'iter', 1000001),
     ]) {
       test('rejects envelope with $name', () async {
-        final hostId = await db
-            .into(db.hosts)
-            .insert(
-              HostsCompanion.insert(
-                label: 'Host',
-                hostname: 'example.com',
-                username: 'user',
-              ),
-            );
-        final host = await (db.select(
-          db.hosts,
-        )..where((h) => h.id.equals(hostId))).getSingle();
-        final encodedPayload = await transferService.createHostPayload(
-          host: host,
-          transferPassphrase: '1234',
-        );
-
-        final compact = encodedPayload.substring('MSSH1:'.length);
-        final envelope = Map<String, dynamic>.from(
-          jsonDecode(
-                utf8.decode(base64Url.decode(base64Url.normalize(compact))),
-              )
-              as Map,
-        );
+        final envelope = <String, dynamic>{
+          'v': 2,
+          'alg': 'AES-GCM-256',
+          'kdf': 'Argon2id',
+          'iter': 3,
+          'mem': 32768,
+          'lanes': 1,
+          'salt': base64Url.encode(List<int>.filled(16, 0)),
+          'nonce': base64Url.encode(List<int>.filled(12, 0)),
+          'mac': base64Url.encode(List<int>.filled(16, 0)),
+          'ciphertext': base64Url.encode([1]),
+          'checksum': base64Url.encode(List<int>.filled(32, 0)),
+        };
         envelope[field] = value;
         final tampered =
             'MSSH1:${base64Url.encode(utf8.encode(jsonEncode(envelope)))}';
@@ -1247,7 +1175,7 @@ void main() {
     });
 
     test('removes missing jump host references during import', () async {
-      final diagnosticsLogger = _RecordingDiagnosticsLogger();
+      final diagnosticsLogger = RecordingDiagnosticsLogger();
       final service = SecureTransferService(
         db,
         keyRepository,
@@ -1320,120 +1248,78 @@ void main() {
     test(
       'imports full migration in replace mode with self references',
       () async {
-        final parentGroupId = await db
-            .into(db.groups)
-            .insert(GroupsCompanion.insert(name: 'Parent Group'));
-        final childGroupId = await db
-            .into(db.groups)
-            .insert(
-              GroupsCompanion.insert(
-                name: 'Child Group',
-                parentId: Value(parentGroupId),
-              ),
-            );
-        final keyId = await keyRepository.insert(
-          SshKeysCompanion.insert(
-            name: 'Main Key',
-            keyType: 'ed25519',
-            publicKey: _publicKeyA,
-            privateKey: 'test-open-ssh-key-materialabc',
-          ),
-        );
-
-        final hostAId = await db
-            .into(db.hosts)
-            .insert(
-              HostsCompanion.insert(
-                label: 'A',
-                hostname: 'a.example.com',
-                username: 'root',
-                keyId: Value(keyId),
-                groupId: Value(childGroupId),
-              ),
-            );
-        await db
-            .into(db.hosts)
-            .insert(
-              HostsCompanion.insert(
-                label: 'B',
-                hostname: 'b.example.com',
-                username: 'root',
-                jumpHostId: Value(hostAId),
-                skipJumpHostOnSsids: const Value('Home WiFi\nOffice WiFi'),
-              ),
-            );
-
-        final parentSnippetFolderId = await db
-            .into(db.snippetFolders)
-            .insert(SnippetFoldersCompanion.insert(name: 'Parent Folder'));
-        final childSnippetFolderId = await db
-            .into(db.snippetFolders)
-            .insert(
-              SnippetFoldersCompanion.insert(
-                name: 'Child Folder',
-                parentId: Value(parentSnippetFolderId),
-              ),
-            );
-        final snippetId = await db
-            .into(db.snippets)
-            .insert(
-              SnippetsCompanion.insert(
-                name: 'List files',
-                command: 'ls -la',
-                folderId: Value(childSnippetFolderId),
-              ),
-            );
-        await (db.update(
-          db.hosts,
-        )..where((tbl) => tbl.id.equals(hostAId))).write(
-          HostsCompanion(
-            autoConnectCommand: const Value('ls -la'),
-            autoConnectSnippetId: Value(snippetId),
-          ),
-        );
-        await db
-            .into(db.portForwards)
-            .insert(
-              PortForwardsCompanion.insert(
-                name: 'pf',
-                hostId: hostAId,
-                forwardType: 'local',
-                localPort: 10022,
-                remoteHost: '127.0.0.1',
-                remotePort: 22,
-              ),
-            );
-        await db
-            .into(db.knownHosts)
-            .insert(
-              KnownHostsCompanion.insert(
-                hostname: 'example.com',
-                port: 22,
-                keyType: 'ssh-ed25519',
-                fingerprint: 'abc',
-                hostKey: 'ssh-ed25519 AAAA',
-              ),
-            );
         await db
             .into(db.settings)
-            .insert(SettingsCompanion.insert(key: 'theme_mode', value: 'dark'));
-
-        final migrationPayload = await transferService
-            .createFullMigrationPayload(transferPassphrase: '1234');
-
-        await db
-            .into(db.settings)
-            .insertOnConflictUpdate(
-              SettingsCompanion.insert(key: 'extra', value: '1'),
-            );
-
-        final decrypted = await transferService.decryptPayload(
-          encodedPayload: migrationPayload,
-          transferPassphrase: '1234',
-        );
-        await transferService.importFullMigrationPayload(
-          payload: decrypted,
+            .insert(SettingsCompanion.insert(key: 'extra', value: '1'));
+        await transferService.importMigrationData(
           mode: MigrationImportMode.replace,
+          data: {
+            'settings': {'theme_mode': 'dark'},
+            'groups': [
+              {'id': 101, 'name': 'Parent Group'},
+              {'id': 102, 'name': 'Child Group', 'parentId': 101},
+            ],
+            'keys': [
+              {
+                'id': 201,
+                'name': 'Main Key',
+                'keyType': 'ed25519',
+                'publicKey': _publicKeyA,
+                'privateKey': 'test-open-ssh-key-materialabc',
+              },
+            ],
+            'hosts': [
+              {
+                'id': 301,
+                'label': 'A',
+                'hostname': 'a.example.com',
+                'username': 'root',
+                'keyId': 201,
+                'groupId': 102,
+                'autoConnectCommand': 'ls -la',
+                'autoConnectSnippetId': 501,
+              },
+              {
+                'id': 302,
+                'label': 'B',
+                'hostname': 'b.example.com',
+                'username': 'root',
+                'jumpHostId': 301,
+                'skipJumpHostOnSsids': 'Home WiFi\nOffice WiFi',
+              },
+            ],
+            'snippetFolders': [
+              {'id': 401, 'name': 'Parent Folder'},
+              {'id': 402, 'name': 'Child Folder', 'parentId': 401},
+            ],
+            'snippets': [
+              {
+                'id': 501,
+                'name': 'List files',
+                'command': 'ls -la',
+                'folderId': 402,
+              },
+            ],
+            'portForwards': [
+              {
+                'name': 'pf',
+                'hostId': 301,
+                'forwardType': 'local',
+                'localPort': 10022,
+                'remoteHost': '127.0.0.1',
+                'remotePort': 22,
+              },
+            ],
+            'knownHosts': [
+              {
+                'hostname': 'example.com',
+                'port': 22,
+                'keyType': 'ssh-ed25519',
+                'fingerprint': 'abc',
+                'hostKey': 'ssh-ed25519 AAAA',
+              },
+            ],
+          },
         );
 
         final extraSetting = await (db.select(
@@ -1458,6 +1344,30 @@ void main() {
         expect(groups, hasLength(2));
         expect(snippetFolders, hasLength(2));
         expect(portForwards, hasLength(1));
+        final parentGroup = groups.firstWhere(
+          (group) => group.name == 'Parent Group',
+        );
+        final childGroup = groups.firstWhere(
+          (group) => group.name == 'Child Group',
+        );
+        final parentFolder = snippetFolders.firstWhere(
+          (folder) => folder.name == 'Parent Folder',
+        );
+        final childFolder = snippetFolders.firstWhere(
+          (folder) => folder.name == 'Child Folder',
+        );
+        expect(childGroup.parentId, parentGroup.id);
+        expect(hostA.groupId, childGroup.id);
+        expect(hostA.keyId, (await keyRepository.getAll()).single.id);
+        expect(hostB.jumpHostId, hostA.id);
+        expect(childFolder.parentId, parentFolder.id);
+        expect(importedSnippet.folderId, childFolder.id);
+        expect(portForwards.single.hostId, hostA.id);
+        expect(
+          (await db.select(db.knownHosts).get()).single.hostname,
+          'example.com',
+        );
+        expect((await db.select(db.settings).get()).single.value, 'dark');
       },
     );
 
@@ -1466,42 +1376,31 @@ void main() {
       () async {
         await db
             .into(db.settings)
-            .insert(SettingsCompanion.insert(key: 'theme_mode', value: 'dark'));
-
-        final migrationPayload = await transferService
-            .createFullMigrationPayload(transferPassphrase: '1234');
-
+            .insert(
+              SettingsCompanion.insert(key: 'theme_mode', value: 'light'),
+            );
         await db
             .into(db.settings)
-            .insertOnConflictUpdate(
-              SettingsCompanion.insert(key: 'extra', value: '1'),
-            );
-
-        final decrypted = await transferService.decryptPayload(
-          encodedPayload: migrationPayload,
-          transferPassphrase: '1234',
-        );
-        await transferService.importFullMigrationPayload(
-          payload: decrypted,
+            .insert(SettingsCompanion.insert(key: 'extra', value: '1'));
+        await transferService.importMigrationData(
+          data: {
+            'settings': {'theme_mode': 'dark', 'incoming': 'new'},
+          },
           mode: MigrationImportMode.merge,
         );
 
-        final extraSetting = await (db.select(
-          db.settings,
-        )..where((s) => s.key.equals('extra'))).getSingleOrNull();
-        final themeSetting = await (db.select(
-          db.settings,
-        )..where((s) => s.key.equals('theme_mode'))).getSingleOrNull();
-
-        expect(extraSetting, isNot(equals(null)));
-        expect(themeSetting?.value, 'dark');
+        final settings = await db.select(db.settings).get();
+        expect(
+          {for (final setting in settings) setting.key: setting.value},
+          {'theme_mode': 'dark', 'incoming': 'new', 'extra': '1'},
+        );
       },
     );
 
     test(
       'logs migration diagnostics without sensitive payload values',
       () async {
-        final diagnosticsLogger = _RecordingDiagnosticsLogger();
+        final diagnosticsLogger = RecordingDiagnosticsLogger();
         final service = SecureTransferService(
           db,
           keyRepository,
@@ -1991,65 +1890,61 @@ void main() {
       },
     );
 
-    for (final (threshold, name, privateKey, keyPassphrase, transferPassphrase)
+    for (final (
+          encryptedAtRest,
+          name,
+          privateKey,
+          keyPassphrase,
+          transferPassphrase,
+        )
         in [
           (
-            null,
+            false,
             'Deploy Key',
             'test-open-ssh-key-materialxyz',
             'key-passphrase',
             '1234',
           ),
-          (0, 'Threshold Key', 'test-open-ssh-key-thresholdxyz', null, 'pass'),
+          (
+            true,
+            'Unprotected Key',
+            'test-open-ssh-key-unprotectedxyz',
+            null,
+            'pass',
+          ),
         ]) {
-      test(
-        'encrypts and imports $name payload (threshold=$threshold)',
-        () async {
-          final service = threshold == null
-              ? transferService
-              : SecureTransferService(
-                  db,
-                  keyRepository,
-                  hostRepository,
-                  isolateAssemblyThresholdBytes: threshold,
-                );
-          final entry = SshKeysCompanion.insert(
-            name: name,
-            keyType: 'ed25519',
-            publicKey: _publicKeyA,
-            privateKey: privateKey,
-            passphrase: Value(keyPassphrase),
-          );
-          final keyId = threshold == null
-              ? await db.into(db.sshKeys).insert(entry)
-              : await keyRepository.insert(entry);
-          final key = await (db.select(
-            db.sshKeys,
-          )..where((k) => k.id.equals(keyId))).getSingle();
+      test('encrypts and imports $name payload', () async {
+        final entry = SshKeysCompanion.insert(
+          name: name,
+          keyType: 'ed25519',
+          publicKey: _publicKeyA,
+          privateKey: privateKey,
+          passphrase: Value(keyPassphrase),
+        );
+        final keyId = encryptedAtRest
+            ? await keyRepository.insert(entry)
+            : await db.into(db.sshKeys).insert(entry);
+        final key = await (db.select(
+          db.sshKeys,
+        )..where((k) => k.id.equals(keyId))).getSingle();
 
-          final encodedPayload = await service.createKeyPayload(
-            key: key,
-            transferPassphrase: transferPassphrase,
-          );
+        final encodedPayload = await transferService.createKeyPayload(
+          key: key,
+          transferPassphrase: transferPassphrase,
+        );
 
-          await db.delete(db.sshKeys).go();
+        await db.delete(db.sshKeys).go();
 
-          final decrypted = await service.decryptPayload(
-            encodedPayload: encodedPayload,
-            transferPassphrase: transferPassphrase,
-          );
-          final importedKey = await service.importKeyPayload(decrypted);
+        final decrypted = await transferService.decryptPayload(
+          encodedPayload: encodedPayload,
+          transferPassphrase: transferPassphrase,
+        );
+        final importedKey = await transferService.importKeyPayload(decrypted);
 
-          expect(importedKey.name, name);
-          expect(
-            importedKey.privateKey,
-            threshold == null
-                ? contains('test-open-ssh-key-material')
-                : privateKey,
-          );
-          expect(importedKey.passphrase, keyPassphrase);
-        },
-      );
+        expect(importedKey.name, name);
+        expect(importedKey.privateKey, privateKey);
+        expect(importedKey.passphrase, keyPassphrase);
+      });
     }
 
     test(
@@ -2166,49 +2061,23 @@ void main() {
     test(
       'rejects invalid auto-connect snippet reference in migration',
       () async {
-        final snippetId = await db
-            .into(db.snippets)
-            .insert(
-              SnippetsCompanion.insert(name: 'List files', command: 'ls -la'),
-            );
-        final hostId = await db
-            .into(db.hosts)
-            .insert(
-              HostsCompanion.insert(
-                label: 'A',
-                hostname: 'a.example.com',
-                username: 'root',
-                autoConnectCommand: const Value('ls -la'),
-                autoConnectSnippetId: Value(snippetId),
-              ),
-            );
-
-        final migrationPayload = await transferService
-            .createFullMigrationPayload(transferPassphrase: '1234');
-        final decrypted = await transferService.decryptPayload(
-          encodedPayload: migrationPayload,
-          transferPassphrase: '1234',
-        );
-
-        final rawHosts = List<Map<String, dynamic>>.from(
-          (decrypted.data['hosts'] as List).cast<Map>(),
-        );
-        final hostIndex = rawHosts.indexWhere((host) => host['id'] == hostId);
-        rawHosts[hostIndex] = {
-          ...rawHosts[hostIndex],
-          'autoConnectSnippetId': snippetId + 999,
-        };
-
-        final tamperedPayload = TransferPayload(
-          type: decrypted.type,
-          schemaVersion: decrypted.schemaVersion,
-          createdAt: decrypted.createdAt,
-          data: {...decrypted.data, 'hosts': rawHosts},
-        );
-
         await expectLater(
-          transferService.importFullMigrationPayload(
-            payload: tamperedPayload,
+          transferService.importMigrationData(
+            data: {
+              'snippets': [
+                {'id': 101, 'name': 'List files', 'command': 'ls -la'},
+              ],
+              'hosts': [
+                {
+                  'id': 201,
+                  'label': 'A',
+                  'hostname': 'a.example.com',
+                  'username': 'root',
+                  'autoConnectCommand': 'ls -la',
+                  'autoConnectSnippetId': 999,
+                },
+              ],
+            },
             mode: MigrationImportMode.merge,
           ),
           throwsFormatException,

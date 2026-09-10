@@ -2,10 +2,8 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"io"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -588,41 +586,6 @@ func TestCapabilityHintResponseMapParsesRecords(t *testing.T) {
 	if capabilityHintResponseMap([]byte("garbage")) != nil {
 		t.Fatal("record without a field separator should be ignored")
 	}
-}
-
-// recordingPty is a muxPty that captures everything written to the window's
-// child, so capability replies can be asserted without a real terminal.
-type recordingPty struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (p *recordingPty) Read([]byte) (int, error) {
-	return 0, io.EOF
-}
-
-func (p *recordingPty) Write(data []byte) (int, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.buf.Write(data)
-}
-
-func (p *recordingPty) Close() error {
-	return nil
-}
-
-func (p *recordingPty) Resize(int, int) error {
-	return nil
-}
-
-func (p *recordingPty) Fd() uintptr {
-	return 0
-}
-
-func (p *recordingPty) String() string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.buf.String()
 }
 
 // stubForegroundResize replaces the foreground-resize hooks with no-ops so tests

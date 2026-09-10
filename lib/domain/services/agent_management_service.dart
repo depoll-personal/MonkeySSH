@@ -928,7 +928,10 @@ class AgentManagementService {
     bool keepPartialOutputOnTimeout = false,
     SshExecPriority priority = SshExecPriority.normal,
   }) => session.runQueuedExec(() async {
-    final exec = await session.execute(command);
+    final exec = await openSshExec(
+      session.execute(command),
+      timeout ?? const Duration(seconds: 15),
+    );
     try {
       final output = StringBuffer();
       void add(String chunk) {

@@ -17,6 +17,91 @@ import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 
 void main() {
+  group('short-lived exec deadlines', () {
+    setUpAll(() => registerFallbackValue(Uint8List(0)));
+
+    for (final operation in ['one-shot', 'server-status', 'helper-version']) {
+      for (final opens in [false, true]) {
+        testWidgets(
+          '$operation bounds ${opens ? 'busy output' : 'channel opening'}',
+          (tester) async {
+            final client = _MockSshClient();
+            final installer = _MockMonkeyMuxInstaller();
+            final session = _buildSession(client, connectionId: 88001);
+            final service = MonkeyMuxService(installer: installer);
+            final opening = Completer<SSHSession>();
+            final stdout = StreamController<Uint8List>();
+            final channel = _buildSilentControlSession(stdout);
+            when(
+              () => installer.ensureInstalled(
+                session,
+                priority: SshExecPriority.normal,
+              ),
+            ).thenAnswer((_) async => _fakeInstallation);
+            when(
+              () => client.execute(any(), pty: any(named: 'pty')),
+            ).thenAnswer((_) => opens ? Future.value(channel) : opening.future);
+            final request = switch (operation) {
+              'one-shot' => service.injectInput(session, 'work', 'x'),
+              'server-status' => service.runningServerStatus(
+                session,
+                _fakeInstallation,
+                'work',
+              ),
+              _ => service.installedHelperVersion(session, _fakeInstallation),
+            };
+            final result = expectLater(
+              request,
+              operation == 'one-shot'
+                  ? throwsA(isA<TimeoutException>())
+                  : completion(isNull),
+            );
+            await tester.pump();
+            final blocker = Completer<void>();
+            final blocked = session.runQueuedExec(() => blocker.future);
+            var nextRan = false;
+            final next = session.runQueuedExec(() async {
+              nextRan = true;
+            });
+            expect(
+              pendingQueuedSshExecCountForTesting(session.connectionId),
+              1,
+            );
+            for (var second = 0; second < (opens ? 11 : 21); second++) {
+              if (opens && stdout.hasListener) {
+                stdout.add(
+                  Uint8List.fromList(
+                    utf8.encode(
+                      '{"type":"window_list","id":"unrelated","windows":[]}\n',
+                    ),
+                  ),
+                );
+              }
+              await tester.pump(const Duration(seconds: 1));
+            }
+            expect(nextRan, isTrue);
+            await result;
+            await next;
+            if (!opens) {
+              opening.complete(channel);
+              await tester.pump();
+            } else {
+              expect(stdout.hasListener, isFalse);
+            }
+            verify(channel.close).called(1);
+            verify(
+              () => client.execute(any(), pty: any(named: 'pty')),
+            ).called(1);
+            blocker.complete();
+            await blocked;
+            stdout.close().ignore();
+            await service.clearCache(session.connectionId);
+          },
+        );
+      }
+    }
+  });
+
   group('RemoteMuxBackendPresentation', () {
     test('parses stable storage values', () {
       expect(
@@ -587,74 +672,69 @@ void main() {
       );
     });
 
-    test('applies live Copilot session titles by pane pid', () {
-      const window = TmuxWindow(
-        index: 1,
-        id: '@7',
-        panePid: 42,
-        name: 'Copilot CLI',
-        isActive: true,
-        currentCommand: 'copilot',
-        paneTitle: 'Copilot CLI',
-      );
-
-      final windows = applyMonkeyMuxAgentSessionMetadataForTesting(
-        const [window],
-        const {
-          42: (sessionId: 'session-1', title: 'Implement MonkeyMux refresh'),
-        },
-        refreshedPanePids: const {42},
-      );
-
-      expect(windows.single.activeAgentSessionId, 'session-1');
-      expect(windows.single.agentSessionTitle, 'Implement MonkeyMux refresh');
-      expect(windows.single.displayTitle, 'Implement MonkeyMux refresh');
-    });
-
-    test('keeps Copilot session titles after a transient refreshed miss', () {
-      const window = TmuxWindow(
-        index: 1,
-        id: '@7',
-        panePid: 42,
-        name: 'Copilot CLI',
-        isActive: true,
-        currentCommand: 'copilot',
-        paneTitle: 'Copilot CLI',
-        activeAgentSessionId: 'stale-session',
-        agentSessionTitle: 'Stale Copilot session',
-      );
-
-      final windows = applyMonkeyMuxAgentSessionMetadataForTesting(
-        const [window],
-        const {},
-        refreshedPanePids: const {42},
-      );
-
-      expect(windows.single.activeAgentSessionId, 'stale-session');
-      expect(windows.single.agentSessionTitle, 'Stale Copilot session');
-      expect(windows.single.displayTitle, 'Stale Copilot session');
-    });
-
-    test('keeps existing Copilot metadata when pane was not refreshed', () {
-      const window = TmuxWindow(
-        index: 1,
-        id: '@7',
-        panePid: 42,
-        name: 'Copilot CLI',
-        isActive: true,
-        currentCommand: 'copilot',
-        paneTitle: 'Copilot CLI',
-        activeAgentSessionId: 'session-1',
-        agentSessionTitle: 'Current Copilot session',
-      );
-
-      final windows = applyMonkeyMuxAgentSessionMetadataForTesting(const [
-        window,
-      ], const {});
-
-      expect(windows.single.activeAgentSessionId, 'session-1');
-      expect(windows.single.agentSessionTitle, 'Current Copilot session');
-    });
+    for (final (name, oldId, oldTitle, output, id, title, displayTitle) in [
+      (
+        'live title',
+        null,
+        null,
+        'copilot\x1fsession-1\x1f501\x1f42\x1fmedium\x1fImplement MonkeyMux refresh\n',
+        'session-1',
+        'Implement MonkeyMux refresh',
+        'Implement MonkeyMux refresh',
+      ),
+      (
+        'absent metadata',
+        'stale-session',
+        'Stale Copilot session',
+        '',
+        'stale-session',
+        'Stale Copilot session',
+        'Stale Copilot session',
+      ),
+      (
+        'untitled replacement',
+        'session-a',
+        'Task A',
+        'copilot\x1fsession-b\x1f501\x1f42\x1fmedium\x1f\n',
+        'session-b',
+        null,
+        'Copilot CLI',
+      ),
+    ]) {
+      test('Copilot metadata: $name', () {
+        final original = [
+          TmuxWindow(
+            index: 1,
+            id: '@7',
+            panePid: 42,
+            name: 'Copilot CLI',
+            isActive: true,
+            currentCommand: 'copilot',
+            paneTitle: 'Copilot CLI',
+            activeAgentSessionId: oldId,
+            agentSessionTitle: oldTitle,
+            activeAgentSessionConfidence: name == 'untitled replacement'
+                ? AgentSessionConfidence.high
+                : null,
+          ),
+        ];
+        final windows = applyMonkeyMuxAgentMetadataForTesting(original, output);
+        expect(windows.single.activeAgentSessionId, id);
+        expect(windows.single.agentSessionTitle, title);
+        expect(windows.single.displayTitle, displayTitle);
+        if (output.isEmpty) expect(windows, same(original));
+        if (name == 'untitled replacement') {
+          expect(
+            windows.single.activeAgentSessionConfidence,
+            AgentSessionConfidence.medium,
+          );
+          expect(
+            applyMonkeyMuxAgentMetadataForTesting(windows, output),
+            same(windows),
+          );
+        }
+      });
+    }
   });
 
   group('MonkeyMux input injection', () {

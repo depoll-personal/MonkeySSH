@@ -25,6 +25,7 @@ import threading
 import time
 import struct
 import termios
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -181,16 +182,19 @@ def _run_target(
     if target.platform == 'ios':
         device_id = _boot_ios_simulator(_ios_simulator_name(target))
         _reset_ios_app_state(device_id)
-        restore_android = None
     else:
         device_id = _android_device_id()
-        restore_android = _configure_android_display(target, device_id)
 
-    try:
-        _run_flutter_capture(target, device_id, demo, scene=scene)
-    finally:
-        if restore_android is not None:
-            restore_android()
+    dart_defines = _capture_defines(target, demo)
+    dart_defines.append('--dart-define=STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR=true')
+    if scene is not None:
+        dart_defines.append(f'--dart-define=STORE_SCREENSHOT_SCENE={scene}')
+    if demo.demo_image_b64:
+        dart_defines.append(
+            f'--dart-define=STORE_SCREENSHOT_DEMO_IMAGE_B64={demo.demo_image_b64}',
+        )
+    with _android_display_override(target, device_id):
+        _run_flutter_capture(target, device_id, dart_defines)
 
 
 def _flutter_environment() -> dict[str, str]:
@@ -253,19 +257,11 @@ def _flutter_command(
 def _run_flutter_capture(
     target: ScreenshotTarget,
     device_id: str,
-    demo: StoreDemoEnvironment,
+    dart_defines: list[str],
     *,
-    scene: str | None = None,
+    capture_delay: float = 0.4,
 ) -> None:
     env = _flutter_environment()
-    dart_defines = _capture_defines(target, demo)
-    dart_defines.append('--dart-define=STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR=true')
-    if scene is not None:
-        dart_defines.append(f'--dart-define=STORE_SCREENSHOT_SCENE={scene}')
-    if demo.demo_image_b64:
-        dart_defines.append(
-            f'--dart-define=STORE_SCREENSHOT_DEMO_IMAGE_B64={demo.demo_image_b64}',
-        )
     command = _flutter_command(target, device_id, env, dart_defines)
 
     process = subprocess.Popen(
@@ -288,7 +284,7 @@ def _run_flutter_capture(
             line = raw_line.strip()
             if READY_MARKER in line:
                 payload = json.loads(line.split(READY_MARKER, 1)[1])
-                time.sleep(0.4)
+                time.sleep(capture_delay)
                 _capture_native_screenshot(
                     target=target,
                     device_id=device_id,
@@ -732,15 +728,12 @@ class StoreDemoEnvironment:
         print(
             f'Capturing light-mode demo image on {target.name} at {output_path}...',
         )
-        restore_android = None
         if target.platform == 'ios':
             device_id = _boot_ios_simulator(_ios_simulator_name(target))
             _reset_ios_app_state(device_id)
         else:
             device_id = _android_device_id()
-            restore_android = _configure_android_display(target, device_id)
 
-        env = _flutter_environment()
         dart_defines = _capture_defines(target, self) + [
             '--dart-define=STORE_SCREENSHOT_THEME_MODE=light',
             '--dart-define=STORE_SCREENSHOT_LIGHT_DEMO_IMAGE=true',
@@ -748,47 +741,9 @@ class StoreDemoEnvironment:
             '--dart-define=STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR=true',
             '--dart-define=STORE_SCREENSHOT_SCENE_HOLD_MS=1800',
         ]
-        command = _flutter_command(target, device_id, env, dart_defines)
-        process = subprocess.Popen(
-            command,
-            cwd=ROOT,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-        assert process.stdout is not None
-        saw_done = False
-        failure: str | None = None
-        try:
-            for raw_line in process.stdout:
-                print(raw_line, end='')
-                line = raw_line.strip()
-                if READY_MARKER in line:
-                    payload = json.loads(line.split(READY_MARKER, 1)[1])
-                    time.sleep(0.5)
-                    _capture_native_screenshot(
-                        target=target,
-                        device_id=device_id,
-                        paths=[Path(path) for path in payload['paths']],
-                    )
-                if ERROR_MARKER in line:
-                    failure = line.split(ERROR_MARKER, 1)[1].strip()
-                    break
-                if DONE_MARKER in line:
-                    saw_done = True
-                    break
-        finally:
-            _terminate_process(process, timeout=20)
-            if restore_android is not None:
-                restore_android()
+        with _android_display_override(target, device_id):
+            _run_flutter_capture(target, device_id, dart_defines, capture_delay=0.5)
 
-        if failure is not None:
-            raise RuntimeError(f'Light-mode demo image capture failed: {failure}')
-        if not saw_done:
-            raise RuntimeError('Light-mode demo image capture ended before DONE.')
         if not output_path.is_file() or output_path.stat().st_size < 10_000:
             raise RuntimeError(
                 f'Light-mode demo image was not written: {output_path}',
@@ -2158,59 +2113,40 @@ def _android_device_id() -> str:
     raise RuntimeError('No running Android device or emulator found')
 
 
-def _configure_android_display(
-    target: ScreenshotTarget,
-    device_id: str,
-):
-    adb = _adb_path()
-    original_size = subprocess.check_output(
-        [str(adb), '-s', device_id, 'shell', 'wm', 'size'],
-        text=True,
-    )
-    original_density = subprocess.check_output(
-        [str(adb), '-s', device_id, 'shell', 'wm', 'density'],
-        text=True,
-    )
+@contextmanager
+def _android_display_override(target: ScreenshotTarget, device_id: str):
+    if target.platform != 'android':
+        yield
+        return
 
-    subprocess.run(
-        [str(adb), '-s', device_id, 'shell', 'wm', 'size', target.android_size or 'reset'],
-        check=True,
-    )
-    subprocess.run(
-        [
-            str(adb),
-            '-s',
-            device_id,
-            'shell',
-            'wm',
-            'density',
-            target.android_density or 'reset',
-        ],
-        check=True,
-    )
+    adb_command = [str(_adb_path()), '-s', device_id, 'shell', 'wm']
+    originals = {}
+    for setting in ('size', 'density'):
+        output = subprocess.check_output([*adb_command, setting], text=True)
+        marker = f'Override {setting}:'
+        originals[setting] = (
+            output.split(marker, 1)[1].splitlines()[0].strip()
+            if marker in output else 'reset'
+        )
 
-    def restore() -> None:
-        if 'Override size:' in original_size:
-            size = original_size.split('Override size:', 1)[1].splitlines()[0].strip()
-            subprocess.run([str(adb), '-s', device_id, 'shell', 'wm', 'size', size], check=True)
-        else:
-            subprocess.run([str(adb), '-s', device_id, 'shell', 'wm', 'size', 'reset'], check=True)
-
-        if 'Override density:' in original_density:
-            density = (
-                original_density.split('Override density:', 1)[1].splitlines()[0].strip()
-            )
-            subprocess.run(
-                [str(adb), '-s', device_id, 'shell', 'wm', 'density', density],
-                check=True,
-            )
-        else:
-            subprocess.run(
-                [str(adb), '-s', device_id, 'shell', 'wm', 'density', 'reset'],
-                check=True,
-            )
-
-    return restore
+    try:
+        for setting, value in (
+            ('size', target.android_size), ('density', target.android_density),
+        ):
+            subprocess.run([*adb_command, setting, value or 'reset'], check=True)
+        yield
+    finally:
+        failed = sys.exc_info()[0] is not None
+        restore_error = None
+        for setting, value in originals.items():
+            try:
+                subprocess.run([*adb_command, setting, value], check=True)
+            except Exception as error:
+                print(f'Warning: could not restore Android {setting}', file=sys.stderr)
+                if restore_error is None:
+                    restore_error = error
+        if restore_error is not None and not failed:
+            raise restore_error
 
 
 def _adb_path() -> Path:

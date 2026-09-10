@@ -46,7 +46,10 @@ class TerminalScreenMuxFixture {
   final MonkeyMuxService monkeyMuxService;
   final windowEvents = StreamController<TmuxWindowChangeEvent>();
 
-  Future<void> dispose() => windowEvents.close();
+  /// Closes the window-event stream without awaiting delivery: a
+  /// single-subscription controller that was never listened to (for
+  /// example when the tmux backend is active) never completes `close()`.
+  void dispose() => unawaited(windowEvents.close());
 
   void stubPrefetch() {
     when(

@@ -126,6 +126,25 @@ void main() {
     managedByPackageManager: true,
   );
 
+  AgentRuntimeInfo secondUpdate({bool withMetadata = true}) => AgentRuntimeInfo(
+    definition: agentCliRuntimeDefinitions[1],
+    status: AgentRuntimeStatus.updateAvailable,
+    installedVersion: '2.0.0',
+    latestVersion: '2.1.0',
+    executablePath: withMetadata ? '/usr/local/bin/copilot' : null,
+    detectionSource: withMetadata ? 'npm global' : null,
+    managedByPackageManager: true,
+  );
+
+  Future<AgentRuntimeActionResult> updateRuntime(AgentRuntimeInfo runtime) =>
+      service.installOrUpdate(
+        session,
+        runtime.definition,
+        update: true,
+        current: runtime,
+        onOutput: any(named: 'onOutput'),
+      );
+
   void replaceRuntime(AgentRuntimeInfo runtime) {
     final index = runtimes.indexWhere(
       (entry) => entry.definition.id == runtime.definition.id,
@@ -412,38 +431,12 @@ void main() {
   );
 
   testWidgets('Update all runs every confirmed update', (tester) async {
-    final second = AgentRuntimeInfo(
-      definition: agentCliRuntimeDefinitions[1],
-      status: AgentRuntimeStatus.updateAvailable,
-      installedVersion: '2.0.0',
-      latestVersion: '2.1.0',
-      executablePath: '/usr/local/bin/copilot',
-      detectionSource: 'npm global',
-      managedByPackageManager: true,
-    );
+    final second = secondUpdate();
     runtimes[1] = second;
     final updates = [runtimes.first, second];
     for (final runtime in updates) {
-      when(
-        () => service.installOrUpdate(
-          session,
-          runtime.definition,
-          update: true,
-          current: runtime,
-          onOutput: any(named: 'onOutput'),
-        ),
-      ).thenAnswer((_) async {
-        final index = runtimes.indexWhere(
-          (entry) => entry.definition.id == runtime.definition.id,
-        );
-        runtimes[index] = AgentRuntimeInfo(
-          definition: runtime.definition,
-          status: AgentRuntimeStatus.installed,
-          installedVersion: runtime.latestVersion,
-          executablePath: runtime.executablePath,
-          detectionSource: runtime.detectionSource,
-          managedByPackageManager: true,
-        );
+      when(() => updateRuntime(runtime)).thenAnswer((_) async {
+        replaceRuntime(installedFrom(runtime));
         return const AgentRuntimeActionResult(
           succeeded: true,
           output: 'updated',
@@ -459,17 +452,49 @@ void main() {
     expect(find.text('All agents updated'), findsNothing);
     expect(find.byType(AlertDialog), findsNothing);
     for (final runtime in updates) {
-      verify(
-        () => service.installOrUpdate(
-          session,
-          runtime.definition,
-          update: true,
-          current: runtime,
-          onOutput: any(named: 'onOutput'),
-        ),
-      ).called(1);
+      verify(() => updateRuntime(runtime)).called(1);
     }
   });
+
+  for (final throws in [false, true]) {
+    testWidgets(
+      'Update all continues after ${throws ? 'an exception' : 'a failure'} '
+      'and refreshes once',
+      (tester) async {
+        final first = runtimes.first;
+        final second = secondUpdate(withMetadata: false);
+        runtimes[1] = second;
+        final started = <String>[];
+        for (final runtime in [first, second]) {
+          when(() => updateRuntime(runtime)).thenAnswer((_) async {
+            started.add(runtime.definition.id);
+            if (runtime == first && throws) {
+              throw StateError('connection closed');
+            }
+            return AgentRuntimeActionResult(
+              succeeded: runtime != first,
+              output: 'finished',
+            );
+          });
+        }
+        await pumpScreen(tester);
+        clearInteractions(service);
+        await tester.tap(find.byKey(const ValueKey('agent-update-all')));
+        await tester.pumpAndSettle();
+        expect(started, [first.definition.id, second.definition.id]);
+        expect(find.text('Some updates failed'), findsOneWidget);
+        expect(
+          find.text('Could not update ${first.definition.label}.'),
+          findsOneWidget,
+        );
+        expect(find.byType(CircularProgressIndicator), findsNothing);
+        verify(() => service.refreshAll(session)).called(1);
+        await tester.tap(find.text('Close'));
+        await tester.pumpAndSettle();
+        expect(refreshHandler(tester), isNotNull);
+      },
+    );
+  }
 
   testWidgets('action errors clear progress and show a failure dialog', (
     tester,
@@ -652,15 +677,7 @@ void main() {
   testWidgets('Update all queues later agents and locks competing commands', (
     tester,
   ) async {
-    final second = AgentRuntimeInfo(
-      definition: agentCliRuntimeDefinitions[1],
-      status: AgentRuntimeStatus.updateAvailable,
-      installedVersion: '2.0.0',
-      latestVersion: '2.1.0',
-      executablePath: '/usr/local/bin/copilot',
-      detectionSource: 'npm global',
-      managedByPackageManager: true,
-    );
+    final second = secondUpdate();
     runtimes[1] = second;
     final updates = [runtimes.first, second];
     final started = <String>[];
@@ -668,19 +685,14 @@ void main() {
     for (final runtime in updates) {
       final id = runtime.definition.id;
       completers[id] = Completer<AgentRuntimeActionResult>();
-      when(
-        () => service.installOrUpdate(
-          session,
-          runtime.definition,
-          update: true,
-          current: runtime,
-          onOutput: any(named: 'onOutput'),
-        ),
-      ).thenAnswer((_) {
+      when(() => updateRuntime(runtime)).thenAnswer((_) {
         started.add(id);
         return completers[id]!.future;
       });
     }
+    when(
+      () => service.refreshAll(session),
+    ).thenAnswer((_) async => runtimes.toList());
     await pumpScreen(tester);
     expect(find.text('2 updates available'), findsOneWidget);
 
@@ -738,7 +750,10 @@ void main() {
 
     expect(started, ['cli:claude', 'cli:copilot']);
     expect(find.text('Updating 2 of 2'), findsOneWidget);
-    expect(inRow('cli:claude', find.text('Installed v1.1.0')), findsOneWidget);
+    expect(
+      inRow('cli:claude', find.text('Update v1.0.0 → v1.1.0')),
+      findsOneWidget,
+    );
     expect(
       inRow('cli:claude', find.byType(CircularProgressIndicator)),
       findsNothing,
@@ -756,7 +771,7 @@ void main() {
           .onPressed,
       isNull,
     );
-    verify(() => service.refreshAll(session)).called(1);
+    verifyNever(() => service.refreshAll(session));
 
     replaceRuntime(installedFrom(second));
     completers['cli:copilot']!.complete(
@@ -779,27 +794,11 @@ void main() {
   ) async {
     final states = StreamController<MonetizationState>();
     addTearDown(states.close);
-    final second = AgentRuntimeInfo(
-      definition: agentCliRuntimeDefinitions[1],
-      status: AgentRuntimeStatus.updateAvailable,
-      installedVersion: '2.0.0',
-      latestVersion: '2.1.0',
-      executablePath: '/usr/local/bin/copilot',
-      detectionSource: 'npm global',
-      managedByPackageManager: true,
-    );
+    final second = secondUpdate();
     runtimes[1] = second;
     final first = runtimes.first;
     final firstUpdate = Completer<AgentRuntimeActionResult>();
-    when(
-      () => service.installOrUpdate(
-        session,
-        first.definition,
-        update: true,
-        current: first,
-        onOutput: any(named: 'onOutput'),
-      ),
-    ).thenAnswer((_) => firstUpdate.future);
+    when(() => updateRuntime(first)).thenAnswer((_) => firstUpdate.future);
     await pumpScreen(tester, states: states.stream);
 
     await tester.tap(find.byKey(const ValueKey('agent-update-all')));

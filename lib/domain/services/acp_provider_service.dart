@@ -79,10 +79,7 @@ class AcpProviderService {
 
   List<AcpProvider> _combineProviders(
     List<AcpCustomProviderDefinition> customProviders,
-  ) => [
-    for (final builtin in builtinProviders) AcpBuiltinProviderView(builtin),
-    for (final definition in customProviders) AcpCustomProviderView(definition),
-  ];
+  ) => [...builtinProviders, ...customProviders];
 }
 
 /// Provider for [AcpProviderService].

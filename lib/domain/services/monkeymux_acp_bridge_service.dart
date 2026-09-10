@@ -438,8 +438,9 @@ final class MonkeyMuxAcpBridgeService {
     SSHSession? channel;
     StreamSubscription<Uint8List>? stderrSubscription;
     try {
-      channel = await session.execute(
-        _buildHelperCommand(installation, arguments),
+      channel = await openSshExec(
+        session.execute(_buildHelperCommand(installation, arguments)),
+        _helperTimeout,
       );
       stderrSubscription = channel.stderr.listen(
         (_) {},
@@ -637,8 +638,11 @@ final class MonkeyMuxAcpTransport implements AcpDecodedTransport {
         priority: SshExecPriority.normal,
       );
       if (_closed || _terminalFailure || generation != _generation) return;
-      channel = await session.execute(
-        _buildHelperCommand(installation, ['acp', 'connect', _bridgeId]),
+      channel = await openSshExec(
+        session.execute(
+          _buildHelperCommand(installation, ['acp', 'connect', _bridgeId]),
+        ),
+        _handshakeTimeout,
       );
       if (_closed || _terminalFailure || generation != _generation) {
         channel.close();

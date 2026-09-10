@@ -73,7 +73,7 @@ jobs:
   monkeymux-assets:
     name: Build MonkeyMux Assets
     needs: changes
-    if: needs.changes.outputs.run_check == 'true'
+    if: needs.changes.outputs.run_check == 'true' || needs.changes.outputs.go == 'true'
     runs-on: ubicloud-standard-4
     timeout-minutes: 10
     steps:
@@ -180,15 +180,14 @@ jobs:
           # ShellCheck/Pyflakes versions from the runner image.
           "$RUNNER_TEMP/actionlint" -shellcheck= -pyflakes=
 
-      - name: Test CI change classification and workflow contracts
-        run: python3 -m unittest discover -s test/scripts -p 'ci_changes_test.py'
-
-      - name: Test MonkeyMux cache validation and invalidation
-        run: python3 -m unittest discover -s test/scripts -p 'monkeymux_cache_test.py'
+      - name: Test Python scripts
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --quiet Pillow
+          .venv/bin/python -m unittest discover -s test/scripts -p '*_test.py'
 
       - name: Test deployment orchestration
         run: |
-          python3 -m unittest discover -s test/scripts -p 'deployment_ci_test.py'
           node --test test/scripts/resolve_preview_artifact_test.cjs test/scripts/preview_deploy_comments_test.cjs
           ruby test/scripts/store_delivery_test.rb
           ruby test/scripts/match_git_persistence_test.rb
@@ -201,15 +200,6 @@ jobs:
 
       - name: Test workflow job graph
         run: ruby test/scripts/workflow_job_graph_test.rb
-
-      - name: Test SQLite prefetch isolation
-        run: python3 -m unittest discover -s test/scripts -p 'sqlite_native_assets_test.py'
-
-      - name: Test Windows UTF conversion failure paths
-        run: python3 -m unittest discover -s test/scripts -p 'windows_utf8_test.py'
-
-      - name: Test store-assets archive safety
-        run: python3 -m unittest discover -s test/scripts -p 'store_assets_test.py'
 
   test:
     name: Test (Shard ${{ matrix.shard-index }}/4)

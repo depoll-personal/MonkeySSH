@@ -81,7 +81,7 @@ func TestWriteWindowInputDoesNotHoldServerLockDuringWrite(t *testing.T) {
 }
 
 func TestAcpAttachAfterStopDoesNotRegisterClient(t *testing.T) {
-	bridge := newAuditAcpBridge()
+	bridge := newTestAcpBridge()
 	server, peer := net.Pipe()
 	defer peer.Close()
 	done := make(chan struct{})

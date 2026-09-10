@@ -31,6 +31,7 @@ import 'host_key_prompt_handler_provider.dart';
 import 'host_key_verification.dart';
 import 'interactive_auth_prompt.dart';
 import 'local_notification_service.dart';
+import 'openssh_key_generator.dart';
 import 'port_forward_browser_service.dart';
 import 'settings_service.dart';
 import 'ssh_error_policy.dart';
@@ -299,8 +300,7 @@ String normalizeTerminalOutputForRemoteShell(String data) =>
 /// xterm.dart 4.0.0 tracks IRM (`CSI 4 h/l`) but does not shift existing cells
 /// when printable characters arrive while the mode is active. Injecting ICH
 /// before each printable cell preserves behavior from editors such as nano,
-/// while [pendingInput] keeps split escape sequences from leaking printable
-/// bytes into the renderer.
+/// while the decoder retains split escape sequences until complete.
 ///
 /// xterm.dart 4.0.0 also corrupts its line buffer when RI (`ESC M`) scrolls a
 /// vertical margin region down. When cursor state is provided, that RI is
@@ -310,89 +310,134 @@ String normalizeTerminalOutputForRemoteShell(String data) =>
 /// xterm.dart also treats private `CSI > ... m` keyboard modifier controls as
 /// SGR attributes. Dropping those controls prevents TUIs such as OpenCode from
 /// accidentally enabling underline/bold while painting spaces.
-@visibleForTesting
-({String output, String pendingInput, bool insertMode, int pendingScanOffset})
-adaptTerminalInsertModeOutputForXterm({
-  required String input,
-  required String pendingInput,
-  required bool insertMode,
-  int pendingScanOffset = 0,
-  int? terminalColumns,
-  int? terminalRows,
-  int? cursorColumn,
-  int? cursorRow,
-  int? marginTop,
-  int? marginBottom,
-  bool originMode = false,
-}) {
-  final combinedInput = pendingInput + input;
-  final output = StringBuffer();
-  var cursor = 0;
-  var nextInsertMode = insertMode;
-  final cursorTracker = _TerminalOutputCursorTracker(
-    columns: terminalColumns,
-    rows: terminalRows,
-    cursorColumn: cursorColumn,
-    cursorRow: cursorRow,
-    marginTop: marginTop,
-    marginBottom: marginBottom,
-    originMode: originMode,
-  );
+class TerminalXtermOutputDecoder {
+  final _sequence = StringBuffer();
+  _TerminalSequenceState? _state;
+  bool _previousEscape = false;
+  String _pendingSurrogate = '';
+  bool _insertMode = false;
 
-  while (cursor < combinedInput.length) {
-    final codeUnit = combinedInput.codeUnitAt(cursor);
-    if (codeUnit == _terminalEscapeCodeUnit) {
-      // Only the carried-over incomplete sequence (always at index 0) can
-      // resume a prior scan; later sequences scan from their own body.
-      final endIndex = _terminalEscapeSequenceEndIndex(
-        combinedInput,
-        cursor,
-        resumeBodyFrom: cursor == 0 ? pendingScanOffset : 0,
-      );
-      if (endIndex == null) {
-        // Still incomplete: we have now scanned to the end, so the next call
-        // resumes one character back (to catch a split `ESC \` terminator).
-        final scanned = combinedInput.length - cursor;
-        return (
-          output: output.toString(),
-          pendingInput: combinedInput.substring(cursor),
-          insertMode: nextInsertMode,
-          pendingScanOffset: scanned > 1 ? scanned - 1 : 0,
-        );
-      }
+  /// Number of code units retained until a sequence or surrogate completes.
+  int get pendingCodeUnits => _sequence.length + _pendingSurrogate.length;
 
-      final sequence = combinedInput.substring(cursor, endIndex);
-      if (!_shouldDropTerminalOutputSequenceForXterm(sequence)) {
-        output.write(cursorTracker.adaptEscapeSequence(sequence));
-        final insertModeUpdate = _terminalInsertModeUpdate(sequence);
-        if (insertModeUpdate != null) {
-          nextInsertMode = insertModeUpdate;
-        }
-      }
-      cursor = endIndex;
-      continue;
-    }
+  /// Counts sequence code units materialized for the renderer.
+  @visibleForTesting
+  int materializedSequenceCodeUnits = 0;
 
-    final rune = _terminalRuneAt(combinedInput, cursor);
-    final runeLength = _terminalRuneLength(rune);
-    if (nextInsertMode && _isTerminalGraphicRune(rune)) {
-      final width = _terminalCellWidth(rune);
-      for (var cell = 0; cell < width; cell += 1) {
-        output.write(_terminalInsertBlankCharacterSequence);
-      }
-    }
-    output.write(combinedInput.substring(cursor, cursor + runeLength));
-    cursorTracker.writeRune(rune);
-    cursor += runeLength;
+  /// Discards partial output and resets insert mode for a new shell.
+  void reset() {
+    _sequence.clear();
+    _state = null;
+    _previousEscape = false;
+    _pendingSurrogate = '';
+    _insertMode = false;
+    materializedSequenceCodeUnits = 0;
   }
 
-  return (
-    output: output.toString(),
-    pendingInput: '',
-    insertMode: nextInsertMode,
-    pendingScanOffset: 0,
-  );
+  /// Adapts the next chunk using the renderer's current cursor state.
+  ({String output, bool insertMode}) add({
+    required String input,
+    int? terminalColumns,
+    int? terminalRows,
+    int? cursorColumn,
+    int? cursorRow,
+    int? marginTop,
+    int? marginBottom,
+    bool originMode = false,
+  }) {
+    final combinedInput = _pendingSurrogate.isEmpty
+        ? input
+        : _pendingSurrogate + input;
+    _pendingSurrogate = '';
+    final output = StringBuffer();
+    var cursor = 0;
+    final cursorTracker = _TerminalOutputCursorTracker(
+      columns: terminalColumns,
+      rows: terminalRows,
+      cursorColumn: cursorColumn,
+      cursorRow: cursorRow,
+      marginTop: marginTop,
+      marginBottom: marginBottom,
+      originMode: originMode,
+    );
+    while (cursor < combinedInput.length) {
+      if (_state != null) {
+        final start = cursor;
+        while (cursor < combinedInput.length && _state != null) {
+          _scanSequenceCodeUnit(combinedInput.codeUnitAt(cursor++));
+        }
+        _sequence.write(combinedInput.substring(start, cursor));
+        if (_state != null) break;
+        final sequence = _sequence.toString();
+        materializedSequenceCodeUnits += sequence.length;
+        _sequence.clear();
+        if (!_shouldDropTerminalOutputSequenceForXterm(sequence)) {
+          output.write(cursorTracker.adaptEscapeSequence(sequence));
+          _insertMode = _terminalInsertModeUpdate(sequence) ?? _insertMode;
+        }
+        continue;
+      }
+      final codeUnit = combinedInput.codeUnitAt(cursor);
+      if (codeUnit == _terminalEscapeCodeUnit) {
+        _sequence.write(_terminalEscape);
+        _state = _TerminalSequenceState.escape;
+        cursor++;
+        continue;
+      }
+      if (cursor == combinedInput.length - 1 &&
+          codeUnit >= 0xD800 &&
+          codeUnit <= 0xDBFF) {
+        _pendingSurrogate = combinedInput.substring(cursor);
+        break;
+      }
+      final rune = _terminalRuneAt(combinedInput, cursor);
+      final runeLength = _terminalRuneLength(rune);
+      if (_insertMode && _isTerminalGraphicRune(rune)) {
+        for (var cell = 0; cell < _terminalCellWidth(rune); cell++) {
+          output.write(_terminalInsertBlankCharacterSequence);
+        }
+      }
+      output.write(combinedInput.substring(cursor, cursor + runeLength));
+      cursorTracker.writeRune(rune);
+      cursor += runeLength;
+    }
+    return (output: output.toString(), insertMode: _insertMode);
+  }
+
+  void _scanSequenceCodeUnit(int codeUnit) {
+    switch (_state!) {
+      case _TerminalSequenceState.escape:
+        switch (codeUnit) {
+          case _terminalCsiIntroducerCodeUnit:
+            _state = _TerminalSequenceState.csi;
+          case _terminalDcsIntroducerCodeUnit:
+          case _terminalOscIntroducerCodeUnit:
+          case _terminalSosIntroducerCodeUnit:
+          case _terminalPmIntroducerCodeUnit:
+          case _terminalApcIntroducerCodeUnit:
+            _state = _TerminalSequenceState.string;
+            _previousEscape = false;
+          default:
+            _state = _isTerminalEscapeIntermediate(codeUnit)
+                ? _TerminalSequenceState.intermediate
+                : null;
+        }
+      case _TerminalSequenceState.csi:
+        if (codeUnit >= 0x40 && codeUnit <= 0x7E) _state = null;
+      case _TerminalSequenceState.string:
+        if (codeUnit == _terminalBellCodeUnit ||
+            (_previousEscape &&
+                codeUnit == _terminalStringTerminatorCodeUnit)) {
+          _state = null;
+        }
+        _previousEscape = codeUnit == _terminalEscapeCodeUnit;
+      case _TerminalSequenceState.intermediate:
+        if (!_isTerminalEscapeIntermediate(codeUnit)) _state = null;
+    }
+  }
 }
+
+enum _TerminalSequenceState { escape, csi, string, intermediate }
 
 class _TerminalOutputCursorTracker {
   _TerminalOutputCursorTracker({
@@ -761,83 +806,6 @@ const _terminalTmuxPassthroughStart = '${_terminalEscape}Ptmux;';
 
 String _formatTerminalModeReport(int mode, int status) =>
     '\x1b[?$mode;$status\$y';
-
-/// Finds the end index of the escape sequence beginning at [start].
-///
-/// [resumeBodyFrom] lets a caller that already scanned part of an incomplete
-/// sequence (carried as `pendingInput`) resume the terminator search instead of
-/// rescanning from the sequence body. This keeps re-feeding a long sequence
-/// (e.g. a multi-megabyte Kitty graphics APC split across slices) O(n) overall
-/// rather than O(n^2). The caller must include a one-character overlap so a
-/// two-byte ST terminator (`ESC \`) split across the boundary is still found.
-int? _terminalEscapeSequenceEndIndex(
-  String input,
-  int start, {
-  int resumeBodyFrom = 0,
-}) {
-  if (start + 1 >= input.length) {
-    return null;
-  }
-
-  final introducer = input.codeUnitAt(start + 1);
-  switch (introducer) {
-    case _terminalCsiIntroducerCodeUnit:
-      return _terminalCsiEndIndex(input, math.max(start + 2, resumeBodyFrom));
-    case _terminalDcsIntroducerCodeUnit:
-    case _terminalOscIntroducerCodeUnit:
-    case _terminalSosIntroducerCodeUnit:
-    case _terminalPmIntroducerCodeUnit:
-    case _terminalApcIntroducerCodeUnit:
-      return _terminalStringEndIndex(
-        input,
-        math.max(start + 2, resumeBodyFrom),
-      );
-  }
-
-  var cursor = math.max(start + 1, resumeBodyFrom);
-  while (cursor < input.length &&
-      _isTerminalEscapeIntermediate(input.codeUnitAt(cursor))) {
-    cursor += 1;
-  }
-  if (cursor >= input.length) {
-    return null;
-  }
-  return cursor + 1;
-}
-
-int? _terminalCsiEndIndex(String input, int start) {
-  var cursor = start;
-  while (cursor < input.length) {
-    final codeUnit = input.codeUnitAt(cursor);
-    if (codeUnit >= 0x40 && codeUnit <= 0x7E) {
-      return cursor + 1;
-    }
-    cursor += 1;
-  }
-  return null;
-}
-
-int? _terminalStringEndIndex(String input, int start) {
-  var cursor = start;
-  while (cursor < input.length) {
-    final codeUnit = input.codeUnitAt(cursor);
-    if (codeUnit == _terminalBellCodeUnit) {
-      return cursor + 1;
-    }
-    if (codeUnit == _terminalEscapeCodeUnit) {
-      if (cursor + 1 >= input.length) {
-        return null;
-      }
-      if (input.codeUnitAt(cursor + 1) == _terminalStringTerminatorCodeUnit) {
-        return cursor + 2;
-      }
-      cursor += 1;
-      continue;
-    }
-    cursor += 1;
-  }
-  return null;
-}
 
 bool _isTerminalEscapeIntermediate(int codeUnit) =>
     codeUnit >= 0x20 && codeUnit <= 0x2F;
@@ -2027,6 +1995,8 @@ class SshService {
     SshConnectionCancellationToken? cancellationToken,
   }) async {
     SSHClient? client;
+    SSHSocket? unownedSocket;
+    var connected = false;
     final dependentClients = <SSHClient>[];
     SSHClient? jumpClient;
     void report(SshConnectionState state, String message) {
@@ -2068,6 +2038,49 @@ class SshService {
       final verificationService = _createHostKeyVerificationService(config);
       final authGate = _InteractiveAuthGate();
       final authHandlers = _buildInteractiveAuthHandlers(config, authGate);
+
+      final identities = await guard(_parseIdentities(config));
+      cancellationToken?.throwIfCancelled();
+
+      Future<void> authenticate(
+        SSHSocket socket,
+        SSHHostkeyVerifyHandler verify,
+      ) async {
+        unownedSocket = socket;
+        report(
+          SshConnectionState.authenticating,
+          isJumpHost ? 'Authenticating with jump host…' : 'Authenticating…',
+        );
+        final createdClient = _clientFactory(
+          socket,
+          username: config.username,
+          onVerifyHostKey: verify,
+          onPasswordRequest: authHandlers.onPasswordRequest,
+          onUserInfoRequest: authHandlers.onUserInfoRequest,
+          identities: identities,
+          keepAliveInterval: config.keepAliveInterval,
+        );
+        client = createdClient;
+        unownedSocket = null;
+        await _awaitAuthentication(
+          createdClient,
+          authGate,
+          timeout: config.connectionTimeout,
+          isJumpHost: isJumpHost,
+          cancellationToken: cancellationToken,
+        );
+      }
+
+      SSHHostkeyVerifyHandler verifyProbedKey(VerifiedHostKey key) =>
+          (_, fingerprint) {
+            if (!_probedHostKeyMatchesCallback(key, fingerprint)) {
+              throw HostKeyVerificationException(
+                'The host key for ${config.hostname}:${config.port} changed '
+                'between verification and authentication.',
+              );
+            }
+            return true;
+          };
 
       // Handle jump host
       if (config.jumpHost != null) {
@@ -2128,6 +2141,7 @@ class SshService {
         knownHosts.getByHost(config.hostname, config.port),
       );
 
+      PendingHostTrustUpdate? pendingHostTrustUpdate;
       if (trustedHost == null) {
         report(
           SshConnectionState.connecting,
@@ -2138,190 +2152,88 @@ class SshService {
           config: config,
           cancellationToken: cancellationToken,
         );
-        final pendingHostTrustUpdate = await guard(
+        pendingHostTrustUpdate = await guard(
           verificationService.verify(presentedHostKey),
         );
-        await pendingHostTrustUpdate.persistTrustDecision(knownHosts);
-
-        final socket = await openEndpointSocket();
-
-        report(
-          SshConnectionState.authenticating,
-          isJumpHost ? 'Authenticating with jump host…' : 'Authenticating…',
+        await pendingHostTrustUpdate!.persistTrustDecision(knownHosts);
+        await authenticate(
+          await openEndpointSocket(),
+          verifyProbedKey(presentedHostKey),
         );
-        client = _clientFactory(
-          socket,
-          username: config.username,
-          onVerifyHostKey: (_, fingerprint) {
-            if (!_probedHostKeyMatchesCallback(presentedHostKey, fingerprint)) {
-              throw HostKeyVerificationException(
-                'The host key for ${config.hostname}:${config.port} changed '
-                'between verification and authentication.',
-              );
-            }
-            return true;
-          },
-          onPasswordRequest: authHandlers.onPasswordRequest,
-          onUserInfoRequest: authHandlers.onUserInfoRequest,
-          identities: _parseIdentities(config),
-          keepAliveInterval: config.keepAliveInterval,
-        );
-
-        // Bound authentication waits so the progress dialog can surface a
-        // recoverable error instead of hanging indefinitely.
-        await _awaitAuthentication(
-          client,
-          authGate,
-          timeout: config.connectionTimeout,
-          isJumpHost: isJumpHost,
-          cancellationToken: cancellationToken,
-        );
-        report(
-          SshConnectionState.connected,
-          isJumpHost ? 'Jump host connected.' : 'SSH connection established.',
-        );
-        await pendingHostTrustUpdate.commitAfterAuthentication(knownHosts);
-
-        DiagnosticsLogService.instance.info(
-          'ssh.connect',
-          'connect_success',
-          fields: {'isJumpHost': isJumpHost, 'trustedHostKnown': false},
-        );
-        return SshConnectionResult(
-          success: true,
-          client: client,
-          dependentClients: dependentClients,
-        );
-      }
-
-      final preparedSocket = _prepareHostKeyCapture(await openEndpointSocket());
-      String? callbackKeyType;
-      String? rejectedCallbackFingerprint;
-      var rejectedTrustedHostKey = false;
-
-      report(
-        SshConnectionState.authenticating,
-        isJumpHost ? 'Authenticating with jump host…' : 'Authenticating…',
-      );
-      client = _clientFactory(
-        preparedSocket.socket,
-        username: config.username,
-        onVerifyHostKey: (type, fingerprint) {
-          callbackKeyType = type;
-          final trusted = _trustedHostMatchesCallback(trustedHost, fingerprint);
-          rejectedTrustedHostKey = !trusted;
-          if (!trusted) {
-            rejectedCallbackFingerprint = _formatCallbackHostKeyFingerprint(
+      } else {
+        unownedSocket = await openEndpointSocket();
+        final preparedSocket = _prepareHostKeyCapture(unownedSocket!);
+        String? callbackKeyType;
+        String? rejectedCallbackFingerprint;
+        var rejectedTrustedHostKey = false;
+        try {
+          await authenticate(preparedSocket.socket, (type, fingerprint) {
+            callbackKeyType = type;
+            final trusted = _trustedHostMatchesCallback(
+              trustedHost,
               fingerprint,
             );
-          }
-          return trusted;
-        },
-        onPasswordRequest: authHandlers.onPasswordRequest,
-        onUserInfoRequest: authHandlers.onUserInfoRequest,
-        identities: _parseIdentities(config),
-        keepAliveInterval: config.keepAliveInterval,
-      );
-
-      try {
-        await _awaitAuthentication(
-          client,
-          authGate,
-          timeout: config.connectionTimeout,
-          isJumpHost: isJumpHost,
-          cancellationToken: cancellationToken,
-        );
-      } on SSHHostkeyError {
-        if (!rejectedTrustedHostKey) {
-          rethrow;
-        }
-
-        await client.close();
-        client = null;
-
-        report(
-          SshConnectionState.connecting,
-          isJumpHost ? 'Verifying jump host key…' : 'Verifying host key…',
-        );
-        final changedHostKey = await _readPresentedHostKey(
-          preparedSocket.hostKeySource,
-          config: config,
-          keyType: callbackKeyType,
-          cancellationToken: cancellationToken,
-        );
-        _confirmCapturedHostKeyMatchesCallback(
-          changedHostKey,
-          rejectedCallbackFingerprint,
-          config: config,
-        );
-        final pendingHostTrustUpdate = await guard(
-          verificationService.verify(changedHostKey),
-        );
-
-        final retrySocket = await openEndpointSocket();
-        report(
-          SshConnectionState.authenticating,
-          isJumpHost ? 'Authenticating with jump host…' : 'Authenticating…',
-        );
-        client = _clientFactory(
-          retrySocket,
-          username: config.username,
-          onVerifyHostKey: (_, fingerprint) {
-            if (!_probedHostKeyMatchesCallback(changedHostKey, fingerprint)) {
-              throw HostKeyVerificationException(
-                'The host key for ${config.hostname}:${config.port} changed '
-                'between verification and authentication.',
+            rejectedTrustedHostKey = !trusted;
+            if (!trusted) {
+              rejectedCallbackFingerprint = _formatCallbackHostKeyFingerprint(
+                fingerprint,
               );
             }
-            return true;
-          },
-          onPasswordRequest: authHandlers.onPasswordRequest,
-          onUserInfoRequest: authHandlers.onUserInfoRequest,
-          identities: _parseIdentities(config),
-          keepAliveInterval: config.keepAliveInterval,
-        );
-
-        await _awaitAuthentication(
-          client,
-          authGate,
-          timeout: config.connectionTimeout,
-          isJumpHost: isJumpHost,
-          cancellationToken: cancellationToken,
-        );
-        report(
-          SshConnectionState.connected,
-          isJumpHost ? 'Jump host connected.' : 'SSH connection established.',
-        );
-        await pendingHostTrustUpdate.commitAfterAuthentication(knownHosts);
-
-        DiagnosticsLogService.instance.info(
-          'ssh.connect',
-          'connect_success',
-          fields: {'isJumpHost': isJumpHost, 'trustedHostKnown': true},
-        );
-        return SshConnectionResult(
-          success: true,
-          client: client,
-          dependentClients: dependentClients,
-        );
+            return trusted;
+          });
+        } on SSHHostkeyError {
+          if (!rejectedTrustedHostKey) rethrow;
+          await client!.close();
+          client = null;
+          report(
+            SshConnectionState.connecting,
+            isJumpHost ? 'Verifying jump host key…' : 'Verifying host key…',
+          );
+          final changedHostKey = await _readPresentedHostKey(
+            preparedSocket.hostKeySource,
+            config: config,
+            keyType: callbackKeyType,
+            cancellationToken: cancellationToken,
+          );
+          _confirmCapturedHostKeyMatchesCallback(
+            changedHostKey,
+            rejectedCallbackFingerprint,
+            config: config,
+          );
+          pendingHostTrustUpdate = await guard(
+            verificationService.verify(changedHostKey),
+          );
+          await authenticate(
+            await openEndpointSocket(),
+            verifyProbedKey(changedHostKey),
+          );
+        }
       }
 
       report(
         SshConnectionState.connected,
         isJumpHost ? 'Jump host connected.' : 'SSH connection established.',
       );
-      await knownHosts.markTrustedHostSeen(
-        hostname: trustedHost.hostname,
-        port: trustedHost.port,
-        keyType: trustedHost.keyType,
-        fingerprint: trustedHost.fingerprint,
-        encodedHostKey: trustedHost.hostKey,
-      );
+      if (pendingHostTrustUpdate != null) {
+        await pendingHostTrustUpdate.commitAfterAuthentication(knownHosts);
+      } else {
+        await knownHosts.markTrustedHostSeen(
+          hostname: trustedHost!.hostname,
+          port: trustedHost.port,
+          keyType: trustedHost.keyType,
+          fingerprint: trustedHost.fingerprint,
+          encodedHostKey: trustedHost.hostKey,
+        );
+      }
+      connected = true;
 
       DiagnosticsLogService.instance.info(
         'ssh.connect',
         'connect_success',
-        fields: {'isJumpHost': isJumpHost, 'trustedHostKnown': true},
+        fields: {
+          'isJumpHost': isJumpHost,
+          'trustedHostKnown': trustedHost != null,
+        },
       );
       return SshConnectionResult(
         success: true,
@@ -2334,11 +2246,11 @@ class SshService {
         'connect_cancelled',
         fields: {'isJumpHost': isJumpHost},
       );
-      await _closeSshClients(client, dependentClients);
       return const SshConnectionResult.userCancelled();
     } on Object catch (e) {
       final error = switch (e) {
         HostKeyVerificationException(:final message) => message,
+        FormatException(:final message) => message,
         SSHHostkeyError(:final message) =>
           'Host key verification failed: $message',
         SSHAuthFailError(:final message) => 'Authentication failed: $message',
@@ -2357,8 +2269,15 @@ class SshService {
         'connect_failed',
         fields: {'isJumpHost': isJumpHost, 'errorType': e.runtimeType},
       );
-      await _closeSshClients(client, dependentClients);
       return SshConnectionResult(success: false, error: error);
+    } finally {
+      if (!connected) {
+        try {
+          unownedSocket?.destroy();
+        } finally {
+          await _closeSshClients(client, dependentClients);
+        }
+      }
     }
   }
 
@@ -2596,20 +2515,22 @@ class SshService {
     String? callbackKeyType;
     String? callbackFingerprint;
 
-    if (socket is! HostKeySource) {
-      probeClient = _clientFactory(
-        verificationSocket.socket,
-        username: config.username,
-        onVerifyHostKey: (type, fingerprint) {
-          callbackKeyType = type;
-          callbackFingerprint = _formatCallbackHostKeyFingerprint(fingerprint);
-          return true;
-        },
-      );
-      probeAuthentication = _drainHostKeyProbeAuthentication(probeClient);
-    }
-
     try {
+      if (socket is! HostKeySource) {
+        probeClient = _clientFactory(
+          verificationSocket.socket,
+          username: config.username,
+          onVerifyHostKey: (type, fingerprint) {
+            callbackKeyType = type;
+            callbackFingerprint = _formatCallbackHostKeyFingerprint(
+              fingerprint,
+            );
+            return true;
+          },
+        );
+        probeAuthentication = _drainHostKeyProbeAuthentication(probeClient);
+      }
+
       final presentedHostKey = await _readPresentedHostKey(
         verificationSocket.hostKeySource,
         config: config,
@@ -2782,34 +2703,35 @@ class SshService {
   /// Check if a connection ID is active.
   bool isConnected(int connectionId) => _sessions.containsKey(connectionId);
 
-  List<SSHKeyPair>? _parseIdentities(SshConnectionConfig config) {
-    final identityKeyPairs = <SSHKeyPair>[];
-    if (config.identityKeys != null) {
-      for (final key in config.identityKeys!) {
-        final parsed = _parsePrivateKey(key.privateKey, key.passphrase);
-        if (parsed != null) {
-          identityKeyPairs.addAll(parsed);
-        }
+  Future<List<SSHKeyPair>?> _parseIdentities(SshConnectionConfig config) async {
+    final identities = <SSHKeyPair>[];
+    for (final key in config.identityKeys ?? const <SshKey>[]) {
+      try {
+        identities.addAll(
+          await parseOpenSshPrivateKey(key.privateKey, key.passphrase),
+        );
+      } on FormatException {
+        continue;
+      } on SSHError {
+        continue;
       }
     }
-    if (identityKeyPairs.isNotEmpty) {
-      return identityKeyPairs;
-    }
-    if (config.privateKey != null) {
-      return _parsePrivateKey(config.privateKey!, config.passphrase);
-    }
-    return null;
-  }
-
-  List<SSHKeyPair>? _parsePrivateKey(String privateKey, String? passphrase) {
+    if (identities.isNotEmpty) return identities;
+    if (config.privateKey == null) return null;
     try {
-      if (passphrase != null && passphrase.isNotEmpty) {
-        return SSHKeyPair.fromPem(privateKey, passphrase);
-      }
-      return SSHKeyPair.fromPem(privateKey);
+      final parsed = await parseOpenSshPrivateKey(
+        config.privateKey!,
+        config.passphrase,
+      );
+      if (parsed.isNotEmpty) return parsed;
     } on FormatException {
-      return null;
+      // Report an unusable explicitly selected key below.
+    } on SSHError {
+      // Includes missing or incorrect passphrases.
     }
+    throw const FormatException(
+      'The selected SSH key is invalid or its passphrase is incorrect.',
+    );
   }
 
   static SSHClient _defaultClientFactory(
@@ -2944,27 +2866,146 @@ class _PreparedHostKeySocket {
   final HostKeySource hostKeySource;
 }
 
-class _NonClosingStreamSink<T> implements StreamSink<T> {
-  const _NonClosingStreamSink(this._delegate);
+Future<void> _relayForward(
+  Socket socket,
+  FutureOr<SSHForwardChannel?> Function() openChannel, {
+  Future<void>? stopped,
+  Duration? openTimeout,
+  void Function(SSHForwardChannel)? destroyChannel,
+}) async {
+  SSHForwardChannel? forward;
+  StreamIterator<Uint8List>? incoming;
+  StreamIterator<Uint8List>? outgoing;
+  Future<void>? socketFlush;
+  var finished = false;
+  var forwardSinkClosed = false;
+  var closingForwardSink = false;
+  var socketClosed = false;
+  var closingSocket = false;
+  final unexpectedClose = Completer<void>();
+  void closed() {
+    if (!unexpectedClose.isCompleted) unexpectedClose.complete();
+  }
 
-  final StreamSink<T> _delegate;
+  void failed(Object error, StackTrace stackTrace) {
+    if (!unexpectedClose.isCompleted) {
+      unexpectedClose.completeError(error, stackTrace);
+    }
+  }
 
-  @override
-  void add(T data) => _delegate.add(data);
+  void destroy(SSHForwardChannel channel) {
+    if (destroyChannel != null) {
+      destroyChannel(channel);
+    } else {
+      channel.destroy();
+    }
+  }
 
-  @override
-  void addError(Object error, [StackTrace? stackTrace]) =>
-      _delegate.addError(error, stackTrace);
-
-  @override
-  Future<void> addStream(Stream<T> stream) => _delegate.addStream(stream);
-
-  @override
-  Future<void> close() async {}
-
-  @override
-  Future<void> get done => _delegate.done;
+  // Observe write-side errors before awaiting channel creation.
+  unawaited(
+    socket.done.then<void>((_) {
+      socketClosed = true;
+      if (!closingSocket) closed();
+    }, onError: failed),
+  );
+  try {
+    final opening = Future<SSHForwardChannel?>.sync(openChannel).then((
+      channel,
+    ) {
+      if (channel == null) return null;
+      if (finished) {
+        destroy(channel);
+        return null;
+      }
+      unawaited(
+        channel.sink.done.then<void>(
+          (_) {
+            forwardSinkClosed = true;
+            if (!closingForwardSink) closed();
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            forwardSinkClosed = true;
+            failed(error, stackTrace);
+          },
+        ),
+      );
+      return forward = channel;
+    });
+    outgoing = StreamIterator(socket);
+    final source = outgoing;
+    final socketToForward = () async {
+      while (await source.moveNext()) {
+        final channel = await opening;
+        // A delivered channel may already have a completed sink.done future.
+        // Let its observer run before writing queued socket bytes.
+        await Future<void>.value();
+        if (channel == null || finished || forwardSinkClosed) return;
+        channel.sink.add(source.current);
+        await channel.flush();
+      }
+      final channel = forward;
+      if (channel != null && !finished && !forwardSinkClosed) {
+        // EOF closes only this direction. The peer can still send a response.
+        closingForwardSink = true;
+        await channel.sink.close();
+      }
+    }();
+    final pending = Future.any<SSHForwardChannel?>([
+      opening,
+      socketToForward.then((_) => null),
+      unexpectedClose.future.then((_) => null),
+      if (stopped != null) stopped.then((_) => null),
+    ]);
+    final channel = await (openTimeout == null
+        ? pending
+        : pending.timeout(openTimeout));
+    if (channel == null) return;
+    incoming = StreamIterator(channel.stream);
+    final response = incoming;
+    final forwardToSocket = () async {
+      while (await response.moveNext()) {
+        if (finished || socketClosed) return;
+        socket.add(response.current);
+        await (socketFlush = socket.flush());
+      }
+      closingSocket = true;
+      await socket.close();
+    }();
+    // Normal EOF preserves the opposite direction; errors, external sink
+    // closure, and tunnel cancellation terminate both pumps.
+    await Future.any<void>([
+      Future.wait([forwardToSocket, socketToForward], eagerError: true),
+      unexpectedClose.future,
+      ?stopped,
+    ]);
+  } finally {
+    finished = true;
+    try {
+      try {
+        if (socketFlush != null) await socketFlush;
+        if (!closingSocket) {
+          closingSocket = true;
+          await socket.close();
+        }
+      } finally {
+        await Future.wait([
+          if (incoming != null) incoming.cancel(),
+          if (outgoing != null) outgoing.cancel(),
+        ]);
+      }
+    } on SocketException {
+      socket.destroy();
+      rethrow;
+    } finally {
+      if (forward != null) destroy(forward!);
+    }
+  }
 }
+
+bool _isClosedForwardSinkError(Object error) =>
+    error is StateError &&
+    (error.message == 'Cannot add event after closing' ||
+        error.message == 'StreamSink is closed');
 
 Map<String, Object?> _diagnosticSshExecErrorFields(Object error) => {
   'errorType': error.runtimeType,
@@ -3412,6 +3453,19 @@ Set<RemoteTcpListenerKey> remoteTcpListenerExclusionKeys(
   }
   return {remoteTcpListenerKey(host, port)};
 }
+
+Set<RemoteTcpListenerKey> _manualListenerExclusions(
+  Iterable<ActiveTunnelInfo> tunnels,
+) => tunnels
+    .where(
+      (tunnel) =>
+          !tunnel.isAutomatic && isPortForwardLoopbackHost(tunnel.remoteHost),
+    )
+    .expand(
+      (tunnel) =>
+          remoteTcpListenerExclusionKeys(tunnel.remoteHost, tunnel.remotePort),
+    )
+    .toSet();
 
 String _canonicalRemoteTcpListenerHost(String host) {
   final normalized = host
@@ -5008,21 +5062,7 @@ class SshSession {
       return;
     }
 
-    final manualRemoteListeners = _activeTunnels.values
-        .where(
-          (tunnel) =>
-              // Reverse forwards listen on the SSH host, so their listener must
-              // never be auto-forwarded back to this device.
-              !tunnel.isAutomatic &&
-              isPortForwardLoopbackHost(tunnel.remoteHost),
-        )
-        .expand(
-          (tunnel) => remoteTcpListenerExclusionKeys(
-            tunnel.remoteHost,
-            tunnel.remotePort,
-          ),
-        )
-        .toSet();
+    final manualRemoteListeners = _manualListenerExclusions(activeTunnels);
     final blockedListeners = {
       ...manualRemoteListeners,
       ..._automaticPortForwardExcludedListeners,
@@ -5387,7 +5427,10 @@ class SshSession {
         ? _windowsAutomaticPortDiscoveryCommand()
         : _posixAutomaticPortDiscoveryCommand();
     final output = await runQueuedExec(() async {
-      final execSession = await execute(command);
+      final execSession = await openSshExec(
+        execute(command),
+        _automaticPortDiscoveryTimeout,
+      );
       try {
         execSession.stderr.drain<void>().ignore();
         return await _readAutomaticPortDiscoveryOutput(execSession);
@@ -5582,21 +5625,17 @@ while($true){
     SSHSession execSession,
   ) async {
     final output = StringBuffer();
-    try {
-      await for (final chunk
-          in execSession.stdout
-              .cast<List<int>>()
-              .transform(utf8.decoder)
-              .timeout(_automaticPortDiscoveryTimeout)) {
-        output.write(chunk);
-        final text = output.toString();
-        final markerIndex = text.indexOf(_automaticPortDiscoveryDoneMarker);
-        if (markerIndex >= 0) {
-          return text.substring(0, markerIndex);
-        }
+    await for (final chunk
+        in execSession.stdout
+            .cast<List<int>>()
+            .transform(utf8.decoder)
+            .timeout(_automaticPortDiscoveryTimeout)) {
+      output.write(chunk);
+      final text = output.toString();
+      final markerIndex = text.indexOf(_automaticPortDiscoveryDoneMarker);
+      if (markerIndex >= 0) {
+        return text.substring(0, markerIndex);
       }
-    } on TimeoutException {
-      rethrow;
     }
     throw StateError('Remote listener scan ended before its completion marker');
   }
@@ -6131,134 +6170,23 @@ while($true){
     required String remoteHost,
     required int remotePort,
   }) async {
-    SSHForwardChannel? forward;
-    StreamIterator<Uint8List>? incoming;
-    StreamIterator<Uint8List>? outgoing;
-    Future<void>? socketFlush;
-    var finished = false;
-    var forwardSinkClosed = false;
-    var socketClosed = false;
-    final forwardSinkDone = Completer<void>();
-    // Observe write-side socket errors even while channel opening is pending.
-    final socketDone = socket.done.whenComplete(() => socketClosed = true);
     try {
-      final opening =
-          Future<SSHForwardChannel?>.sync(
-            () => _isClosing || tunnel.stopped.isCompleted
-                ? null
-                : client.forwardLocal(remoteHost, remotePort),
-          ).then<SSHForwardChannel?>((channel) {
-            if (channel == null) return null;
-            if (finished) {
-              _destroyLocalForwardChannel(channel);
-              return null;
-            }
-            // A sink may already be closed when forwardLocal delivers it.
-            // Watch its completion independently of the channel's read side.
-            unawaited(
-              channel.sink.done.then<void>(
-                (_) {
-                  forwardSinkClosed = true;
-                  forwardSinkDone.complete();
-                },
-                onError: (Object error, StackTrace stackTrace) {
-                  forwardSinkClosed = true;
-                  forwardSinkDone.completeError(error, stackTrace);
-                },
-              ),
-            );
-            return forward = channel;
-          });
-      outgoing = StreamIterator(socket);
-      final source = outgoing;
-      final socketToForward = () async {
-        while (await source.moveNext()) {
-          final channel = await opening;
-          if (channel == null ||
-              finished ||
-              forwardSinkClosed ||
-              tunnel.stopped.isCompleted) {
-            return;
-          }
-          channel.sink.add(source.current);
-          await channel.flush();
-        }
-      }();
-      final channel = await Future.any<SSHForwardChannel?>([
-        opening,
-        socketToForward.then((_) => null),
-        socketDone.then((_) => null),
-        forwardSinkDone.future.then((_) => null),
-        tunnel.stopped.future.then((_) => null),
-      ]).timeout(portForwardStartTimeout);
-      if (channel == null) return;
-
-      incoming = StreamIterator(channel.stream);
-      // Avoid addStream's exclusive sink binding: a channel can close at any
-      // point, including before forwardLocal's future delivers it. Async pumps
-      // also turn synchronous sink errors into futures observed by Future.any.
-      await Future.any<void>([
-        _pumpLocalForward(
-          incoming,
-          socket.add,
-          () => socketFlush = socket.flush(),
-          isFinished: () =>
-              finished || socketClosed || tunnel.stopped.isCompleted,
-        ),
-        socketToForward,
-        socketDone,
-        forwardSinkDone.future,
-        tunnel.stopped.future,
-      ]);
-    } on SSHError catch (error) {
-      _logLocalForwardFailure(error);
-    } on Exception catch (error) {
-      _logLocalForwardFailure(error);
+      await _relayForward(
+        socket,
+        () => _isClosing || tunnel.stopped.isCompleted
+            ? null
+            : client.forwardLocal(remoteHost, remotePort),
+        stopped: tunnel.stopped.future,
+        openTimeout: portForwardStartTimeout,
+        destroyChannel: _destroyLocalForwardChannel,
+      );
     } on Object catch (error) {
-      // These are the SDK's closed-sink outcomes. A concurrent addStream or
-      // any unrelated StateError remains a programming error.
-      if (error is! StateError ||
-          (error.message != 'Cannot add event after closing' &&
-              error.message != 'StreamSink is closed')) {
+      if (error is! SSHError &&
+          error is! Exception &&
+          !_isClosedForwardSinkError(error)) {
         rethrow;
       }
       _logLocalForwardFailure(error);
-    } finally {
-      finished = true;
-      try {
-        try {
-          // A remote close can win while the response is still flushing.
-          // Wait for that flush before closing the write side, since both
-          // close() and a second flush would otherwise race the bound sink.
-          if (socketFlush != null) await socketFlush;
-          await socket.close();
-        } finally {
-          await Future.wait([
-            if (incoming != null) incoming.cancel(),
-            if (outgoing != null) outgoing.cancel(),
-          ]);
-        }
-      } on SocketException catch (error) {
-        // The peer can reset during shutdown too. Cleanup errors must stay
-        // owned by this connection, just like errors from either pump.
-        _logLocalForwardFailure(error);
-        socket.destroy();
-      } finally {
-        if (forward != null) _destroyLocalForwardChannel(forward!);
-      }
-    }
-  }
-
-  Future<void> _pumpLocalForward(
-    StreamIterator<Uint8List> source,
-    void Function(List<int>) add,
-    Future<void> Function() flush, {
-    required bool Function() isFinished,
-  }) async {
-    while (await source.moveNext()) {
-      if (isFinished()) return;
-      add(source.current);
-      await flush();
     }
   }
 
@@ -6347,12 +6275,13 @@ while($true){
         Socket? socket;
         try {
           socket = await Socket.connect(localHost, localPort);
-          final remoteToLocal = channel.stream.cast<List<int>>().pipe(socket);
-          final localToRemote = socket.cast<List<int>>().pipe(
-            _NonClosingStreamSink(channel.sink),
-          );
-          await Future.any<void>([remoteToLocal, localToRemote]);
-        } on Exception catch (e) {
+          await _relayForward(socket, () => channel);
+        } on Object catch (e) {
+          if (e is! Exception &&
+              e is! SSHError &&
+              !_isClosedForwardSinkError(e)) {
+            rethrow;
+          }
           DiagnosticsLogService.instance.warning(
             'ssh.forward',
             'remote_connection_failed',
@@ -6362,10 +6291,12 @@ while($true){
             debugPrint('Remote forward connection error: $e');
           }
         } finally {
-          try {
-            channel.destroy();
-          } on SSHError catch (_) {
-            // The transport may already be closed during channel teardown.
+          if (socket == null) {
+            try {
+              channel.destroy();
+            } on SSHError catch (_) {
+              // The transport may already be closed during channel teardown.
+            }
           }
           try {
             socket?.destroy();
@@ -8291,22 +8222,9 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     final processRoots = sessions
         .expand((session) => session.automaticPortForwardProcessRoots)
         .toSet();
-    final activeManualRemoteListeners = sessions
-        .expand((session) => session.activeTunnels)
-        .where(
-          (tunnel) =>
-              // Reverse forwards listen on the SSH host, so their listener must
-              // never be auto-forwarded back to this device.
-              !tunnel.isAutomatic &&
-              isPortForwardLoopbackHost(tunnel.remoteHost),
-        )
-        .expand(
-          (tunnel) => remoteTcpListenerExclusionKeys(
-            tunnel.remoteHost,
-            tunnel.remotePort,
-          ),
-        )
-        .toSet();
+    final activeManualRemoteListeners = _manualListenerExclusions(
+      sessions.expand((session) => session.activeTunnels),
+    );
     if (sessions.isEmpty) {
       _automaticForwardDesiredExclusionsByHost.remove(host.id);
       return;
@@ -9047,19 +8965,9 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     final hostSessions = getConnectionsForHost(
       hostId,
     ).map(getSession).whereType<SshSession>().toList(growable: false);
-    final manualRemoteListeners = hostSessions
-        .expand((session) => session.activeTunnels)
-        .where(
-          (tunnel) =>
-              tunnel.isLocal &&
-              !tunnel.isAutomatic &&
-              isPortForwardLoopbackHost(tunnel.remoteHost),
-        )
-        .map(
-          (tunnel) =>
-              remoteTcpListenerKey(tunnel.remoteHost, tunnel.remotePort),
-        )
-        .toSet();
+    final manualRemoteListeners = _manualListenerExclusions(
+      hostSessions.expand((session) => session.activeTunnels),
+    );
     final endpointSession = hostSessions.isEmpty ? null : hostSessions.first;
     final endpointKey = endpointSession == null
         ? null
@@ -9173,13 +9081,6 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     }
     return true;
   }
-
-  /// Whether [hostId] currently has a cancellable connection attempt.
-  bool canCancelConnectionAttempt(int hostId) =>
-      _connectionCancellationTokens[hostId]?.any(
-        (token) => !token.isCancelled,
-      ) ??
-      false;
 
   /// Surface an unexpected connection failure in the shared attempt state.
   void reportConnectionAttemptError(int hostId, String message) {

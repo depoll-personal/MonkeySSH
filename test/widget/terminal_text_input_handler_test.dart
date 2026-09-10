@@ -2861,36 +2861,22 @@ void main() {
     testWidgets(
       'keeps the cursor aligned when replacing across an emoji boundary and trailing space',
       (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
         const initialText = 'go 👩🏽‍💻 now';
         const selectionStart = _deleteDetectionMarker.length + 'go '.length;
         const selectionEnd =
             _deleteDetectionMarker.length + 'go 👩🏽‍💻 '.length;
 
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
+        final harness = await pumpTerminalInputHarness(
+          tester,
+          attachController: false,
         );
-
-        focusNode.requestFocus();
-        await tester.pump();
 
         tester.testTextInput.updateEditingValue(
           _editingValue(initialText, selectionOffset: initialText.length),
         );
         await tester.pump();
 
-        terminalOutput.clear();
+        harness.terminalOutput.clear();
 
         tester.testTextInput.updateEditingValue(
           const TextEditingValue(
@@ -2915,48 +2901,34 @@ void main() {
 
         expect(
           terminalStateFromEvents(
-            terminalOutput,
+            harness.terminalOutput,
             initialText: initialText,
             initialCursorOffset: initialText.characters.length,
           ),
           (text: 'go late now', cursorOffset: 'go late'.length),
         );
 
-        focusNode.dispose();
+        await disposeTerminalInputHarness(tester, harness);
       },
     );
 
     testWidgets(
       'keeps the cursor aligned when replacing the first word and trailing space at the buffer start',
       (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
         const initialText = 'teh world';
         const selectionEnd = _deleteDetectionMarker.length + 'teh '.length;
 
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
+        final harness = await pumpTerminalInputHarness(
+          tester,
+          attachController: false,
         );
-
-        focusNode.requestFocus();
-        await tester.pump();
 
         tester.testTextInput.updateEditingValue(
           _editingValue(initialText, selectionOffset: initialText.length),
         );
         await tester.pump();
 
-        terminalOutput.clear();
+        harness.terminalOutput.clear();
 
         tester.testTextInput.updateEditingValue(
           const TextEditingValue(
@@ -2981,49 +2953,35 @@ void main() {
 
         expect(
           terminalStateFromEvents(
-            terminalOutput,
+            harness.terminalOutput,
             initialText: initialText,
             initialCursorOffset: initialText.length,
           ),
           (text: 'th world', cursorOffset: 'th'.length),
         );
 
-        focusNode.dispose();
+        await disposeTerminalInputHarness(tester, harness);
       },
     );
 
     testWidgets(
       'keeps the cursor aligned when replacing the last word and leading space at the buffer end',
       (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
         const initialText = 'hello teh';
         const selectionStart = _deleteDetectionMarker.length + 'hello'.length;
         const selectionEnd = _deleteDetectionMarker.length + initialText.length;
 
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
+        final harness = await pumpTerminalInputHarness(
+          tester,
+          attachController: false,
         );
-
-        focusNode.requestFocus();
-        await tester.pump();
 
         tester.testTextInput.updateEditingValue(
           _editingValue(initialText, selectionOffset: initialText.length),
         );
         await tester.pump();
 
-        terminalOutput.clear();
+        harness.terminalOutput.clear();
 
         tester.testTextInput.updateEditingValue(
           const TextEditingValue(
@@ -3048,14 +3006,14 @@ void main() {
 
         expect(
           terminalStateFromEvents(
-            terminalOutput,
+            harness.terminalOutput,
             initialText: initialText,
             initialCursorOffset: initialText.length,
           ),
           (text: 'hello th', cursorOffset: 'hello th'.length),
         );
 
-        focusNode.dispose();
+        await disposeTerminalInputHarness(tester, harness);
       },
     );
 
@@ -3187,31 +3145,14 @@ void main() {
         const virtualEnterKey = PhysicalKeyboardKey(
           LogicalKeyboardKey.androidPlane + 66,
         );
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
 
         // Production terminal screen uses manageFocus: false and routes keys
         // through the global HardwareKeyboard handler.
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: Focus(
-                focusNode: focusNode,
-                child: TerminalTextInputHandler(
-                  terminal: terminal,
-                  focusNode: focusNode,
-                  deleteDetection: true,
-                  manageFocus: false,
-                  child: const SizedBox.expand(),
-                ),
-              ),
-            ),
-          ),
+        final harness = await pumpTerminalInputHarness(
+          tester,
+          attachController: false,
+          manageFocus: false,
         );
-
-        focusNode.requestFocus();
-        await tester.pump();
         expect(tester.testTextInput.isVisible, isTrue);
 
         // Soft keyboards often leave Shift pressed after capitalization while
@@ -3240,12 +3181,15 @@ void main() {
         );
         await tester.pump();
 
-        expect(terminalOutput, isEmpty);
+        expect(harness.terminalOutput, isEmpty);
 
         _terminalTextInputClient(tester).performAction(TextInputAction.newline);
         await tester.pump();
 
-        expect(terminalOutput.join(), _terminalKeyOutput(TerminalKey.enter));
+        expect(
+          harness.terminalOutput.join(),
+          _terminalKeyOutput(TerminalKey.enter),
+        );
 
         HardwareKeyboard.instance.handleKeyEvent(
           const KeyUpEvent(
@@ -3255,9 +3199,7 @@ void main() {
           ),
         );
 
-        await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
-        await tester.pump();
-        focusNode.dispose();
+        await disposeTerminalInputHarness(tester, harness);
       },
     );
 
@@ -3268,38 +3210,21 @@ void main() {
           LogicalKeyboardKey.androidPlane + 66,
         );
         var shiftActive = true;
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
 
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: Focus(
-                focusNode: focusNode,
-                child: TerminalTextInputHandler(
-                  terminal: terminal,
-                  focusNode: focusNode,
-                  deleteDetection: true,
-                  manageFocus: false,
-                  resolveTerminalKeyModifiers: () =>
-                      (ctrl: false, alt: false, shift: shiftActive),
-                  consumeTerminalKeyModifiers: () => shiftActive = false,
-                  child: const SizedBox.expand(),
-                ),
-              ),
-            ),
-          ),
+        final harness = await pumpTerminalInputHarness(
+          tester,
+          attachController: false,
+          manageFocus: false,
+          resolveTerminalKeyModifiers: () =>
+              (ctrl: false, alt: false, shift: shiftActive),
+          consumeTerminalKeyModifiers: () => shiftActive = false,
         );
-
-        focusNode.requestFocus();
-        await tester.pump();
 
         tester.testTextInput.updateEditingValue(
           _editingValue('C', selectionOffset: 1),
         );
         await tester.pump();
-        terminalOutput.clear();
+        harness.terminalOutput.clear();
 
         HardwareKeyboard.instance.handleKeyEvent(
           const KeyDownEvent(
@@ -3317,17 +3242,15 @@ void main() {
         );
         await tester.pump();
 
-        expect(terminalOutput, isEmpty);
+        expect(harness.terminalOutput, isEmpty);
 
         _terminalTextInputClient(tester).performAction(TextInputAction.newline);
         await tester.pump();
 
-        expect(terminalOutput.join(), _terminalShiftEnterNewlineInput);
+        expect(harness.terminalOutput.join(), _terminalShiftEnterNewlineInput);
         expect(shiftActive, isFalse);
 
-        await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
-        await tester.pump();
-        focusNode.dispose();
+        await disposeTerminalInputHarness(tester, harness);
       },
     );
 
@@ -3389,26 +3312,12 @@ void main() {
       const virtualCommaKey = PhysicalKeyboardKey(
         LogicalKeyboardKey.androidPlane + 55,
       );
-      final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add)
-        ..write('\x1b[>9u');
-      final focusNode = FocusNode();
 
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: TerminalTextInputHandler(
-              terminal: terminal,
-              focusNode: focusNode,
-              deleteDetection: true,
-              child: const SizedBox.expand(),
-            ),
-          ),
-        ),
+      final harness = await pumpTerminalInputHarness(
+        tester,
+        attachController: false,
+        initialTerminalOutput: '\x1b[>9u',
       );
-
-      focusNode.requestFocus();
-      await tester.pump();
 
       expect(tester.testTextInput.isVisible, isTrue);
 
@@ -3443,16 +3352,16 @@ void main() {
       );
       await tester.pump();
 
-      expect(terminalOutput, isEmpty);
+      expect(harness.terminalOutput, isEmpty);
 
       tester.testTextInput.updateEditingValue(
         _editingValue('<', selectionOffset: 1),
       );
       await tester.pump();
 
-      expect(terminalOutput, <String>['<']);
+      expect(harness.terminalOutput, <String>['<']);
 
-      focusNode.dispose();
+      await disposeTerminalInputHarness(tester, harness);
     });
 
     testWidgets('Android IME HID controls bypass Kitty hardware key encoding', (
@@ -3460,31 +3369,15 @@ void main() {
     ) async {
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
       tester.view.viewInsets = const FakeViewPadding(bottom: 300);
-      final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add)
-        ..write('\x1b[>1u');
-      final focusNode = FocusNode();
 
+      TerminalInputHarness? harness;
       try {
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: Focus(
-                focusNode: focusNode,
-                child: TerminalTextInputHandler(
-                  terminal: terminal,
-                  focusNode: focusNode,
-                  deleteDetection: true,
-                  manageFocus: false,
-                  child: const SizedBox.expand(),
-                ),
-              ),
-            ),
-          ),
+        harness = await pumpTerminalInputHarness(
+          tester,
+          attachController: false,
+          manageFocus: false,
+          initialTerminalOutput: '\x1b[>1u',
         );
-
-        focusNode.requestFocus();
-        await tester.pump();
 
         expect(tester.testTextInput.isVisible, isTrue);
 
@@ -3492,7 +3385,7 @@ void main() {
           _editingValue('CC', selectionOffset: 2),
         );
         await tester.pump();
-        terminalOutput.clear();
+        harness.terminalOutput.clear();
 
         HardwareKeyboard.instance.handleKeyEvent(
           const KeyDownEvent(
@@ -3524,7 +3417,7 @@ void main() {
         );
         await tester.pump();
 
-        expect(terminalOutput, <String>['\x7f', '\x7f']);
+        expect(harness.terminalOutput, <String>['\x7f', '\x7f']);
 
         tester.testTextInput.updateEditingValue(
           _editingValue('', selectionOffset: 0),
@@ -3532,7 +3425,7 @@ void main() {
         await tester.pump();
 
         expect(
-          terminalOutput.join(),
+          harness.terminalOutput.join(),
           '${_terminalKeyOutput(TerminalKey.backspace)}'
           '${_terminalKeyOutput(TerminalKey.backspace)}',
         );
@@ -3545,9 +3438,9 @@ void main() {
           ),
         );
       } finally {
-        await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
-        await tester.pump();
-        focusNode.dispose();
+        if (harness != null) {
+          await disposeTerminalInputHarness(tester, harness);
+        }
         tester.view.resetViewInsets();
         debugDefaultTargetPlatformOverride = null;
       }
@@ -4151,25 +4044,10 @@ void main() {
     testWidgets('keeps ctrl combos working while IME composition is active', (
       tester,
     ) async {
-      final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
-      final focusNode = FocusNode();
-
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: TerminalTextInputHandler(
-              terminal: terminal,
-              focusNode: focusNode,
-              deleteDetection: true,
-              child: const SizedBox.expand(),
-            ),
-          ),
-        ),
+      final harness = await pumpTerminalInputHarness(
+        tester,
+        attachController: false,
       );
-
-      focusNode.requestFocus();
-      await tester.pump();
 
       tester.testTextInput.updateEditingValue(
         const TextEditingValue(
@@ -4186,9 +4064,9 @@ void main() {
       await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
       await tester.pump();
 
-      expect(terminalOutput.join(), '\u0003');
+      expect(harness.terminalOutput.join(), '\u0003');
 
-      focusNode.dispose();
+      await disposeTerminalInputHarness(tester, harness);
     });
 
     testWidgets('notifies when soft-keyboard input is sent to the terminal', (
@@ -4231,30 +4109,16 @@ void main() {
     testWidgets(
       'ignores a stale newline edit when the IME action arrives first',
       (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
         var reviewCount = 0;
 
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                onReviewInsertedText: (_) async {
-                  reviewCount++;
-                  return true;
-                },
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
+        final harness = await pumpTerminalInputHarness(
+          tester,
+          attachController: false,
+          onReviewInsertedText: (_) async {
+            reviewCount++;
+            return true;
+          },
         );
-
-        focusNode.requestFocus();
-        await tester.pump();
 
         tester.testTextInput.updateEditingValue(
           const TextEditingValue(
@@ -4264,7 +4128,7 @@ void main() {
         );
         await tester.pump();
 
-        terminalOutput.clear();
+        harness.terminalOutput.clear();
 
         _terminalTextInputClient(tester).performAction(TextInputAction.newline);
         await tester.pump();
@@ -4277,7 +4141,7 @@ void main() {
         );
         await tester.pump();
 
-        expect(terminalOutput.join(), '\r');
+        expect(harness.terminalOutput.join(), '\r');
         expect(reviewCount, 0);
         expect(
           _terminalTextInputClient(tester).currentTextEditingValue,
@@ -4287,37 +4151,23 @@ void main() {
           ),
         );
 
-        focusNode.dispose();
+        await disposeTerminalInputHarness(tester, harness);
       },
     );
 
     testWidgets(
       'accepts new text after swallowing an action-first newline commit',
       (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
         var reviewCount = 0;
 
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                onReviewInsertedText: (_) async {
-                  reviewCount++;
-                  return true;
-                },
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
+        final harness = await pumpTerminalInputHarness(
+          tester,
+          attachController: false,
+          onReviewInsertedText: (_) async {
+            reviewCount++;
+            return true;
+          },
         );
-
-        focusNode.requestFocus();
-        await tester.pump();
 
         tester.testTextInput.updateEditingValue(
           const TextEditingValue(
@@ -4327,7 +4177,7 @@ void main() {
         );
         await tester.pump();
 
-        terminalOutput.clear();
+        harness.terminalOutput.clear();
 
         _terminalTextInputClient(tester).performAction(TextInputAction.newline);
         await tester.pump();
@@ -4340,7 +4190,7 @@ void main() {
         );
         await tester.pump();
 
-        expect(terminalOutput.join(), '\rn');
+        expect(harness.terminalOutput.join(), '\rn');
         expect(reviewCount, 0);
         expect(
           _terminalTextInputClient(tester).currentTextEditingValue,
@@ -4350,7 +4200,7 @@ void main() {
           ),
         );
 
-        focusNode.dispose();
+        await disposeTerminalInputHarness(tester, harness);
       },
     );
 
@@ -5247,26 +5097,12 @@ void main() {
     );
 
     testWidgets('opens the keyboard after a touch tap', (tester) async {
-      final terminal = Terminal();
-      final focusNode = FocusNode();
-
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: TerminalTextInputHandler(
-              terminal: terminal,
-              focusNode: focusNode,
-              deleteDetection: true,
-              child: const SizedBox.expand(key: ValueKey('terminal-child')),
-            ),
-          ),
-        ),
+      final harness = await pumpTerminalInputHarness(
+        tester,
+        attachController: false,
       );
 
-      focusNode.requestFocus();
-      await tester.pump();
-
-      expect(focusNode.hasFocus, isTrue);
+      expect(harness.focusNode.hasFocus, isTrue);
       expect(tester.testTextInput.isVisible, isTrue);
 
       tester.testTextInput.hide();
@@ -5280,10 +5116,10 @@ void main() {
       await tester.tapAt(target);
       await tester.pump();
 
-      expect(focusNode.hasFocus, isTrue);
+      expect(harness.focusNode.hasFocus, isTrue);
       expect(tester.testTextInput.isVisible, isTrue);
 
-      focusNode.dispose();
+      await disposeTerminalInputHarness(tester, harness);
     });
 
     testWidgets(
@@ -5327,27 +5163,12 @@ void main() {
     testWidgets(
       'does not reopen the keyboard when the platform closes it while focused',
       (tester) async {
-        final terminal = Terminal();
-        final focusNode = FocusNode();
-        addTearDown(focusNode.dispose);
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(key: ValueKey('terminal-child')),
-              ),
-            ),
-          ),
+        final harness = await pumpTerminalInputHarness(
+          tester,
+          attachController: false,
         );
 
-        focusNode.requestFocus();
-        await tester.pump();
-
-        expect(focusNode.hasFocus, isTrue);
+        expect(harness.focusNode.hasFocus, isTrue);
         expect(tester.testTextInput.isVisible, isTrue);
 
         tester.testTextInput.log.clear();
@@ -5355,39 +5176,26 @@ void main() {
             .connectionClosed();
         await tester.pump();
 
-        expect(focusNode.hasFocus, isTrue);
+        expect(harness.focusNode.hasFocus, isTrue);
         expect(
           tester.testTextInput.log.where(
             (call) => call.method == 'TextInput.show',
           ),
           isEmpty,
         );
+        await disposeTerminalInputHarness(tester, harness);
       },
     );
 
     testWidgets('does not open the keyboard after a touch long press', (
       tester,
     ) async {
-      final terminal = Terminal();
-      final focusNode = FocusNode();
-
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: TerminalTextInputHandler(
-              terminal: terminal,
-              focusNode: focusNode,
-              deleteDetection: true,
-              child: const SizedBox.expand(key: ValueKey('terminal-child')),
-            ),
-          ),
-        ),
+      final harness = await pumpTerminalInputHarness(
+        tester,
+        attachController: false,
       );
 
-      focusNode.requestFocus();
-      await tester.pump();
-
-      expect(focusNode.hasFocus, isTrue);
+      expect(harness.focusNode.hasFocus, isTrue);
       expect(tester.testTextInput.isVisible, isTrue);
 
       tester.testTextInput.hide();
@@ -5399,58 +5207,50 @@ void main() {
           tester.getTopLeft(find.byType(TerminalTextInputHandler)) +
           const Offset(40, 40);
       final gesture = await tester.createGesture();
-      await gesture.down(target);
+      await gesture.down(target, timeStamp: const Duration(seconds: 1));
       await tester.pump(terminalKeyboardTapLongPressTimeout);
-      await gesture.up();
+      await gesture.up(
+        timeStamp:
+            const Duration(seconds: 1) + terminalKeyboardTapLongPressTimeout,
+      );
       await tester.pump();
 
-      expect(focusNode.hasFocus, isTrue);
+      expect(harness.focusNode.hasFocus, isTrue);
       expect(tester.testTextInput.isVisible, isFalse);
 
-      focusNode.dispose();
+      await disposeTerminalInputHarness(tester, harness);
     });
 
     testWidgets(
       'keeps the keyboard visible when touch becomes selection intent',
       (tester) async {
-        final terminal = Terminal();
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(key: ValueKey('terminal-child')),
-              ),
-            ),
-          ),
+        final harness = await pumpTerminalInputHarness(
+          tester,
+          attachController: false,
         );
 
-        focusNode.requestFocus();
-        await tester.pump();
-
-        expect(focusNode.hasFocus, isTrue);
+        expect(harness.focusNode.hasFocus, isTrue);
         expect(tester.testTextInput.isVisible, isTrue);
 
         final target =
             tester.getTopLeft(find.byType(TerminalTextInputHandler)) +
             const Offset(40, 40);
         final gesture = await tester.createGesture();
-        await gesture.down(target);
+        await gesture.down(target, timeStamp: const Duration(seconds: 1));
         await tester.pump(terminalKeyboardTapLongPressTimeout);
 
-        expect(focusNode.hasFocus, isTrue);
+        expect(harness.focusNode.hasFocus, isTrue);
         expect(tester.testTextInput.isVisible, isTrue);
 
-        await gesture.up();
+        await gesture.up(
+          timeStamp:
+              const Duration(seconds: 1) + terminalKeyboardTapLongPressTimeout,
+        );
         await tester.pump();
 
         expect(tester.testTextInput.isVisible, isTrue);
 
-        focusNode.dispose();
+        await disposeTerminalInputHarness(tester, harness);
       },
     );
 
@@ -5465,14 +5265,21 @@ void main() {
         final target =
             tester.getTopLeft(find.byType(TerminalTextInputHandler)) +
             const Offset(40, 40);
-        final gesture = await tester.startGesture(target);
+        final gesture = await tester.createGesture();
+        await gesture.down(target, timeStamp: const Duration(seconds: 1));
         await tester.pump();
-        await gesture.moveBy(const Offset(0, 80));
+        await gesture.moveBy(
+          const Offset(0, 80),
+          timeStamp: const Duration(milliseconds: 1100),
+        );
         await tester.pump(terminalKeyboardTapLongPressTimeout);
 
         expect(tester.testTextInput.isVisible, isTrue);
 
-        await gesture.up();
+        await gesture.up(
+          timeStamp:
+              const Duration(seconds: 1) + terminalKeyboardTapLongPressTimeout,
+        );
         await tester.pump();
 
         expect(tester.testTextInput.isVisible, isTrue);
@@ -5494,15 +5301,18 @@ void main() {
           const Offset(40, 40);
       final firstGesture = await tester.createGesture();
       final secondGesture = await tester.createGesture();
-      await firstGesture.down(target);
+      await firstGesture.down(target, timeStamp: const Duration(seconds: 1));
       await tester.pump();
-      await secondGesture.down(target + const Offset(60, 0));
+      await secondGesture.down(
+        target + const Offset(60, 0),
+        timeStamp: const Duration(milliseconds: 1010),
+      );
       await tester.pump(terminalKeyboardTapLongPressTimeout);
 
       expect(tester.testTextInput.isVisible, isTrue);
 
-      await secondGesture.up();
-      await firstGesture.up();
+      await secondGesture.up(timeStamp: const Duration(milliseconds: 1510));
+      await firstGesture.up(timeStamp: const Duration(milliseconds: 1520));
       await tester.pump();
 
       expect(tester.testTextInput.isVisible, isTrue);
@@ -5513,26 +5323,12 @@ void main() {
     testWidgets('does not open the keyboard after a touch drag', (
       tester,
     ) async {
-      final terminal = Terminal();
-      final focusNode = FocusNode();
-
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: TerminalTextInputHandler(
-              terminal: terminal,
-              focusNode: focusNode,
-              deleteDetection: true,
-              child: const SizedBox.expand(key: ValueKey('terminal-child')),
-            ),
-          ),
-        ),
+      final harness = await pumpTerminalInputHarness(
+        tester,
+        attachController: false,
       );
 
-      focusNode.requestFocus();
-      await tester.pump();
-
-      expect(focusNode.hasFocus, isTrue);
+      expect(harness.focusNode.hasFocus, isTrue);
       expect(tester.testTextInput.isVisible, isTrue);
 
       tester.testTextInput.hide();
@@ -5550,36 +5346,22 @@ void main() {
       await gesture.up();
       await tester.pump();
 
-      expect(focusNode.hasFocus, isTrue);
+      expect(harness.focusNode.hasFocus, isTrue);
       expect(tester.testTextInput.isVisible, isFalse);
 
-      focusNode.dispose();
+      await disposeTerminalInputHarness(tester, harness);
     });
 
     testWidgets('does not open the keyboard after a touch tap when read only', (
       tester,
     ) async {
-      final terminal = Terminal();
-      final focusNode = FocusNode();
-
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: TerminalTextInputHandler(
-              terminal: terminal,
-              focusNode: focusNode,
-              deleteDetection: true,
-              readOnly: true,
-              child: const SizedBox.expand(key: ValueKey('terminal-child')),
-            ),
-          ),
-        ),
+      final harness = await pumpTerminalInputHarness(
+        tester,
+        attachController: false,
+        readOnly: true,
       );
 
-      focusNode.requestFocus();
-      await tester.pump();
-
-      expect(focusNode.hasFocus, isTrue);
+      expect(harness.focusNode.hasFocus, isTrue);
       expect(tester.testTextInput.isVisible, isFalse);
 
       final target =
@@ -5588,10 +5370,10 @@ void main() {
       await tester.tapAt(target);
       await tester.pump();
 
-      expect(focusNode.hasFocus, isTrue);
+      expect(harness.focusNode.hasFocus, isTrue);
       expect(tester.testTextInput.isVisible, isFalse);
 
-      focusNode.dispose();
+      await disposeTerminalInputHarness(tester, harness);
     });
 
     testWidgets(
@@ -5885,28 +5667,9 @@ void main() {
     testWidgets('does not open the keyboard after a suppressed touch tap', (
       tester,
     ) async {
-      final terminal = Terminal();
-      final focusNode = FocusNode();
-      final controller = TerminalTextInputHandlerController();
+      final harness = await pumpTerminalInputHarness(tester);
 
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: TerminalTextInputHandler(
-              terminal: terminal,
-              focusNode: focusNode,
-              controller: controller,
-              deleteDetection: true,
-              child: const SizedBox.expand(key: ValueKey('terminal-child')),
-            ),
-          ),
-        ),
-      );
-
-      focusNode.requestFocus();
-      await tester.pump();
-
-      expect(focusNode.hasFocus, isTrue);
+      expect(harness.focusNode.hasFocus, isTrue);
       expect(tester.testTextInput.isVisible, isTrue);
 
       tester.testTextInput.hide();
@@ -5914,14 +5677,14 @@ void main() {
 
       expect(tester.testTextInput.isVisible, isFalse);
 
-      controller.suppressNextTouchKeyboardRequest();
+      harness.controller.suppressNextTouchKeyboardRequest();
       final target =
           tester.getTopLeft(find.byType(TerminalTextInputHandler)) +
           const Offset(40, 40);
       await tester.tapAt(target);
       await tester.pump();
 
-      expect(focusNode.hasFocus, isTrue);
+      expect(harness.focusNode.hasFocus, isTrue);
       expect(tester.testTextInput.isVisible, isFalse);
 
       await tester.tapAt(target);
@@ -5929,32 +5692,18 @@ void main() {
 
       expect(tester.testTextInput.isVisible, isTrue);
 
-      focusNode.dispose();
+      await disposeTerminalInputHarness(tester, harness);
     });
 
     testWidgets(
       'does not open the keyboard after a multitouch gesture when the last finger stays still',
       (tester) async {
-        final terminal = Terminal();
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(key: ValueKey('terminal-child')),
-              ),
-            ),
-          ),
+        final harness = await pumpTerminalInputHarness(
+          tester,
+          attachController: false,
         );
 
-        focusNode.requestFocus();
-        await tester.pump();
-
-        expect(focusNode.hasFocus, isTrue);
+        expect(harness.focusNode.hasFocus, isTrue);
         expect(tester.testTextInput.isVisible, isTrue);
 
         tester.testTextInput.hide();
@@ -5979,10 +5728,10 @@ void main() {
         await firstGesture.up();
         await tester.pump();
 
-        expect(focusNode.hasFocus, isTrue);
+        expect(harness.focusNode.hasFocus, isTrue);
         expect(tester.testTextInput.isVisible, isFalse);
 
-        focusNode.dispose();
+        await disposeTerminalInputHarness(tester, harness);
       },
     );
 
@@ -6618,7 +6367,6 @@ void main() {
           activeTouchPointers: 1,
           hadMultipleTouchPointers: false,
           movedBeyondTapSlop: false,
-          pressedBeyondLongPressTimeout: false,
           readOnly: false,
         ),
         isTrue,
@@ -6632,7 +6380,6 @@ void main() {
           activeTouchPointers: 1,
           hadMultipleTouchPointers: false,
           movedBeyondTapSlop: true,
-          pressedBeyondLongPressTimeout: false,
           readOnly: false,
         ),
         isFalse,
@@ -6646,7 +6393,6 @@ void main() {
           activeTouchPointers: 2,
           hadMultipleTouchPointers: true,
           movedBeyondTapSlop: false,
-          pressedBeyondLongPressTimeout: false,
           readOnly: false,
         ),
         isFalse,
@@ -6660,7 +6406,6 @@ void main() {
           activeTouchPointers: 1,
           hadMultipleTouchPointers: true,
           movedBeyondTapSlop: false,
-          pressedBeyondLongPressTimeout: false,
           readOnly: false,
         ),
         isFalse,
@@ -6674,7 +6419,6 @@ void main() {
           activeTouchPointers: 0,
           hadMultipleTouchPointers: false,
           movedBeyondTapSlop: false,
-          pressedBeyondLongPressTimeout: true,
           readOnly: false,
         ),
         isTrue,
@@ -6688,24 +6432,25 @@ void main() {
           activeTouchPointers: 1,
           hadMultipleTouchPointers: false,
           movedBeyondTapSlop: false,
-          pressedBeyondLongPressTimeout: false,
           readOnly: true,
         ),
         isFalse,
       );
     });
 
-    test('suppresses the keyboard after a long touch press', () {
+    test('requests the keyboard just before touch reaches long press', () {
       expect(
         shouldRequestKeyboardForTerminalPointerUp(
           pointerKind: PointerDeviceKind.touch,
           activeTouchPointers: 1,
           hadMultipleTouchPointers: false,
           movedBeyondTapSlop: false,
-          pressedBeyondLongPressTimeout: true,
           readOnly: false,
+          touchPressDuration:
+              terminalKeyboardTapLongPressTimeout -
+              const Duration(microseconds: 1),
         ),
-        isFalse,
+        isTrue,
       );
     });
 
@@ -6716,7 +6461,6 @@ void main() {
           activeTouchPointers: 1,
           hadMultipleTouchPointers: false,
           movedBeyondTapSlop: false,
-          pressedBeyondLongPressTimeout: false,
           readOnly: false,
           touchPressDuration: terminalKeyboardTapLongPressTimeout,
         ),
@@ -7018,25 +6762,10 @@ void main() {
     testWidgets('clears the IME buffer after trailing backspace', (
       tester,
     ) async {
-      final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
-      final focusNode = FocusNode();
-
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: TerminalTextInputHandler(
-              terminal: terminal,
-              focusNode: focusNode,
-              deleteDetection: true,
-              child: const SizedBox.expand(),
-            ),
-          ),
-        ),
+      final harness = await pumpTerminalInputHarness(
+        tester,
+        attachController: false,
       );
-
-      focusNode.requestFocus();
-      await tester.pump();
       tester.testTextInput.log.clear();
 
       // Type "hello".
@@ -7054,7 +6783,7 @@ void main() {
       await tester.pump();
 
       // The terminal should show "hell".
-      expect(terminalTextFromEvents(terminalOutput), 'hell');
+      expect(terminalTextFromEvents(harness.terminalOutput), 'hell');
 
       // The IME buffer should be cleared after the backspace.
       expect(
@@ -7075,7 +6804,7 @@ void main() {
         ),
       );
 
-      focusNode.dispose();
+      await disposeTerminalInputHarness(tester, harness);
     });
 
     testWidgets(
@@ -7496,25 +7225,10 @@ void main() {
     testWidgets('typing after trailing backspace inserts from a fresh buffer', (
       tester,
     ) async {
-      final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
-      final focusNode = FocusNode();
-
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: TerminalTextInputHandler(
-              terminal: terminal,
-              focusNode: focusNode,
-              deleteDetection: true,
-              child: const SizedBox.expand(),
-            ),
-          ),
-        ),
+      final harness = await pumpTerminalInputHarness(
+        tester,
+        attachController: false,
       );
-
-      focusNode.requestFocus();
-      await tester.pump();
 
       // Type "hello".
       tester.testTextInput.updateEditingValue(
@@ -7535,33 +7249,18 @@ void main() {
       await tester.pump();
 
       // The terminal should show "hello".
-      expect(terminalTextFromEvents(terminalOutput), 'hello');
+      expect(terminalTextFromEvents(harness.terminalOutput), 'hello');
 
-      focusNode.dispose();
+      await disposeTerminalInputHarness(tester, harness);
     });
 
     testWidgets(
       'clears the IME buffer after deleting a corrected contraction tail',
       (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
+        final harness = await pumpTerminalInputHarness(
+          tester,
+          attachController: false,
         );
-
-        focusNode.requestFocus();
-        await tester.pump();
 
         tester.testTextInput.updateEditingValue(
           _editingValue("didn't", selectionOffset: "didn't".length),
@@ -7575,7 +7274,7 @@ void main() {
         );
         await tester.pump();
 
-        expect(terminalTextFromEvents(terminalOutput), 'didn');
+        expect(terminalTextFromEvents(harness.terminalOutput), 'didn');
 
         final client = _terminalTextInputClient(tester);
         expect(
@@ -7586,32 +7285,17 @@ void main() {
           ),
         );
 
-        focusNode.dispose();
+        await disposeTerminalInputHarness(tester, harness);
       },
     );
 
     testWidgets(
       'trims a leading swipe space after backspace-triggered IME buffer clear',
       (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
+        final harness = await pumpTerminalInputHarness(
+          tester,
+          attachController: false,
         );
-
-        focusNode.requestFocus();
-        await tester.pump();
 
         // Type "hello".
         tester.testTextInput.updateEditingValue(
@@ -7632,34 +7316,22 @@ void main() {
         // The cleared IME buffer should not keep suggesting continuations from
         // the deleted word. Because the terminal text before the cursor does
         // not end in whitespace, the leading swipe space is trimmed.
-        expect(terminalStateFromEvents(terminalOutput).text, 'hellworld');
+        expect(
+          terminalStateFromEvents(harness.terminalOutput).text,
+          'hellworld',
+        );
 
-        focusNode.dispose();
+        await disposeTerminalInputHarness(tester, harness);
       },
     );
 
     testWidgets(
       'trims a leading suggestion space after backspace-triggered IME buffer clear',
       (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
+        final harness = await pumpTerminalInputHarness(
+          tester,
+          attachController: false,
         );
-
-        focusNode.requestFocus();
-        await tester.pump();
 
         tester.testTextInput.updateEditingValue(
           _editingValue('didnt', selectionOffset: 'didnt'.length),
@@ -7679,35 +7351,20 @@ void main() {
         );
         await tester.pump();
 
-        expect(terminalTextFromEvents(terminalOutput), 'didntest');
+        expect(terminalTextFromEvents(harness.terminalOutput), 'didntest');
 
-        focusNode.dispose();
+        await disposeTerminalInputHarness(tester, harness);
       },
     );
 
     testWidgets(
       'preserves the shortened prefix when a delete-reset continuation resumes the same word with the live terminal prefix',
       (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                resolveTextBeforeCursor: () => 'didn',
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
+        final harness = await pumpTerminalInputHarness(
+          tester,
+          attachController: false,
+          resolveTextBeforeCursor: () => 'didn',
         );
-
-        focusNode.requestFocus();
-        await tester.pump();
 
         tester.testTextInput.updateEditingValue(
           _editingValue('didnt', selectionOffset: 'didnt'.length),
@@ -7727,9 +7384,9 @@ void main() {
         );
         await tester.pump();
 
-        expect(terminalTextFromEvents(terminalOutput), 'didntest');
+        expect(terminalTextFromEvents(harness.terminalOutput), 'didntest');
 
-        focusNode.dispose();
+        await disposeTerminalInputHarness(tester, harness);
       },
     );
 
@@ -7877,25 +7534,10 @@ void main() {
     testWidgets('trims a leading suggestion space after a committed newline', (
       tester,
     ) async {
-      final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
-      final focusNode = FocusNode();
-
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: TerminalTextInputHandler(
-              terminal: terminal,
-              focusNode: focusNode,
-              deleteDetection: true,
-              child: const SizedBox.expand(),
-            ),
-          ),
-        ),
+      final harness = await pumpTerminalInputHarness(
+        tester,
+        attachController: false,
       );
-
-      focusNode.requestFocus();
-      await tester.pump();
 
       tester.testTextInput.updateEditingValue(
         const TextEditingValue(
@@ -7914,44 +7556,30 @@ void main() {
       await tester.pump();
 
       expect(
-        terminalTextFromEvents(terminalOutput),
+        terminalTextFromEvents(harness.terminalOutput),
         'echo hi${_terminalKeyOutput(TerminalKey.enter)}next',
       );
 
-      focusNode.dispose();
+      await disposeTerminalInputHarness(tester, harness);
     });
 
     testWidgets('resets IME editing state after modifier chord character', (
       tester,
     ) async {
-      final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add);
-      final focusNode = FocusNode();
       var modifierActive = false;
 
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: TerminalTextInputHandler(
-              terminal: terminal,
-              focusNode: focusNode,
-              deleteDetection: true,
-              hasActiveToolbarModifier: () => modifierActive,
-              child: const SizedBox.expand(),
-            ),
-          ),
-        ),
+      final harness = await pumpTerminalInputHarness(
+        tester,
+        attachController: false,
+        hasActiveToolbarModifier: () => modifierActive,
       );
-
-      focusNode.requestFocus();
-      await tester.pump();
 
       // Type "ls" normally.
       tester.testTextInput.updateEditingValue(
         _editingValue('ls', selectionOffset: 2),
       );
       await tester.pump();
-      expect(terminalTextFromEvents(terminalOutput), 'ls');
+      expect(terminalTextFromEvents(harness.terminalOutput), 'ls');
 
       // Activate Ctrl modifier (simulating toolbar toggle).
       modifierActive = true;
@@ -7973,7 +7601,7 @@ void main() {
         ),
       );
 
-      focusNode.dispose();
+      await disposeTerminalInputHarness(tester, harness);
     });
 
     testWidgets('applies modifiers before soft-keyboard text is emitted', (

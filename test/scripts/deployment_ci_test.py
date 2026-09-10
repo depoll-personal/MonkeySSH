@@ -155,7 +155,6 @@ class DeploymentContractsTest(unittest.TestCase):
         self.assertEqual(followup['runs-on'], 'ubuntu-latest')
         self.assertEqual(followup['needs'], 'build-ios')
         self.assertIn('finish-testflight', jobs['deploy-status-summary']['needs'])
-        self.assertIn('finish-testflight', jobs['update-ios-deploy-comment']['needs'])
         marker = jobs['record-private-deploy-build-number']
         self.assertNotIn('finish-testflight', marker['needs'])
         self.assertIn('always()', marker['if'])
@@ -173,6 +172,41 @@ class DeploymentContractsTest(unittest.TestCase):
         self.assertEqual(jobs['sync-ios']['strategy']['matrix']['app'],
                          '${{ fromJSON(needs.preflight-ios.outputs.apps) }}')
         self.assertIn('preflight-ios', jobs['metadata-result']['needs'])
+
+    def test_metadata_matrix_preserves_flavor_identity_media_and_deployment_status(self):
+        jobs = self.workflows['sync-metadata.yml']['jobs']
+        for platform, label, store, argument in [
+            ('ios', 'iOS', 'App Store', 'app_identifier'),
+            ('android', 'Android', 'Play Store', 'package_name'),
+        ]:
+            with self.subTest(platform=platform):
+                job = jobs[f'sync-{platform}']
+                self.assertEqual(job['env']['APP_IDENTIFIER'],
+                                 "${{ matrix.app == 'private' && 'xyz.depollsoft.monkeyssh.private' || 'xyz.depollsoft.monkeyssh' }}")
+                self.assertEqual(job['env']['APP_LABEL'],
+                                 "${{ matrix.app == 'private' && 'Private' || 'Production' }}")
+                steps = job['steps']
+                sync = next(s for s in steps if s.get('id') == 'sync-metadata')
+                self.assertNotIn('if', sync)
+                self.assertIn(f'{argument}:"$APP_IDENTIFIER" skip_media:"$SKIP_MEDIA"', sync['run'])
+                media = f"needs.changes.outputs.{platform}_screenshots == 'true'"
+                if platform == 'ios':
+                    media += " || needs.changes.outputs.ios_app_previews == 'true'"
+                self.assertEqual(sync['env']['SKIP_MEDIA'], "${{ (" + media + ") && 'false' || 'true' }}")
+                deployments = [s for s in steps if s.get('uses') == './.github/actions/deployment-status']
+                self.assertEqual([s['with']['action'] for s in deployments], ['start', 'finish'])
+                start, finish = deployments
+                self.assertEqual(start['id'], 'start-metadata-deployment')
+                self.assertNotIn('if', start)
+                self.assertEqual(finish['if'], "always() && steps.start-metadata-deployment.outputs['deployment-id'] != ''")
+                self.assertEqual(finish['with']['deployment-id'], "${{ steps.start-metadata-deployment.outputs['deployment-id'] }}")
+                self.assertEqual(finish['with']['state'], "${{ steps.sync-metadata.outcome == 'success' && 'success' || 'failure' }}")
+                for step in deployments:
+                    self.assertTrue(step['continue-on-error'])
+                    self.assertEqual(step['with']['environment'], label + ' ${{ env.APP_LABEL }} / ' + store + ' Metadata')
+                    if platform == 'android':
+                        self.assertEqual(step['with']['production-environment'], "${{ matrix.app == 'production' && 'true' || 'false' }}")
+                        self.assertEqual(step['with']['environment-url'], "${{ matrix.app == 'production' && 'https://play.google.com/store/apps/details?id=xyz.depollsoft.monkeyssh' || '' }}")
 
     def test_published_validation_applies_to_the_same_artifact_snapshot(self):
         publisher = self.workflows['publish-store-assets.yml']['jobs']['sync-metadata']

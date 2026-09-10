@@ -17,6 +17,7 @@ import 'package:monkeyssh/domain/services/acp_recent_sessions_service.dart';
 import 'package:monkeyssh/domain/services/acp_session_manager.dart';
 import 'package:monkeyssh/presentation/controllers/acp_composer_controller.dart';
 import 'package:monkeyssh/presentation/widgets/acp_composer.dart';
+import 'package:xterm/xterm.dart';
 
 class _FakeConnector extends Fake implements AcpBridgeConnector {}
 
@@ -729,6 +730,48 @@ void main() {
     expect(tester.getBottomLeft(send).dy, closeTo(initialSendBottom, 0.1));
     expect(tester.takeException(), isNull);
   });
+
+  for (final (key, caret, expected) in [
+    (TerminalKey.arrowLeft, 3, 'abXc'),
+    (TerminalKey.arrowRight, 1, 'abXc'),
+    (TerminalKey.home, 2, 'Xabc'),
+    (TerminalKey.end, 1, 'abcX'),
+    (null, 0, 'aX'),
+  ]) {
+    testWidgets(
+      '${key ?? 'ordinary selection'} preserves the field caret before insertion',
+      (tester) async {
+        final controller = _makeController(_RecordingManager());
+        final focusController = AcpComposerFocusController();
+        addTearDown(controller.dispose);
+        await _pump(tester, controller, focusController: focusController);
+        await tester.enterText(find.byType(TextField), 'abc');
+        final field = tester
+            .widget<TextField>(find.byType(TextField))
+            .controller!;
+        if (key != null) {
+          field.selection = TextSelection.collapsed(offset: caret);
+          focusController.sendSpecialKey(key);
+          await tester.pump();
+          expect(field.selection.baseOffset, controller.caret);
+        } else {
+          for (final selection in [
+            const TextSelection(baseOffset: 1, extentOffset: 3),
+            const TextSelection(baseOffset: 3, extentOffset: 1),
+          ]) {
+            field.selection = selection;
+            controller.updateSession(_session());
+            await tester.pump();
+            expect(field.selection, selection);
+          }
+        }
+        focusController.insertText('X');
+        await tester.pump();
+        expect(field.text, expected);
+        expect(controller.text, expected);
+      },
+    );
+  }
 
   testWidgets('external focus controller opens and dismisses the composer', (
     tester,

@@ -392,7 +392,10 @@ Future<TerminalClientCommandResult> _runSshClientCommand(
   String command, {
   required SshExecPriority priority,
 }) => session.runQueuedExec(() async {
-  final exec = await session.execute(command);
+  final exec = await openSshExec(
+    session.execute(command),
+    const Duration(seconds: 10),
+  );
   try {
     final stdout = StringBuffer();
     final stderr = StringBuffer();

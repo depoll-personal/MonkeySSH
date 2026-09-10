@@ -160,8 +160,7 @@ Future<AcpSessionKey? Function()> _pumpAndLaunch(
           (ref) => Stream.value(
             providers ??
                 <AcpProvider>[
-                  for (final builtin in acpBuiltinProviders)
-                    AcpBuiltinProviderView(builtin),
+                  for (final builtin in acpBuiltinProviders) builtin,
                 ],
           ),
         ),
@@ -207,23 +206,18 @@ void main() {
   testWidgets('provider picker excludes custom ACP definitions', (
     tester,
   ) async {
-    final custom = AcpCustomProviderView(
-      AcpCustomProviderDefinition.create(
-        id: 'custom-provider',
-        label: 'Custom provider',
-        launchCommand: AcpLaunchCommand(executable: '/opt/custom-acp'),
-        now: DateTime.utc(2026),
-      ),
+    final custom = AcpCustomProviderDefinition.create(
+      id: 'custom-provider',
+      label: 'Custom provider',
+      launchCommand: AcpLaunchCommand(executable: '/opt/custom-acp'),
+      now: DateTime.utc(2026),
     );
 
     await _pumpAndLaunch(
       tester,
       FakeAcpSessionManager(),
       startSession: false,
-      providers: <AcpProvider>[
-        AcpBuiltinProviderView(acpCopilotCliProvider),
-        custom,
-      ],
+      providers: <AcpProvider>[acpCopilotCliProvider, custom],
     );
 
     expect(find.text('Copilot CLI'), findsOneWidget);
@@ -343,10 +337,7 @@ void main() {
     );
     final defaults = resolveAcpSessionLaunchDefaults(
       hosts: [plainHost, configuredHost],
-      providers: [
-        for (final builtin in acpBuiltinProviders)
-          AcpBuiltinProviderView(builtin),
-      ],
+      providers: [for (final builtin in acpBuiltinProviders) builtin],
       recents: const [],
       activeHostIds: const {},
       presets: const {
@@ -427,8 +418,7 @@ void main() {
             allHostsProvider.overrideWith((ref) => Stream.value(<Host>[host])),
             acpProvidersProvider.overrideWith(
               (ref) => Stream.value(<AcpProvider>[
-                for (final builtin in acpBuiltinProviders)
-                  AcpBuiltinProviderView(builtin),
+                for (final builtin in acpBuiltinProviders) builtin,
               ]),
             ),
           ],

@@ -12,6 +12,12 @@ import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import 'monkey_terminal_view.dart';
 
+/// Called once per styled-preview fitting search for measurement tests.
+@visibleForTesting
+VoidCallback? debugOnStyledPreviewFontFit;
+
+typedef _StyledPreviewMeasurement = ({double fontSize, Size cellSize});
+
 const _previewMaxLines = 17;
 const _previewMinFontSize = 6.5;
 const _previewMaxFontSize = 10.5;
@@ -360,9 +366,9 @@ class ConnectionPreviewStack extends StatelessWidget {
         final cardWidth = constraints.maxWidth > maxHorizontalInset
             ? constraints.maxWidth - maxHorizontalInset
             : 0.0;
-        final cardHeights = [
+        final cardLayouts = [
           for (final entry in entries)
-            _stackPreviewCardHeightForEntry(
+            _measureStackPreviewCard(
               context: context,
               entry: entry,
               cardWidth: cardWidth,
@@ -372,8 +378,8 @@ class ConnectionPreviewStack extends StatelessWidget {
             ),
         ];
         final stackHeight = [
-          for (var index = 0; index < cardHeights.length; index++)
-            cardHeights[index] + (index * 14.0),
+          for (var index = 0; index < cardLayouts.length; index++)
+            cardLayouts[index].height + (index * 14.0),
         ].reduce(math.max);
 
         final stack = SizedBox(
@@ -389,7 +395,8 @@ class ConnectionPreviewStack extends StatelessWidget {
                   width: cardWidth,
                   child: _ConnectionPreviewStackCard(
                     entry: entries[index],
-                    height: cardHeights[index],
+                    height: cardLayouts[index].height,
+                    styledMeasurement: cardLayouts[index].styledMeasurement,
                     opacity: index == entries.length - 1
                         ? 1
                         : 0.9 - ((entries.length - index - 2) * 0.05),
@@ -418,11 +425,13 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
   const _ConnectionPreviewStackCard({
     required this.entry,
     required this.height,
+    required this.styledMeasurement,
     required this.opacity,
     this.onTap,
   });
 
   final ConnectionPreviewStackEntry entry;
+  final _StyledPreviewMeasurement? styledMeasurement;
   final double height;
   final double opacity;
   final VoidCallback? onTap;
@@ -480,6 +489,7 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
                   child: entry.nativeAcpPreviewSnapshot == null
                       ? _AdaptiveTerminalPreviewText(
                           text: entry.body,
+                          styledMeasurement: styledMeasurement,
                           previewSnapshot: entry.previewSnapshot,
                           terminalTheme: entry.terminalTheme,
                           color: textColor,
@@ -619,7 +629,8 @@ Color _previewBorderColor(
   );
 }
 
-double _stackPreviewCardHeightForEntry({
+({double height, _StyledPreviewMeasurement? styledMeasurement})
+_measureStackPreviewCard({
   required BuildContext context,
   required ConnectionPreviewStackEntry entry,
   required double cardWidth,
@@ -657,24 +668,27 @@ double _stackPreviewCardHeightForEntry({
     cardWidth - _stackPreviewCardHorizontalPadding,
   );
 
-  if (entry.nativeAcpPreviewSnapshot != null) return maxHeight;
+  if (entry.nativeAcpPreviewSnapshot != null) {
+    return (height: maxHeight, styledMeasurement: null);
+  }
 
   final styledSnapshot = entry.previewSnapshot;
   final styledTheme = entry.terminalTheme;
   double previewHeight;
+  _StyledPreviewMeasurement? styledMeasurement;
   if (styledSnapshot != null && styledTheme != null) {
     final lineCount = math.max(
       1,
       math.min(styledSnapshot.lines.length, _previewMaxLines),
     );
     final columnCount = _styledContentColumns(styledSnapshot);
-    final cellHeight = _styledPreviewCellHeight(
+    styledMeasurement = _measureStyledPreview(
       terminalTheme: styledTheme,
       columnCount: columnCount,
       maxWidth: previewTextMaxWidth,
       textScaler: textScaler,
     );
-    final naturalHeight = cellHeight * lineCount;
+    final naturalHeight = styledMeasurement.cellSize.height * lineCount;
     previewHeight =
         math.min(naturalHeight, previewTextMaxHeight) +
         _stackPreviewTextTopInset;
@@ -698,9 +712,12 @@ double _stackPreviewCardHeightForEntry({
         ) +
         _stackPreviewTextTopInset;
   }
-  return (chromeHeight + math.min(previewHeight, previewMaxHeight)).clamp(
-    _stackPreviewMinCardHeight,
-    maxHeight,
+  return (
+    height: (chromeHeight + math.min(previewHeight, previewMaxHeight)).clamp(
+      _stackPreviewMinCardHeight,
+      maxHeight,
+    ),
+    styledMeasurement: styledMeasurement,
   );
 }
 
@@ -725,9 +742,11 @@ class _AdaptiveTerminalPreviewText extends StatelessWidget {
     required this.terminalTheme,
     required this.color,
     required this.maxLines,
+    this.styledMeasurement,
   });
 
   final String text;
+  final _StyledPreviewMeasurement? styledMeasurement;
   final TerminalPreviewSnapshot? previewSnapshot;
   final TerminalThemeData? terminalTheme;
   final Color color;
@@ -736,6 +755,26 @@ class _AdaptiveTerminalPreviewText extends StatelessWidget {
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
+      final styledPreview = previewSnapshot;
+      final resolvedTerminalTheme = terminalTheme;
+      if (styledPreview != null && resolvedTerminalTheme != null) {
+        return _StyledTerminalPreviewText(
+          measurement:
+              styledMeasurement ??
+              _measureStyledPreview(
+                terminalTheme: resolvedTerminalTheme,
+                columnCount: _styledContentColumns(styledPreview),
+                maxWidth: constraints.maxWidth,
+                textScaler: MediaQuery.textScalerOf(context),
+              ),
+          preview: styledPreview,
+          terminalTheme: resolvedTerminalTheme,
+          maxLines: maxLines,
+          maxWidth: constraints.maxWidth,
+          maxHeight: constraints.maxHeight,
+        );
+      }
+
       final style = FluttyTheme.monoStyle.copyWith(
         fontSize: _previewMaxFontSize,
         color: color,
@@ -746,18 +785,6 @@ class _AdaptiveTerminalPreviewText extends StatelessWidget {
         maxLines: maxLines,
         constraints: constraints,
       );
-
-      final styledPreview = previewSnapshot;
-      final resolvedTerminalTheme = terminalTheme;
-      if (styledPreview != null && resolvedTerminalTheme != null) {
-        return _StyledTerminalPreviewText(
-          preview: styledPreview,
-          terminalTheme: resolvedTerminalTheme,
-          maxLines: maxLines,
-          maxWidth: constraints.maxWidth,
-          maxHeight: constraints.maxHeight,
-        );
-      }
 
       return Text(
         text,
@@ -773,6 +800,7 @@ class _AdaptiveTerminalPreviewText extends StatelessWidget {
 class _StyledTerminalPreviewText extends StatelessWidget {
   const _StyledTerminalPreviewText({
     required this.preview,
+    required this.measurement,
     required this.terminalTheme,
     required this.maxLines,
     required this.maxWidth,
@@ -780,6 +808,7 @@ class _StyledTerminalPreviewText extends StatelessWidget {
   });
 
   final TerminalPreviewSnapshot preview;
+  final _StyledPreviewMeasurement measurement;
   final TerminalThemeData terminalTheme;
   final int maxLines;
   final double maxWidth;
@@ -789,19 +818,12 @@ class _StyledTerminalPreviewText extends StatelessWidget {
   Widget build(BuildContext context) {
     final textScaler = MediaQuery.textScalerOf(context);
     final lineCount = math.max(1, math.min(preview.lines.length, maxLines));
-    final columnCount = _styledContentColumns(preview);
-    final fontSize = _fitStyledPreviewFontSize(
-      terminalTheme: terminalTheme,
-      columnCount: columnCount,
-      maxWidth: maxWidth,
-      textScaler: textScaler,
-    );
     final painter = _buildStyledPreviewPainter(
       terminalTheme: terminalTheme,
-      fontSize: fontSize,
+      fontSize: measurement.fontSize,
       textScaler: textScaler,
     );
-    final naturalHeight = painter.cellSize.height * lineCount;
+    final naturalHeight = measurement.cellSize.height * lineCount;
     final height = maxHeight.isFinite
         ? math.min(maxHeight, naturalHeight)
         : naturalHeight;
@@ -841,7 +863,9 @@ double _fitStyledPreviewFontSize({
       fontSize: midpoint,
       textScaler: textScaler,
     );
-    if (painter.cellSize.width * columnCount <= maxWidth) {
+    final cellWidth = painter.cellSize.width;
+    painter.dispose();
+    if (cellWidth * columnCount <= maxWidth) {
       low = midpoint;
     } else {
       high = midpoint;
@@ -865,23 +889,27 @@ MonkeyTerminalPainter _buildStyledPreviewPainter({
   textScaler: textScaler,
 );
 
-double _styledPreviewCellHeight({
+_StyledPreviewMeasurement _measureStyledPreview({
   required TerminalThemeData terminalTheme,
   required int columnCount,
   required double maxWidth,
   required TextScaler textScaler,
 }) {
+  debugOnStyledPreviewFontFit?.call();
   final fontSize = _fitStyledPreviewFontSize(
     terminalTheme: terminalTheme,
     columnCount: columnCount,
     maxWidth: maxWidth,
     textScaler: textScaler,
   );
-  return _buildStyledPreviewPainter(
+  final painter = _buildStyledPreviewPainter(
     terminalTheme: terminalTheme,
     fontSize: fontSize,
     textScaler: textScaler,
-  ).cellSize.height;
+  );
+  final cellSize = painter.cellSize;
+  painter.dispose();
+  return (fontSize: fontSize, cellSize: cellSize);
 }
 
 int _styledContentColumns(TerminalPreviewSnapshot snapshot) {

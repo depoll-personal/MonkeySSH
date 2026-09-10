@@ -342,8 +342,11 @@ int approximateContentBlockBytes(AcpContentBlock block) {
     // JSON string solely to estimate images this timeline already retains.
     AcpImageContent() =>
       block.data.length +
-          block.mimeType.length +
-          (block.uri?.length ?? 0) +
+          utf8.encode(block.mimeType).length +
+          utf8.encode(block.uri ?? '').length +
+          _approximateJsonBytes(block.annotations?.toJson()) +
+          _approximateJsonBytes(block.meta) +
+          _approximateJsonBytes(block.extensions) +
           256,
     _ => _encodedContentBlockBytes(block),
   };
@@ -359,13 +362,20 @@ int _encodedContentBlockBytes(AcpContentBlock block) {
   }
 }
 
-int _approximateToolContentBytes(AcpToolContent content) => switch (content) {
-  AcpToolContentBlock(:final content) => approximateContentBlockBytes(content),
-  AcpToolDiff(:final path, :final oldText, :final newText) =>
-    path.length + (oldText?.length ?? 0) + newText.length,
-  AcpToolTerminal(:final terminalId) => terminalId.length + 16,
-  AcpUnknownToolContent(:final raw) => _approximateJsonBytes(raw),
-};
+int _approximateToolContentBytes(AcpToolContent content) =>
+    _approximateJsonBytes(content.meta) +
+    _approximateJsonBytes(content.extensions) +
+    switch (content) {
+      AcpToolContentBlock(:final content) => approximateContentBlockBytes(
+        content,
+      ),
+      AcpToolDiff(:final path, :final oldText, :final newText) =>
+        utf8.encode(path).length +
+            utf8.encode(oldText ?? '').length +
+            utf8.encode(newText).length,
+      AcpToolTerminal(:final terminalId) => terminalId.length + 16,
+      AcpUnknownToolContent(:final raw) => _approximateJsonBytes(raw),
+    };
 
 int _approximateJsonBytes(Object? value) {
   try {
@@ -416,12 +426,21 @@ int approximateTimelineEntryBytes(AcpTimelineEntry entry) => switch (entry) {
 AcpContentBlock _truncatedContentBlock(AcpContentBlock block, int maxBytes) {
   if (block is AcpTextContent) {
     final bytes = utf8.encode(block.text);
-    if (bytes.length <= maxBytes) return block;
-    final keep = maxBytes < 0 ? 0 : maxBytes;
-    final truncatedText =
+    final minimal = AcpTextContent(block.text);
+    if (approximateContentBlockBytes(minimal) <= maxBytes) return minimal;
+    final markerBytes = approximateContentBlockBytes(
+      const AcpTextContent(_truncationMarkerText),
+    );
+    var keep = math.min(bytes.length, math.max(0, maxBytes - markerBytes));
+    while (true) {
+      final truncated = AcpTextContent(
         utf8.decode(bytes.sublist(0, keep), allowMalformed: true) +
-        _truncationMarkerText;
-    return AcpTextContent(truncatedText, annotations: block.annotations);
+            _truncationMarkerText,
+      );
+      final excess = approximateContentBlockBytes(truncated) - maxBytes;
+      if (excess <= 0 || keep == 0) return truncated;
+      keep = math.max(0, keep - excess);
+    }
   }
   return const AcpTextContent('[content omitted to stay within memory limits]');
 }
@@ -674,40 +693,48 @@ class AcpTimelineBuilder {
       entry.content,
       _limits.maxRetainedImageBytes,
     );
-    final imageAllowance = protectedImages.fold<int>(
-      0,
-      (sum, block) => sum + approximateContentBlockBytes(block),
+    int byteLimit(Iterable<AcpContentBlock> content) => math.min(
+      _limits.maxTotalBytes,
+      _limits.maxEntryBytes +
+          content.whereType<AcpImageContent>().fold<int>(
+            0,
+            (sum, block) =>
+                sum + (protectedImages.contains(block) ? block.data.length : 0),
+          ),
     );
-    final byteLimit = _limits.maxEntryBytes + imageAllowance;
-    if (_approximateMessageBytes(entry) <= byteLimit) {
+    if (_approximateMessageBytes(entry) <= byteLimit(entry.content)) {
       return entry;
     }
     _overflowed = true;
     final content = List<AcpContentBlock>.of(entry.content);
-    var total = content.fold<int>(
-      0,
-      (sum, block) => sum + approximateContentBlockBytes(block),
-    );
-    while (content.isNotEmpty && total > byteLimit) {
+    var total = _approximateMessageBytes(entry);
+    while (content.isNotEmpty && total > byteLimit(content)) {
       final unprotected = <int>[
         for (var index = 0; index < content.length; index++)
           if (!protectedImages.contains(content[index])) index,
       ];
-      if (unprotected.length > 1 || unprotected.isEmpty) {
+      if (content.length > 1 && unprotected.length != 1) {
         final index = unprotected.isEmpty ? 0 : unprotected.first;
         total -= approximateContentBlockBytes(content.removeAt(index));
         continue;
       }
-      final index = unprotected.single;
-      final otherBytes = total - approximateContentBlockBytes(content[index]);
-      content[index] = _truncatedContentBlock(
-        content[index],
-        (byteLimit - otherBytes).clamp(0, byteLimit),
+      final index = unprotected.isEmpty ? 0 : unprotected.single;
+      final block = content[index];
+      final otherBytes = total - approximateContentBlockBytes(block);
+      final replacement = _truncatedContentBlock(
+        block,
+        math.max(0, byteLimit(content) - otherBytes),
       );
-      // The content-free marker can itself exceed tiny synthetic test limits;
-      // retain that final bounded explanation rather than leaving the message
-      // empty, matching the historical text-truncation contract.
-      break;
+      content[index] = replacement;
+      total = otherBytes + approximateContentBlockBytes(replacement);
+      // Keep a bounded explanation even when a synthetic limit cannot fit
+      // the marker itself. Otherwise continue if image metadata still exceeds
+      // the ordinary budget after the unprotected content was trimmed.
+      if (content.length == 1 || total <= byteLimit(content)) break;
+      if (approximateContentBlockBytes(replacement) >=
+          approximateContentBlockBytes(block)) {
+        total -= approximateContentBlockBytes(content.removeAt(index));
+      }
     }
     return AcpMessageEntry(
       role: entry.role,

@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'diagnostics_log_service.dart';
 import 'remote_file_service.dart' show shellEscapePosix;
+import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
 import 'windows_remote_powershell.dart';
 
@@ -412,8 +413,8 @@ class ShellCompletionService {
             buildWindowsShellHistoryScript(invocation),
           )
         : buildShellHistoryRemoteCommand(invocation);
-    final exec = await session.execute(command);
     try {
+      final exec = await openSshExec(session.execute(command), historyTimeout);
       return parseShellHistoryOutput(
         await _collectStdout(
           exec,
@@ -465,8 +466,8 @@ class ShellCompletionService {
             buildWindowsShellCompletionScript(invocation),
           )
         : buildShellCompletionRemoteCommand(invocation);
-    final exec = await session.execute(command);
     try {
+      final exec = await openSshExec(session.execute(command), timeout);
       return await _collectStdout(
         exec,
         outputLimit: maxOutputChars,
@@ -491,7 +492,10 @@ class ShellCompletionService {
     ShellCompletionInvocation invocation,
   ) async {
     final command = buildInteractiveZshCompletionRemoteCommand(invocation);
-    final exec = await session.execute(command, pty: const SSHPtyConfig());
+    final exec = await openSshExec(
+      session.execute(command, pty: const SSHPtyConfig()),
+      interactiveZshTimeout,
+    );
     final output = await _collectStdout(
       exec,
       outputLimit: maxOutputChars,

@@ -180,13 +180,19 @@ func TestPendingWindowStartAlreadyClosedNeverLaunches(t *testing.T) {
 	if launched || window != nil || !errors.Is(err, errServerClosed) {
 		t.Fatalf("closed createWindow = (%v, %v), launched=%v", window, err, launched)
 	}
+	if len(server.windows) != 0 || server.nextID != 0 {
+		t.Fatal("closed server changed the window registry")
+	}
+	watchersDone := make(chan struct{})
+	go func() { server.windowWatchers.Wait(); close(watchersDone) }()
+	awaitWindowStart(t, "watcher balance", watchersDone)
 }
 
 func TestPendingWindowStartWatcherHandoff(t *testing.T) {
 	server := newMuxServer("handoff")
-	var done <-chan struct{}
+	var callers []<-chan struct{}
 	t.Cleanup(func() {
-		if done != nil {
+		for _, done := range callers {
 			awaitWindowStart(t, "shutdown completion", done)
 		}
 	})
@@ -202,16 +208,19 @@ func TestPendingWindowStartWatcherHandoff(t *testing.T) {
 	}
 	awaitWindowStart(t, "reader entry", read.entered)
 	awaitWindowStart(t, "watcher entry", wait.entered)
-	done = closeWindowStartServer(server)
+	callers = append(callers, closeWindowStartServer(server))
 	awaitWindowStart(t, "normal hangup", hungup)
 	awaitWindowStart(t, "normal PTY close", ptyClose.entered)
+	callers = append(callers, closeWindowStartServer(server))
 	ptyClose.open()
-	assertWindowStartPending(t, "registered watchers", done)
+	assertWindowStartPending(t, "registered watchers", callers...)
 	read.open()
 	awaitWindowStart(t, "reader return", read.returned)
-	assertWindowStartPending(t, "process watcher", done)
+	assertWindowStartPending(t, "process watcher", callers...)
 	wait.open()
-	awaitWindowStart(t, "shutdown completion", done)
+	for _, done := range callers {
+		awaitWindowStart(t, "shutdown completion", done)
+	}
 	// An unbalanced watcher group must not hide behind the bounded wait.
 	watchersDone := make(chan struct{})
 	go func() { server.windowWatchers.Wait(); close(watchersDone) }()

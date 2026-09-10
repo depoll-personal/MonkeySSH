@@ -10,6 +10,57 @@ class _Client extends Mock implements SSHClient {}
 class _Shell extends Mock implements SSHSession {}
 
 void main() {
+  testWidgets('Windows detection opening times out and closes a late probe', (
+    tester,
+  ) async {
+    final client = _Client();
+    final shell = _Shell();
+    final opening = Completer<SSHSession>();
+    when(
+      () => client.remoteVersion,
+    ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
+    when(
+      () => client.shell(
+        pty: any(named: 'pty'),
+        environment: any(named: 'environment'),
+      ),
+    ).thenThrow(SSHChannelRequestError('env rejected'));
+    final commands = <String>[];
+    when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+      invocation,
+    ) {
+      commands.add(invocation.positionalArguments.first as String);
+      return invocation.namedArguments[#pty] == null
+          ? opening.future
+          : Future.value(shell);
+    });
+    when(() => shell.stdout).thenAnswer((_) => const Stream.empty());
+    when(() => shell.stderr).thenAnswer((_) => const Stream.empty());
+    when(() => shell.done).thenAnswer((_) => Completer<void>().future);
+    final session = SshSession(
+      connectionId: 88003,
+      hostId: 1,
+      client: client,
+      config: const SshConnectionConfig(
+        hostname: 'example.com',
+        port: 22,
+        username: 'tester',
+      ),
+    );
+    final result = session.getShell();
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 3));
+    expect(await result, same(shell));
+    expect(commands, hasLength(2));
+    expect(commands.last, startsWith('cmd.exe /d /k'));
+    final lateProbe = _Shell();
+    opening.complete(lateProbe);
+    await tester.pump();
+    verify(lateProbe.close).called(1);
+    verifyNever(() => lateProbe.stdout);
+    await session.closeShell(waitForStreams: false);
+  });
+
   group('concurrent shell opens', () {
     late _Client client;
     late SshSession session;

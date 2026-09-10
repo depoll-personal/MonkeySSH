@@ -10,27 +10,19 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 /// Service that encrypts and decrypts sensitive values stored in SQLite.
 class SecretEncryptionService {
   /// Creates a new [SecretEncryptionService].
-  SecretEncryptionService({
-    FlutterSecureStorage? storage,
-    AesGcm? algorithm,
-    Random? random,
-  }) : _storage = storage ?? _secureStorage,
-       _algorithm = algorithm ?? AesGcm.with256bits(),
-       _random = random ?? Random.secure(),
-       _testingMasterKey = null;
+  SecretEncryptionService({FlutterSecureStorage? storage, Random? random})
+    : _storage = storage ?? _secureStorage,
+      _random = random ?? Random.secure(),
+      _testingMasterKey = null;
 
   /// Creates a [SecretEncryptionService] configured for tests.
-  SecretEncryptionService.forTesting({
-    List<int>? masterKey,
-    AesGcm? algorithm,
-    Random? random,
-  }) : _storage = null,
-       _algorithm = algorithm ?? AesGcm.with256bits(),
-       _random = random ?? Random(1),
-       _testingMasterKey = masterKey ?? SecretKeyData.random(length: 32).bytes;
+  SecretEncryptionService.forTesting({List<int>? masterKey, Random? random})
+    : _storage = null,
+      _random = random ?? Random(1),
+      _testingMasterKey = masterKey ?? SecretKeyData.random(length: 32).bytes;
 
   final FlutterSecureStorage? _storage;
-  final AesGcm _algorithm;
+  final AesGcm _algorithm = AesGcm.with256bits();
   final Random _random;
   final List<int>? _testingMasterKey;
 

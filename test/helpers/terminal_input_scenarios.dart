@@ -4,66 +4,33 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show TextInputClient;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
-import 'package:xterm/xterm.dart';
 
+import 'terminal_input_harness.dart';
 import 'terminal_input_helpers.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
 
 Future<void> swipeSeparatorAfterPromptReset(WidgetTester tester) async {
-  final terminalOutput = <String>[];
-  final terminal = Terminal(onOutput: terminalOutput.add);
-  final focusNode = FocusNode();
-  final controller = TerminalTextInputHandlerController();
-
-  await tester.pumpWidget(
-    MaterialApp(
-      home: Scaffold(
-        body: TerminalTextInputHandler(
-          terminal: terminal,
-          focusNode: focusNode,
-          controller: controller,
-          deleteDetection: true,
-          resolveTextBeforeCursor: () => '>',
-          child: const SizedBox.expand(),
-        ),
-      ),
-    ),
+  final harness = await pumpTerminalInputHarness(
+    tester,
+    resolveTextBeforeCursor: () => '>',
   );
 
-  focusNode.requestFocus();
-  await tester.pump();
-
-  controller.clearImeBuffer();
+  harness.controller.clearImeBuffer();
   await tester.pump();
 
   await commitSwipeText(tester, '$_deleteDetectionMarker world');
 
-  expect(terminalTextFromEvents(terminalOutput), 'world');
+  expect(terminalTextFromEvents(harness.terminalOutput), 'world');
 
-  focusNode.dispose();
+  await disposeTerminalInputHarness(tester, harness);
 }
 
 Future<void> suggestionReplacingShortenedFirstWord(WidgetTester tester) async {
-  final terminalOutput = <String>[];
-  final terminal = Terminal(onOutput: terminalOutput.add);
-  final focusNode = FocusNode();
-
-  await tester.pumpWidget(
-    MaterialApp(
-      home: Scaffold(
-        body: TerminalTextInputHandler(
-          terminal: terminal,
-          focusNode: focusNode,
-          deleteDetection: true,
-          child: const SizedBox.expand(),
-        ),
-      ),
-    ),
+  final harness = await pumpTerminalInputHarness(
+    tester,
+    attachController: false,
   );
-
-  focusNode.requestFocus();
-  await tester.pump();
 
   tester.testTextInput.updateEditingValue(
     const TextEditingValue(
@@ -73,7 +40,7 @@ Future<void> suggestionReplacingShortenedFirstWord(WidgetTester tester) async {
   );
   await tester.pump();
 
-  terminalOutput.clear();
+  harness.terminalOutput.clear();
 
   tester.testTextInput.updateEditingValue(
     const TextEditingValue(
@@ -93,37 +60,22 @@ Future<void> suggestionReplacingShortenedFirstWord(WidgetTester tester) async {
 
   expect(
     terminalStateFromEvents(
-      terminalOutput,
+      harness.terminalOutput,
       initialText: 'teh ',
       initialCursorOffset: 'teh '.length,
     ),
     (text: 'the ', cursorOffset: 'the '.length),
   );
 
-  focusNode.dispose();
+  await disposeTerminalInputHarness(tester, harness);
 }
 
 Future<void> imeSeparatorDuringDeleteReset(WidgetTester tester) async {
-  final terminalOutput = <String>[];
-  final terminal = Terminal(onOutput: terminalOutput.add);
-  final focusNode = FocusNode();
-
-  await tester.pumpWidget(
-    MaterialApp(
-      home: Scaffold(
-        body: TerminalTextInputHandler(
-          terminal: terminal,
-          focusNode: focusNode,
-          deleteDetection: true,
-          resolveTextBeforeCursor: () => 'te',
-          child: const SizedBox.expand(),
-        ),
-      ),
-    ),
+  final harness = await pumpTerminalInputHarness(
+    tester,
+    attachController: false,
+    resolveTextBeforeCursor: () => 'te',
   );
-
-  focusNode.requestFocus();
-  await tester.pump();
 
   tester.testTextInput.updateEditingValue(
     const TextEditingValue(
@@ -133,7 +85,7 @@ Future<void> imeSeparatorDuringDeleteReset(WidgetTester tester) async {
   );
   await tester.pump();
 
-  terminalOutput.clear();
+  harness.terminalOutput.clear();
 
   tester.testTextInput.updateEditingValue(
     const TextEditingValue(
@@ -153,36 +105,21 @@ Future<void> imeSeparatorDuringDeleteReset(WidgetTester tester) async {
 
   expect(
     terminalStateFromEvents(
-      terminalOutput,
+      harness.terminalOutput,
       initialText: 'teh ',
       initialCursorOffset: 'teh '.length,
     ),
     (text: 'the ', cursorOffset: 'the '.length),
   );
 
-  focusNode.dispose();
+  await disposeTerminalInputHarness(tester, harness);
 }
 
 Future<void> manualSeparatorAfterSwipeBackspace(WidgetTester tester) async {
-  final terminalOutput = <String>[];
-  final terminal = Terminal(onOutput: terminalOutput.add);
-  final focusNode = FocusNode();
-
-  await tester.pumpWidget(
-    MaterialApp(
-      home: Scaffold(
-        body: TerminalTextInputHandler(
-          terminal: terminal,
-          focusNode: focusNode,
-          deleteDetection: true,
-          child: const SizedBox.expand(),
-        ),
-      ),
-    ),
+  final harness = await pumpTerminalInputHarness(
+    tester,
+    attachController: false,
   );
-
-  focusNode.requestFocus();
-  await tester.pump();
 
   await commitSwipeText(tester, '$_deleteDetectionMarker teh');
 
@@ -194,7 +131,7 @@ Future<void> manualSeparatorAfterSwipeBackspace(WidgetTester tester) async {
   );
   await tester.pump();
 
-  terminalOutput.clear();
+  harness.terminalOutput.clear();
 
   tester.testTextInput.updateEditingValue(
     const TextEditingValue(
@@ -214,40 +151,25 @@ Future<void> manualSeparatorAfterSwipeBackspace(WidgetTester tester) async {
 
   expect(
     terminalStateFromEvents(
-      terminalOutput,
+      harness.terminalOutput,
       initialText: 'teh ',
       initialCursorOffset: 'teh '.length,
     ),
     (text: 'the ', cursorOffset: 'the '.length),
   );
 
-  focusNode.dispose();
+  await disposeTerminalInputHarness(tester, harness);
 }
 
 Future<void> imeSeparatorAfterSwipeBackspace(WidgetTester tester) async {
-  final terminalOutput = <String>[];
-  final terminal = Terminal(onOutput: terminalOutput.add);
-  final focusNode = FocusNode();
-
-  await tester.pumpWidget(
-    MaterialApp(
-      home: Scaffold(
-        body: TerminalTextInputHandler(
-          terminal: terminal,
-          focusNode: focusNode,
-          deleteDetection: true,
-          child: const SizedBox.expand(),
-        ),
-      ),
-    ),
+  final harness = await pumpTerminalInputHarness(
+    tester,
+    attachController: false,
   );
-
-  focusNode.requestFocus();
-  await tester.pump();
 
   await commitSwipeText(tester, '${_deleteDetectionMarker}teh ');
 
-  terminalOutput.clear();
+  harness.terminalOutput.clear();
 
   tester.testTextInput.updateEditingValue(
     const TextEditingValue(
@@ -267,36 +189,21 @@ Future<void> imeSeparatorAfterSwipeBackspace(WidgetTester tester) async {
 
   expect(
     terminalStateFromEvents(
-      terminalOutput,
+      harness.terminalOutput,
       initialText: 'teh ',
       initialCursorOffset: 'teh '.length,
     ),
     (text: 'the ', cursorOffset: 'the '.length),
   );
 
-  focusNode.dispose();
+  await disposeTerminalInputHarness(tester, harness);
 }
 
 Future<void> replacementAfterDeletingLaterWord(WidgetTester tester) async {
-  final terminalOutput = <String>[];
-  final terminal = Terminal(onOutput: terminalOutput.add);
-  final focusNode = FocusNode();
-
-  await tester.pumpWidget(
-    MaterialApp(
-      home: Scaffold(
-        body: TerminalTextInputHandler(
-          terminal: terminal,
-          focusNode: focusNode,
-          deleteDetection: true,
-          child: const SizedBox.expand(),
-        ),
-      ),
-    ),
+  final harness = await pumpTerminalInputHarness(
+    tester,
+    attachController: false,
   );
-
-  focusNode.requestFocus();
-  await tester.pump();
 
   tester.testTextInput.updateEditingValue(
     const TextEditingValue(
@@ -333,7 +240,7 @@ Future<void> replacementAfterDeletingLaterWord(WidgetTester tester) async {
   );
   await tester.pump();
 
-  expect(terminalTextFromEvents(terminalOutput), 'the ');
+  expect(terminalTextFromEvents(harness.terminalOutput), 'the ');
   expect(
     tester.testTextInput.log.where(
       (call) => call.method == 'TextInput.setEditingState',
@@ -341,5 +248,5 @@ Future<void> replacementAfterDeletingLaterWord(WidgetTester tester) async {
     isEmpty,
   );
 
-  focusNode.dispose();
+  await disposeTerminalInputHarness(tester, harness);
 }

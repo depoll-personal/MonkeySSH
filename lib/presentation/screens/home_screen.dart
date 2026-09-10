@@ -15,13 +15,11 @@ import '../../data/repositories/snippet_repository.dart';
 import '../../domain/commands/duplicate_host_command.dart';
 import '../../domain/models/acp_provider.dart';
 import '../../domain/models/acp_session_state.dart';
-import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/remote_multiplexer.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/acp_session_manager.dart';
-import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
 import '../../domain/services/auth_service.dart';
 import '../../domain/services/diagnostics_log_service.dart';
@@ -3010,7 +3008,6 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   String? _preferredSessionToolName;
   String? _sessionName;
   RemoteMuxBackend _muxBackend = RemoteMuxBackend.tmux;
-  bool _startClisInYoloMode = false;
   bool _queried = false;
   bool _expanded = false;
   bool _showSessions = false;
@@ -3023,21 +3020,11 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   bool _loadingWindows = false;
   bool _pendingWindowReload = false;
   bool _tmuxQueryScheduled = false;
+  bool _needsTmuxQuery = true;
   bool _muxSessionEnding = false;
   int _windowReloadGeneration = 0;
   int _windowEventGeneration = 0;
   int _tmuxQueryGeneration = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    unawaited(() async {
-      await _loadHostAgentPreferences();
-      if (mounted) {
-        await _queryTmux();
-      }
-    }());
-  }
 
   @override
   void didUpdateWidget(covariant _TmuxConnectionBadge oldWidget) {
@@ -3049,7 +3036,6 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
         oldWidget.configuredMuxBackend != widget.configuredMuxBackend;
     final tmuxExtraFlagsChanged =
         oldWidget.tmuxExtraFlags != widget.tmuxExtraFlags;
-    _refreshHostAgentPreferences();
     if (connectionChanged ||
         preferredSessionChanged ||
         muxBackendChanged ||
@@ -3073,76 +3059,18 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
         }
       });
       _syncConnectionSessionTitle(null);
-      unawaited(_queryTmux());
+      _needsTmuxQuery = true;
     }
   }
 
   bool _isCurrentTmuxQuery(int generation) =>
       mounted && generation == _tmuxQueryGeneration;
 
-  void _refreshHostAgentPreferences([int? hostId]) {
-    unawaited(
-      _loadHostAgentPreferences(hostId).then<void>((changed) {
-        if (changed && mounted) {
-          unawaited(_queryTmux());
-        }
-      }),
-    );
-  }
-
   @override
   void dispose() {
     _tmuxRetryTimer?.cancel();
     unawaited(_windowChangeSubscription?.cancel());
     super.dispose();
-  }
-
-  Future<bool> _loadHostAgentPreferences([int? hostId]) async {
-    if (!mounted) return false;
-    final activeSessions = ref.read(activeSessionsProvider.notifier);
-    final presetService = ref.read(agentLaunchPresetServiceProvider);
-    final cliLaunchPreferencesService = ref.read(
-      hostCliLaunchPreferencesServiceProvider,
-    );
-    final resolvedHostId =
-        hostId ?? activeSessions.getSession(widget.connectionId)?.hostId;
-    if (resolvedHostId == null) return false;
-
-    final preset = await presetService.getPresetForHost(resolvedHostId);
-    if (!mounted) return false;
-    final cliLaunchPreferences = await cliLaunchPreferencesService
-        .getPreferencesForHost(resolvedHostId);
-    if (!mounted) return false;
-
-    final preferredToolName = preset?.tool.discoveredSessionToolName;
-    final presetSessionName = preset?.tmuxSessionName?.trim();
-    final preferredAgentSessionName =
-        presetSessionName == null || presetSessionName.isEmpty
-        ? null
-        : presetSessionName;
-    final preferredAgentMuxBackend = preferredAgentSessionName == null
-        ? null
-        : preset?.effectiveRemoteMuxBackend;
-    final startClisInYoloMode = cliLaunchPreferences.startInYoloMode;
-    final preferredToolChanged = _preferredSessionToolName != preferredToolName;
-    final preferredAgentMuxChanged =
-        _preferredAgentMuxBackend != preferredAgentMuxBackend ||
-        _preferredAgentSessionName != preferredAgentSessionName;
-    if (!preferredToolChanged &&
-        !preferredAgentMuxChanged &&
-        _startClisInYoloMode == startClisInYoloMode) {
-      return false;
-    }
-    setState(() {
-      _preferredSessionToolName = preferredToolName;
-      _preferredAgentMuxBackend = preferredAgentMuxBackend;
-      _preferredAgentSessionName = preferredAgentSessionName;
-      _startClisInYoloMode = startClisInYoloMode;
-    });
-    if (_showSessions && preferredToolChanged) {
-      unawaited(_prefetchPreferredSessionProvider());
-    }
-    return preferredAgentMuxChanged || preferredToolChanged;
   }
 
   @override
@@ -3203,7 +3131,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   RemoteMultiplexerService _serviceForBackend(RemoteMuxBackend backend) =>
       backend == RemoteMuxBackend.monkeyMux
       ? ref.read(monkeyMuxServiceProvider)
-      : TmuxRemoteMultiplexerService(ref.read(tmuxServiceProvider));
+      : ref.read(tmuxServiceProvider);
 
   Future<String?> _resolveMuxSessionName(
     SshSession session,
@@ -3322,7 +3250,6 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       await _retryTmuxQuery(retries, expectedGeneration: queryGeneration);
       return;
     }
-    _refreshHostAgentPreferences(session.hostId);
 
     final muxBackend = _resolveMuxBackend(session);
     final mux = _serviceForBackend(muxBackend);
@@ -3524,13 +3451,41 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     final connectionState = ref.watch(
       activeSessionsProvider.select((state) => state[widget.connectionId]),
     );
-    if (connectionState == SshConnectionState.connected &&
+    final hostId = ref.watch(
+      activeSessionsProvider.select(
+        (_) => ref
+            .read(activeSessionsProvider.notifier)
+            .getActiveConnection(widget.connectionId)
+            ?.hostId,
+      ),
+    );
+    final preferences = hostId == null
+        ? null
+        : ref.watch(hostAgentBadgePreferencesProvider(hostId));
+    final preferred = preferences?.asData?.value;
+    final preferredToolChanged =
+        _preferredSessionToolName != preferred?.toolName;
+    final preferencesChanged =
+        preferredToolChanged ||
+        _preferredAgentMuxBackend != preferred?.muxBackend ||
+        _preferredAgentSessionName != preferred?.sessionName;
+    _preferredSessionToolName = preferred?.toolName;
+    _preferredAgentMuxBackend = preferred?.muxBackend;
+    _preferredAgentSessionName = preferred?.sessionName;
+    if (_showSessions && preferredToolChanged) {
+      unawaited(_prefetchPreferredSessionProvider());
+    }
+    _needsTmuxQuery |= preferencesChanged;
+    if (preferences?.isLoading != true &&
         !_tmuxQueryScheduled &&
-        !_loadingWindows &&
-        (_sessionName == null || !_queried)) {
+        (_needsTmuxQuery ||
+            (connectionState == SshConnectionState.connected &&
+                !_loadingWindows &&
+                (_sessionName == null || !_queried)))) {
       _tmuxQueryScheduled = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _tmuxQueryScheduled = false;
+        _needsTmuxQuery = false;
         if (mounted) {
           unawaited(_queryTmux());
         }

@@ -67,6 +67,32 @@ class ClassificationTest(unittest.TestCase):
                 result = self.assert_platforms([path], changes.PLATFORMS)
                 self.assertTrue(result['go'])
 
+    def test_daemon_tests_only_run_go_and_readme_is_documentation(self):
+        for path in ['remote/monkeymux/main_test.go', 'remote/monkeymux/internal/example_test.go']:
+            with self.subTest(path=path):
+                result = self.assert_platforms([path], [])
+                self.assertTrue(result['go'])
+                self.assertFalse(result['run_check'])
+        self.assertFalse(any(changes.classify(['remote/monkeymux/README.md']).values()))
+
+    def test_daemon_packaging_exceptions_and_unknown_inputs_stay_conservative(self):
+        for path in ['remote/monkeymux/conpty/example_test.go',
+                     'remote/monkeymux/conpty/README.md', 'remote/monkeymux/unknown.input']:
+            with self.subTest(path=path):
+                result = self.assert_platforms([path], changes.PLATFORMS)
+                self.assertTrue(result['go'])
+                self.assertTrue(result['run_check'])
+
+    def test_mixed_daemon_and_application_changes_retain_their_coverage(self):
+        result = self.assert_platforms(['remote/monkeymux/main_test.go', 'lib/main.dart'], [])
+        self.assertTrue(result['go'])
+        self.assertTrue(result['run_check'])
+        result = self.assert_platforms(['remote/monkeymux/README.md', 'ios/native.swift'], ['ios'])
+        self.assertFalse(result['go'])
+        self.assertTrue(result['run_check'])
+        self.assert_platforms(['remote/monkeymux/main_test.go', 'remote/monkeymux/main.go'],
+                              changes.PLATFORMS)
+
     def test_vendored_terminal_inputs_keep_test_coverage(self):
         for path in ['third_party/xterm/pubspec.yaml', 'third_party/xterm/pubspec.lock',
                      'third_party/xterm/lib/src/terminal.dart']:
@@ -116,6 +142,86 @@ class GitDiffTest(unittest.TestCase):
                 result = self.classify(event)
                 self.assertEqual(result['android'], 'true')
                 self.assertEqual(result['ios'], 'false')
+
+    def test_daemon_renames_classify_both_old_and_new_paths(self):
+        for source, target, builds, go in [
+            ('main.go', 'main_test.go', True, True),
+            ('main_test.go', 'main.go', True, True),
+            ('main_test.go', 'renamed_test.go', False, True),
+            ('README.md', 'unknown.input', True, True),
+            ('README.md', '../../docs/daemon.md', False, False),
+        ]:
+            with self.subTest(source=source, target=target):
+                self.write('remote/monkeymux/' + source, 'fixture')
+                self.git('add', '.')
+                self.git('commit', '-qm', 'daemon input')
+                base = self.git('rev-parse', 'HEAD')
+                dest = self.root / 'remote/monkeymux' / target
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                self.git('mv', 'remote/monkeymux/' + source, str(dest))
+                self.git('commit', '-qm', 'rename daemon input')
+                result = self.classify(base=base)
+                self.assertEqual(result['go'], str(go).lower())
+                for output in ['run_check', *changes.PLATFORMS]:
+                    self.assertEqual(result[output], str(builds).lower())
+
+    def resolve_security_commits(self, base, head):
+        script = subprocess.check_output(['ruby', '-ryaml', '-e',
+            "puts YAML.load_file(ARGV[0])['jobs']['dependency-review']['steps'].find { |s| s['id'] == 'comparison' }['run']",
+            str(ROOT / '.github/workflows/security.yml')], text=True)
+        output = self.root / 'security-output'
+        output.write_text('')
+        result = subprocess.run(['bash', '-e', '-c', script], cwd=self.root, capture_output=True,
+                                text=True, env={**os.environ, 'BASE_SHA': base, 'HEAD_SHA': head,
+                                                'GH_TOKEN': '', 'GITHUB_OUTPUT': str(output)})
+        return result, dict(line.split('=', 1) for line in output.read_text().splitlines())
+
+    def test_security_fetches_older_before_commit_in_shallow_multicommit_push(self):
+        self.write('pubspec.lock', 'changed dependency')
+        self.git('add', '.')
+        self.git('commit', '-qm', 'dependency update')
+        for index in range(3):
+            self.write('docs/new.md', str(index))
+            self.git('add', '.')
+            self.git('commit', '-qm', 'documentation update')
+        origin = self.root
+        clone = origin / 'shallow'
+        self.git('clone', '--depth=2', origin.as_uri(), str(clone))
+        self.root = clone
+        self.assertEqual(self.git('rev-parse', '--is-shallow-repository'), 'true')
+        self.assertNotEqual(subprocess.run(['git', 'cat-file', '-e', self.base], cwd=clone,
+                                          capture_output=True).returncode, 0)
+        head = self.git('rev-parse', 'HEAD')
+        result, outputs = self.resolve_security_commits(self.base, head)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(outputs, {'base': self.base, 'head': head})
+        self.assertEqual(self.git('diff', '--name-only', outputs['base'], outputs['head']).splitlines(),
+                         ['docs/new.md', 'pubspec.lock'])
+        self.assertEqual(self.classify('push')['run_check'], 'true')
+        self.assertEqual(self.git('rev-parse', '--is-shallow-repository'), 'true')
+        # A head that arrived after checkout must also be fetched explicitly.
+        self.root = origin
+        self.write('Gemfile.lock', 'another dependency')
+        self.git('add', 'Gemfile.lock')
+        self.git('commit', '-qm', 'new head')
+        next_head = self.git('rev-parse', 'HEAD')
+        self.root = clone
+        result, outputs = self.resolve_security_commits(head, next_head)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.git('diff', '--name-only', outputs['base'], outputs['head']), 'Gemfile.lock')
+        result, _ = self.resolve_security_commits('f' * 40, next_head)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_security_first_push_resolves_parent_or_has_no_baseline(self):
+        result, outputs = self.resolve_security_commits('0' * 40, self.base)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(outputs['base'], '')
+        self.write('README.md', 'documentation')
+        self.git('add', '.')
+        self.git('commit', '-qm', 'second commit')
+        result, outputs = self.resolve_security_commits('0' * 40, self.git('rev-parse', 'HEAD'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(outputs['base'], self.base)
 
     def test_nul_separation_prevents_newlines_in_names_from_inventing_paths(self):
         self.write('docs/newline\nlib/fake.dart', 'documentation')
@@ -213,6 +319,33 @@ class WorkflowContractsTest(unittest.TestCase):
                 self.assertNotIn('**.dart', triggers[event]['paths'])
                 self.assertIn('remote/monkeymux/**', triggers[event]['paths'])
                 self.assertIn('third_party/**', triggers[event]['paths'])
+
+    def test_daemon_test_jobs_receive_the_asset_manifest(self):
+        jobs = self.workflows['ci.yml']['jobs']
+        self.assertEqual(jobs['monkeymux-assets']['if'],
+                         "needs.changes.outputs.run_check == 'true' || needs.changes.outputs.go == 'true'")
+        self.assertIn('monkeymux-assets', jobs['go-test']['needs'])
+
+    def test_tooling_discovers_all_python_suites_and_publication_validates_artifacts(self):
+        steps = self.workflows['ci.yml']['jobs']['tooling']['steps']
+        python = next(s['run'] for s in steps if "-p '*_test.py'" in s.get('run', ''))
+        self.assertIn('pip install --quiet Pillow', python)
+        self.assertIn('-m unittest discover -s test/scripts', python)
+        publisher = self.workflows['publish-store-assets.yml']['jobs']['publish']['steps']
+        commands = '\n'.join(s.get('run', '') for s in publisher)
+        self.assertNotIn('unittest', commands)
+        self.assertNotIn('scripts/validate_store_screenshots.py', commands)
+        self.assertIn('--require-screenshots', commands)
+        self.assertIn('scripts/validate_store_demo_videos.py', commands)
+
+    def test_security_shallow_comparison_passes_the_resolved_baseline(self):
+        jobs = self.workflows['security.yml']['jobs']
+        steps = jobs['dependency-review']['steps']
+        self.assertEqual(steps[0]['with']['fetch-depth'], 2)
+        for name in ['Detect changed dependency lockfiles', 'Compare changed dependencies with OSV']:
+            step = next(s for s in steps if s.get('name') == name)
+            self.assertEqual(step['env']['BASE_SHA'], '${{ steps.comparison.outputs.base }}')
+            self.assertNotIn('git rev-parse', step['run'])
 
     def test_gate_waits_for_independent_tooling_and_terminal_checks(self):
         jobs = self.workflows['ci.yml']['jobs']

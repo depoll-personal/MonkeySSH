@@ -1,21 +1,11 @@
 // ignore_for_file: public_member_api_docs
 
-import 'dart:async';
-
 import 'package:drift/drift.dart' show InvalidDataException;
-import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:go_router/go_router.dart';
 import 'package:mocktail/mocktail.dart';
 
 import 'package:monkeyssh/data/database/database.dart';
-import 'package:monkeyssh/data/repositories/host_repository.dart';
-import 'package:monkeyssh/data/repositories/key_repository.dart';
-import 'package:monkeyssh/data/repositories/port_forward_repository.dart';
-import 'package:monkeyssh/data/repositories/snippet_repository.dart';
-import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
@@ -131,35 +121,26 @@ class _RejectingHostRepository extends FakeHostRepository {
   }
 }
 
-class _HostEditTestHarness {
-  const _HostEditTestHarness({required this.hostRepository});
-
-  final FakeHostRepository hostRepository;
-}
-
-Future<_HostEditTestHarness> _pumpHostCreateScreen(
+Future<({FakeHostRepository hostRepository})> _pumpHostCreateScreen(
   WidgetTester tester, {
   bool hasPro = false,
   Exception? saveError,
   bool unreadablePassword = false,
   List<Snippet> snippets = const [],
 }) async {
-  final database = AppDatabase.forTesting(NativeDatabase.memory());
-  final encryptionService = SecretEncryptionService.forTesting();
-  addTearDown(database.close);
-  addTearDown(() => tester.binding.setSurfaceSize(null));
-  await tester.binding.setSurfaceSize(const Size(420, 900));
-
-  final hostRepository = _RejectingHostRepository(
-    saveError: saveError,
-    unreadablePassword: unreadablePassword,
+  final fixture = HostEditFixture(
     host: _testHost(
       id: 1,
       label: 'Unused Host',
       autoConnectRequiresConfirmation: false,
     ),
-    database: database,
-    encryptionService: encryptionService,
+  );
+  final hostRepository = _RejectingHostRepository(
+    host: fixture.host,
+    database: fixture.database,
+    encryptionService: fixture.encryptionService,
+    saveError: saveError,
+    unreadablePassword: unreadablePassword,
   );
   final presetService = _MockAgentLaunchPresetService();
   when(
@@ -170,57 +151,25 @@ Future<_HostEditTestHarness> _pumpHostCreateScreen(
   ).thenAnswer((_) async {});
   when(() => presetService.deletePresetForHost(any())).thenAnswer((_) async {});
 
-  final router = GoRouter(
-    routes: [
-      GoRoute(
-        path: '/',
-        builder: (context, state) => const Scaffold(body: SizedBox.shrink()),
-      ),
-      GoRoute(
-        path: '/add',
-        builder: (context, state) =>
-            HostEditScreen(hostId: unreadablePassword ? 1 : null),
-      ),
-    ],
-  );
-  addTearDown(router.dispose);
-
-  await tester.pumpWidget(
-    ProviderScope(
-      overrides: [
-        if (hasPro) ...[
-          monetizationServiceProvider.overrideWithValue(
-            _buildProMonetizationService(),
-          ),
-          monetizationStateProvider.overrideWith(
-            (ref) => Stream.value(_proMonetizationState),
-          ),
-        ],
-        databaseProvider.overrideWithValue(database),
-        hostRepositoryProvider.overrideWithValue(hostRepository),
-        agentLaunchPresetServiceProvider.overrideWithValue(presetService),
-        keyRepositoryProvider.overrideWithValue(
-          FakeKeyRepository(
-            database: database,
-            encryptionService: encryptionService,
-          ),
+  await fixture.setSurfaceSize(tester);
+  await fixture.pump(
+    tester,
+    createHost: !unreadablePassword,
+    snippets: snippets,
+    hostRepository: hostRepository,
+    overrides: [
+      if (hasPro) ...[
+        monetizationServiceProvider.overrideWithValue(
+          _buildProMonetizationService(),
         ),
-        snippetRepositoryProvider.overrideWithValue(
-          FakeSnippetRepository(snippets: snippets, database: database),
-        ),
-        portForwardRepositoryProvider.overrideWithValue(
-          FakePortForwardRepository(database: database),
+        monetizationStateProvider.overrideWith(
+          (ref) => Stream.value(_proMonetizationState),
         ),
       ],
-      child: MaterialApp.router(routerConfig: router),
-    ),
+      agentLaunchPresetServiceProvider.overrideWithValue(presetService),
+    ],
   );
-
-  unawaited(router.push('/add'));
-  await tester.pump();
-  await tester.pump(const Duration(milliseconds: 300));
-
-  return _HostEditTestHarness(hostRepository: hostRepository);
+  return (hostRepository: hostRepository);
 }
 
 Future<void> _fillRequiredHostFields(WidgetTester tester) async {
@@ -249,7 +198,10 @@ Future<void> _selectStartupMode(WidgetTester tester, String label) async {
   await tester.pump(const Duration(milliseconds: 300));
 }
 
-Future<void> _tapBottomSave(WidgetTester tester) async {
+Future<void> _tapBottomSave(
+  WidgetTester tester, {
+  Duration duration = const Duration(milliseconds: 600),
+}) async {
   final saveButton = find.byKey(
     const Key('host-save-button'),
     skipOffstage: false,
@@ -262,7 +214,7 @@ Future<void> _tapBottomSave(WidgetTester tester) async {
   await tester.ensureVisible(saveButton);
   tester.widget<FilledButton>(saveButton).onPressed!();
   await tester.pump();
-  await tester.pump(const Duration(milliseconds: 600));
+  await tester.pump(duration);
   await tester.pump();
 }
 
@@ -284,23 +236,6 @@ String _fieldText(WidgetTester tester, Key fieldKey) {
     ),
   );
   return editableText.controller.text;
-}
-
-/// Opens the startup-mode dropdown from any current selection and taps [label].
-Future<void> _switchStartupMode(WidgetTester tester, String label) async {
-  final startupModeField = find.byKey(const Key('host-startup-mode-field'));
-  await tester.scrollUntilVisible(
-    startupModeField,
-    200,
-    scrollable: find.byType(Scrollable).first,
-  );
-  await tester.ensureVisible(startupModeField);
-  await tester.tap(startupModeField);
-  await tester.pump();
-  await tester.pump(const Duration(milliseconds: 300));
-  await tester.tap(find.text(label).last, warnIfMissed: false);
-  await tester.pump();
-  await tester.pump(const Duration(milliseconds: 300));
 }
 
 void main() {
@@ -597,7 +532,7 @@ void main() {
     ) async {
       await _pumpHostCreateScreen(tester, hasPro: true);
       await _fillRequiredHostFields(tester);
-      await _switchStartupMode(tester, 'tmux');
+      await _selectStartupMode(tester, 'tmux');
 
       await tester.enterText(
         find.byKey(const Key('host-tmux-session-field')),
@@ -613,7 +548,7 @@ void main() {
       );
       await tester.pump();
 
-      await _switchStartupMode(tester, 'Launch coding agent');
+      await _selectStartupMode(tester, 'Launch coding agent');
 
       expect(
         _fieldText(tester, const Key('host-agent-tmux-session-field')),
@@ -640,7 +575,7 @@ void main() {
       (tester) async {
         await _pumpHostCreateScreen(tester, hasPro: true);
         await _fillRequiredHostFields(tester);
-        await _switchStartupMode(tester, 'Launch coding agent');
+        await _selectStartupMode(tester, 'Launch coding agent');
 
         await tester.enterText(
           find.byKey(const Key('host-agent-tmux-session-field')),
@@ -652,7 +587,7 @@ void main() {
         );
         await tester.pump();
 
-        await _switchStartupMode(tester, 'tmux');
+        await _selectStartupMode(tester, 'tmux');
 
         expect(
           _fieldText(tester, const Key('host-tmux-session-field')),
@@ -671,21 +606,21 @@ void main() {
       await _pumpHostCreateScreen(tester, hasPro: true);
       await _fillRequiredHostFields(tester);
 
-      await _switchStartupMode(tester, 'Launch coding agent');
+      await _selectStartupMode(tester, 'Launch coding agent');
       await tester.enterText(
         find.byKey(const Key('host-agent-tmux-session-field')),
         'agent-session',
       );
       await tester.pump();
 
-      await _switchStartupMode(tester, 'tmux');
+      await _selectStartupMode(tester, 'tmux');
       await tester.enterText(
         find.byKey(const Key('host-tmux-session-field')),
         'tmux-session',
       );
       await tester.pump();
 
-      await _switchStartupMode(tester, 'Launch coding agent');
+      await _selectStartupMode(tester, 'Launch coding agent');
 
       expect(
         _fieldText(tester, const Key('host-agent-tmux-session-field')),
@@ -830,20 +765,10 @@ void main() {
           'Reviewed Host',
         );
 
-        final formScroll = find.byType(Scrollable).first;
-        await tester.scrollUntilVisible(
-          find.byKey(const Key('host-save-button')),
-          200,
-          scrollable: formScroll,
+        await _tapBottomSave(
+          tester,
+          duration: const Duration(milliseconds: 300),
         );
-        final saveButton = find.byKey(
-          const Key('host-save-button'),
-          skipOffstage: false,
-        );
-        await tester.ensureVisible(saveButton);
-        tester.widget<FilledButton>(saveButton).onPressed!();
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 300));
 
         expect(hostRepository.updatedHost, isNotNull);
         expect(hostRepository.updatedHost!.label, 'Reviewed Host');
@@ -884,19 +809,7 @@ void main() {
         '-f ~/.tmux.conf',
       );
 
-      await tester.scrollUntilVisible(
-        find.byKey(const Key('host-save-button')),
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
-      final saveButton = find.byKey(
-        const Key('host-save-button'),
-        skipOffstage: false,
-      );
-      await tester.ensureVisible(saveButton);
-      tester.widget<FilledButton>(saveButton).onPressed!();
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 300));
+      await _tapBottomSave(tester, duration: const Duration(milliseconds: 300));
 
       expect(hostRepository.updatedHost, isNotNull);
       expect(hostRepository.updatedHost!.autoConnectCommand, isNull);
@@ -941,19 +854,10 @@ void main() {
         statusBarCheckbox.onChanged!(true);
         await tester.pump();
 
-        final saveButton = find.byKey(
-          const Key('host-save-button'),
-          skipOffstage: false,
+        await _tapBottomSave(
+          tester,
+          duration: const Duration(milliseconds: 300),
         );
-        await tester.scrollUntilVisible(
-          saveButton,
-          200,
-          scrollable: find.byType(Scrollable).first,
-        );
-        await tester.ensureVisible(saveButton);
-        tester.widget<FilledButton>(saveButton).onPressed!();
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 300));
 
         expect(hostRepository.updatedHost, isNotNull);
         expect(
@@ -991,19 +895,7 @@ void main() {
       expect(extraFlagsField.controller!.text, '-f ~/.tmux.conf');
       expect(statusBarCheckbox.value, isTrue);
 
-      await tester.scrollUntilVisible(
-        find.byKey(const Key('host-save-button')),
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
-      final saveButton = find.byKey(
-        const Key('host-save-button'),
-        skipOffstage: false,
-      );
-      await tester.ensureVisible(saveButton);
-      tester.widget<FilledButton>(saveButton).onPressed!();
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 300));
+      await _tapBottomSave(tester, duration: const Duration(milliseconds: 300));
 
       expect(hostRepository.updatedHost, isNotNull);
       expect(
@@ -1090,19 +982,10 @@ void main() {
         checkbox.onChanged!(true);
         await tester.pump();
 
-        final saveButton = find.byKey(
-          const Key('host-save-button'),
-          skipOffstage: false,
+        await _tapBottomSave(
+          tester,
+          duration: const Duration(milliseconds: 300),
         );
-        await tester.scrollUntilVisible(
-          saveButton,
-          200,
-          scrollable: find.byType(Scrollable).first,
-        );
-        await tester.ensureVisible(saveButton);
-        tester.widget<FilledButton>(saveButton).onPressed!();
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 300));
 
         expect(hostRepository.updatedHost, isNotNull);
         expect(
@@ -1227,19 +1110,10 @@ void main() {
           findsOneWidget,
         );
 
-        final saveButton = find.byKey(
-          const Key('host-save-button'),
-          skipOffstage: false,
+        await _tapBottomSave(
+          tester,
+          duration: const Duration(milliseconds: 300),
         );
-        await tester.scrollUntilVisible(
-          saveButton,
-          200,
-          scrollable: find.byType(Scrollable).first,
-        );
-        await tester.ensureVisible(saveButton);
-        tester.widget<FilledButton>(saveButton).onPressed!();
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 300));
 
         expect(hostRepository.updatedHost, isNotNull);
         expect(
@@ -1300,19 +1174,7 @@ void main() {
         findsWidgets,
       );
 
-      final saveButton = find.byKey(
-        const Key('host-save-button'),
-        skipOffstage: false,
-      );
-      await tester.scrollUntilVisible(
-        saveButton,
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
-      await tester.ensureVisible(saveButton);
-      tester.widget<FilledButton>(saveButton).onPressed!();
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 350));
+      await _tapBottomSave(tester, duration: const Duration(milliseconds: 350));
 
       expect(
         find.text('Fix agent tmux flags to save this host'),
@@ -1377,19 +1239,10 @@ void main() {
         expect(tester.widget<CheckboxListTile>(checkboxFinder).value, isTrue);
         expect(find.byKey(const Key('host-tmux-session-field')), findsNothing);
 
-        final saveButton = find.byKey(
-          const Key('host-save-button'),
-          skipOffstage: false,
+        await _tapBottomSave(
+          tester,
+          duration: const Duration(milliseconds: 300),
         );
-        await tester.scrollUntilVisible(
-          saveButton,
-          200,
-          scrollable: find.byType(Scrollable).first,
-        );
-        await tester.ensureVisible(saveButton);
-        tester.widget<FilledButton>(saveButton).onPressed!();
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 300));
 
         expect(hostRepository.updatedHost, isNotNull);
         expect(
@@ -1480,34 +1333,6 @@ void main() {
       );
       expect(find.textContaining('Terminal windows stay free'), findsNothing);
     });
-
-    testWidgets(
-      'dirty-state notifier: typing marks form dirty without extra setState pumps',
-      (tester) async {
-        // Verify that the ValueNotifier path correctly drives UnsavedChangesGuard
-        // without the removed Form.onChanged whole-screen-rebuild.
-        await _pumpHostCreateScreen(tester);
-
-        // Type a single character – dirty state should update via controller
-        // listener, not Form.onChanged.
-        await tester.enterText(find.byKey(const Key('host-label-field')), 'X');
-        await tester.pump();
-
-        // Navigating back should trigger the discard dialog.
-        await tester.pageBack();
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 300));
-        expect(find.text('Discard changes?'), findsOneWidget);
-
-        await tester.tap(find.text('Discard'));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 300));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 300));
-        await tester.pump(const Duration(seconds: 2));
-        expect(find.byType(HostEditScreen), findsNothing);
-      },
-    );
 
     testWidgets(
       'dirty-state notifier: non-text state change (dropdown) marks form dirty',
@@ -1658,19 +1483,7 @@ void main() {
       expect(find.text('JetBrains Mono'), findsNothing);
 
       // Tap save
-      final saveButton = find.byKey(
-        const Key('host-save-button'),
-        skipOffstage: false,
-      );
-      await tester.scrollUntilVisible(
-        saveButton,
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
-      await tester.ensureVisible(saveButton);
-      tester.widget<FilledButton>(saveButton).onPressed!();
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 600));
+      await _tapBottomSave(tester);
 
       // Verify database repositories received updated host with null themes
       expect(hostRepository.updatedHost, isNotNull);

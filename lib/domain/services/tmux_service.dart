@@ -12,6 +12,7 @@ import '../models/tmux_state.dart';
 import 'command_output_marker_reader.dart';
 import 'diagnostics_log_service.dart';
 import 'remote_file_service.dart' show shellEscapePosix;
+import 'remote_multiplexer_service.dart';
 import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
 import 'windows_remote_powershell.dart';
@@ -58,7 +59,7 @@ typedef _ActiveAgentSessionMetadata = ({
 ///
 /// The tmux binary path is cached after first successful detection to
 /// avoid redundant profile sourcing on subsequent calls.
-class TmuxService {
+class TmuxService implements RemoteMultiplexerService {
   /// Creates a new [TmuxService].
   const TmuxService({
     Duration execOpenTimeout = const Duration(seconds: 10),
@@ -84,55 +85,25 @@ class TmuxService {
   final Duration _agentSessionMetadataRefreshDebounce;
   final Duration _agentSessionMetadataPeriodicRefreshInterval;
 
-  /// Cached tmux binary paths per SSH session (by connectionId).
-  static final Map<int, String> _tmuxPathCache = {};
+  static final _connectionStates = <int, _TmuxConnectionState>{};
 
-  /// Cached profile source commands per SSH session.
-  static final Map<int, String> _profileSourceCache = {};
+  static _TmuxConnectionState _stateFor(int connectionId) =>
+      _connectionStates.putIfAbsent(connectionId, _TmuxConnectionState.new);
 
-  /// In-flight tmux path/profile probes per SSH session.
-  static final Map<int, Future<void>> _tmuxPathRequests = {};
+  static bool _ownsState(int connectionId, _TmuxConnectionState state) =>
+      identical(_connectionStates[connectionId], state);
 
-  /// Per-connection deadline before which one-shot tmux exec channels should be
-  /// deferred so the attached shell channel can deliver a window-switch redraw.
-  static final Map<int, DateTime> _execQuietUntil = {};
+  static void _requireState(int connectionId, _TmuxConnectionState state) {
+    if (!_ownsState(connectionId, state)) {
+      throw const TmuxCommandException('Tmux connection state was cleared');
+    }
+  }
 
-  /// In-flight tmux session-existence probes.
-  static final _hasSessionRequests = <_TmuxWindowWatchKey, Future<bool>>{};
+  /// Whether a connection still owns any tmux state, including scheduled work.
+  @visibleForTesting
+  static bool hasConnectionStateForTesting(int connectionId) =>
+      _connectionStates.containsKey(connectionId);
 
-  /// Cached set of installed agent CLIs per SSH session (by connectionId).
-  static final _installedAgentToolsCache = <int, _CachedInstalledAgentTools>{};
-
-  static final _installedAgentToolRequests =
-      <int, Future<Set<AgentLaunchTool>>>{};
-
-  static final _windowObservers =
-      <_TmuxWindowWatchKey, _TmuxWindowChangeObserver>{};
-  static final _windowListRequests =
-      <_TmuxWindowWatchKey, Future<List<TmuxWindow>>>{};
-  static final _windowSnapshotCache = <_TmuxWindowWatchKey, List<TmuxWindow>>{};
-  static final _activeAgentSessionMetadataCache =
-      <int, Map<int, _ActiveAgentSessionMetadata>>{};
-  static final _activeAgentSessionMetadataRequests = <int, Future<void>>{};
-  static final _activeAgentSessionMetadataRequestTokens = <int, Object>{};
-  static final _activeAgentSessionMetadataRequestPanePids = <int, Set<int>>{};
-  static final _activeAgentSessionMetadataDebounceTimers = <int, Timer>{};
-  static final _activeAgentSessionMetadataDebouncedSessions =
-      <int, SshSession>{};
-  static final _activeAgentSessionMetadataDebouncedPanePids = <int, Set<int>>{};
-  static final _activeAgentSessionMetadataDebouncedForced = <int, bool>{};
-  static final _activeAgentSessionMetadataCooldownTimers = <int, Timer>{};
-  static final _activeAgentSessionMetadataCooldownSessions =
-      <int, SshSession>{};
-  static final _activeAgentSessionMetadataCooldownPanePids = <int, Set<int>>{};
-  static final _activeAgentSessionMetadataCooldownForced = <int, bool>{};
-  static final _activeAgentSessionMetadataPendingPanePids = <int, Set<int>>{};
-  static final _activeAgentSessionMetadataPendingForced = <int, bool>{};
-  static final _activeAgentSessionMetadataPeriodicTimers = <int, Timer>{};
-  static final _activeAgentSessionMetadataPeriodicSessions =
-      <int, SshSession>{};
-  static final _activeAgentSessionMetadataRefreshes = <int, DateTime>{};
-  static final _execChannelBackoffs = <int, _TmuxExecChannelBackoff>{};
   // A failed transport cannot recover in place. Key this by session identity so
   // clearing caches cannot revive it or disable a replacement connection.
   static final _deadExecSessions = Expando<bool>();
@@ -153,6 +124,7 @@ class TmuxService {
   }
 
   /// Returns the version reported by the active remote tmux server.
+  @override
   Future<String?> detectedVersion(
     SshSession session,
     String sessionName, {
@@ -184,21 +156,24 @@ class TmuxService {
   /// Returns whether a tmux binary path cache entry exists for [connectionId].
   @visibleForTesting
   static bool hasTmuxPathCacheEntry(int connectionId) =>
-      _tmuxPathCache.containsKey(connectionId);
+      _connectionStates[connectionId]?.tmuxPath != null;
 
   /// Returns whether an installed agent tools cache entry exists for
   /// [connectionId].
   @visibleForTesting
   static bool hasInstalledAgentToolsCacheEntry(int connectionId) =>
-      _installedAgentToolsCache.containsKey(connectionId);
+      _connectionStates[connectionId]?.installedAgentTools != null;
 
   /// Invalidates installed-agent detection for [connectionId].
   ///
   /// Any in-flight result from before this call is prevented from repopulating
   /// the cache. The next detection or prefetch starts a fresh remote probe.
   void invalidateInstalledAgentTools(int connectionId) {
-    _installedAgentToolsCache.remove(connectionId);
-    _installedAgentToolRequests.remove(connectionId)?.ignore();
+    final state = _stateFor(connectionId);
+    state.installedAgentToolsRequest?.ignore();
+    state
+      ..installedAgentTools = null
+      ..installedAgentToolsRequest = null;
     DiagnosticsLogService.instance.info(
       'tmux.agent',
       'tool_detection_invalidated',
@@ -209,75 +184,30 @@ class TmuxService {
   /// Returns whether a window snapshot cache entry exists for [connectionId].
   @visibleForTesting
   static bool hasWindowSnapshotCacheEntry(int connectionId) =>
-      _windowSnapshotCache.keys.any((k) => k.connectionId == connectionId);
+      _connectionStates[connectionId]?.windowSnapshotCache.isNotEmpty ?? false;
 
   /// Returns whether an exec-channel backoff entry exists for [connectionId].
   @visibleForTesting
   static bool hasExecChannelBackoffEntry(int connectionId) =>
-      _execChannelBackoffs.containsKey(connectionId);
+      _connectionStates[connectionId]?.execChannelBackoff != null;
 
   /// Returns the exec-channel failure count for [connectionId], if any.
   @visibleForTesting
   static int? execChannelBackoffFailureCountForTesting(int connectionId) =>
-      _execChannelBackoffs[connectionId]?.failureCount;
+      _connectionStates[connectionId]?.execChannelBackoff?.failureCount;
 
   /// Clears tmux caches and disposes active watchers for a connection.
   Future<void> clearCache(int connectionId) async {
+    final state = _connectionStates.remove(connectionId);
     DiagnosticsLogService.instance.info(
       'tmux.cache',
       'clear',
       fields: {
         'connectionId': connectionId,
-        'observerCount': _windowObservers.keys
-            .where((key) => key.connectionId == connectionId)
-            .length,
+        'observerCount': state?.windowObservers.length ?? 0,
       },
     );
-    _tmuxPathCache.remove(connectionId);
-    _profileSourceCache.remove(connectionId);
-    _tmuxPathRequests.remove(connectionId)?.ignore();
-    _execQuietUntil.remove(connectionId);
-    _hasSessionRequests.removeWhere(
-      (key, _) => key.connectionId == connectionId,
-    );
-    invalidateInstalledAgentTools(connectionId);
-    _activeAgentSessionMetadataCache.remove(connectionId);
-    _activeAgentSessionMetadataRequests.remove(connectionId)?.ignore();
-    _activeAgentSessionMetadataRequestTokens.remove(connectionId);
-    _activeAgentSessionMetadataRequestPanePids.remove(connectionId);
-    _activeAgentSessionMetadataDebounceTimers.remove(connectionId)?.cancel();
-    _activeAgentSessionMetadataDebouncedSessions.remove(connectionId);
-    _activeAgentSessionMetadataDebouncedPanePids.remove(connectionId);
-    _activeAgentSessionMetadataDebouncedForced.remove(connectionId);
-    _activeAgentSessionMetadataCooldownTimers.remove(connectionId)?.cancel();
-    _activeAgentSessionMetadataCooldownSessions.remove(connectionId);
-    _activeAgentSessionMetadataCooldownPanePids.remove(connectionId);
-    _activeAgentSessionMetadataCooldownForced.remove(connectionId);
-    _activeAgentSessionMetadataPendingPanePids.remove(connectionId);
-    _activeAgentSessionMetadataPendingForced.remove(connectionId);
-    _activeAgentSessionMetadataPeriodicTimers.remove(connectionId)?.cancel();
-    _activeAgentSessionMetadataPeriodicSessions.remove(connectionId);
-    _activeAgentSessionMetadataRefreshes.remove(connectionId);
-    _execChannelBackoffs.remove(connectionId);
-    _windowSnapshotCache.removeWhere(
-      (key, _) => key.connectionId == connectionId,
-    );
-    _windowListRequests.removeWhere(
-      (key, _) => key.connectionId == connectionId,
-    );
-    final observerKeys = _windowObservers.keys
-        .where((key) => key.connectionId == connectionId)
-        .toList(growable: false);
-    final observerDisposals = <Future<void>>[];
-    for (final key in observerKeys) {
-      final observer = _windowObservers.remove(key);
-      if (observer != null) {
-        observerDisposals.add(observer.dispose());
-      }
-    }
-    if (observerDisposals.isNotEmpty) {
-      await Future.wait(observerDisposals);
-    }
+    await state?.dispose();
   }
 
   /// Defers one-shot tmux exec channels for [duration].
@@ -289,13 +219,14 @@ class TmuxService {
   /// period keeps those helpers off the critical path while leaving control-mode
   /// commands untouched.
   void deferExecsForRedraw(SshSession session, Duration duration) {
+    final state = _stateFor(session.connectionId);
     if (duration <= Duration.zero) {
       return;
     }
     final until = DateTime.now().add(duration);
-    final existing = _execQuietUntil[session.connectionId];
+    final existing = state.execQuietUntil;
     if (existing == null || existing.isBefore(until)) {
-      _execQuietUntil[session.connectionId] = until;
+      state.execQuietUntil = until;
     }
   }
 
@@ -374,6 +305,7 @@ class TmuxService {
 
   /// Returns the tmux session attached to the primary SSH terminal, and throws
   /// when the remote check could not complete.
+  @override
   Future<String?> foregroundSessionNameOrThrow(
     SshSession session, {
     String? extraFlags,
@@ -393,7 +325,9 @@ class TmuxService {
       'foreground_session_start',
       fields: {'connectionId': session.connectionId},
     );
+    final state = _stateFor(session.connectionId);
     await _cacheTmuxPath(session);
+    _requireState(session.connectionId, state);
     final output = await _exec(
       session,
       _buildForegroundTmuxSessionCommand(extraFlags: extraFlags),
@@ -440,7 +374,8 @@ class TmuxService {
   Future<Set<AgentLaunchTool>> detectInstalledAgentTools(
     SshSession session,
   ) async {
-    final cached = _installedAgentToolsCache[session.connectionId];
+    final state = _stateFor(session.connectionId);
+    final cached = state.installedAgentTools;
     if (cached != null) {
       final age = DateTime.now().difference(cached.cachedAt);
       DiagnosticsLogService.instance.info(
@@ -473,7 +408,8 @@ class TmuxService {
 
   /// Warms the installed agent CLI cache in the background.
   Future<void> prefetchInstalledAgentTools(SshSession session) async {
-    final cached = _installedAgentToolsCache[session.connectionId];
+    final state = _stateFor(session.connectionId);
+    final cached = state.installedAgentTools;
     if (cached != null &&
         DateTime.now().difference(cached.cachedAt) <
             _installedAgentToolsFreshTtl) {
@@ -505,7 +441,8 @@ class TmuxService {
     SshSession session, {
     SshExecPriority priority = SshExecPriority.normal,
   }) {
-    final existingRequest = _installedAgentToolRequests[session.connectionId];
+    final state = _stateFor(session.connectionId);
+    final existingRequest = state.installedAgentToolsRequest;
     if (existingRequest != null) {
       DiagnosticsLogService.instance.debug(
         'tmux.agent',
@@ -534,15 +471,12 @@ class TmuxService {
               priority: priority,
             );
       final installed = parseInstalledAgentTools(output);
-      if (identical(
-        _installedAgentToolRequests[session.connectionId],
-        request,
-      )) {
-        _installedAgentToolsCache[session.connectionId] =
-            _CachedInstalledAgentTools(
-              tools: Set<AgentLaunchTool>.unmodifiable(installed),
-              cachedAt: DateTime.now(),
-            );
+      if (_ownsState(session.connectionId, state) &&
+          identical(state.installedAgentToolsRequest, request)) {
+        state.installedAgentTools = _CachedInstalledAgentTools(
+          tools: Set<AgentLaunchTool>.unmodifiable(installed),
+          cachedAt: DateTime.now(),
+        );
       }
       DiagnosticsLogService.instance.info(
         'tmux.agent',
@@ -554,13 +488,11 @@ class TmuxService {
       );
       return installed;
     }();
-    _installedAgentToolRequests[session.connectionId] = request;
+    state.installedAgentToolsRequest = request;
     request.whenComplete(() {
-      if (identical(
-        _installedAgentToolRequests[session.connectionId],
-        request,
-      )) {
-        _installedAgentToolRequests.remove(session.connectionId);
+      if (_ownsState(session.connectionId, state) &&
+          identical(state.installedAgentToolsRequest, request)) {
+        state.installedAgentToolsRequest = null;
       }
     }).ignore();
     return request;
@@ -636,12 +568,13 @@ class TmuxService {
     String sessionName, {
     String? extraFlags,
   }) async {
+    final state = _stateFor(session.connectionId);
     final requestKey = _TmuxWindowWatchKey(
       connectionId: session.connectionId,
       sessionName: sessionName,
       extraFlags: resolveTmuxClientFlagsFromExtraFlags(extraFlags),
     );
-    final existingRequest = _hasSessionRequests[requestKey];
+    final existingRequest = state.hasSessionRequests[requestKey];
     if (existingRequest != null) {
       DiagnosticsLogService.instance.debug(
         'tmux.query',
@@ -659,10 +592,10 @@ class TmuxService {
       sessionName,
       extraFlags: extraFlags,
     );
-    _hasSessionRequests[requestKey] = request;
+    state.hasSessionRequests[requestKey] = request;
     request.whenComplete(() {
-      if (identical(_hasSessionRequests[requestKey], request)) {
-        _hasSessionRequests.remove(requestKey);
+      if (identical(state.hasSessionRequests[requestKey], request)) {
+        state.hasSessionRequests.remove(requestKey);
       }
     }).ignore();
     return request;
@@ -678,7 +611,9 @@ class TmuxService {
       'has_session_start',
       fields: {'connectionId': session.connectionId},
     );
+    final state = _stateFor(session.connectionId);
     await _cacheTmuxPath(session);
+    _requireState(session.connectionId, state);
     final output = await _exec(
       session,
       '${_tmuxCommand('has-session -t ${shellEscapePosix(sessionName)}', extraFlags: extraFlags)} 2>/dev/null; '
@@ -700,11 +635,13 @@ class TmuxService {
   // ── Window queries ─────────────────────────────────────────────────────
 
   /// Lists all windows in the given tmux [sessionName].
+  @override
   Future<List<TmuxWindow>> listWindows(
     SshSession session,
     String sessionName, {
     String? extraFlags,
   }) async {
+    final state = _stateFor(session.connectionId);
     final key = _TmuxWindowWatchKey(
       connectionId: session.connectionId,
       sessionName: sessionName,
@@ -717,7 +654,7 @@ class TmuxService {
               extraFlags: extraFlags,
             )?.canRunCommands !=
             true) {
-      final cachedWindows = _windowSnapshotCache[key];
+      final cachedWindows = state.windowSnapshotCache[key];
       if (cachedWindows != null && cachedWindows.isNotEmpty) {
         DiagnosticsLogService.instance.warning(
           'tmux.query',
@@ -730,7 +667,7 @@ class TmuxService {
         return cachedWindows;
       }
     }
-    final existingRequest = _windowListRequests[key];
+    final existingRequest = state.windowListRequests[key];
     if (existingRequest != null) {
       DiagnosticsLogService.instance.debug(
         'tmux.query',
@@ -744,10 +681,10 @@ class TmuxService {
     }
 
     final request = _listWindows(session, sessionName, extraFlags: extraFlags);
-    _windowListRequests[key] = request;
+    state.windowListRequests[key] = request;
     request.whenComplete(() {
-      if (identical(_windowListRequests[key], request)) {
-        _windowListRequests.remove(key);
+      if (identical(state.windowListRequests[key], request)) {
+        state.windowListRequests.remove(key);
       }
     }).ignore();
     return request;
@@ -775,6 +712,7 @@ class TmuxService {
     String sessionName, {
     String? extraFlags,
   }) async {
+    final state = _stateFor(session.connectionId);
     DiagnosticsLogService.instance.debug(
       'tmux.query',
       'list_windows_start',
@@ -800,8 +738,8 @@ class TmuxService {
           parsedWindows,
         ),
       );
-      if (windows.isNotEmpty) {
-        _windowSnapshotCache[_TmuxWindowWatchKey(
+      if (_ownsState(session.connectionId, state) && windows.isNotEmpty) {
+        state.windowSnapshotCache[_TmuxWindowWatchKey(
               connectionId: session.connectionId,
               sessionName: sessionName,
               extraFlags: resolveTmuxClientFlagsFromExtraFlags(extraFlags),
@@ -825,7 +763,7 @@ class TmuxService {
       return windows;
     } on Object catch (error) {
       final cachedWindows =
-          _windowSnapshotCache[_TmuxWindowWatchKey(
+          state.windowSnapshotCache[_TmuxWindowWatchKey(
             connectionId: session.connectionId,
             sessionName: sessionName,
             extraFlags: resolveTmuxClientFlagsFromExtraFlags(extraFlags),
@@ -852,7 +790,7 @@ class TmuxService {
     int connectionId,
     List<TmuxWindow> windows,
   ) {
-    final metadataByPanePid = _activeAgentSessionMetadataCache[connectionId];
+    final metadataByPanePid = _connectionStates[connectionId]?.metadataCache;
     if (metadataByPanePid == null || metadataByPanePid.isEmpty) {
       return windows;
     }
@@ -890,26 +828,26 @@ class TmuxService {
       return;
     }
     final connectionId = session.connectionId;
-    _activeAgentSessionMetadataPeriodicSessions[connectionId] = session;
-    if (_activeAgentSessionMetadataPeriodicTimers.containsKey(connectionId)) {
+    final state = _stateFor(connectionId)..metadataPeriodicSession = session;
+    if (state.metadataPeriodicTimer != null) {
       return;
     }
-    _activeAgentSessionMetadataPeriodicTimers[connectionId] = Timer(
+    state.metadataPeriodicTimer = Timer(
       _agentSessionMetadataPeriodicRefreshInterval,
       () {
-        _activeAgentSessionMetadataPeriodicTimers.remove(connectionId);
-        final queuedSession =
-            _activeAgentSessionMetadataPeriodicSessions[connectionId];
+        if (!_ownsState(connectionId, state)) return;
+        state.metadataPeriodicTimer = null;
+        final queuedSession = state.metadataPeriodicSession;
         if (queuedSession == null) {
           return;
         }
         if (!_hasWindowObserverForConnection(connectionId)) {
-          _activeAgentSessionMetadataPeriodicSessions.remove(connectionId);
+          state.metadataPeriodicSession = null;
           return;
         }
         final panePids = _cachedAgentPanePidsForConnection(connectionId);
         if (panePids.isEmpty) {
-          _activeAgentSessionMetadataPeriodicSessions.remove(connectionId);
+          state.metadataPeriodicSession = null;
           return;
         }
         _scheduleAgentSessionMetadataRefreshForPanePids(
@@ -923,65 +861,74 @@ class TmuxService {
   }
 
   void _cancelAgentSessionMetadataPeriodicRefresh(int connectionId) {
-    _activeAgentSessionMetadataPeriodicTimers.remove(connectionId)?.cancel();
-    _activeAgentSessionMetadataPeriodicSessions.remove(connectionId);
+    final state = _stateFor(connectionId);
+    state.metadataPeriodicTimer?.cancel();
+    state
+      ..metadataPeriodicTimer = null
+      ..metadataPeriodicSession = null;
   }
 
   Set<int> _cachedAgentPanePidsForConnection(int connectionId) {
+    final state = _stateFor(connectionId);
     final panePids = <int>{};
-    for (final entry in _windowSnapshotCache.entries) {
-      if (entry.key.connectionId != connectionId) continue;
+    for (final entry in state.windowSnapshotCache.entries) {
       panePids.addAll(_agentPanePids(entry.value));
     }
     return panePids;
   }
 
   bool _hasWindowObserverForConnection(int connectionId) =>
-      _windowObservers.keys.any((key) => key.connectionId == connectionId);
+      _connectionStates[connectionId]?.windowObservers.isNotEmpty ?? false;
 
   void _scheduleAgentSessionMetadataRefreshForPanePids(
     SshSession session,
     Set<int> agentPanePids, {
     bool force = false,
+  }) => _scheduleMetadataBatch(
+    session,
+    agentPanePids,
+    force: force,
+    delay: _agentSessionMetadataRefreshDebounce,
+    kind: _MetadataDelay.debounce,
+  );
+
+  void _scheduleMetadataBatch(
+    SshSession session,
+    Set<int> panePids, {
+    required bool force,
+    required Duration delay,
+    required _MetadataDelay kind,
   }) {
     if (_isExecSessionClosed(session)) return;
     final connectionId = session.connectionId;
-    final debouncedPanePids =
-        (_activeAgentSessionMetadataDebouncedPanePids[connectionId] ?? <int>{})
-          ..addAll(agentPanePids);
-    _activeAgentSessionMetadataDebouncedPanePids[connectionId] =
-        debouncedPanePids;
-    _activeAgentSessionMetadataDebouncedSessions[connectionId] = session;
-    _activeAgentSessionMetadataDebouncedForced[connectionId] =
-        (_activeAgentSessionMetadataDebouncedForced[connectionId] ?? false) ||
-        force;
-
-    if (_activeAgentSessionMetadataDebounceTimers.containsKey(connectionId)) {
-      return;
-    }
-
-    _activeAgentSessionMetadataDebounceTimers[connectionId] = Timer(
-      _agentSessionMetadataRefreshDebounce,
-      () {
-        _activeAgentSessionMetadataDebounceTimers.remove(connectionId);
-        final queuedPanePids = _activeAgentSessionMetadataDebouncedPanePids
-            .remove(connectionId);
-        final queuedSession = _activeAgentSessionMetadataDebouncedSessions
-            .remove(connectionId);
-        final queuedForced =
-            _activeAgentSessionMetadataDebouncedForced.remove(connectionId) ??
-            false;
-        if (queuedPanePids == null ||
-            queuedPanePids.isEmpty ||
-            queuedSession == null) {
-          return;
+    final state = _stateFor(connectionId);
+    state.metadataBatches[kind] = _mergeMetadataBatch(
+      state.metadataBatches[kind],
+      session,
+      panePids,
+      force,
+    );
+    state.metadataTimers.putIfAbsent(
+      kind,
+      () => Timer(delay, () {
+        if (!_ownsState(connectionId, state)) return;
+        state.metadataTimers.remove(kind);
+        final batch = state.metadataBatches.remove(kind);
+        if (batch == null || batch.panePids.isEmpty) return;
+        if (kind == _MetadataDelay.cooldown) {
+          _scheduleAgentSessionMetadataRefreshForPanePids(
+            batch.session,
+            batch.panePids,
+            force: batch.force,
+          );
+        } else {
+          _startAgentSessionMetadataRefreshForPanePids(
+            batch.session,
+            batch.panePids,
+            force: batch.force,
+          );
         }
-        _startAgentSessionMetadataRefreshForPanePids(
-          queuedSession,
-          queuedPanePids,
-          force: queuedForced,
-        );
-      },
+      }),
     );
   }
 
@@ -992,29 +939,24 @@ class TmuxService {
   }) {
     if (_isExecSessionClosed(session)) return;
     final connectionId = session.connectionId;
-    if (_activeAgentSessionMetadataRequests.containsKey(connectionId)) {
-      final activePanePids =
-          _activeAgentSessionMetadataRequestPanePids[connectionId] ??
-          const <int>{};
+    final state = _stateFor(connectionId);
+    if (state.metadataRequest != null) {
+      final activePanePids = state.metadataRequestPanePids ?? const <int>{};
       final hasNewPanePids = agentPanePids.any(
         (panePid) => !activePanePids.contains(panePid),
       );
       if (force || hasNewPanePids) {
-        final pendingPanePids =
-            (_activeAgentSessionMetadataPendingPanePids[connectionId] ??
-                  <int>{})
-              ..addAll(agentPanePids);
-        _activeAgentSessionMetadataPendingPanePids[connectionId] =
-            pendingPanePids;
-        _activeAgentSessionMetadataPendingForced[connectionId] =
-            (_activeAgentSessionMetadataPendingForced[connectionId] ?? false) ||
-            force ||
-            hasNewPanePids;
+        state.metadataPending = _mergeMetadataBatch(
+          state.metadataPending,
+          session,
+          agentPanePids,
+          force || hasNewPanePids,
+        );
       }
       return;
     }
 
-    final lastRefresh = _activeAgentSessionMetadataRefreshes[connectionId];
+    final lastRefresh = state.metadataRefreshedAt;
     if (!force &&
         lastRefresh != null &&
         DateTime.now().difference(lastRefresh) <
@@ -1043,74 +985,63 @@ class TmuxService {
       },
     );
 
-    final requestToken = Object();
-    _activeAgentSessionMetadataRequestTokens[connectionId] = requestToken;
-    _activeAgentSessionMetadataRequestPanePids[connectionId] = agentPanePids;
+    state.metadataRequestPanePids = agentPanePids;
     late final Future<void> request;
     request =
         _refreshActiveAgentSessionMetadata(
           session,
-          requestToken,
           agentPanePids,
           force: force,
         ).whenComplete(() {
-          if (identical(
-            _activeAgentSessionMetadataRequests[connectionId],
-            request,
-          )) {
-            _activeAgentSessionMetadataRequests.remove(connectionId);
-            _activeAgentSessionMetadataRequestTokens.remove(connectionId);
-            _activeAgentSessionMetadataRequestPanePids.remove(connectionId);
-            final pendingPanePids = _activeAgentSessionMetadataPendingPanePids
-                .remove(connectionId);
-            final pendingForced =
-                _activeAgentSessionMetadataPendingForced.remove(connectionId) ??
-                false;
-            if (pendingPanePids != null && pendingPanePids.isNotEmpty) {
+          if (_ownsState(connectionId, state) &&
+              identical(state.metadataRequest, request)) {
+            state
+              ..metadataRequest = null
+              ..metadataRequestPanePids = null;
+            final pending = state.metadataPending;
+            state.metadataPending = null;
+            if (pending != null && pending.panePids.isNotEmpty) {
               _startAgentSessionMetadataRefreshForPanePids(
-                session,
-                pendingPanePids,
-                force: pendingForced,
+                pending.session,
+                pending.panePids,
+                force: pending.force,
               );
             }
           }
         });
-    _activeAgentSessionMetadataRequests[connectionId] = request;
+    state.metadataRequest = request;
     unawaited(request);
   }
 
   Future<void> _refreshActiveAgentSessionMetadata(
     SshSession session,
-    Object requestToken,
     Set<int> panePids, {
     required bool force,
   }) async {
     final connectionId = session.connectionId;
+    final state = _stateFor(connectionId);
     try {
       final output = await _exec(
         session,
         buildAgentActiveSessionMetadataCommand(panePids),
         priority: SshExecPriority.low,
       );
-      if (!identical(
-        _activeAgentSessionMetadataRequestTokens[connectionId],
-        requestToken,
-      )) {
+      if (!_ownsState(connectionId, state)) {
         return;
       }
-      _activeAgentSessionMetadataRefreshes[connectionId] = DateTime.now();
+      state.metadataRefreshedAt = DateTime.now();
       final metadataByPanePid = parseAgentActiveSessionMetadataOutput(
         output,
         panePids,
       );
       final nextMetadataByPanePid = Map<int, _ActiveAgentSessionMetadata>.of(
-        _activeAgentSessionMetadataCache[connectionId] ?? const {},
+        state.metadataCache ?? const {},
       );
       for (final panePid in panePids) {
         nextMetadataByPanePid.remove(panePid);
       }
       nextMetadataByPanePid.addAll(metadataByPanePid);
-      _activeAgentSessionMetadataCache[connectionId] = nextMetadataByPanePid;
+      state.metadataCache = nextMetadataByPanePid;
       DiagnosticsLogService.instance.info(
         'tmux.agent',
         'active_session_metadata_complete',
@@ -1126,6 +1057,7 @@ class TmuxService {
         refreshedPanePids: panePids,
       );
     } on Object catch (error) {
+      if (!_ownsState(connectionId, state)) return;
       DiagnosticsLogService.instance.debug(
         'tmux.agent',
         'active_session_metadata_failed',
@@ -1158,19 +1090,6 @@ class TmuxService {
   }) {
     if (_isExecSessionClosed(session)) return;
     final connectionId = session.connectionId;
-    final pendingPanePids =
-        (_activeAgentSessionMetadataCooldownPanePids[connectionId] ?? <int>{})
-          ..addAll(panePids);
-    _activeAgentSessionMetadataCooldownPanePids[connectionId] = pendingPanePids;
-    _activeAgentSessionMetadataCooldownSessions[connectionId] = session;
-    _activeAgentSessionMetadataCooldownForced[connectionId] =
-        (_activeAgentSessionMetadataCooldownForced[connectionId] ?? false) ||
-        force;
-
-    if (_activeAgentSessionMetadataCooldownTimers.containsKey(connectionId)) {
-      return;
-    }
-
     DiagnosticsLogService.instance.debug(
       'tmux.agent',
       'active_session_metadata_deferred',
@@ -1181,28 +1100,12 @@ class TmuxService {
         'delayMs': cooldown.inMilliseconds,
       },
     );
-    _activeAgentSessionMetadataCooldownTimers[connectionId] = Timer(
-      cooldown,
-      () {
-        _activeAgentSessionMetadataCooldownTimers.remove(connectionId);
-        final queuedPanePids = _activeAgentSessionMetadataCooldownPanePids
-            .remove(connectionId);
-        final queuedSession = _activeAgentSessionMetadataCooldownSessions
-            .remove(connectionId);
-        final queuedForced =
-            _activeAgentSessionMetadataCooldownForced.remove(connectionId) ??
-            false;
-        if (queuedPanePids == null ||
-            queuedPanePids.isEmpty ||
-            queuedSession == null) {
-          return;
-        }
-        _scheduleAgentSessionMetadataRefreshForPanePids(
-          queuedSession,
-          queuedPanePids,
-          force: queuedForced,
-        );
-      },
+    _scheduleMetadataBatch(
+      session,
+      panePids,
+      force: force,
+      delay: cooldown,
+      kind: _MetadataDelay.cooldown,
     );
   }
 
@@ -1283,13 +1186,15 @@ class TmuxService {
     Map<int, _ActiveAgentSessionMetadata> metadataByPanePid, {
     Set<int>? refreshedPanePids,
   }) {
+    final state = _stateFor(connectionId);
     if (metadataByPanePid.isEmpty &&
         (refreshedPanePids == null || refreshedPanePids.isEmpty)) {
       return;
     }
-    for (final entry in _windowSnapshotCache.entries.toList(growable: false)) {
+    for (final entry in state.windowSnapshotCache.entries.toList(
+      growable: false,
+    )) {
       final key = entry.key;
-      if (key.connectionId != connectionId) continue;
       final currentWindows = entry.value;
       final result = _applyAgentSessionMetadataToWindows(
         currentWindows,
@@ -1300,9 +1205,9 @@ class TmuxService {
         continue;
       }
       final enrichedWindows = List<TmuxWindow>.unmodifiable(result.windows);
-      _windowSnapshotCache[key] = enrichedWindows;
+      state.windowSnapshotCache[key] = enrichedWindows;
 
-      final observer = _windowObservers[key];
+      final observer = state.windowObservers[key];
       if (observer == null) {
         continue;
       }
@@ -1321,6 +1226,7 @@ class TmuxService {
 
   /// Returns the active pane working directory for [sessionName], if tmux
   /// reports one.
+  @override
   Future<String?> currentPanePath(
     SshSession session,
     String sessionName, {
@@ -1334,6 +1240,7 @@ class TmuxService {
   ))?.currentPath;
 
   /// Returns active pane metadata for [sessionName], if tmux reports it.
+  @override
   Future<TmuxPaneContext?> currentPaneContext(
     SshSession session,
     String sessionName, {
@@ -1409,8 +1316,9 @@ class TmuxService {
     String sessionName, {
     String? extraFlags,
   }) {
+    final state = _stateFor(session.connectionId);
     final windows =
-        _windowSnapshotCache[_TmuxWindowWatchKey(
+        state.windowSnapshotCache[_TmuxWindowWatchKey(
           connectionId: session.connectionId,
           sessionName: sessionName,
           extraFlags: resolveTmuxClientFlagsFromExtraFlags(extraFlags),
@@ -1461,6 +1369,7 @@ class TmuxService {
 
   /// Returns whether [sessionName] is attached in the primary SSH terminal, and
   /// throws when the remote check could not complete.
+  @override
   Future<bool> hasForegroundClientOrThrow(
     SshSession session,
     String sessionName, {
@@ -1495,6 +1404,7 @@ class TmuxService {
     String sessionName, {
     String? extraFlags,
   }) async {
+    final state = _stateFor(session.connectionId);
     DiagnosticsLogService.instance.debug(
       'tmux.action',
       'refresh_clients_start',
@@ -1506,6 +1416,7 @@ class TmuxService {
         sessionName,
         extraFlags: extraFlags,
       );
+      _requireState(session.connectionId, state);
       if (!usedControl) {
         await _exec(
           session,
@@ -1568,11 +1479,16 @@ class TmuxService {
 
   /// Updates tmux's pane palette for [sessionName] and redraws foreground
   /// clients.
+  ///
+  /// [forceForegroundRedraw] is a no-op because classic tmux already redraws
+  /// foreground clients via `refresh-client`.
+  @override
   Future<void> refreshTerminalTheme(
     SshSession session,
     String sessionName,
     TerminalThemeData theme, {
     String? extraFlags,
+    bool forceForegroundRedraw = false,
   }) async {
     DiagnosticsLogService.instance.debug(
       'tmux.action',
@@ -1617,17 +1533,19 @@ class TmuxService {
 
   /// Watches tmux control-mode notifications that indicate window state
   /// has changed for [sessionName].
+  @override
   Stream<TmuxWindowChangeEvent> watchWindowChanges(
     SshSession session,
     String sessionName, {
     String? extraFlags,
   }) {
+    final state = _stateFor(session.connectionId);
     final key = _TmuxWindowWatchKey(
       connectionId: session.connectionId,
       sessionName: sessionName,
       extraFlags: resolveTmuxClientFlagsFromExtraFlags(extraFlags),
     );
-    var observer = _windowObservers[key];
+    var observer = state.windowObservers[key];
     if (observer == null || observer._disposed) {
       late final _TmuxWindowChangeObserver replacement;
       replacement = _TmuxWindowChangeObserver(
@@ -1636,16 +1554,19 @@ class TmuxService {
         sessionName: sessionName,
         extraFlags: extraFlags,
         onDispose: () {
-          if (!identical(_windowObservers[key], replacement)) return;
-          _windowObservers.remove(key);
+          if (!_ownsState(session.connectionId, state) ||
+              !identical(state.windowObservers[key], replacement)) {
+            return;
+          }
+          state.windowObservers.remove(key);
           if (!_hasWindowObserverForConnection(session.connectionId)) {
             _cancelAgentSessionMetadataPeriodicRefresh(session.connectionId);
           }
         },
       );
-      _windowObservers[key] = observer = replacement;
+      state.windowObservers[key] = observer = replacement;
     }
-    final cachedWindows = _windowSnapshotCache[key];
+    final cachedWindows = state.windowSnapshotCache[key];
     if (cachedWindows != null) {
       _scheduleAgentSessionMetadataRefresh(session, cachedWindows);
     }
@@ -1654,7 +1575,7 @@ class TmuxService {
       'watch_requested',
       fields: {
         'connectionId': session.connectionId,
-        'observerCount': _windowObservers.length,
+        'observerCount': state.windowObservers.length,
       },
     );
     return observer.stream;
@@ -1664,6 +1585,7 @@ class TmuxService {
 
   /// Creates a new window in [sessionName], optionally running [command],
   /// setting a window [name], and/or starting in [workingDirectory].
+  @override
   Future<void> createWindow(
     SshSession session,
     String sessionName, {
@@ -1672,6 +1594,7 @@ class TmuxService {
     String? workingDirectory,
     String? extraFlags,
   }) async {
+    final state = _stateFor(session.connectionId);
     DiagnosticsLogService.instance.info(
       'tmux.action',
       'create_window_start',
@@ -1700,6 +1623,7 @@ class TmuxService {
         extraFlags: extraFlags,
       ),
     );
+    _requireState(session.connectionId, state);
     final target = createdWindowIndex == null
         ? sessionName
         : '$sessionName:$createdWindowIndex';
@@ -1724,6 +1648,7 @@ class TmuxService {
         optionCommands.join(r' \; '),
         extraFlags: extraFlags,
       );
+      _requireState(session.connectionId, state);
     }
     DiagnosticsLogService.instance.info(
       'tmux.action',
@@ -1762,12 +1687,17 @@ class TmuxService {
   /// Waits for tmux to process the selection before returning so callers can
   /// safely perform follow-up work (like reattaching the visible PTY) without
   /// racing the server-side window change.
+  ///
+  /// [clientImageSignatures] and [suppressReplay] are no-ops for classic tmux.
+  @override
   Future<void> selectWindow(
     SshSession session,
     String sessionName,
     int windowIndex, {
     String? windowId,
     String? extraFlags,
+    Map<int, int>? clientImageSignatures,
+    bool suppressReplay = false,
   }) async {
     final targetWindowId = windowId?.trim();
     final safeWindowId =
@@ -1805,6 +1735,7 @@ class TmuxService {
   }
 
   /// Closes a window in [sessionName] via exec channel.
+  @override
   Future<void> killWindow(
     SshSession session,
     String sessionName,
@@ -1846,7 +1777,8 @@ class TmuxService {
       (_deadExecSessions[session] ?? false) || session.client.isClosed;
 
   Duration? _execChannelCooldownRemaining(SshSession session) {
-    final backoff = _execChannelBackoffs[session.connectionId];
+    final state = _connectionStates[session.connectionId];
+    final backoff = state?.execChannelBackoff;
     if (backoff == null) return null;
     final remaining = backoff.cooldownUntil.difference(
       _execChannelNow?.call() ?? DateTime.now(),
@@ -1863,14 +1795,15 @@ class TmuxService {
       _execChannelCooldownRemaining(session) != null;
 
   /// Returns whether optional SSH exec-channel work should be deferred.
+  @override
   bool isExecChannelCoolingDown(SshSession session) =>
       _isExecSessionClosed(session) || _isExecChannelCoolingDown(session);
 
   void _recordExecChannelFailure(int connectionId, Object error) {
-    final failureCount =
-        (_execChannelBackoffs[connectionId]?.failureCount ?? 0) + 1;
+    final state = _stateFor(connectionId);
+    final failureCount = (state.execChannelBackoff?.failureCount ?? 0) + 1;
     final delay = resolveTmuxExecChannelBackoffDelay(failureCount);
-    _execChannelBackoffs[connectionId] = _TmuxExecChannelBackoff(
+    state.execChannelBackoff = _TmuxExecChannelBackoff(
       failureCount: failureCount,
       cooldownUntil: (_execChannelNow?.call() ?? DateTime.now()).add(delay),
     );
@@ -1887,7 +1820,9 @@ class TmuxService {
   }
 
   void _clearExecChannelBackoff(int connectionId) {
-    if (_execChannelBackoffs.remove(connectionId) != null) {
+    final state = _stateFor(connectionId);
+    if (state.execChannelBackoff != null) {
+      state.execChannelBackoff = null;
       DiagnosticsLogService.instance.debug(
         'tmux.exec',
         'channel_backoff_cleared',
@@ -1902,12 +1837,13 @@ class TmuxService {
     TmuxWindowSnapshotEvent event, {
     String? extraFlags,
   }) {
+    final state = _stateFor(session.connectionId);
     final key = _TmuxWindowWatchKey(
       connectionId: session.connectionId,
       sessionName: sessionName,
       extraFlags: resolveTmuxClientFlagsFromExtraFlags(extraFlags),
     );
-    final cachedWindows = _windowSnapshotCache[key];
+    final cachedWindows = state.windowSnapshotCache[key];
     final forceAgentMetadataRefresh =
         shouldForceAgentSessionMetadataRefreshForSnapshot(
           cachedWindows ?? const <TmuxWindow>[],
@@ -1915,7 +1851,7 @@ class TmuxService {
         );
     if (cachedWindows != null && cachedWindows.isNotEmpty) {
       final updatedWindows = applyTmuxWindowChangeEvent(cachedWindows, event);
-      _windowSnapshotCache[key] = List<TmuxWindow>.unmodifiable(
+      state.windowSnapshotCache[key] = List<TmuxWindow>.unmodifiable(
         _enrichWindowsWithCachedAgentSessionMetadata(
           session.connectionId,
           updatedWindows,
@@ -1934,7 +1870,7 @@ class TmuxService {
   /// - bash: `~/.bash_profile` (falls back to `~/.profile`)
   /// - sh/other: `~/.profile`
   String _profilePrefix(int connectionId) {
-    final cached = _profileSourceCache[connectionId];
+    final cached = _connectionStates[connectionId]?.profileSource;
     if (cached != null) return cached;
     // Fallback — source all common profiles until shell is detected.
     // Redirect stdout to avoid profile greeting/MOTD output corrupting
@@ -1946,7 +1882,7 @@ class TmuxService {
   /// Wraps [command] with profile sourcing or cached path substitution.
   String _wrapCommand(SshSession session, String command) {
     final utf8Command = _forceUtf8TmuxCommand(command);
-    final cachedPath = _tmuxPathCache[session.connectionId];
+    final cachedPath = _connectionStates[session.connectionId]?.tmuxPath;
     final prefixedCommand = cachedPath != null
         ? utf8Command.replaceFirst('tmux -u ', '$cachedPath -u ')
         : utf8Command;
@@ -1981,6 +1917,7 @@ class TmuxService {
     SshSession session,
     String command, {
     SSHPtyConfig? pty,
+    Future<void> Function(SSHSession)? closeStaleSession,
   }) async {
     if (_isExecSessionClosed(session)) {
       DiagnosticsLogService.instance.debug(
@@ -1992,6 +1929,7 @@ class TmuxService {
       // ignore: only_throw_errors
       throw SSHStateError('SSH session is closed');
     }
+    final state = _stateFor(session.connectionId);
     final execCooldown = _execChannelCooldownRemaining(session);
     if (execCooldown != null) {
       DiagnosticsLogService.instance.debug(
@@ -2016,49 +1954,39 @@ class TmuxService {
       },
     );
     try {
-      final openFuture = session.execute(command, pty: pty);
-      final exec = await openFuture.timeout(
+      final exec = await openSshExec(
+        session.execute(command, pty: pty),
         _execOpenTimeout,
-        onTimeout: () {
-          DiagnosticsLogService.instance.warning(
-            'tmux.exec',
-            'open_timeout',
-            fields: {
-              'connectionId': session.connectionId,
-              'commandKind': _diagnosticTmuxCommandKind(command),
-              'timeoutMs': _execOpenTimeout.inMilliseconds,
-              'pty': pty != null,
-            },
-          );
-          // timeout owns the request's error. This listener owns only the late
-          // result, including a transport failure that arrives after timeout.
-          unawaited(
-            openFuture.then<void>(
-              (exec) {
-                try {
-                  exec.close();
-                } on SSHError catch (error) {
-                  _recordLateExecOpenFailure(session, error);
-                }
-              },
-              onError: (Object error, StackTrace stackTrace) {
-                _recordLateExecOpenFailure(session, error);
-              },
-            ),
-          );
-          throw TimeoutException(
-            'Timed out opening SSH exec channel',
-            _execOpenTimeout,
-          );
-        },
+        onLateError: (error, _) => _recordLateExecOpenFailure(session, error),
       );
+      if (!_ownsState(session.connectionId, state)) {
+        if (closeStaleSession != null) {
+          await closeStaleSession(exec);
+        } else {
+          exec.close();
+        }
+        _requireState(session.connectionId, state);
+      }
       _clearExecChannelBackoff(session.connectionId);
       return exec;
     } on Object catch (error) {
       if (error is SSHStateError) {
         _deadExecSessions[session] = true;
       }
-      if (shouldBackOffTmuxExecChannelAfterFailure(error)) {
+      if (error is TimeoutException) {
+        DiagnosticsLogService.instance.warning(
+          'tmux.exec',
+          'open_timeout',
+          fields: {
+            'connectionId': session.connectionId,
+            'commandKind': _diagnosticTmuxCommandKind(command),
+            'timeoutMs': _execOpenTimeout.inMilliseconds,
+            'pty': pty != null,
+          },
+        );
+      }
+      if (_ownsState(session.connectionId, state) &&
+          shouldBackOffTmuxExecChannelAfterFailure(error)) {
         _recordExecChannelFailure(session.connectionId, error);
       }
       rethrow;
@@ -2092,49 +2020,58 @@ class TmuxService {
     SshSession session,
     String command, {
     SshExecPriority priority = SshExecPriority.normal,
-  }) => session.runQueuedExec(() async {
-    final quietUntil = _execQuietUntil[session.connectionId];
-    if (quietUntil != null) {
-      final delay = quietUntil.difference(DateTime.now());
-      if (delay > Duration.zero) {
-        DiagnosticsLogService.instance.debug(
-          'tmux.exec',
-          'deferred_for_redraw',
-          fields: {
-            'connectionId': session.connectionId,
-            'commandKind': _diagnosticTmuxCommandKind(command),
-            'delayMs': delay.inMilliseconds,
-          },
-        );
-        await Future<void>.delayed(delay);
+  }) {
+    final state = _stateFor(session.connectionId);
+    return session.runQueuedExec(() async {
+      _requireState(session.connectionId, state);
+      final quietUntil = state.execQuietUntil;
+      if (quietUntil != null) {
+        final delay = quietUntil.difference(DateTime.now());
+        if (delay > Duration.zero) {
+          DiagnosticsLogService.instance.debug(
+            'tmux.exec',
+            'deferred_for_redraw',
+            fields: {
+              'connectionId': session.connectionId,
+              'commandKind': _diagnosticTmuxCommandKind(command),
+              'delayMs': delay.inMilliseconds,
+            },
+          );
+          await Future<void>.delayed(delay);
+        }
+        if (state.execQuietUntil == quietUntil) {
+          state.execQuietUntil = null;
+        }
       }
-      if (_execQuietUntil[session.connectionId] == quietUntil) {
-        _execQuietUntil.remove(session.connectionId);
-      }
-    }
-    return _execUnqueued(session, command);
-  }, priority: priority);
+      _requireState(session.connectionId, state);
+      return _execUnqueued(session, command);
+    }, priority: priority);
+  }
 
   Future<String> _execWindowsPowerShell(
     SshSession session,
     String script, {
     SshExecPriority priority = SshExecPriority.normal,
-  }) => session.runQueuedExec(() async {
-    final execSession = await _openExec(
-      session,
-      buildWindowsPowerShellCommand(script),
-    );
-    try {
-      execSession.stderr.drain<void>().ignore();
-      return await _readStdoutUntilClose(
-        execSession,
-        connectionId: session.connectionId,
-        commandKind: 'tool_detection',
+  }) {
+    final state = _stateFor(session.connectionId);
+    return session.runQueuedExec(() async {
+      _requireState(session.connectionId, state);
+      final execSession = await _openExec(
+        session,
+        buildWindowsPowerShellCommand(script),
       );
-    } finally {
-      execSession.close();
-    }
-  }, priority: priority);
+      try {
+        execSession.stderr.drain<void>().ignore();
+        return await _readStdoutUntilClose(
+          execSession,
+          connectionId: session.connectionId,
+          commandKind: 'tool_detection',
+        );
+      } finally {
+        execSession.close();
+      }
+    }, priority: priority);
+  }
 
   Future<String> _execTmuxCommand(
     SshSession session,
@@ -2144,6 +2081,7 @@ class TmuxService {
     bool forceUtf8 = false,
     SshExecPriority priority = SshExecPriority.normal,
   }) async {
+    final state = _stateFor(session.connectionId);
     final controlOutput = await _tryControlCommand(
       session,
       sessionName,
@@ -2153,6 +2091,7 @@ class TmuxService {
     if (controlOutput != null) {
       return controlOutput;
     }
+    _requireState(session.connectionId, state);
     return _exec(
       session,
       _tmuxCommand(tmuxCommand, extraFlags: extraFlags, forceUtf8: forceUtf8),
@@ -2190,7 +2129,8 @@ class TmuxService {
     String sessionName, {
     String? extraFlags,
   }) =>
-      _windowObservers[_TmuxWindowWatchKey(
+      _connectionStates[session.connectionId]
+          ?.windowObservers[_TmuxWindowWatchKey(
         connectionId: session.connectionId,
         sessionName: sessionName,
         extraFlags: resolveTmuxClientFlagsFromExtraFlags(extraFlags),
@@ -2348,18 +2288,12 @@ class TmuxService {
         'commandKind': commandKind,
       },
     );
-    final controlObserver = _controlCommandObserver(
+    final commandFuture = _execTmuxCommand(
       session,
       sessionName,
+      tmuxCommand,
       extraFlags: extraFlags,
     );
-    final commandFuture =
-        controlObserver?.runCommand(
-          tmuxCommand,
-          commandKind: commandKind,
-          timeout: _execOutputTimeout,
-        ) ??
-        _exec(session, _tmuxCommand(tmuxCommand, extraFlags: extraFlags));
     commandFuture.catchError((Object error) {
       DiagnosticsLogService.instance.warning(
         'tmux.exec',
@@ -2379,8 +2313,9 @@ class TmuxService {
   /// Caches both the shell-specific profile source command and the
   /// full tmux path for subsequent calls.
   Future<void> _cacheTmuxPath(SshSession session) async {
-    if (_tmuxPathCache.containsKey(session.connectionId)) return;
-    final existingRequest = _tmuxPathRequests[session.connectionId];
+    final state = _stateFor(session.connectionId);
+    if (state.tmuxPath != null) return;
+    final existingRequest = state.tmuxPathRequest;
     if (existingRequest != null) {
       DiagnosticsLogService.instance.debug(
         'tmux.cache',
@@ -2415,10 +2350,11 @@ class TmuxService {
         'command -v tmux',
         priority: SshExecPriority.low,
       );
+      if (!_ownsState(session.connectionId, state)) return;
       final lines = output.trim().split('\n');
       if (lines.isNotEmpty) {
         final shellName = lines[0].trim();
-        _profileSourceCache[session.connectionId] = switch (shellName) {
+        state.profileSource = switch (shellName) {
           'zsh' => '{ . ~/.zprofile; } >/dev/null 2>&1; ',
           'bash' => '{ . ~/.bash_profile; . ~/.profile; } >/dev/null 2>&1; ',
           _ => '{ . ~/.profile; } >/dev/null 2>&1; ',
@@ -2427,7 +2363,7 @@ class TmuxService {
       if (lines.length > 1) {
         final path = lines[1].trim();
         if (path.isNotEmpty && path.startsWith('/')) {
-          _tmuxPathCache[session.connectionId] = path;
+          state.tmuxPath = path;
         }
       }
       DiagnosticsLogService.instance.info(
@@ -2435,12 +2371,12 @@ class TmuxService {
         'tmux_path_complete',
         fields: {
           'connectionId': session.connectionId,
-          'hasPath': _tmuxPathCache.containsKey(session.connectionId),
-          'hasProfile': _profileSourceCache.containsKey(session.connectionId),
+          'hasPath': (state.tmuxPath != null),
+          'hasProfile': (state.profileSource != null),
         },
       );
     }();
-    _tmuxPathRequests[session.connectionId] = request;
+    state.tmuxPathRequest = request;
     try {
       await request;
     } on Object catch (error) {
@@ -2454,8 +2390,9 @@ class TmuxService {
       );
       // Ignore — we'll fall back to sourcing all profiles.
     } finally {
-      if (identical(_tmuxPathRequests[session.connectionId], request)) {
-        _tmuxPathRequests.remove(session.connectionId)?.ignore();
+      if (identical(state.tmuxPathRequest, request)) {
+        state.tmuxPathRequest?.ignore();
+        state.tmuxPathRequest = null;
       }
     }
   }
@@ -2490,6 +2427,57 @@ AgentLaunchTool? _agentToolForCreatedWindow({
 }) =>
     agentLaunchToolForCommandName(name) ??
     agentLaunchToolForCommandText(command);
+
+enum _MetadataDelay { debounce, cooldown }
+
+typedef _MetadataBatch = ({SshSession session, Set<int> panePids, bool force});
+
+_MetadataBatch _mergeMetadataBatch(
+  _MetadataBatch? previous,
+  SshSession session,
+  Set<int> panePids,
+  bool force,
+) => (
+  session: session,
+  panePids: {...?previous?.panePids, ...panePids},
+  force: (previous?.force ?? false) || force,
+);
+
+class _TmuxConnectionState {
+  final metadataBatches = <_MetadataDelay, _MetadataBatch>{};
+  final metadataTimers = <_MetadataDelay, Timer>{};
+  _MetadataBatch? metadataPending;
+  String? tmuxPath;
+  String? profileSource;
+  Future<void>? tmuxPathRequest;
+  DateTime? execQuietUntil;
+  final hasSessionRequests = <_TmuxWindowWatchKey, Future<bool>>{};
+  _CachedInstalledAgentTools? installedAgentTools;
+  Future<Set<AgentLaunchTool>>? installedAgentToolsRequest;
+  final windowObservers = <_TmuxWindowWatchKey, _TmuxWindowChangeObserver>{};
+  final windowListRequests = <_TmuxWindowWatchKey, Future<List<TmuxWindow>>>{};
+  final windowSnapshotCache = <_TmuxWindowWatchKey, List<TmuxWindow>>{};
+  Map<int, _ActiveAgentSessionMetadata>? metadataCache;
+  Future<void>? metadataRequest;
+  Set<int>? metadataRequestPanePids;
+  Timer? metadataPeriodicTimer;
+  SshSession? metadataPeriodicSession;
+  DateTime? metadataRefreshedAt;
+  _TmuxExecChannelBackoff? execChannelBackoff;
+
+  Future<void> dispose() async {
+    tmuxPathRequest?.ignore();
+    installedAgentToolsRequest?.ignore();
+    metadataRequest?.ignore();
+    for (final timer in metadataTimers.values) {
+      timer.cancel();
+    }
+    metadataPeriodicTimer?.cancel();
+    await Future.wait(
+      windowObservers.values.map((observer) => observer.dispose()),
+    );
+  }
+}
 
 class _CachedInstalledAgentTools {
   const _CachedInstalledAgentTools({
@@ -3682,6 +3670,12 @@ class _TmuxWindowChangeObserver {
         // servers. Request a dedicated PTY so `%subscription-changed` events
         // stream in real time instead of only catching up on fallback reloads.
         pty: const SSHPtyConfig(),
+        // A clear during channel creation must still detach the tmux client
+        // before the stale-channel guard closes its SSH channel.
+        closeStaleSession: (execSession) => _shutdownControlSession(
+          execSession,
+          shutdownInput: _tmuxControlModeDetachInput,
+        ),
       );
       if (_disposed) {
         await _shutdownControlSession(

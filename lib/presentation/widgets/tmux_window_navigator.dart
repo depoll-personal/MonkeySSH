@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui' show SemanticsRole;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -13,8 +14,8 @@ import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/host_cli_launch_preferences.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/remote_multiplexer.dart';
+import '../../domain/models/terminal_progress.dart';
 import '../../domain/models/tmux_state.dart';
-import '../../domain/services/acp_provider_service.dart';
 import '../../domain/services/acp_session_manager.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
@@ -29,7 +30,6 @@ import 'acp_mux_window_status_badge.dart';
 import 'acp_native_badge.dart';
 import 'acp_new_session_sheet.dart';
 import 'acp_session_presentation.dart';
-import 'acp_session_switcher.dart';
 import 'agent_tool_icon.dart';
 import 'ai_session_picker.dart';
 import 'premium_badge.dart';
@@ -297,8 +297,7 @@ Map<AgentLaunchTool, String> nativeAcpProvidersByTool(
 /// Maps known terminal agent tools to built-in ACP providers without I/O.
 Map<AgentLaunchTool, String> builtinNativeAcpProvidersByTool() =>
     nativeAcpProvidersByTool(<AcpProvider>[
-      for (final provider in acpBuiltinProviders)
-        AcpBuiltinProviderView(provider),
+      for (final provider in acpBuiltinProviders) provider,
     ]);
 
 /// Resolves the branded terminal-agent identity for a built-in ACP provider.
@@ -897,16 +896,11 @@ class _TmuxNavigatorSheet extends ConsumerStatefulWidget {
 }
 
 class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
-  /// Maximum number of recent sessions to show per tool.
-  static const _maxSessionsPerTool = 16;
-
   List<TmuxWindow>? _windows;
   AgentLaunchTool? _preferredLaunchTool;
   StreamSubscription<TmuxWindowChangeEvent>? _windowChangeSubscription;
   bool _isLoadingWindows = true;
   String? _error;
-  bool _showSessions = false;
-  bool _hasInitializedSessionProviders = false;
   int _windowEventGeneration = 0;
 
   late final _windowLoader = TmuxWindowLoader(
@@ -928,108 +922,12 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
     RemoteMuxBackend.auto => 'remote multiplexer',
   };
 
-  AgentSessionDiscoveryService get _discovery =>
-      ref.read(agentSessionDiscoveryServiceProvider);
-
-  int get _firstNativeAcpWindowIndex =>
-      (_windows ?? const <TmuxWindow>[]).fold<int>(
-        -1,
-        (maximum, window) => window.index > maximum ? window.index : maximum,
-      ) +
-      1;
+  late MuxWindowProjection _projection;
 
   AcpSessionManagerState get _watchedAcpManagerState {
     final manager = ref.watch(acpSessionManagerProvider);
     return ref.watch(acpSessionManagerStateProvider).asData?.value ??
         manager.state;
-  }
-
-  AcpSessionState? _sessionForNativeWindow(TmuxWindow window) =>
-      _watchedAcpManagerState.sessions
-          .where(
-            (session) =>
-                session.key.hostId == widget.session.hostId &&
-                session.key.bridgeId == window.nativeAcpBridgeId &&
-                session.key.providerId == window.nativeAcpProviderId &&
-                session.isOpenMuxWindow,
-          )
-          .firstOrNull;
-
-  List<ToolSessionInfo> _liveMonkeyMuxAgentSessions({String? toolName}) {
-    if (widget.remoteMuxBackend != RemoteMuxBackend.monkeyMux) {
-      return const <ToolSessionInfo>[];
-    }
-
-    final sessions = <ToolSessionInfo>[];
-    for (final window in _windows ?? const <TmuxWindow>[]) {
-      final tool = window.foregroundAgentTool;
-      final discoveredToolName = tool?.discoveredSessionToolName;
-      final sessionId = window.activeAgentSessionId?.trim();
-      if (tool == null ||
-          discoveredToolName == null ||
-          window.activeAgentSessionConfidence != AgentSessionConfidence.high ||
-          sessionId == null ||
-          sessionId.isEmpty ||
-          (toolName != null && discoveredToolName != toolName)) {
-        continue;
-      }
-      final lastActivityEpochSeconds = window.lastActivityEpochSeconds;
-      sessions.add(
-        ToolSessionInfo(
-          toolName: discoveredToolName,
-          sessionId: sessionId,
-          workingDirectory: window.currentPath,
-          lastActive: lastActivityEpochSeconds == null
-              ? null
-              : DateTime.fromMillisecondsSinceEpoch(
-                  lastActivityEpochSeconds * 1000,
-                ),
-          summary:
-              window.agentSessionDisplayTitle ?? 'Active ${tool.label} session',
-        ),
-      );
-    }
-    return sessions;
-  }
-
-  DiscoveredSessionsResult _includeLiveMonkeyMuxAgentSessions(
-    DiscoveredSessionsResult result, {
-    String? toolName,
-  }) {
-    final filteredResult = toolName == null
-        ? result
-        : DiscoveredSessionsResult(
-            sessions: result.sessions.where(
-              (session) => session.toolName == toolName,
-            ),
-            failedTools: result.failedTools.where((tool) => tool == toolName),
-            attemptedTools: result.attemptedTools.where(
-              (tool) => tool == toolName,
-            ),
-          );
-    final liveSessions = _liveMonkeyMuxAgentSessions(toolName: toolName);
-    if (liveSessions.isEmpty) return filteredResult;
-
-    final sessionsByIdentity = <String, ToolSessionInfo>{
-      for (final session in liveSessions)
-        '${session.toolName}\u001f${session.sessionId}': session,
-    };
-    // Prefer file-discovered metadata when it exists because it usually has a
-    // richer title. Live MonkeyMux identity fills the gap when history scanning
-    // is empty or still in flight.
-    for (final session in filteredResult.sessions) {
-      sessionsByIdentity['${session.toolName}\u001f${session.sessionId}'] =
-          session;
-    }
-    final sessions = sessionsByIdentity.values.toList(growable: false);
-    final liveTools = liveSessions.map((session) => session.toolName).toSet();
-    return DiscoveredSessionsResult(
-      sessions: sessions,
-      failedTools: filteredResult.failedTools.where(
-        (tool) => !liveTools.contains(tool),
-      ),
-      attemptedTools: <String>{...filteredResult.attemptedTools, ...liveTools},
-    );
   }
 
   @override
@@ -1045,8 +943,6 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.session.hostId != widget.session.hostId) {
       _windowLoader.invalidate();
-      _showSessions = false;
-      _hasInitializedSessionProviders = false;
       unawaited(_loadPreferredLaunchTool());
     }
   }
@@ -1211,97 +1107,6 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
     );
   }
 
-  Future<void> _resumeSession(
-    ToolSessionInfo info, {
-    bool forceModePicker = false,
-  }) async {
-    final tool = AgentLaunchTool.values
-        .where((candidate) => candidate.label == info.toolName)
-        .firstOrNull;
-    final providerId = tool == null
-        ? null
-        : builtinNativeAcpProvidersByTool()[tool];
-    if (tool != null &&
-        providerId != null &&
-        widget.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
-      final mode = await resolveAgentWindowMode(
-        context: context,
-        tool: tool,
-        isProUser: widget.isProUser,
-        preference: widget.agentWindowModePreference,
-        forcePicker: forceModePicker,
-      );
-      if (!mounted || mode == null) {
-        return;
-      }
-      if (mode == AgentWindowMode.nativeAcp) {
-        Navigator.pop(
-          context,
-          TmuxResumeAcpSessionAction(
-            providerId: providerId,
-            acpSessionId: info.sessionId,
-            workingDirectory: info.workingDirectory,
-          ),
-        );
-        return;
-      }
-    }
-    final command = _discovery.buildResumeCommand(
-      info,
-      startInYoloMode: widget.startClisInYoloMode,
-    );
-    Navigator.pop(
-      context,
-      TmuxResumeSessionAction(command, workingDirectory: info.workingDirectory),
-    );
-  }
-
-  Future<void> _showSessionPickerForTool(
-    AiSessionProviderEntry provider,
-  ) async {
-    unawaited(
-      ref
-          .read(telemetryServiceProvider)
-          .logSessionHistoryOpened(
-            tool: _telemetryAgentToolName(provider.toolName),
-            sessionCount: 0,
-          ),
-    );
-    ToolSessionInfo? heldSession;
-    final selected = await showAiSessionPickerDialog(
-      context: context,
-      toolName: provider.toolName,
-      initialMaxSessions: _maxSessionsPerTool,
-      sessionFetchStep: _maxSessionsPerTool,
-      loadSessions: (maxSessions) {
-        final activeWindow = _windows?.where((w) => w.isActive).firstOrNull;
-        final scopeWorkingDirectory =
-            widget.scopeWorkingDirectory ??
-            resolveAgentSessionScopeWorkingDirectory(
-              activeWorkingDirectory: activeWindow?.currentPath,
-              sessionWorkingDirectory: widget.session.workingDirectory,
-            );
-        return _discovery
-            .discoverSessionsStream(
-              widget.session,
-              workingDirectory: scopeWorkingDirectory,
-              maxPerTool: maxSessions,
-              toolName: provider.toolName,
-            )
-            .map(
-              (result) => _includeLiveMonkeyMuxAgentSessions(
-                result,
-                toolName: provider.toolName,
-              ),
-            );
-      },
-      onSessionLongPress: (session) => heldSession = session,
-    );
-    final session = heldSession ?? selected;
-    if (!mounted || session == null) return;
-    await _resumeSession(session, forceModePicker: heldSession != null);
-  }
-
   Future<void> _showNewWindowPicker() async {
     final installedToolsFuture = ref
         .read(tmuxServiceProvider)
@@ -1363,6 +1168,20 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
 
   @override
   Widget build(BuildContext context) {
+    _projection = MuxWindowProjection(
+      _windows ?? const [],
+      widget.remoteMuxBackend == RemoteMuxBackend.monkeyMux
+          ? _watchedAcpManagerState.sessions
+                .where(
+                  (session) =>
+                      session.key.hostId == widget.session.hostId &&
+                      session.isOpenMuxWindow,
+                )
+                .toList()
+          : const [],
+      liveOrphansOnly: true,
+    );
+
     final theme = Theme.of(context);
     final screenHeight = MediaQuery.sizeOf(context).height;
     final maxSheetHeight = math.min(
@@ -1479,24 +1298,7 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
   }
 
   Widget _buildNativeAcpSessionSection(ThemeData theme) {
-    final serverOwnedBridgeIds = (_windows ?? const <TmuxWindow>[])
-        .map((window) => window.nativeAcpBridgeId)
-        .whereType<String>()
-        .toSet();
-    final sessions = _watchedAcpManagerState.sessions
-        .where(
-          (session) =>
-              session.key.hostId == widget.session.hostId &&
-              session.isLive &&
-              !serverOwnedBridgeIds.contains(session.key.bridgeId),
-        )
-        .toList(growable: false);
-    final providers =
-        ref.watch(acpProvidersProvider).asData?.value ?? const <AcpProvider>[];
-    final providerLabels = <String, String>{
-      for (final provider in providers) provider.id: provider.label,
-    };
-    final entries = buildAcpMuxWindowEntries(sessions);
+    final entries = _projection.orphanSessions;
     if (entries.isEmpty) {
       return const SizedBox.shrink();
     }
@@ -1517,137 +1319,27 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
           ),
         ),
         for (var index = 0; index < entries.length; index++)
-          _buildNativeAcpSessionTile(
-            entries[index],
-            windowIndex: _firstNativeAcpWindowIndex + index,
-            providerLabels: providerLabels,
-          ),
+          _buildNativeAcpSessionTile(entries[index]),
       ],
     );
   }
 
-  Widget _buildNativeAcpSessionTile(
-    AcpSwitcherEntry entry, {
-    required int windowIndex,
-    required Map<String, String> providerLabels,
-  }) {
-    final theme = Theme.of(context);
-    final session = entry.session;
-    final recent = entry.recent;
-    final key = session?.key ?? recent!.key;
-    final providerLabel =
-        session?.providerLabel ?? providerLabels[key.providerId] ?? 'Agent';
-    final agentTool = agentLaunchToolForAcpProviderId(key.providerId);
-    final cwd = acpCwdSummary(session?.cwd ?? recent?.cwd);
-    final activity = session == null
-        ? null
-        : acpSessionActivityDisplay(session);
-    final iconColor = agentWindowIdentityColor(
-      theme.colorScheme,
+  Widget _buildNativeAcpSessionTile(AcpSessionState session) => MuxWindowRow(
+    key: ValueKey(('native-session', session.key)),
+    presentation: MuxWindowPresentation.session(
+      session,
+      index: _projection.nativeIndices[session.key]!,
       isActive: false,
-    );
-    final secondaryColor = theme.colorScheme.onSurfaceVariant;
-    final activityColor = activity == null
-        ? secondaryColor
-        : acpStatusColor(theme.colorScheme, activity.tone);
-    final progress = activity == null
-        ? null
-        : acpActivityTerminalProgress(activity);
-    return ListTile(
-      key: ValueKey('native-acp-session-${key.value}'),
-      dense: true,
-      visualDensity: _tmuxNavigatorDenseVisualDensity,
-      minVerticalPadding: 2,
-      contentPadding: const EdgeInsets.only(left: 16, right: 4),
-      horizontalTitleGap: 10,
-      minLeadingWidth: 28,
-      leading: Container(
-        key: ValueKey('native-acp-number-slot-${key.value}'),
-        width: 24,
-        height: 24,
-        decoration: BoxDecoration(
-          color: theme.colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(6),
-        ),
-        alignment: Alignment.center,
-        child: Text(
-          '$windowIndex',
-          style: theme.textTheme.labelMedium?.copyWith(
-            color: secondaryColor,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
+      includeProvider: true,
+    ),
+    onClose: () => unawaited(
+      _confirmStopNativeAcpSession(
+        session.key,
+        acpSessionDisplayTitle(session),
       ),
-      title: Row(
-        children: [
-          AcpNativeBadgeOverlay(
-            size: 16,
-            color: iconColor,
-            badgeKey: ValueKey('native-acp-indicator-${key.value}'),
-            child: AgentToolIcon(
-              key: ValueKey('native-acp-agent-icon-${key.value}'),
-              tool: agentTool,
-              size: 16,
-              color: iconColor,
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              entry.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        ],
-      ),
-      subtitle: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            '$providerLabel · $cwd · ${activity?.label ?? 'recent'}',
-            key: ValueKey('native-acp-subtitle-${key.value}'),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: theme.textTheme.bodySmall?.copyWith(color: secondaryColor),
-          ),
-          if (progress != null) ...[
-            const SizedBox(height: 3),
-            LinearProgressIndicator(
-              key: ValueKey('native-acp-progress-${key.value}'),
-              value: progress.percentage == null ? null : progress.fraction,
-              minHeight: 3,
-              color: activityColor,
-              backgroundColor: theme.colorScheme.surfaceContainerHighest,
-            ),
-          ],
-        ],
-      ),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Padding(
-            padding: const EdgeInsets.only(right: 6),
-            child: AcpMuxWindowStatusBadge(session: session),
-          ),
-          if (session != null)
-            IconButton(
-              icon: const Icon(Icons.close, size: 16),
-              visualDensity: VisualDensity.compact,
-              constraints: const BoxConstraints.tightFor(width: 44, height: 44),
-              padding: EdgeInsets.zero,
-              tooltip: 'Close window',
-              onPressed: () =>
-                  unawaited(_confirmStopNativeAcpSession(key, entry.title)),
-            )
-          else
-            const SizedBox(width: 30),
-        ],
-      ),
-      onTap: () => Navigator.pop(context, TmuxOpenAcpSessionAction(key)),
-    );
-  }
+    ),
+    onTap: () => Navigator.pop(context, TmuxOpenAcpSessionAction(session.key)),
+  );
 
   Future<void> _confirmStopNativeAcpSession(
     AcpSessionKey key,
@@ -1689,157 +1381,19 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
   );
 
   Widget _buildWindowTile(TmuxWindow window) {
-    final theme = Theme.of(context);
     final isActive = window.isActive;
-    final nativeSession = window.isNativeAcp
-        ? _sessionForNativeWindow(window)
-        : null;
-    final nativeActivity = nativeSession == null
-        ? null
-        : acpSessionActivityDisplay(nativeSession);
-    final title = nativeSession == null
-        ? window.displayTitle
-        : acpSessionDisplayTitle(nativeSession);
-    final secondaryTitle = nativeSession == null
-        ? window.secondaryTitle
-        : '${nativeSession.providerLabel} · '
-              '${acpCwdSummary(nativeSession.cwd)} · ${nativeActivity!.label}';
-    final windowTool = window.isNativeAcp
-        ? agentLaunchToolForAcpProviderId(window.nativeAcpProviderId!)
-        : window.foregroundAgentTool;
-    final iconColor = agentWindowIdentityColor(
-      theme.colorScheme,
+    final nativeSession = _projection.sessionForWindow(window);
+    final presentation = MuxWindowPresentation.window(
+      window,
+      session: nativeSession,
       isActive: isActive,
+      showProgress: widget.remoteMuxBackend == RemoteMuxBackend.monkeyMux,
     );
-    final secondaryColor = theme.colorScheme.onSurfaceVariant;
-    final activityColor = nativeActivity == null
-        ? secondaryColor
-        : acpStatusColor(theme.colorScheme, nativeActivity.tone);
-    final progress = nativeActivity == null
-        ? null
-        : acpActivityTerminalProgress(nativeActivity);
-
-    return ListTile(
-      key: ValueKey('tmux-window-${window.index}'),
-      dense: true,
-      visualDensity: _tmuxNavigatorDenseVisualDensity,
-      minVerticalPadding: 2,
-      contentPadding: const EdgeInsets.only(left: 16, right: 4),
-      horizontalTitleGap: 10,
-      minLeadingWidth: 28,
-      tileColor: isActive
-          ? theme.colorScheme.primaryContainer.withAlpha(80)
-          : null,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-      leading: Container(
-        width: 24,
-        height: 24,
-        decoration: BoxDecoration(
-          color: isActive
-              ? theme.colorScheme.primary
-              : theme.colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(6),
-        ),
-        alignment: Alignment.center,
-        child: Text(
-          '${window.index}',
-          style: theme.textTheme.labelMedium?.copyWith(
-            color: isActive
-                ? theme.colorScheme.onPrimary
-                : theme.colorScheme.onSurfaceVariant,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-      ),
-      title: Row(
-        children: [
-          if (window.isNativeAcp)
-            AcpNativeBadgeOverlay(
-              size: 16,
-              color: iconColor,
-              badgeKey: ValueKey('native-acp-window-indicator-${window.index}'),
-              child: AgentToolIcon(
-                key: ValueKey('tmux-window-agent-icon-${window.index}'),
-                tool: windowTool,
-                size: 16,
-                color: iconColor,
-              ),
-            )
-          else
-            AgentToolIcon(
-              key: ValueKey('tmux-window-agent-icon-${window.index}'),
-              tool: windowTool,
-              size: 16,
-              color: iconColor,
-              fallbackIcon: Icons.terminal,
-            ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: isActive
-                  ? theme.textTheme.bodyMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    )
-                  : null,
-            ),
-          ),
-        ],
-      ),
-      subtitle: secondaryTitle == null && progress == null
-          ? null
-          : Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (secondaryTitle != null)
-                  Text(
-                    secondaryTitle,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    key: ValueKey('tmux-window-subtitle-${window.index}'),
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: secondaryColor,
-                    ),
-                  ),
-                if (progress != null) ...[
-                  if (secondaryTitle != null) const SizedBox(height: 3),
-                  LinearProgressIndicator(
-                    key: ValueKey('native-acp-window-progress-${window.index}'),
-                    value: progress.percentage == null
-                        ? null
-                        : progress.fraction,
-                    minHeight: 3,
-                    color: activityColor,
-                    backgroundColor: theme.colorScheme.surfaceContainerHighest,
-                  ),
-                ],
-              ],
-            ),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Padding(
-            padding: const EdgeInsets.only(right: 6),
-            child: window.isNativeAcp
-                ? AcpMuxWindowStatusBadge(
-                    session: nativeSession,
-                    fallbackLabel: 'native',
-                  )
-                : TmuxWindowStatusBadge(window: window),
-          ),
-          IconButton(
-            icon: const Icon(Icons.close, size: 16),
-            visualDensity: VisualDensity.compact,
-            constraints: const BoxConstraints.tightFor(width: 44, height: 44),
-            padding: EdgeInsets.zero,
-            tooltip: 'Close window',
-            onPressed: () =>
-                unawaited(_confirmCloseWindow(window, displayTitle: title)),
-          ),
-        ],
+    return MuxWindowRow(
+      key: ValueKey(('server-window', window.index)),
+      presentation: presentation,
+      onClose: () => unawaited(
+        _confirmCloseWindow(window, displayTitle: presentation.title),
       ),
       onTap: window.isNativeAcp
           ? () => Navigator.pop(
@@ -1895,137 +1449,59 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
     ),
   );
 
-  Widget _buildRecentSessionsSection(ThemeData theme) => Column(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      ListTile(
-        dense: true,
-        visualDensity: _tmuxNavigatorDenseVisualDensity,
-        minTileHeight: 42,
-        contentPadding: _tmuxNavigatorTilePadding,
-        horizontalTitleGap: 12,
-        minLeadingWidth: 18,
-        leading: Icon(
-          Icons.smart_toy_outlined,
-          size: 18,
-          color: theme.colorScheme.onSurfaceVariant,
-        ),
-        title: const Row(
-          children: [
-            Expanded(
-              child: Text(
-                'Recent terminal sessions',
-                overflow: TextOverflow.ellipsis,
-              ),
+  Widget _buildRecentSessionsSection(ThemeData theme) =>
+      MuxRecentSessionsSection(
+        session: widget.session,
+        tmuxSessionName: widget.tmuxSessionName,
+        remoteMuxBackend: widget.remoteMuxBackend,
+        scopeWorkingDirectory:
+            widget.scopeWorkingDirectory ??
+            resolveAgentSessionScopeWorkingDirectory(
+              activeWorkingDirectory: _windows
+                  ?.where((window) => window.isActive)
+                  .firstOrNull
+                  ?.currentPath,
+              sessionWorkingDirectory: widget.session.workingDirectory,
             ),
-            SizedBox(width: 8),
-            PremiumBadge(),
-          ],
-        ),
-        trailing: Icon(
-          _showSessions ? Icons.expand_less : Icons.expand_more,
-          size: 18,
-          color: theme.colorScheme.onSurfaceVariant,
-        ),
-        onTap: () {
-          final showSessions = !_showSessions;
-          if (showSessions) {
-            unawaited(
-              ref
-                  .read(telemetryServiceProvider)
-                  .logSessionHistoryOpened(tool: 'all', sessionCount: 0),
-            );
-          }
-          setState(() {
-            _showSessions = showSessions;
-            if (showSessions) {
-              _hasInitializedSessionProviders = true;
-            }
-          });
-        },
-      ),
-      if (_hasInitializedSessionProviders)
-        Offstage(
-          offstage: !_showSessions,
-          child: AiSessionProviderList(
-            key: ValueKey<Object>(
-              Object.hashAll(<Object?>[
-                widget.session.connectionId,
-                widget.tmuxSessionName,
-                widget.scopeWorkingDirectory,
-                _windows
-                    ?.where((window) => window.isActive)
-                    .firstOrNull
-                    ?.currentPath,
-              ]),
-            ),
-            orderedTools: orderedDiscoveredSessionTools(
-              const <String, List<ToolSessionInfo>>{},
-              const <String>{},
-              preferredToolName:
-                  _preferredLaunchTool?.discoveredSessionToolName,
-            ),
-            loadSessions: (maxSessions) {
-              final activeWindow = _windows
-                  ?.where((w) => w.isActive)
-                  .firstOrNull;
-              final scopeWorkingDirectory =
-                  widget.scopeWorkingDirectory ??
-                  resolveAgentSessionScopeWorkingDirectory(
-                    activeWorkingDirectory: activeWindow?.currentPath,
-                    sessionWorkingDirectory: widget.session.workingDirectory,
-                  );
-              final loggedTools = <String>{};
-              return _discovery
-                  .discoverSessionsStream(
-                    widget.session,
-                    workingDirectory: scopeWorkingDirectory,
-                    maxPerTool: maxSessions,
-                  )
-                  .map((result) {
-                    final mergedResult = _includeLiveMonkeyMuxAgentSessions(
-                      result,
-                    );
-                    for (final toolName in mergedResult.attemptedTools) {
-                      if (!loggedTools.add(toolName)) {
-                        continue;
-                      }
-                      final count = mergedResult.sessions
-                          .where((session) => session.toolName == toolName)
-                          .length;
-                      unawaited(
-                        ref
-                            .read(telemetryServiceProvider)
-                            .logAgentSessionsDetected(
-                              tool: _telemetryAgentToolName(toolName),
-                              sessionCount: count,
-                              failed: mergedResult.failedTools.contains(
-                                toolName,
-                              ),
-                            ),
-                      );
-                    }
-                    return mergedResult;
-                  });
-            },
-            itemBuilder: (context, provider) =>
-                _buildSessionProviderTile(theme, provider),
+        liveWindows: _windows ?? const [],
+        isProUser: widget.isProUser,
+        startClisInYoloMode: widget.startClisInYoloMode,
+        preferredTool: _preferredLaunchTool,
+        loadModePreference: () async => widget.agentWindowModePreference,
+        logTelemetry: true,
+        onAction: (action) => Navigator.pop(context, action),
+        headerBuilder: (context, toggle, {required expanded}) => ListTile(
+          dense: true,
+          visualDensity: _tmuxNavigatorDenseVisualDensity,
+          minTileHeight: 42,
+          contentPadding: _tmuxNavigatorTilePadding,
+          horizontalTitleGap: 12,
+          minLeadingWidth: 18,
+          leading: Icon(
+            Icons.smart_toy_outlined,
+            size: 18,
+            color: theme.colorScheme.onSurfaceVariant,
           ),
+          title: const Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Recent terminal sessions',
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              SizedBox(width: 8),
+              PremiumBadge(),
+            ],
+          ),
+          trailing: Icon(
+            expanded ? Icons.expand_less : Icons.expand_more,
+            size: 18,
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+          onTap: toggle,
         ),
-    ],
-  );
-
-  Widget _buildSessionProviderTile(
-    ThemeData theme,
-    AiSessionProviderEntry provider,
-  ) => AiSessionProviderTile(
-    provider: provider,
-    onTap: () => unawaited(_showSessionPickerForTool(provider)),
-    visualDensity: _tmuxNavigatorDenseVisualDensity,
-    contentPadding: _tmuxNavigatorGroupTilePadding,
-    minLeadingWidth: 20,
-    iconColor: theme.colorScheme.primary,
-  );
+      );
 }
 
 /// Bottom sheet for picking an AI coding tool to launch in a new tmux window.
@@ -2245,4 +1721,719 @@ class _TmuxNewWindowMenuItem extends StatelessWidget {
       Flexible(child: Text(label)),
     ],
   );
+}
+
+/// Projects tracked sessions once, keeping synthetic window numbers stable.
+class MuxWindowProjection {
+  /// Creates the lookups and orders sessions by creation time and identity.
+  MuxWindowProjection(
+    List<TmuxWindow> windows,
+    List<AcpSessionState> sessions, {
+    bool liveOrphansOnly = false,
+  }) {
+    for (final session in sessions) {
+      sessionsByBridge[(session.key.bridgeId, session.key.providerId)] =
+          session;
+    }
+    final serverBridges = <String>{};
+    var nextIndex = 0;
+    for (final window in windows) {
+      nextIndex = math.max(nextIndex, window.index + 1);
+      final bridge = window.nativeAcpBridgeId;
+      if (bridge != null) {
+        serverBridges.add(bridge);
+        final session = sessionForWindow(window);
+        if (session != null) nativeIndices[session.key] = window.index;
+      }
+    }
+    orphanSessions =
+        sessions
+            .where(
+              (session) =>
+                  !serverBridges.contains(session.key.bridgeId) &&
+                  (!liveOrphansOnly || session.isLive),
+            )
+            .toList()
+          ..sort((a, b) {
+            final created = a.createdAt.compareTo(b.createdAt);
+            return created != 0 ? created : a.key.value.compareTo(b.key.value);
+          });
+    for (final session in orphanSessions) {
+      nativeIndices[session.key] = nextIndex++;
+    }
+  }
+
+  /// Sessions keyed by the identity supplied by server windows.
+  final sessionsByBridge = <(String, String), AcpSessionState>{};
+
+  /// Native sessions without a server window, in stable display order.
+  late final List<AcpSessionState> orphanSessions;
+
+  /// Server or synthetic window index for each tracked session.
+  final nativeIndices = <AcpSessionKey, int>{};
+
+  /// Resolves native activity without scanning the session list per row.
+  AcpSessionState? sessionForWindow(TmuxWindow window) =>
+      sessionsByBridge[(window.nativeAcpBridgeId, window.nativeAcpProviderId)];
+}
+
+/// The identity, activity and text rendered by either expanded window list.
+class MuxWindowPresentation {
+  /// Projects a server window, optionally substituting store screenshot text.
+  MuxWindowPresentation.window(
+    TmuxWindow this.window, {
+    required this.isActive,
+    this.session,
+    bool showProgress = true,
+    String? displayTitle,
+  }) : index = window.index,
+       title =
+           displayTitle ??
+           (session == null
+               ? window.displayTitle
+               : acpSessionDisplayTitle(session)),
+       subtitle = displayTitle != null
+           ? null
+           : session == null
+           ? window.secondaryTitle
+           : '${session.providerLabel} · ${acpCwdSummary(session.cwd)} · ${acpSessionActivityDisplay(session).label}',
+       progress = !showProgress
+           ? null
+           : session == null
+           ? window.terminalProgress
+           : acpActivityTerminalProgress(acpSessionActivityDisplay(session));
+
+  /// Projects a tracked native session that has no server window.
+  MuxWindowPresentation.session(
+    AcpSessionState this.session, {
+    required this.index,
+    required this.isActive,
+    bool includeProvider = false,
+  }) : window = null,
+       title = acpSessionDisplayTitle(session),
+       subtitle =
+           '${includeProvider ? '${session.providerLabel} · ' : ''}${acpCwdSummary(session.cwd)} · ${acpSessionActivityDisplay(session).label}',
+       progress = acpActivityTerminalProgress(
+         acpSessionActivityDisplay(session),
+       );
+
+  /// Server window, when one exists.
+  final TmuxWindow? window;
+
+  /// Tracked native session, when available.
+  final AcpSessionState? session;
+
+  /// Displayed window number.
+  final int index;
+
+  /// Whether the parent currently selects this row.
+  final bool isActive;
+
+  /// Primary label.
+  final String title;
+
+  /// Optional secondary label.
+  final String? subtitle;
+
+  /// Progress reported by native activity or the terminal.
+  final TerminalProgress? progress;
+
+  /// Whether this is a native agent window.
+  bool get isNative => session != null || (window?.isNativeAcp ?? false);
+
+  /// Agent identity used for the icon.
+  AgentLaunchTool? get tool => isNative
+      ? agentLaunchToolForAcpProviderId(
+          session?.key.providerId ?? window!.nativeAcpProviderId!,
+        )
+      : window?.foregroundAgentTool;
+}
+
+/// Shared expanded row, with the bar's smaller spacing and touch controls.
+class MuxWindowRow extends StatelessWidget {
+  /// Creates a window row; parents retain navigation and close ownership.
+  const MuxWindowRow({
+    required this.presentation,
+    required this.onTap,
+    required this.onClose,
+    this.inBar = false,
+    super.key,
+  });
+
+  /// Projected window content.
+  final MuxWindowPresentation presentation;
+
+  /// Selects or dismisses the row in its parent.
+  final VoidCallback onTap;
+
+  /// Runs the parent's confirmation and close action.
+  final VoidCallback onClose;
+
+  /// Uses the compact persistent-bar layout.
+  final bool inBar;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final p = presentation;
+    final orphan = p.window == null;
+    final identity = orphan ? p.session!.key.value : '${p.index}';
+    final prefix = orphan
+        ? (inBar ? 'monkeymux-acp' : 'native-acp')
+        : (inBar ? 'monkeymux-window' : 'tmux-window');
+    final iconColor = agentWindowIdentityColor(
+      theme.colorScheme,
+      isActive: p.isActive,
+    );
+    final secondaryColor = theme.colorScheme.onSurfaceVariant;
+    final surface = inBar
+        ? theme.colorScheme.surfaceContainerHigh
+        : theme.colorScheme.surfaceContainerHighest;
+    final numberSize = inBar ? 22.0 : 24.0;
+    final iconSize = inBar && orphan ? 17.0 : 16.0;
+    final icon = AgentToolIcon(
+      key: ValueKey('$prefix-agent-icon-$identity'),
+      tool: p.tool,
+      size: iconSize,
+      color: iconColor,
+      fallbackIcon: p.isNative ? Icons.smart_toy_outlined : Icons.terminal,
+    );
+    final badgeKey = orphan
+        ? '$prefix-${inBar ? 'native' : 'indicator'}-$identity'
+        : '${inBar ? 'monkeymux-native-badge' : 'native-acp-window-indicator'}-$identity';
+    final progressKey = orphan
+        ? '$prefix-progress-$identity'
+        : '${inBar ? 'monkeymux-window' : 'native-acp-window'}-progress-$identity';
+    return ListTile(
+      key: ValueKey(
+        orphan && !inBar ? 'native-acp-session-$identity' : '$prefix-$identity',
+      ),
+      dense: true,
+      visualDensity: inBar && orphan ? null : _tmuxNavigatorDenseVisualDensity,
+      minVerticalPadding: inBar && orphan ? null : 2,
+      minTileHeight: inBar && orphan ? 44 : null,
+      selected: inBar && orphan && p.isActive,
+      selectedTileColor: theme.colorScheme.primaryContainer.withAlpha(96),
+      contentPadding: EdgeInsets.only(left: inBar ? 12 : 16, right: 4),
+      horizontalTitleGap: 10,
+      minLeadingWidth: inBar ? 24 : 28,
+      tileColor: !orphan && p.isActive
+          ? theme.colorScheme.primaryContainer.withAlpha(80)
+          : null,
+      shape: orphan
+          ? null
+          : RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      leading: Container(
+        key: orphan ? ValueKey('$prefix-number-slot-$identity') : null,
+        width: numberSize,
+        height: numberSize,
+        decoration: BoxDecoration(
+          color: !orphan && p.isActive ? theme.colorScheme.primary : surface,
+          borderRadius: BorderRadius.circular(6),
+        ),
+        alignment: Alignment.center,
+        child: Text(
+          '${p.index}',
+          style:
+              (inBar && !orphan
+                      ? theme.textTheme.labelSmall
+                      : theme.textTheme.labelMedium)
+                  ?.copyWith(
+                    color: !orphan && p.isActive
+                        ? theme.colorScheme.onPrimary
+                        : inBar && orphan
+                        ? iconColor
+                        : secondaryColor,
+                    fontWeight: FontWeight.bold,
+                  ),
+        ),
+      ),
+      title: Row(
+        children: [
+          if (p.isNative)
+            AcpNativeBadgeOverlay(
+              size: iconSize,
+              color: iconColor,
+              badgeKey: ValueKey(badgeKey),
+              child: icon,
+            )
+          else
+            icon,
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              p.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: p.isActive
+                  ? theme.textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    )
+                  : null,
+            ),
+          ),
+        ],
+      ),
+      subtitle: p.subtitle == null && p.progress == null
+          ? null
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (p.subtitle != null)
+                  Text(
+                    p.subtitle!,
+                    key: !inBar ? ValueKey('$prefix-subtitle-$identity') : null,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: secondaryColor,
+                    ),
+                  ),
+                if (p.progress != null) ...[
+                  if (p.subtitle != null) const SizedBox(height: 3),
+                  MuxWindowProgressIndicator(
+                    key: ValueKey(progressKey),
+                    progress: p.progress!,
+                    semanticsWindowLabel: orphan
+                        ? 'Native agent window: ${p.title}'
+                        : p.isActive
+                        ? null
+                        : '${inBar ? 'MonkeyMux' : 'Terminal'} window ${p.index}: ${p.title}',
+                  ),
+                ],
+              ],
+            ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(right: 6),
+            child: p.isNative
+                ? AcpMuxWindowStatusBadge(
+                    session: p.session,
+                    fallbackLabel: orphan ? 'recent' : 'native',
+                  )
+                : TmuxWindowStatusBadge(window: p.window!),
+          ),
+          IconButton(
+            icon: const Icon(Icons.close, size: 16),
+            visualDensity: VisualDensity.compact,
+            constraints: BoxConstraints.tightFor(
+              width: inBar ? 30 : 44,
+              height: inBar ? 30 : 44,
+            ),
+            padding: EdgeInsets.zero,
+            tooltip: 'Close window',
+            onPressed: onClose,
+          ),
+        ],
+      ),
+      onTap: onTap,
+    );
+  }
+}
+
+/// Accessible progress shared by expanded rows and the compact rail.
+class MuxWindowProgressIndicator extends StatelessWidget {
+  /// Creates a progress indicator with optional window semantics.
+  const MuxWindowProgressIndicator({
+    required this.progress,
+    required this.semanticsWindowLabel,
+    this.compact = false,
+    super.key,
+  });
+
+  /// Reported progress state and percentage.
+  final TerminalProgress progress;
+
+  /// Window label, omitted for the active window.
+  final String? semanticsWindowLabel;
+
+  /// Uses the thinner rail indicator.
+  final bool compact;
+
+  String get _progressLabel => switch (progress.state) {
+    TerminalProgressState.normal => 'progress',
+    TerminalProgressState.error => 'progress, error',
+    TerminalProgressState.indeterminate => 'progress, indeterminate',
+    TerminalProgressState.pausedOrWarning => 'progress, paused or warning',
+  };
+
+  Color _color(ColorScheme colorScheme) => switch (progress.state) {
+    TerminalProgressState.normal ||
+    TerminalProgressState.indeterminate => colorScheme.primary,
+    TerminalProgressState.error => colorScheme.error,
+    TerminalProgressState.pausedOrWarning => colorScheme.tertiary,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final percentage = progress.percentage;
+    final hasPercentage = percentage != null;
+    final disableAnimations =
+        MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+    final indicatorValue = hasPercentage
+        ? progress.fraction
+        : (disableAnimations ? 0.5 : null);
+
+    final indicator = ExcludeSemantics(
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(999),
+        child: LinearProgressIndicator(
+          value: indicatorValue,
+          minHeight: compact ? 2 : 3,
+          color: _color(colorScheme),
+          backgroundColor: colorScheme.surfaceContainerHighest,
+        ),
+      ),
+    );
+    final windowLabel = semanticsWindowLabel;
+    if (windowLabel == null) {
+      return indicator;
+    }
+    return Semantics(
+      label: '$windowLabel, $_progressLabel',
+      value: hasPercentage ? '$percentage' : null,
+      minValue: hasPercentage ? '0' : null,
+      maxValue: hasPercentage ? '100' : null,
+      role: hasPercentage
+          ? SemanticsRole.progressBar
+          : SemanticsRole.loadingSpinner,
+      child: indicator,
+    );
+  }
+}
+
+/// Retains lazy history discovery and resolves resume modes for both window lists.
+class MuxRecentSessionsSection extends ConsumerStatefulWidget {
+  /// Creates a history section whose header and dismissal belong to its parent.
+  const MuxRecentSessionsSection({
+    required this.session,
+    required this.tmuxSessionName,
+    required this.remoteMuxBackend,
+    required this.scopeWorkingDirectory,
+    required this.liveWindows,
+    required this.isProUser,
+    required this.startClisInYoloMode,
+    required this.loadModePreference,
+    required this.onAction,
+    required this.headerBuilder,
+    this.preferredTool,
+    this.inBar = false,
+    this.logTelemetry = false,
+    super.key,
+  });
+
+  /// SSH connection used for discovery.
+  final SshSession session;
+
+  /// Multiplexer session identity.
+  final String tmuxSessionName;
+
+  /// Backend that supplies the live windows.
+  final RemoteMuxBackend remoteMuxBackend;
+
+  /// Effective directory after applying the parent's explicit scope.
+  final String? scopeWorkingDirectory;
+
+  /// Current server windows, including high-confidence agent identities.
+  final List<TmuxWindow> liveWindows;
+
+  /// Whether native resume is available to this user.
+  final bool isProUser;
+
+  /// Preserves the user's CLI launch preference.
+  final bool startClisInYoloMode;
+
+  /// Reads the current preferred mode when a session is selected.
+  final Future<AgentWindowModePreference> Function() loadModePreference;
+
+  /// Delivers a resolved resume action for parent-specific dismissal.
+  final ValueChanged<TmuxNavigatorAction> onAction;
+
+  /// Builds the parent's header around shared expansion state.
+  final Widget Function(
+    BuildContext,
+    VoidCallback toggle, {
+    required bool expanded,
+  })
+  headerBuilder;
+
+  /// Preferred tool appears first in the provider list.
+  final AgentLaunchTool? preferredTool;
+
+  /// Uses the persistent bar's provider spacing.
+  final bool inBar;
+
+  /// Retains the navigator's existing history telemetry.
+  final bool logTelemetry;
+
+  @override
+  ConsumerState<MuxRecentSessionsSection> createState() =>
+      _MuxRecentSessionsSectionState();
+}
+
+class _MuxRecentSessionsSectionState
+    extends ConsumerState<MuxRecentSessionsSection> {
+  bool _expanded = false;
+  bool _initialized = false;
+  AgentSessionDiscoveryService get _discovery =>
+      ref.read(agentSessionDiscoveryServiceProvider);
+
+  @override
+  void didUpdateWidget(covariant MuxRecentSessionsSection oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.session.connectionId != widget.session.connectionId ||
+        oldWidget.tmuxSessionName != widget.tmuxSessionName) {
+      _expanded = false;
+      _initialized = false;
+    }
+  }
+
+  List<ToolSessionInfo> _liveMonkeyMuxAgentSessions({String? toolName}) {
+    if (widget.remoteMuxBackend != RemoteMuxBackend.monkeyMux) {
+      return const <ToolSessionInfo>[];
+    }
+
+    final sessions = <ToolSessionInfo>[];
+    for (final window in widget.liveWindows) {
+      final tool = window.foregroundAgentTool;
+      final discoveredToolName = tool?.discoveredSessionToolName;
+      final sessionId = window.activeAgentSessionId?.trim();
+      if (tool == null ||
+          discoveredToolName == null ||
+          window.activeAgentSessionConfidence != AgentSessionConfidence.high ||
+          sessionId == null ||
+          sessionId.isEmpty ||
+          (toolName != null && discoveredToolName != toolName)) {
+        continue;
+      }
+      final lastActivityEpochSeconds = window.lastActivityEpochSeconds;
+      sessions.add(
+        ToolSessionInfo(
+          toolName: discoveredToolName,
+          sessionId: sessionId,
+          workingDirectory: window.currentPath,
+          lastActive: lastActivityEpochSeconds == null
+              ? null
+              : DateTime.fromMillisecondsSinceEpoch(
+                  lastActivityEpochSeconds * 1000,
+                ),
+          summary:
+              window.agentSessionDisplayTitle ?? 'Active ${tool.label} session',
+        ),
+      );
+    }
+    return sessions;
+  }
+
+  DiscoveredSessionsResult _includeLiveMonkeyMuxAgentSessions(
+    DiscoveredSessionsResult result, {
+    String? toolName,
+  }) {
+    final filteredResult = toolName == null
+        ? result
+        : DiscoveredSessionsResult(
+            sessions: result.sessions.where(
+              (session) => session.toolName == toolName,
+            ),
+            failedTools: result.failedTools.where((tool) => tool == toolName),
+            attemptedTools: result.attemptedTools.where(
+              (tool) => tool == toolName,
+            ),
+          );
+    final liveSessions = _liveMonkeyMuxAgentSessions(toolName: toolName);
+    if (liveSessions.isEmpty) return filteredResult;
+
+    final sessionsByIdentity = <String, ToolSessionInfo>{
+      for (final session in liveSessions)
+        '${session.toolName}\u001f${session.sessionId}': session,
+    };
+    // Prefer file-discovered metadata when it exists because it usually has a
+    // richer title. Live MonkeyMux identity fills the gap when history scanning
+    // is empty or still in flight.
+    for (final session in filteredResult.sessions) {
+      sessionsByIdentity['${session.toolName}\u001f${session.sessionId}'] =
+          session;
+    }
+    final sessions = sessionsByIdentity.values.toList(growable: false);
+    final liveTools = liveSessions.map((session) => session.toolName).toSet();
+    return DiscoveredSessionsResult(
+      sessions: sessions,
+      failedTools: filteredResult.failedTools.where(
+        (tool) => !liveTools.contains(tool),
+      ),
+      attemptedTools: <String>{...filteredResult.attemptedTools, ...liveTools},
+    );
+  }
+
+  Future<void> _resumeSession(
+    ToolSessionInfo info, {
+    bool forceModePicker = false,
+  }) async {
+    final tool = AgentLaunchTool.values
+        .where((candidate) => candidate.label == info.toolName)
+        .firstOrNull;
+    final providerId = tool == null
+        ? null
+        : builtinNativeAcpProvidersByTool()[tool];
+    if (tool != null &&
+        providerId != null &&
+        widget.remoteMuxBackend == RemoteMuxBackend.monkeyMux) {
+      final preference = await widget.loadModePreference();
+      if (!mounted) return;
+      final mode = await resolveAgentWindowMode(
+        context: context,
+        tool: tool,
+        isProUser: widget.isProUser,
+        preference: preference,
+        forcePicker: forceModePicker,
+      );
+      if (!mounted || mode == null) {
+        return;
+      }
+      if (mode == AgentWindowMode.nativeAcp) {
+        widget.onAction(
+          TmuxResumeAcpSessionAction(
+            providerId: providerId,
+            acpSessionId: info.sessionId,
+            workingDirectory: info.workingDirectory,
+          ),
+        );
+        return;
+      }
+    }
+    final command = _discovery.buildResumeCommand(
+      info,
+      startInYoloMode: widget.startClisInYoloMode,
+    );
+    widget.onAction(
+      TmuxResumeSessionAction(command, workingDirectory: info.workingDirectory),
+    );
+  }
+
+  Future<void> _showSessionPickerForTool(
+    AiSessionProviderEntry provider,
+  ) async {
+    if (widget.logTelemetry) {
+      unawaited(
+        ref
+            .read(telemetryServiceProvider)
+            .logSessionHistoryOpened(
+              tool: _telemetryAgentToolName(provider.toolName),
+              sessionCount: 0,
+            ),
+      );
+    }
+    ToolSessionInfo? heldSession;
+    final selected = await showAiSessionPickerDialog(
+      context: context,
+      toolName: provider.toolName,
+      initialMaxSessions: widget.inBar ? 12 : 16,
+      sessionFetchStep: widget.inBar ? 12 : 16,
+      loadSessions: (maxSessions) => _discovery
+          .discoverSessionsStream(
+            widget.session,
+            workingDirectory: widget.scopeWorkingDirectory,
+            maxPerTool: maxSessions,
+            toolName: provider.toolName,
+          )
+          .map(
+            (result) => _includeLiveMonkeyMuxAgentSessions(
+              result,
+              toolName: provider.toolName,
+            ),
+          ),
+      onSessionLongPress: (session) => heldSession = session,
+    );
+    final session = heldSession ?? selected;
+    if (!mounted || session == null) return;
+    await _resumeSession(session, forceModePicker: heldSession != null);
+  }
+
+  Stream<DiscoveredSessionsResult> _loadSessions(int maxSessions) {
+    final loggedTools = <String>{};
+    return _discovery
+        .discoverSessionsStream(
+          widget.session,
+          workingDirectory: widget.scopeWorkingDirectory,
+          maxPerTool: maxSessions,
+        )
+        .map((result) {
+          final merged = _includeLiveMonkeyMuxAgentSessions(result);
+          if (widget.logTelemetry) {
+            for (final toolName in merged.attemptedTools) {
+              if (!loggedTools.add(toolName)) continue;
+              unawaited(
+                ref
+                    .read(telemetryServiceProvider)
+                    .logAgentSessionsDetected(
+                      tool: _telemetryAgentToolName(toolName),
+                      sessionCount: merged.sessions
+                          .where((session) => session.toolName == toolName)
+                          .length,
+                      failed: merged.failedTools.contains(toolName),
+                    ),
+              );
+            }
+          }
+          return merged;
+        });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        widget.headerBuilder(context, () {
+          if (!_expanded && widget.logTelemetry) {
+            unawaited(
+              ref
+                  .read(telemetryServiceProvider)
+                  .logSessionHistoryOpened(tool: 'all', sessionCount: 0),
+            );
+          }
+          setState(() {
+            _expanded = !_expanded;
+            _initialized = _initialized || _expanded;
+          });
+        }, expanded: _expanded),
+        if (_initialized)
+          Offstage(
+            offstage: !_expanded,
+            child: AiSessionProviderList(
+              key: ValueKey((
+                widget.session.connectionId,
+                widget.tmuxSessionName,
+                widget.scopeWorkingDirectory,
+              )),
+              orderedTools: orderedDiscoveredSessionTools(
+                const <String, List<ToolSessionInfo>>{},
+                const <String>{},
+                preferredToolName:
+                    widget.preferredTool?.discoveredSessionToolName,
+              ),
+              loadSessions: _loadSessions,
+              itemBuilder: (context, provider) => AiSessionProviderTile(
+                provider: provider,
+                onTap: () => unawaited(_showSessionPickerForTool(provider)),
+                visualDensity: _tmuxNavigatorDenseVisualDensity,
+                contentPadding: widget.inBar
+                    ? const EdgeInsets.only(left: 52, right: 12)
+                    : _tmuxNavigatorGroupTilePadding,
+                minLeadingWidth: widget.inBar ? 18 : 20,
+                iconSize: widget.inBar ? 16 : 20,
+                iconColor: widget.inBar && provider.hasFailure
+                    ? theme.colorScheme.error
+                    : theme.colorScheme.primary,
+              ),
+            ),
+          ),
+      ],
+    );
+  }
 }

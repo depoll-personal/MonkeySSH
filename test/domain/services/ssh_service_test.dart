@@ -30,7 +30,9 @@ import 'package:monkeyssh/domain/services/background_ssh_service.dart';
 import 'package:monkeyssh/domain/services/diagnostics_log_service.dart';
 import 'package:monkeyssh/domain/services/host_key_verification.dart';
 import 'package:monkeyssh/domain/services/interactive_auth_prompt.dart';
+import 'package:monkeyssh/domain/services/key_service.dart';
 import 'package:monkeyssh/domain/services/local_notification_service.dart';
+import 'package:monkeyssh/domain/services/openssh_key_generator.dart';
 import 'package:monkeyssh/domain/services/port_forward_browser_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
@@ -39,6 +41,8 @@ import 'package:monkeyssh/domain/services/telemetry_service.dart';
 import 'package:monkeyssh/domain/services/terminal_notification.dart';
 import 'package:monkeyssh/domain/services/wifi_network_service.dart';
 import 'package:xterm/xterm.dart';
+
+import '../../helpers/powershell_test_helpers.dart';
 
 const _backgroundSshChannel = MethodChannel(
   'xyz.depollsoft.monkeyssh/ssh_service',
@@ -137,6 +141,7 @@ class _AuthenticationFixture {
   late final SshService service;
   SSHPasswordRequestHandler? capturedPassword;
   SSHUserInfoRequestHandler? capturedUserInfo;
+  List<SSHKeyPair>? capturedIdentities;
 
   static Future<_AuthenticationFixture> create({
     required String hostname,
@@ -173,6 +178,7 @@ class _AuthenticationFixture {
             keepAliveInterval,
           }) {
             fixture
+              ..capturedIdentities = identities
               ..capturedPassword = onPasswordRequest
               ..capturedUserInfo = onUserInfoRequest;
             when(() => fixture.client.authenticated).thenAnswer((_) async {
@@ -419,20 +425,12 @@ void _stubSessionStreams(_MockExecSession session, {String stdout = ''}) {
   when(session.close).thenAnswer((_) {});
 }
 
-String _decodePowerShellScriptFromCommand(String command) {
-  final encoded = command.split('-EncodedCommand ').last;
-  final bytes = base64.decode(encoded);
-  final buffer = StringBuffer();
-  for (var i = 0; i + 1 < bytes.length; i += 2) {
-    buffer.writeCharCode(bytes[i] | (bytes[i + 1] << 8));
-  }
-  return buffer.toString();
-}
-
 class _FakeHostKeySocket implements SSHSocket, HostKeySource {
   _FakeHostKeySocket(this._hostKeyBytes);
 
   final Uint8List _hostKeyBytes;
+  bool destroyed = false;
+  int closeCalls = 0;
   final _streamController = StreamController<Uint8List>();
   final _sinkController = StreamController<List<int>>();
 
@@ -447,6 +445,7 @@ class _FakeHostKeySocket implements SSHSocket, HostKeySource {
 
   @override
   Future<void> close() async {
+    closeCalls++;
     unawaited(_streamController.close());
     unawaited(_sinkController.close());
   }
@@ -458,7 +457,9 @@ class _FakeHostKeySocket implements SSHSocket, HostKeySource {
   Future<void> get done async {}
 
   @override
-  void destroy() {}
+  void destroy() {
+    destroyed = true;
+  }
 }
 
 class _DestroyTrackingSocket implements SSHSocket {
@@ -503,12 +504,18 @@ class _RecordingAutomaticForwardSession extends SshSession {
     this.name = 'session',
     this.configurationLog,
     this.useRecordedTunnels = false,
+    this.tunnelChanges,
   });
 
   final String name;
   final List<String>? configurationLog;
   final bool useRecordedTunnels;
   final Map<int, ActiveTunnelInfo> tunnels = {};
+  final StreamController<void>? tunnelChanges;
+
+  @override
+  Stream<void> get portForwardChanges =>
+      tunnelChanges?.stream ?? super.portForwardChanges;
   final List<
     ({
       bool enabled,
@@ -748,7 +755,14 @@ class _DelayedTerminalNotificationService extends LocalNotificationService {
 }
 
 class _FakeActiveSessionsSshService extends SshService {
-  _FakeActiveSessionsSshService({this.connectGate});
+  _FakeActiveSessionsSshService({
+    this.connectGate,
+    this.useRecordedTunnels = false,
+    this.tunnelChanges,
+  });
+
+  final bool useRecordedTunnels;
+  final StreamController<void>? tunnelChanges;
 
   final Map<int, SshSession> _sessions = {};
   final Map<int, Completer<void>> _clientDoneCompleters = {};
@@ -779,6 +793,8 @@ class _FakeActiveSessionsSshService extends SshService {
     final session = _RecordingAutomaticForwardSession(
       connectionId: connectionId,
       hostId: hostId,
+      useRecordedTunnels: useRecordedTunnels,
+      tunnelChanges: tunnelChanges,
       client: client,
       config: SshConnectionConfig(
         hostname: 'host-$hostId.example.com',
@@ -818,13 +834,6 @@ class _FakeActiveSessionsSshService extends SshService {
   }
 }
 
-Future<int> _unusedLoopbackPort() async {
-  final socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-  final port = socket.port;
-  await socket.close();
-  return port;
-}
-
 String _structurallyValidInvalidEncryptedSecret() {
   final envelope = {
     'n': base64Url.encode(List<int>.filled(12, 1)),
@@ -833,6 +842,19 @@ String _structurallyValidInvalidEncryptedSecret() {
   };
   return 'ENCv1:${base64Url.encode(utf8.encode(jsonEncode(envelope)))}';
 }
+
+SshSession _testSession(
+  SSHClient client, {
+  int connectionId = 1,
+  int hostId = 42,
+  String hostname = 'host.example.com',
+  String username = 'tester',
+}) => SshSession(
+  connectionId: connectionId,
+  hostId: hostId,
+  client: client,
+  config: SshConnectionConfig(hostname: hostname, port: 22, username: username),
+);
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -946,15 +968,10 @@ LISTEN ::1:4201
     });
 
     test('builds a valid persistent POSIX watcher command', () async {
-      final session = SshSession(
+      final session = _testSession(
+        _MockSshClient(),
         connectionId: 7,
-        hostId: 42,
-        client: _MockSshClient(),
-        config: const SshConnectionConfig(
-          hostname: 'dev.example.com',
-          port: 22,
-          username: 'tester',
-        ),
+        hostname: 'dev.example.com',
       );
 
       final command = session.buildAutomaticPortForwardWatcherCommand();
@@ -976,18 +993,13 @@ LISTEN ::1:4201
       when(
         () => client.remoteVersion,
       ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
-      final session = SshSession(
+      final session = _testSession(
+        client,
         connectionId: 7,
-        hostId: 42,
-        client: client,
-        config: const SshConnectionConfig(
-          hostname: 'dev.example.com',
-          port: 22,
-          username: 'tester',
-        ),
+        hostname: 'dev.example.com',
       );
 
-      final script = _decodePowerShellScriptFromCommand(
+      final script = decodeEncodedPowerShell(
         session.buildAutomaticPortForwardWatcherCommand(),
       );
 
@@ -1015,15 +1027,10 @@ LISTEN ::1:4201
         client: _MockSshClient(),
         config: config,
       );
-      final differentHost = SshSession(
-        connectionId: 1,
+      final differentHost = _testSession(
+        _MockSshClient(),
         hostId: 43,
-        client: _MockSshClient(),
-        config: const SshConnectionConfig(
-          hostname: 'other.example.com',
-          port: 22,
-          username: 'tester',
-        ),
+        hostname: 'other.example.com',
       );
 
       expect(reconnected.shellLineageToken, first.shellLineageToken);
@@ -1040,15 +1047,10 @@ LISTEN ::1:4201
       when(
         () => client.execute(any(), pty: any(named: 'pty')),
       ).thenAnswer((_) async => execSession);
-      final session = SshSession(
-        connectionId: 1,
+      final session = _testSession(
+        client,
         hostId: 7,
-        client: client,
-        config: const SshConnectionConfig(
-          hostname: 'dev.example.com',
-          port: 22,
-          username: 'tester',
-        ),
+        hostname: 'dev.example.com',
       );
 
       expect(
@@ -1067,15 +1069,10 @@ LISTEN ::1:4201
       when(
         () => client.execute(any(), pty: any(named: 'pty')),
       ).thenAnswer((_) async => execSession);
-      final session = SshSession(
+      final session = _testSession(
+        client,
         connectionId: 7,
-        hostId: 42,
-        client: client,
-        config: const SshConnectionConfig(
-          hostname: 'dev.example.com',
-          port: 22,
-          username: 'tester',
-        ),
+        hostname: 'dev.example.com',
       );
       await session.updateAutomaticPortForwardProcessRoots({7300});
 
@@ -1106,15 +1103,10 @@ LISTEN ::1:4201
     test(
       'keeps mux process roots while automatic forwarding is disabled',
       () async {
-        final session = SshSession(
+        final session = _testSession(
+          _MockSshClient(),
           connectionId: 7,
-          hostId: 42,
-          client: _MockSshClient(),
-          config: const SshConnectionConfig(
-            hostname: 'dev.example.com',
-            port: 22,
-            username: 'tester',
-          ),
+          hostname: 'dev.example.com',
         );
 
         await session.updateAutomaticPortForwardProcessRoots({7300});
@@ -1242,15 +1234,10 @@ LISTEN ::1:4201
     });
 
     test('binds detected ports under the host proxy domain', () async {
-      final session = SshSession(
-        connectionId: 1,
+      final session = _testSession(
+        _MockSshClient(),
         hostId: 7,
-        client: _MockSshClient(),
-        config: const SshConnectionConfig(
-          hostname: 'dev.example.com',
-          port: 22,
-          username: 'tester',
-        ),
+        hostname: 'dev.example.com',
       );
       addTearDown(session.stopAllForwards);
 
@@ -1284,15 +1271,10 @@ LISTEN ::1:4201
     test(
       'keeps an automatic tunnel when a saved replacement cannot bind',
       () async {
-        final session = SshSession(
-          connectionId: 1,
+        final session = _testSession(
+          _MockSshClient(),
           hostId: 7,
-          client: _MockSshClient(),
-          config: const SshConnectionConfig(
-            hostname: 'dev.example.com',
-            port: 22,
-            username: 'tester',
-          ),
+          hostname: 'dev.example.com',
         );
         final occupiedSocket = await ServerSocket.bind(
           InternetAddress.loopbackIPv4,
@@ -1425,15 +1407,10 @@ LISTEN ::1:4201
         when(() => watcher.stderr).thenAnswer((_) => const Stream.empty());
         when(() => watcher.done).thenAnswer((_) => done.future);
         when(watcher.close).thenAnswer((_) {});
-        final session = SshSession(
+        final session = _testSession(
+          client,
           connectionId: 7,
-          hostId: 42,
-          client: client,
-          config: const SshConnectionConfig(
-            hostname: 'dev.example.com',
-            port: 22,
-            username: 'tester',
-          ),
+          hostname: 'dev.example.com',
         );
         addTearDown(() async {
           await session.configureAutomaticPortForwarding(enabled: false);
@@ -1602,15 +1579,10 @@ LISTEN ::1:4201
         ).thenAnswer((_) => doneCompleters[index].future);
         when(watchers[index].close).thenAnswer((_) {});
       }
-      final session = SshSession(
+      final session = _testSession(
+        client,
         connectionId: 7,
-        hostId: 42,
-        client: client,
-        config: const SshConnectionConfig(
-          hostname: 'dev.example.com',
-          port: 22,
-          username: 'tester',
-        ),
+        hostname: 'dev.example.com',
       );
       addTearDown(() async {
         for (final completer in doneCompleters) {
@@ -1686,15 +1658,10 @@ LISTEN ::1:4201
       when(() => watcher.stderr).thenAnswer((_) => const Stream.empty());
       when(() => watcher.done).thenAnswer((_) => done.future);
       when(watcher.close).thenAnswer((_) {});
-      final session = SshSession(
+      final session = _testSession(
+        client,
         connectionId: 7,
-        hostId: 42,
-        client: client,
-        config: const SshConnectionConfig(
-          hostname: 'dev.example.com',
-          port: 22,
-          username: 'tester',
-        ),
+        hostname: 'dev.example.com',
       );
       addTearDown(() async {
         await session.configureAutomaticPortForwarding(enabled: false);
@@ -1770,15 +1737,10 @@ LISTEN ::1:4201
         when(() => watcher.stderr).thenAnswer((_) => const Stream.empty());
         when(() => watcher.done).thenAnswer((_) => watcherDone.future);
         when(watcher.close).thenAnswer((_) {});
-        final session = SshSession(
+        final session = _testSession(
+          client,
           connectionId: 7,
-          hostId: 42,
-          client: client,
-          config: const SshConnectionConfig(
-            hostname: 'dev.example.com',
-            port: 22,
-            username: 'tester',
-          ),
+          hostname: 'dev.example.com',
         );
         addTearDown(() async {
           await session.configureAutomaticPortForwarding(enabled: false);
@@ -1824,15 +1786,10 @@ LISTEN ::1:4201
   });
 
   test('session keeps MonkeyMux host resize gating for terminal lifetime', () {
-    final session = SshSession(
-      connectionId: 1,
+    final session = _testSession(
+      _MockSshClient(),
       hostId: 1,
-      client: _MockSshClient(),
-      config: const SshConnectionConfig(
-        hostname: 'example.com',
-        port: 22,
-        username: 'tester',
-      ),
+      hostname: 'example.com',
     );
     final terminal = session.getOrCreateTerminal()
       ..resize(80, 24)
@@ -2013,106 +1970,66 @@ LISTEN ::1:4201
 
     test('adapts insert mode output so xterm shifts existing cells', () {
       final terminal = Terminal(maxLines: 100);
-      final result = adaptTerminalInsertModeOutputForXterm(
-        input: 'abcdef\r\x1b[3C\x1b[4hXY',
-        pendingInput: '',
-        insertMode: false,
-      );
+      final decoder = TerminalXtermOutputDecoder();
+      final result = decoder.add(input: 'abcdef\r\x1b[3C\x1b[4hXY');
 
       terminal.write(result.output);
 
-      expect(result.pendingInput, isEmpty);
+      expect(decoder.pendingCodeUnits, 0);
       expect(result.insertMode, isTrue);
       expect(terminal.lines[0].getText(0, 8), 'abcXYdef');
     });
 
     test('adapts split insert mode sequences across chunks', () {
       final terminal = Terminal(maxLines: 100);
-      final first = adaptTerminalInsertModeOutputForXterm(
-        input: 'abcdef\r\x1b[3C\x1b[',
-        pendingInput: '',
-        insertMode: false,
-      );
+      final decoder = TerminalXtermOutputDecoder();
+      final first = decoder.add(input: 'abcdef\r\x1b[3C\x1b[');
       terminal.write(first.output);
 
-      final second = adaptTerminalInsertModeOutputForXterm(
-        input: '4hZ\x1b[4lQ',
-        pendingInput: first.pendingInput,
-        insertMode: first.insertMode,
-      );
+      expect(decoder.pendingCodeUnits, '\x1b['.length);
+      final second = decoder.add(input: '4hZ\x1b[4lQ');
       terminal.write(second.output);
 
-      expect(first.pendingInput, '\x1b[');
-      expect(second.pendingInput, isEmpty);
+      expect(decoder.pendingCodeUnits, 0);
       expect(second.insertMode, isFalse);
       expect(second.output, '\x1b[4h\x1b[@Z\x1b[4lQ');
       expect(terminal.lines[0].getText(0, 7), 'abcZQef');
     });
 
-    test('reassembles a long APC split across slices via incremental scan', () {
-      // A large image APC must pass through intact when fed in many slices,
-      // and the incremental scan offset must not skip a split `ESC \`
-      // terminator. Threading pendingScanOffset keeps this O(n) (see the
-      // window-switch hang fix) without changing the parsed result.
-      final body = 'QUJDREVGR0g=' * 4000; // ~48 KB, no ESC bytes
+    test('accumulates fragmented multi-megabyte APC only once', () {
+      final body = 'QUJDREVGR0g=' * 350000;
       final apc = '\x1b_Gf=100,a=T;$body\x1b\\';
-
-      String runWithSlice(int sliceSize) {
-        final out = StringBuffer();
-        var pending = '';
-        var scanOffset = 0;
-        var insertMode = false;
-        var offset = 0;
-        while (offset < apc.length) {
-          final end = offset + sliceSize > apc.length
-              ? apc.length
-              : offset + sliceSize;
-          final result = adaptTerminalInsertModeOutputForXterm(
-            input: apc.substring(offset, end),
-            pendingInput: pending,
-            pendingScanOffset: scanOffset,
-            insertMode: insertMode,
+      for (final sliceSize in [1023, 65536]) {
+        final decoder = TerminalXtermOutputDecoder();
+        // Leave the final backslash for a separate call to split ST.
+        for (var offset = 0; offset < apc.length - 1; offset += sliceSize) {
+          final end = (offset + sliceSize).clamp(0, apc.length - 1);
+          expect(
+            decoder.add(input: apc.substring(offset, end)).output,
+            isEmpty,
           );
-          out.write(result.output);
-          pending = result.pendingInput;
-          scanOffset = result.pendingScanOffset;
-          insertMode = result.insertMode;
-          offset = end;
+          expect(decoder.pendingCodeUnits, end);
+          expect(decoder.materializedSequenceCodeUnits, 0);
         }
-        expect(pending, isEmpty, reason: 'slice $sliceSize left a partial');
-        return out.toString();
+        expect(decoder.add(input: r'\').output, apc);
+        expect(decoder.pendingCodeUnits, 0);
+        expect(decoder.materializedSequenceCodeUnits, apc.length);
       }
+    });
 
-      // Small odd slices land boundaries inside the body and across `ESC \`.
-      expect(runWithSlice(7), apc);
-      expect(runWithSlice(1024), apc);
-      // A boundary exactly between ESC and the trailing backslash.
-      final beforeTerminator = apc.length - 1;
-      final split = adaptTerminalInsertModeOutputForXterm(
-        input: apc.substring(0, beforeTerminator),
-        pendingInput: '',
-        insertMode: false,
-      );
-      final rest = adaptTerminalInsertModeOutputForXterm(
-        input: apc.substring(beforeTerminator),
-        pendingInput: split.pendingInput,
-        pendingScanOffset: split.pendingScanOffset,
-        insertMode: split.insertMode,
-      );
-      expect(rest.pendingInput, isEmpty);
-      expect('${split.output}${rest.output}', apc);
+    test('retains a surrogate split across input chunks', () {
+      final decoder = TerminalXtermOutputDecoder();
+      expect(decoder.add(input: '\x1b[4h\uD83D').output, '\x1b[4h');
+      expect(decoder.pendingCodeUnits, 1);
+      expect(decoder.add(input: '\uDC4DZ').output, '\x1b[@\x1b[@👍\x1b[@Z');
+      expect(decoder.pendingCodeUnits, 0);
     });
 
     test(
       'a multi-chunk image survives the adapt+xterm pipeline without leaking '
       'base64 as text',
       () {
-        // The real window-switch path pumps the replay through the adapt layer
-        // in fixed slices before xterm parses it. A large image is transmitted
-        // as several m=1 continuation APCs (Kitty caps a chunk at 4096 base64
-        // bytes), so the slice boundaries fall between chunks, mid-payload and
-        // across each chunk's ESC/ST. None of the base64 may reach the terminal
-        // as printable text (the on-screen "gibberish").
+        // Split both Kitty continuation APC payloads and their terminators.
         final rgba = base64.encode(
           Uint8List.fromList(
             List<int>.generate(40 * 40 * 4, (i) => (i * 37 + 11) & 0xFF),
@@ -2137,26 +2054,20 @@ LISTEN ::1:4201
 
         for (final sliceSize in <int>[1, 13, 200, 4096]) {
           final terminal = Terminal(maxLines: 100);
-          var pending = '';
-          var scanOffset = 0;
-          var insertMode = false;
+          final decoder = TerminalXtermOutputDecoder();
           for (var offset = 0; offset < stream.length; offset += sliceSize) {
             final end = offset + sliceSize > stream.length
                 ? stream.length
                 : offset + sliceSize;
-            final result = adaptTerminalInsertModeOutputForXterm(
-              input: stream.substring(offset, end),
-              pendingInput: pending,
-              pendingScanOffset: scanOffset,
-              insertMode: insertMode,
-            );
+            final result = decoder.add(input: stream.substring(offset, end));
             terminal.write(result.output);
-            pending = result.pendingInput;
-            scanOffset = result.pendingScanOffset;
-            insertMode = result.insertMode;
           }
 
-          expect(pending, isEmpty, reason: 'slice $sliceSize left a partial');
+          expect(
+            decoder.pendingCodeUnits,
+            0,
+            reason: 'slice $sliceSize left a partial',
+          );
           expect(
             terminal.buffer.getText().replaceAll('\n', ''),
             'BEGINEND',
@@ -2171,90 +2082,61 @@ LISTEN ::1:4201
       },
     );
 
-    test('does not inject insert blanks into OSC payloads', () {
-      final result = adaptTerminalInsertModeOutputForXterm(
-        input: '\x1b[4h\x1b]0;nano title\x07Z',
-        pendingInput: '',
-        insertMode: false,
-      );
-
-      expect(result.pendingInput, isEmpty);
-      expect(result.insertMode, isTrue);
-      expect(result.output, '\x1b[4h\x1b]0;nano title\x07\x1b[@Z');
-    });
+    for (final (name, input, output) in [
+      (
+        'OSC payload',
+        '\x1b[4h\x1b]0;nano title\x07Z',
+        '\x1b[4h\x1b]0;nano title\x07\x1b[@Z',
+      ),
+      (
+        'emoji modifier',
+        '\x1b[4h\u{1F44D}\u{1F3FD}Z',
+        '\x1b[4h\x1b[@\x1b[@\u{1F44D}\u{1F3FD}\x1b[@Z',
+      ),
+    ]) {
+      test('insert mode preserves $name', () {
+        final decoder = TerminalXtermOutputDecoder();
+        final result = decoder.add(input: input);
+        expect(decoder.pendingCodeUnits, 0);
+        expect(result.insertMode, isTrue);
+        expect(result.output, output);
+      });
+    }
 
     test('strips private CSI modifier controls that xterm treats as SGR', () {
-      final first = adaptTerminalInsertModeOutputForXterm(
-        input: 'before\x1b[>4;',
-        pendingInput: '',
-        insertMode: false,
-      );
-      final second = adaptTerminalInsertModeOutputForXterm(
-        input: '1mafter',
-        pendingInput: first.pendingInput,
-        insertMode: first.insertMode,
-      );
+      final decoder = TerminalXtermOutputDecoder();
+      final first = decoder.add(input: 'before\x1b[>4;');
+      expect(decoder.pendingCodeUnits, '\x1b[>4;'.length);
+      final second = decoder.add(input: '1mafter');
 
       expect(first.output, 'before');
-      expect(first.pendingInput, '\x1b[>4;');
       expect(second.output, 'after');
-      expect(second.pendingInput, isEmpty);
+      expect(decoder.pendingCodeUnits, 0);
       expect(second.insertMode, isFalse);
     });
 
     test('clears tracked insert mode on terminal reset sequences', () {
-      final fullReset = adaptTerminalInsertModeOutputForXterm(
-        input: '\x1b[4hA\x1bcB',
-        pendingInput: '',
-        insertMode: false,
-      );
-
-      expect(fullReset.pendingInput, isEmpty);
-      expect(fullReset.insertMode, isFalse);
-      expect(fullReset.output, '\x1b[4h\x1b[@A\x1bcB');
-
-      final softReset = adaptTerminalInsertModeOutputForXterm(
-        input: '\x1b[4hA\x1b[!pB',
-        pendingInput: '',
-        insertMode: false,
-      );
-
-      expect(softReset.pendingInput, isEmpty);
-      expect(softReset.insertMode, isFalse);
-      expect(softReset.output, '\x1b[4h\x1b[@A\x1b[!pB');
+      final decoder = TerminalXtermOutputDecoder();
+      for (final reset in ['\x1bc', '\x1b[!p']) {
+        final result = decoder.add(input: '\x1b[4hA${reset}B');
+        expect(decoder.pendingCodeUnits, 0);
+        expect(result.insertMode, isFalse);
+        expect(result.output, '\x1b[4h\x1b[@A${reset}B');
+      }
     });
 
     test('does not inject insert blanks into DCS payloads', () {
-      final first = adaptTerminalInsertModeOutputForXterm(
-        input: '\x1b[4h\x1bP1+r',
-        pendingInput: '',
-        insertMode: false,
-      );
+      final decoder = TerminalXtermOutputDecoder();
+      final first = decoder.add(input: '\x1b[4h\x1bP1+r');
 
-      final second = adaptTerminalInsertModeOutputForXterm(
-        input: 'abc\x1b\\Z',
-        pendingInput: first.pendingInput,
-        insertMode: first.insertMode,
-      );
+      expect(decoder.pendingCodeUnits, '\x1bP1+r'.length);
+      final second = decoder.add(input: 'abc\x1b\\Z');
 
       expect(first.output, '\x1b[4h');
-      expect(first.pendingInput, '\x1bP1+r');
       expect(first.insertMode, isTrue);
-      expect(second.pendingInput, isEmpty);
+      expect(decoder.pendingCodeUnits, 0);
       expect(second.insertMode, isTrue);
       expect(second.output, '\x1bP1+rabc\x1b\\\x1b[@Z');
-    });
-
-    test('treats emoji modifiers as zero-width insert-mode cells', () {
-      final result = adaptTerminalInsertModeOutputForXterm(
-        input: '\x1b[4h\u{1F44D}\u{1F3FD}Z',
-        pendingInput: '',
-        insertMode: false,
-      );
-
-      expect(result.pendingInput, isEmpty);
-      expect(result.insertMode, isTrue);
-      expect(result.output, '\x1b[4h\x1b[@\x1b[@\u{1F44D}\u{1F3FD}\x1b[@Z');
     });
 
     test(
@@ -2263,10 +2145,10 @@ LISTEN ::1:4201
         final terminal = Terminal(maxLines: 100)..resize(61, 37);
         final reverseIndexes = List.filled(9, '\x1bM').join();
         final insertLines = List.filled(9, '\x1b[L').join();
-        final result = adaptTerminalInsertModeOutputForXterm(
+        final decoder = TerminalXtermOutputDecoder();
+        final result = decoder.add(
           input: '\x1b[1;37r\x1b[1;1H$reverseIndexes',
-          pendingInput: '',
-          insertMode: false,
+
           terminalColumns: terminal.viewWidth,
           terminalRows: terminal.viewHeight,
           cursorColumn: terminal.buffer.cursorX,
@@ -2277,7 +2159,7 @@ LISTEN ::1:4201
 
         terminal.write(result.output);
 
-        expect(result.pendingInput, isEmpty);
+        expect(decoder.pendingCodeUnits, 0);
         expect(result.insertMode, isFalse);
         expect(result.output, '\x1b[1;37r\x1b[1;1H$insertLines');
         expect(
@@ -2291,10 +2173,10 @@ LISTEN ::1:4201
     );
 
     test('preserves reverse index when cursor is below the top margin', () {
-      final result = adaptTerminalInsertModeOutputForXterm(
+      final decoder = TerminalXtermOutputDecoder();
+      final result = decoder.add(
         input: '\x1b[5;4H\x1bM',
-        pendingInput: '',
-        insertMode: false,
+
         terminalColumns: 61,
         terminalRows: 37,
         cursorColumn: 0,
@@ -2307,10 +2189,10 @@ LISTEN ::1:4201
     });
 
     test('restores cursor column after adapted reverse index', () {
-      final result = adaptTerminalInsertModeOutputForXterm(
+      final decoder = TerminalXtermOutputDecoder();
+      final result = decoder.add(
         input: '\x1b[1;4H\x1bM',
-        pendingInput: '',
-        insertMode: false,
+
         terminalColumns: 61,
         terminalRows: 37,
         cursorColumn: 0,
@@ -2324,10 +2206,10 @@ LISTEN ::1:4201
 
     test('adapts origin-mode reverse index at the top margin', () {
       final terminal = Terminal(maxLines: 100)..resize(61, 37);
-      final result = adaptTerminalInsertModeOutputForXterm(
+      final decoder = TerminalXtermOutputDecoder();
+      final result = decoder.add(
         input: '\x1b[2;10r\x1b[?6h\x1b[1;1H\x1bM',
-        pendingInput: '',
-        insertMode: false,
+
         terminalColumns: terminal.viewWidth,
         terminalRows: terminal.viewHeight,
         cursorColumn: terminal.buffer.cursorX,
@@ -3006,15 +2888,10 @@ LISTEN ::1:4201
     tearDown(resetQueuedSshExecsForTesting);
 
     test('notifies preview listeners when the terminal theme changes', () {
-      final session = SshSession(
-        connectionId: 1,
+      final session = _testSession(
+        _MockSshClient(),
         hostId: 2,
-        client: _MockSshClient(),
-        config: const SshConnectionConfig(
-          hostname: 'example.com',
-          port: 22,
-          username: 'tester',
-        ),
+        hostname: 'example.com',
       );
       var notificationCount = 0;
 
@@ -3031,16 +2908,7 @@ LISTEN ::1:4201
     test('forwards execute requests with an optional PTY config', () async {
       final client = _MockSshClient();
       final execSession = _MockExecSession();
-      final session = SshSession(
-        connectionId: 1,
-        hostId: 2,
-        client: client,
-        config: const SshConnectionConfig(
-          hostname: 'example.com',
-          port: 22,
-          username: 'tester',
-        ),
-      );
+      final session = _testSession(client, hostId: 2, hostname: 'example.com');
 
       when(
         () => client.execute(any(), pty: any(named: 'pty')),
@@ -3063,16 +2931,7 @@ LISTEN ::1:4201
     test('opens interactive shells with a truecolor login bootstrap', () async {
       final client = _MockSshClient();
       final shell = _MockExecSession();
-      final session = SshSession(
-        connectionId: 1,
-        hostId: 2,
-        client: client,
-        config: const SshConnectionConfig(
-          hostname: 'example.com',
-          port: 22,
-          username: 'tester',
-        ),
-      );
+      final session = _testSession(client, hostId: 2, hostname: 'example.com');
       const pty = SSHPtyConfig(width: 120, height: 30);
 
       when(
@@ -3095,16 +2954,7 @@ LISTEN ::1:4201
     test('opens commands without an outer PTY when requested', () async {
       final client = _MockSshClient();
       final shell = _MockExecSession();
-      final session = SshSession(
-        connectionId: 1,
-        hostId: 2,
-        client: client,
-        config: const SshConnectionConfig(
-          hostname: 'example.com',
-          port: 22,
-          username: 'tester',
-        ),
-      );
+      final session = _testSession(client, hostId: 2, hostname: 'example.com');
       const pty = SSHPtyConfig(width: 120, height: 30);
 
       when(
@@ -3138,15 +2988,10 @@ LISTEN ::1:4201
         final client = _MockSshClient();
         final shell = _MockExecSession();
         final shellDone = Completer<void>();
-        final session = SshSession(
-          connectionId: 1,
+        final session = _testSession(
+          client,
           hostId: 2,
-          client: client,
-          config: const SshConnectionConfig(
-            hostname: 'example.com',
-            port: 22,
-            username: 'tester',
-          ),
+          hostname: 'example.com',
         );
 
         when(
@@ -3195,15 +3040,10 @@ LISTEN ::1:4201
         when(() => shell.stdout).thenAnswer((_) => const Stream.empty());
         when(() => shell.stderr).thenAnswer((_) => const Stream.empty());
         when(() => shell.done).thenAnswer((_) => Completer<void>().future);
-        final session = SshSession(
-          connectionId: 1,
+        final session = _testSession(
+          client,
           hostId: 2,
-          client: client,
-          config: const SshConnectionConfig(
-            hostname: 'example.com',
-            port: 22,
-            username: 'tester',
-          ),
+          hostname: 'example.com',
         );
 
         final terminal = session.getOrCreateTerminal();
@@ -3234,15 +3074,10 @@ LISTEN ::1:4201
         final executedCommands = <String>[];
         final startupWrites = <List<int>>[];
         final loginWrites = <List<int>>[];
-        final session = SshSession(
-          connectionId: 1,
+        final session = _testSession(
+          client,
           hostId: 2,
-          client: client,
-          config: const SshConnectionConfig(
-            hostname: 'example.com',
-            port: 22,
-            username: 'tester',
-          ),
+          hostname: 'example.com',
         );
         const pty = SSHPtyConfig(width: 120, height: 30);
 
@@ -3348,15 +3183,10 @@ LISTEN ::1:4201
       () async {
         final client = _MockSshClient();
         final shell = _MockExecSession();
-        final session = SshSession(
-          connectionId: 1,
+        final session = _testSession(
+          client,
           hostId: 2,
-          client: client,
-          config: const SshConnectionConfig(
-            hostname: 'example.com',
-            port: 22,
-            username: 'tester',
-          ),
+          hostname: 'example.com',
         );
         const pty = SSHPtyConfig(width: 120, height: 30);
 
@@ -3384,16 +3214,7 @@ LISTEN ::1:4201
     test('requests terminal capability env on Windows remotes', () async {
       final client = _MockSshClient();
       final shell = _MockExecSession();
-      final session = SshSession(
-        connectionId: 1,
-        hostId: 2,
-        client: client,
-        config: const SshConnectionConfig(
-          hostname: 'example.com',
-          port: 22,
-          username: 'tester',
-        ),
-      );
+      final session = _testSession(client, hostId: 2, hostname: 'example.com');
       const pty = SSHPtyConfig(width: 120, height: 30);
       final terminalCapabilityEnvironment = {
         'COLORTERM': 'truecolor',
@@ -3436,15 +3257,10 @@ LISTEN ::1:4201
         final client = _MockSshClient();
         final detection = _MockExecSession();
         final shell = _MockExecSession();
-        final session = SshSession(
-          connectionId: 1,
+        final session = _testSession(
+          client,
           hostId: 2,
-          client: client,
-          config: const SshConnectionConfig(
-            hostname: 'example.com',
-            port: 22,
-            username: 'tester',
-          ),
+          hostname: 'example.com',
         );
         const pty = SSHPtyConfig(width: 120, height: 30);
 
@@ -3492,15 +3308,10 @@ LISTEN ::1:4201
         final client = _MockSshClient();
         final detection = _MockExecSession();
         final shell = _MockExecSession();
-        final session = SshSession(
-          connectionId: 1,
+        final session = _testSession(
+          client,
           hostId: 2,
-          client: client,
-          config: const SshConnectionConfig(
-            hostname: 'example.com',
-            port: 22,
-            username: 'tester',
-          ),
+          hostname: 'example.com',
         );
         const pty = SSHPtyConfig(width: 120, height: 30);
 
@@ -3535,7 +3346,7 @@ LISTEN ::1:4201
           startsWith('powershell.exe -NoLogo -NoExit -EncodedCommand '),
         );
         expect(
-          _decodePowerShellScriptFromCommand(commands.last),
+          decodeEncodedPowerShell(commands.last),
           contains(
             r"$env:COLORTERM='truecolor';$env:TERM_PROGRAM='kitty';"
             r"$env:KITTY_WINDOW_ID='1';$env:FORCE_HYPERLINK='1';"
@@ -3549,15 +3360,11 @@ LISTEN ::1:4201
     test('retries transient SFTP channel open failures', () async {
       final client = _MockSshClient();
       final sftp = _MockSftpClient();
-      final session = SshSession(
+      final session = _testSession(
+        client,
         connectionId: 11,
         hostId: 2,
-        client: client,
-        config: const SshConnectionConfig(
-          hostname: 'example.com',
-          port: 22,
-          username: 'tester',
-        ),
+        hostname: 'example.com',
       );
       var openAttempts = 0;
 
@@ -3578,15 +3385,11 @@ LISTEN ::1:4201
     test('discarding SFTP consumes close errors after disconnect', () async {
       final client = _MockSshClient();
       final sftp = _MockSftpClient();
-      final session = SshSession(
+      final session = _testSession(
+        client,
         connectionId: 11,
         hostId: 2,
-        client: client,
-        config: const SshConnectionConfig(
-          hostname: 'example.com',
-          port: 22,
-          username: 'tester',
-        ),
+        hostname: 'example.com',
       );
 
       when(client.sftp).thenAnswer((_) async => sftp);
@@ -3603,15 +3406,11 @@ LISTEN ::1:4201
 
     test('does not retry non-transient SFTP channel open failures', () async {
       final client = _MockSshClient();
-      final session = SshSession(
+      final session = _testSession(
+        client,
         connectionId: 11,
         hostId: 2,
-        client: client,
-        config: const SshConnectionConfig(
-          hostname: 'example.com',
-          port: 22,
-          username: 'tester',
-        ),
+        hostname: 'example.com',
       );
       var openAttempts = 0;
 
@@ -3628,15 +3427,11 @@ LISTEN ::1:4201
 
     test('runs queued exec work against the session connection', () async {
       final client = _MockSshClient();
-      final session = SshSession(
+      final session = _testSession(
+        client,
         connectionId: 9,
         hostId: 2,
-        client: client,
-        config: const SshConnectionConfig(
-          hostname: 'example.com',
-          port: 22,
-          username: 'tester',
-        ),
+        hostname: 'example.com',
       );
       final completers = List.generate(3, (_) => Completer<int>());
       final started = <int>[];
@@ -3769,15 +3564,11 @@ LISTEN ::1:4201
       final stderr = StreamController<Uint8List>();
       final done = Completer<void>();
       final shellWrites = <List<int>>[];
-      final session = SshSession(
+      final session = _testSession(
+        client,
         connectionId: 91,
         hostId: 2,
-        client: client,
-        config: const SshConnectionConfig(
-          hostname: 'example.com',
-          port: 22,
-          username: 'tester',
-        ),
+        hostname: 'example.com',
       );
 
       when(
@@ -4035,6 +3826,8 @@ LISTEN ::1:4201
       for (var i = 0; i < 20000; i++) {
         builder.write('line $i is part of a very large replay payload\r\n');
       }
+      const finalMarker = 'REPLAY_COMPLETE_20000';
+      builder.write(finalMarker);
       final replay = builder.toString();
       expect(replay.length, greaterThan(512 * 1024));
 
@@ -4043,10 +3836,18 @@ LISTEN ::1:4201
 
       // Past the coalesce quiet period the replay is drained over several
       // bounded writes rather than one blocking call, but completes quickly.
-      for (var i = 0; i < 30; i++) {
-        await Future<void>.delayed(const Duration(milliseconds: 5));
-        await pumpEventQueue();
-      }
+      await _waitUntil(() {
+        for (
+          var row = terminal.buffer.height - terminal.viewHeight;
+          row < terminal.buffer.height;
+          row++
+        ) {
+          if (terminal.buffer.lines[row].getText().contains(finalMarker)) {
+            return true;
+          }
+        }
+        return false;
+      });
       expect(terminalWrites, greaterThan(1));
       expect(firstLineText(terminal), startsWith('line '));
       expect(firstLineText(terminal), endsWith('large replay payload'));
@@ -4881,7 +4682,6 @@ LISTEN ::1:4201
       final pending = notifier.connect(42, forceNew: true);
       await cancellableService.connectStarted.future;
 
-      expect(notifier.canCancelConnectionAttempt(42), isTrue);
       expect(notifier.cancelConnectionAttempt(42), isTrue);
       expect(notifier.getConnectionAttempt(42)?.cancelRequested, isTrue);
       expect(notifier.getConnectionAttempt(42)?.isCancelling, isTrue);
@@ -4892,14 +4692,12 @@ LISTEN ::1:4201
       expect(result.success, isFalse);
       expect(notifier.getConnectionAttempt(42)?.cancelled, isTrue);
       expect(notifier.getConnectionAttempt(42)?.isCancelling, isFalse);
-      expect(notifier.canCancelConnectionAttempt(42), isFalse);
       expect(cancellableService.receivedToken?.isCancelled, isTrue);
     });
 
     test('cancelConnectionAttempt is a no-op without an attempt', () async {
       final notifier = container.read(activeSessionsProvider.notifier);
 
-      expect(notifier.canCancelConnectionAttempt(99), isFalse);
       expect(notifier.cancelConnectionAttempt(99), isFalse);
       expect(notifier.getConnectionAttempt(99), isNull);
     });
@@ -4939,7 +4737,6 @@ LISTEN ::1:4201
           isTrue,
           reason: 'both concurrent attempts must observe cancellation',
         );
-        expect(notifier.canCancelConnectionAttempt(42), isFalse);
       },
     );
 
@@ -5311,6 +5108,76 @@ LISTEN ::1:4201
       });
     }
 
+    test(
+      'manual exclusions stay stable on automatic events and track reverse listeners',
+      () async {
+        final changes = StreamController<void>.broadcast(sync: true);
+        addTearDown(changes.close);
+        final service = _FakeActiveSessionsSshService(
+          useRecordedTunnels: true,
+          tunnelChanges: changes,
+        );
+        final hosts = _MockHostRepository();
+        when(
+          () => hosts.getById(42),
+        ).thenAnswer((_) async => _automaticForwardHost(enabled: true));
+        final localContainer = ProviderContainer(
+          overrides: [
+            sshServiceProvider.overrideWithValue(service),
+            hostRepositoryProvider.overrideWithValue(hosts),
+            portForwardRepositoryProvider.overrideWithValue(
+              _emptyPortForwardRepository(),
+            ),
+          ],
+        );
+        addTearDown(localContainer.dispose);
+        final notifier = localContainer.read(activeSessionsProvider.notifier);
+        final result = await notifier.connect(42, forceNew: true);
+        expect(result.success, isTrue);
+        final session =
+            service.getSession(result.connectionId!)!
+                as _RecordingAutomaticForwardSession;
+        var configured = session.automaticConfigurations.length;
+        for (final (id, port, remoteHost, isLocal, automatic) in [
+          (1, 3000, 'localhost', true, false),
+          (-1, 3001, '127.0.0.1', true, true),
+          (2, 3002, 'localhost', false, false),
+        ]) {
+          session.tunnels[id] = ActiveTunnelInfo(
+            portForwardId: id,
+            localHost: '127.0.0.1',
+            localPort: port + 1000,
+            remoteHost: remoteHost,
+            remotePort: port,
+            isLocal: isLocal,
+            isAutomatic: automatic,
+          );
+          changes.add(null);
+          await pumpEventQueue();
+          if (automatic) {
+            expect(session.automaticConfigurations, hasLength(configured));
+          } else {
+            expect(
+              session.automaticConfigurations.last.excludedRemoteListeners,
+              {
+                ...remoteTcpListenerExclusionKeys('localhost', 3000),
+                if (!isLocal)
+                  ...remoteTcpListenerExclusionKeys('localhost', 3002),
+              },
+            );
+            configured = session.automaticConfigurations.length;
+          }
+        }
+        session.tunnels.remove(2);
+        changes.add(null);
+        await pumpEventQueue();
+        expect(
+          session.automaticConfigurations.last.excludedRemoteListeners,
+          remoteTcpListenerExclusionKeys('localhost', 3000),
+        );
+      },
+    );
+
     test('excludes stopped saved local forwards from discovery', () async {
       final primary = _RecordingAutomaticForwardSession(
         connectionId: 1,
@@ -5676,7 +5543,6 @@ LISTEN ::1:4201
         final connectionId = result.connectionId!;
         final session = fakeSshService.getSession(connectionId)!;
         await pumpEventQueue();
-        final localPort = await _unusedLoopbackPort();
         when(
           () => fakeSshService
               .clientFor(connectionId)
@@ -5689,7 +5555,7 @@ LISTEN ::1:4201
           await session.startLocalForward(
             portForwardId: 1,
             localHost: InternetAddress.loopbackIPv4.address,
-            localPort: localPort,
+            localPort: 0,
             remoteHost: 'remote.example.com',
             remotePort: 80,
           ),
@@ -5701,7 +5567,7 @@ LISTEN ::1:4201
           activeTunnel.browserHost,
           portForwardBrowserHostForPortForwardId(activeTunnel.portForwardId),
         );
-        expect(activeTunnel.browserPort, localPort);
+        expect(activeTunnel.browserPort, activeTunnel.localPort);
         final socket = await Socket.connect(
           InternetAddress.loopbackIPv6,
           activeTunnel.browserPort!,
@@ -5718,6 +5584,126 @@ LISTEN ::1:4201
         );
       },
     );
+
+    for (final isLocal in [true, false]) {
+      for (final ending in ['socket EOF', 'channel EOF', 'channel error']) {
+        test(
+          '${isLocal ? 'local' : 'reverse'} relay handles $ending',
+          () async {
+            final client = _MockSshClient();
+            final forward = _SingleCloseForwardChannel();
+            final session = _testSession(client);
+            final channelBytes = <int>[];
+            final channelDone = Completer<void>();
+            final channelSubscription = forward._sinkController.stream.listen(
+              channelBytes.addAll,
+              onDone: channelDone.complete,
+            );
+            late final Socket socket;
+            if (isLocal) {
+              when(
+                () => client.forwardLocal('remote.example.com', 80),
+              ).thenAnswer((_) async => forward);
+              expect(
+                await session.startLocalForward(
+                  portForwardId: 1,
+                  localHost: '127.0.0.1',
+                  localPort: 0,
+                  remoteHost: 'remote.example.com',
+                  remotePort: 80,
+                ),
+                isTrue,
+              );
+              socket = await Socket.connect(
+                '127.0.0.1',
+                session.activeTunnels.single.localPort,
+              );
+            } else {
+              final remoteForward = _MockRemoteForward();
+              final connections = StreamController<SSHForwardChannel>();
+              final targetServer = await ServerSocket.bind(
+                InternetAddress.loopbackIPv4,
+                0,
+              );
+              final accepted = Completer<Socket>();
+              final subscription = targetServer.listen(accepted.complete);
+              when(() => remoteForward.host).thenReturn('127.0.0.1');
+              when(() => remoteForward.port).thenReturn(8022);
+              when(
+                () => remoteForward.connections,
+              ).thenAnswer((_) => connections.stream);
+              when(remoteForward.close).thenReturn(null);
+              when(
+                () => client.forwardRemote(host: '127.0.0.1', port: 8022),
+              ).thenAnswer((_) async => remoteForward);
+              expect(
+                await session.startRemoteForward(
+                  portForwardId: 1,
+                  remoteHost: '127.0.0.1',
+                  remotePort: 8022,
+                  localHost: '127.0.0.1',
+                  localPort: targetServer.port,
+                ),
+                isTrue,
+              );
+              connections.add(forward);
+              socket = await accepted.future;
+              addTearDown(() async {
+                await connections.close();
+                await subscription.cancel();
+                await targetServer.close();
+              });
+            }
+            addTearDown(() async {
+              socket.destroy();
+              await session.stopAllForwards();
+              await forward.close();
+              await channelSubscription.cancel();
+            });
+            final socketBytes = <int>[];
+            final socketDone = Completer<void>();
+            socket.listen(socketBytes.addAll, onDone: socketDone.complete);
+            final request = List<int>.generate(128 * 1024, (i) => i % 251);
+            final response = request.reversed.toList();
+            if (ending == 'socket EOF') {
+              socket.add(request);
+              await socket.close();
+              await channelDone.future.timeout(const Duration(seconds: 5));
+              expect(channelBytes, request);
+              expect(forward.destroyCalls, 0);
+              await Future<void>.delayed(const Duration(milliseconds: 10));
+              forward._streamController.add(Uint8List.fromList(response));
+              await forward.closeIncoming();
+              await socketDone.future.timeout(const Duration(seconds: 5));
+              expect(socketBytes, response);
+              expect(forward.sink.closeAttempts, 1);
+            } else if (ending == 'channel EOF') {
+              forward._streamController.add(Uint8List.fromList(request));
+              await forward.closeIncoming();
+              await socketDone.future.timeout(const Duration(seconds: 5));
+              expect(socketBytes, request);
+              expect(forward.destroyCalls, 0);
+              await Future<void>.delayed(const Duration(milliseconds: 10));
+              socket.add(response);
+              await socket.close();
+              await channelDone.future.timeout(const Duration(seconds: 5));
+              expect(channelBytes, response);
+              expect(forward.sink.closeAttempts, 1);
+            } else {
+              forward._streamController.addError(
+                const SocketException('relay failed'),
+              );
+              await socketDone.future.timeout(const Duration(seconds: 5));
+            }
+            await _waitForCondition(() => forward.destroyCalls > 0);
+            expect(forward.destroyCalls, 1);
+            if (ending == 'channel error') {
+              expect(forward.sink.closeAttempts, 0);
+            }
+          },
+        );
+      }
+    }
 
     for (final scenario in [
       'closed sink',
@@ -5743,16 +5729,7 @@ LISTEN ::1:4201
             return releaseFlush.future;
           };
         }
-        final session = SshSession(
-          connectionId: 1,
-          hostId: 42,
-          client: client,
-          config: const SshConnectionConfig(
-            hostname: 'host.example.com',
-            port: 22,
-            username: 'tester',
-          ),
-        );
+        final session = _testSession(client);
         when(() => client.forwardLocal('remote.example.com', 80)).thenAnswer((
           _,
         ) {
@@ -5770,18 +5747,20 @@ LISTEN ::1:4201
           }
           await forward.close();
         });
-        final port = await _unusedLoopbackPort();
         expect(
           await session.startLocalForward(
             portForwardId: 1,
             localHost: InternetAddress.loopbackIPv4.address,
-            localPort: port,
+            localPort: 0,
             remoteHost: 'remote.example.com',
             remotePort: 80,
           ),
           isTrue,
         );
-        final socket = await Socket.connect(InternetAddress.loopbackIPv4, port);
+        final socket = await Socket.connect(
+          InternetAddress.loopbackIPv4,
+          session.activeTunnels.single.localPort,
+        );
         addTearDown(socket.destroy);
         final socketErrors = <Object>[];
         // Own both socket error paths immediately, including errors that
@@ -5822,6 +5801,7 @@ LISTEN ::1:4201
             await forward.closeIncoming();
           } else if (scenario == 'socket EOF') {
             await socket.close();
+            await forward.closeIncoming();
           } else if (scenario == 'stop') {
             await session.stopForward(1).timeout(const Duration(seconds: 1));
           } else if (scenario != 'closed sink') {
@@ -5868,131 +5848,17 @@ LISTEN ::1:4201
           expect(forward.sink.addAttempts, 1);
         }
         expect(forward.sink.addStreamAttempts, 0);
+        if (scenario == 'stop' ||
+            scenario == 'closed sink' ||
+            scenario == 'sink closes during flush') {
+          expect(forward.sink.closeAttempts, 0);
+        }
         await _waitForCondition(
           () => scenario.contains('refus') || forward.destroyCalls == 1,
         );
         expect(forward.destroyCalls, scenario.contains('refus') ? 0 : 1);
       });
     }
-
-    test(
-      'local forward cleanup destroys the channel without closing its sink',
-      () async {
-        final client = _MockSshClient();
-        final forward = _SingleCloseForwardChannel();
-        final session = SshSession(
-          connectionId: 1,
-          hostId: 42,
-          client: client,
-          config: const SshConnectionConfig(
-            hostname: 'host.example.com',
-            port: 22,
-            username: 'tester',
-          ),
-        );
-        final localPort = await _unusedLoopbackPort();
-        when(
-          () => client.forwardLocal('remote.example.com', 80),
-        ).thenAnswer((_) async => forward);
-
-        addTearDown(() async {
-          await session.stopAllForwards();
-          await forward.close();
-        });
-
-        expect(
-          await session.startLocalForward(
-            portForwardId: 1,
-            localHost: InternetAddress.loopbackIPv4.address,
-            localPort: localPort,
-            remoteHost: 'remote.example.com',
-            remotePort: 80,
-          ),
-          isTrue,
-        );
-
-        final socket = await Socket.connect(
-          InternetAddress.loopbackIPv4,
-          localPort,
-        );
-        await socket.close();
-        await _waitForCondition(() => forward.destroyCalls >= 1);
-        await Future<void>.delayed(const Duration(milliseconds: 50));
-
-        expect(forward.sink.closeAttempts, 0);
-        expect(forward.destroyCalls, 1);
-      },
-    );
-
-    test(
-      'remote forward cleanup destroys the channel without closing its sink',
-      () async {
-        final client = _MockSshClient();
-        final remoteForward = _MockRemoteForward();
-        final connections = StreamController<SSHForwardChannel>();
-        final forward = _SingleCloseForwardChannel();
-        final targetServer = await ServerSocket.bind(
-          InternetAddress.loopbackIPv4,
-          0,
-        );
-        final acceptedSocket = Completer<Socket>();
-        final targetSubscription = targetServer.listen((socket) {
-          if (!acceptedSocket.isCompleted) {
-            acceptedSocket.complete(socket);
-          }
-        });
-        final session = SshSession(
-          connectionId: 1,
-          hostId: 42,
-          client: client,
-          config: const SshConnectionConfig(
-            hostname: 'host.example.com',
-            port: 22,
-            username: 'tester',
-          ),
-        );
-
-        when(() => remoteForward.host).thenReturn('127.0.0.1');
-        when(() => remoteForward.port).thenReturn(8022);
-        when(
-          () => remoteForward.connections,
-        ).thenAnswer((_) => connections.stream);
-        when(remoteForward.close).thenReturn(null);
-        when(
-          () => client.forwardRemote(host: '127.0.0.1', port: 8022),
-        ).thenAnswer((_) async => remoteForward);
-
-        addTearDown(() async {
-          await session.stopAllForwards();
-          await connections.close();
-          await targetSubscription.cancel();
-          await targetServer.close();
-          if (acceptedSocket.isCompleted) {
-            (await acceptedSocket.future).destroy();
-          }
-          await forward.close();
-        });
-
-        expect(
-          await session.startRemoteForward(
-            portForwardId: 1,
-            remoteHost: '127.0.0.1',
-            remotePort: 8022,
-            localHost: InternetAddress.loopbackIPv4.address,
-            localPort: targetServer.port,
-          ),
-          isTrue,
-        );
-
-        connections.add(forward);
-        await acceptedSocket.future;
-        await forward.closeIncoming();
-        await _waitForCondition(() => forward.destroyCalls >= 1);
-
-        expect(forward.sink.closeAttempts, 0);
-        expect(forward.destroyCalls, 1);
-      },
-    );
 
     test(
       'removes stale sessions when remote forwards report a closed transport',
@@ -6855,6 +6721,171 @@ LISTEN ::1:4201
       expect(result.success, isFalse);
       expect(result.error, isNotNull);
     });
+
+    for (final passphrase in <String?>[null, 'incorrect']) {
+      test(
+        'unusable encrypted identity ($passphrase) opens no sockets',
+        () async {
+          final db = AppDatabase.forTesting(NativeDatabase.memory());
+          addTearDown(db.close);
+          final generated = await generateOpenSshKey(
+            keyType: SshKeyType.ed25519,
+            comment: 'test',
+            passphrase: 'correct',
+          );
+          var socketCalls = 0;
+          final service = SshService(
+            knownHostsRepository: KnownHostsRepository(db),
+            socketConnector: (host, port, {timeout}) async {
+              socketCalls++;
+              throw StateError('must parse before opening sockets');
+            },
+          );
+          final result = await service.connect(
+            SshConnectionConfig(
+              hostname: 'destination',
+              port: 22,
+              username: 'test',
+              privateKey: generated.privateKeyPem,
+              passphrase: passphrase,
+              jumpHost: const SshConnectionConfig(
+                hostname: 'jump',
+                port: 22,
+                username: 'test',
+              ),
+            ),
+          );
+          expect(result.success, isFalse);
+          expect(result.error, contains('passphrase'));
+          expect(socketCalls, 0);
+        },
+      );
+    }
+
+    test(
+      'skips unusable auto identities and authenticates with a usable key',
+      () async {
+        final fixture = await _AuthenticationFixture.create(
+          hostname: 'destination',
+          keyBytes: [1, 2, 3],
+        );
+        final generated = await generateOpenSshKey(
+          keyType: SshKeyType.ed25519,
+          comment: 'test',
+          passphrase: 'correct',
+        );
+        SshKey identity(int id, String pem, String? passphrase) => SshKey(
+          id: id,
+          name: 'test',
+          keyType: 'ssh-ed25519',
+          publicKey: '',
+          privateKey: pem,
+          passphrase: passphrase,
+          createdAt: DateTime(2026),
+        );
+        final result = await fixture.service.connect(
+          SshConnectionConfig(
+            hostname: 'destination',
+            port: 22,
+            username: 'test',
+            identityKeys: [
+              identity(1, 'invalid PEM', null),
+              identity(2, generated.privateKeyPem, null),
+              identity(3, generated.privateKeyPem, 'incorrect'),
+              identity(4, generated.privateKeyPem, 'correct'),
+            ],
+          ),
+        );
+        expect(result.success, isTrue);
+        expect(fixture.capturedIdentities, hasLength(1));
+        expect(
+          fixture.capturedIdentities!.single.toPublicKey().encode(),
+          generated.publicKeyBlob,
+        );
+        await result.closeAll();
+      },
+    );
+
+    for (final phase in ['trusted', 'untrusted', 'probe', 'jump']) {
+      test(
+        'client factory failure cleans acquired resources during $phase',
+        () async {
+          final db = AppDatabase.forTesting(NativeDatabase.memory());
+          addTearDown(db.close);
+          final repository = KnownHostsRepository(db);
+          final hostKey = _ed25519HostKeyBlob([1, 2, 3]);
+          if (phase == 'trusted' || phase == 'jump') {
+            await _seedTrustedHost(
+              repository,
+              hostname: 'destination',
+              hostKeyBytes: hostKey,
+            );
+          }
+          if (phase == 'jump') {
+            await _seedTrustedHost(
+              repository,
+              hostname: 'jump',
+              hostKeyBytes: hostKey,
+            );
+          }
+          final endpoint = _FakeForwardHostKeySocket(hostKey);
+          final jump = _MockSshClient();
+          when(() => jump.authenticated).thenAnswer((_) async {});
+          when(jump.close).thenAnswer((_) async {});
+          when(
+            () => jump.forwardLocal('destination', 22),
+          ).thenAnswer((_) async => endpoint);
+          final failure = StateError('client construction failed');
+          final service = SshService(
+            knownHostsRepository: repository,
+            hostKeyPromptHandler: (_) async => HostKeyTrustDecision.trust,
+            socketConnector: (host, port, {timeout}) async => host == 'jump'
+                ? _FakeHostKeySocket(hostKey)
+                : phase == 'probe'
+                ? _DestroyTrackingSocket(endpoint)
+                : endpoint,
+            clientFactory:
+                (
+                  socket, {
+                  required username,
+                  onVerifyHostKey,
+                  onPasswordRequest,
+                  onUserInfoRequest,
+                  identities,
+                  keepAliveInterval,
+                }) {
+                  if (phase == 'jump' && !identical(socket, endpoint)) {
+                    return jump;
+                  }
+                  throw failure;
+                },
+          );
+          await expectLater(
+            service.connect(
+              SshConnectionConfig(
+                hostname: 'destination',
+                port: 22,
+                username: 'test',
+                jumpHost: phase == 'jump'
+                    ? const SshConnectionConfig(
+                        hostname: 'jump',
+                        port: 22,
+                        username: 'test',
+                      )
+                    : null,
+              ),
+            ),
+            throwsA(same(failure)),
+          );
+          if (phase == 'probe') {
+            expect(endpoint.closeCalls, 1);
+          } else {
+            expect(endpoint.destroyed, isTrue);
+          }
+          if (phase == 'jump') verify(jump.close).called(1);
+        },
+      );
+    }
 
     test(
       'connect prompts for unknown host before auth client creation',
@@ -7914,10 +7945,7 @@ LISTEN ::1:4201
     );
 
     test('sessions map is unmodifiable', () {
-      expect(
-        () => (sshService.sessions as Map)[1] = 'test',
-        throwsA(isA<Error>()),
-      );
+      expect(() => sshService.sessions.clear(), throwsUnsupportedError);
     });
   });
 

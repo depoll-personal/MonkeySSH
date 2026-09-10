@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -49,8 +50,8 @@ func writeCopilotSession(
 		}
 	}
 	if lockPid > 0 {
-		lock := filepath.Join(dir, "inuse."+itoaPositive(lockPid)+".lock")
-		if err := os.WriteFile(lock, []byte(itoaPositive(lockPid)), 0o644); err != nil {
+		lock := filepath.Join(dir, "inuse."+strconv.Itoa(lockPid)+".lock")
+		if err := os.WriteFile(lock, []byte(strconv.Itoa(lockPid)), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		if !modTime.IsZero() {
@@ -59,18 +60,6 @@ func writeCopilotSession(
 			}
 		}
 	}
-}
-
-func itoaPositive(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	buf := []byte{}
-	for n > 0 {
-		buf = append([]byte{byte('0' + n%10)}, buf...)
-		n /= 10
-	}
-	return string(buf)
 }
 
 // TestDiscoverCopilotSessionIDsPrefersFreshSessionOnStaleLock reproduces the

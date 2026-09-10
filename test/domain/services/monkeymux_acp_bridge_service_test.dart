@@ -22,6 +22,8 @@ import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/windows_remote_powershell.dart';
 
+import '../../helpers/powershell_test_helpers.dart';
+
 const _bridgeId = '0123456789abcdef0123456789abcdef';
 const _otherBridgeId = 'fedcba9876543210fedcba9876543210';
 const _commandHash =
@@ -166,9 +168,14 @@ final class _TestChannel {
     }
   }
 
-  Future<void> remoteClose() async {
-    await stdout.close();
-    await stderr.close();
+  /// Ends the remote streams without awaiting delivery: the done events are
+  /// flushed by the next pump, while awaiting `close()` on a controller whose
+  /// subscription was cancelled from stdout's onDone can strand a widget
+  /// test's next pump outside the fake-async microtask flush.
+  Future<void> remoteClose() {
+    unawaited(stdout.close());
+    unawaited(stderr.close());
+    return Future<void>.value();
   }
 }
 
@@ -224,17 +231,6 @@ Map<String, Object?> _decodeFrame(List<int> bytes) =>
       (key, value) => MapEntry(key.toString(), value),
     );
 
-String _decodePowerShellScript(String command) {
-  const marker = '-EncodedCommand ';
-  final encoded = command.substring(command.indexOf(marker) + marker.length);
-  final bytes = base64.decode(encoded.trim());
-  final units = <int>[];
-  for (var index = 0; index + 1 < bytes.length; index += 2) {
-    units.add(bytes[index] | (bytes[index + 1] << 8));
-  }
-  return String.fromCharCodes(units);
-}
-
 Future<void> _waitUntil(
   bool Function() condition, {
   Duration timeout = const Duration(seconds: 2),
@@ -249,6 +245,131 @@ Future<void> _waitUntil(
 }
 
 void main() {
+  tearDown(resetQueuedSshExecsForTesting);
+
+  testWidgets('stalled helper open fails and releases its queue slot', (
+    tester,
+  ) async {
+    final opening = Completer<SSHSession>();
+    final client = _MockSshClient();
+    when(
+      () => client.execute(any(), pty: any(named: 'pty')),
+    ).thenAnswer((_) => opening.future);
+    final session = _sshSession(client);
+    var completed = false;
+    final failed =
+        expectLater(
+          _bridgeService().list(session),
+          throwsA(
+            isA<MonkeyMuxAcpBridgeException>()
+                .having(
+                  (error) => error.kind,
+                  'kind',
+                  MonkeyMuxAcpBridgeErrorKind.helperUnavailable,
+                )
+                .having(
+                  (error) => error.message,
+                  'message',
+                  contains('TimeoutException'),
+                ),
+          ),
+        ).then((_) {
+          completed = true;
+        });
+    await tester.pump();
+    expect(activeQueuedSshExecCountForTesting(session.connectionId), 1);
+    await tester.pump(const Duration(milliseconds: 14999));
+    expect(completed, isFalse);
+    await tester.pump(const Duration(milliseconds: 1));
+    expect(completed, isTrue);
+    await failed;
+    expect(activeQueuedSshExecCountForTesting(session.connectionId), 0);
+    expect(pendingQueuedSshExecCountForTesting(session.connectionId), 0);
+    final late = _MockSshChannel();
+    opening.complete(late);
+    await tester.pump();
+    verify(late.close).called(1);
+  });
+
+  testWidgets('stalled reconnect open times out and retries after backoff', (
+    tester,
+  ) async {
+    final opening = Completer<SSHSession>();
+    final client = _MockSshClient();
+    late _TestChannel channel;
+    channel = _TestChannel(
+      onWrite: (value) {
+        if ((jsonDecode(value) as Map)['type'] != 'hello') return;
+        channel.addText(
+          _frame({
+            'version': 1,
+            'type': 'hello',
+            'bridgeId': _bridgeId,
+            'clientId': _otherBridgeId,
+            'canSend': true,
+            'bridge': _metadata(),
+          }),
+        );
+      },
+    );
+    var calls = 0;
+    when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((_) {
+      calls++;
+      return calls == 2 ? opening.future : Future.value(channel.session);
+    });
+    final transport = _bridgeService().connect(
+      sessionProvider: () async => _sshSession(client),
+      bridgeId: _bridgeId,
+      providerId: 'copilot',
+      reconnectBackoff: const [
+        Duration(milliseconds: 100),
+        Duration(milliseconds: 200),
+      ],
+      handshakeTimeout: const Duration(seconds: 1),
+    );
+    await tester.pump();
+    expect(transport.isConnected, isTrue);
+    await channel.remoteClose();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(calls, 2);
+    expect(transport.isConnected, isFalse);
+    await tester.pump(const Duration(milliseconds: 999));
+    expect(calls, 2);
+    await tester.pump(const Duration(milliseconds: 1));
+    channel = _TestChannel(
+      onWrite: (value) {
+        if ((jsonDecode(value) as Map)['type'] != 'hello') return;
+        channel.addText(
+          _frame({
+            'version': 1,
+            'type': 'hello',
+            'bridgeId': _bridgeId,
+            'clientId': _otherBridgeId,
+            'canSend': true,
+            'bridge': _metadata(),
+          }),
+        );
+      },
+    );
+    await tester.pump(const Duration(milliseconds: 199));
+    expect(calls, 2);
+    await tester.pump(const Duration(milliseconds: 1));
+    expect(calls, 3);
+    expect(transport.isConnected, isTrue);
+    final late = _MockSshChannel();
+    opening.complete(late);
+    await tester.pump();
+    verify(late.close).called(1);
+    expect(transport.isConnected, isTrue);
+    // Stream cancellation can complete outside the fake microtask flush. Keep
+    // cleanup in the real async zone so its follow-up futures can also settle.
+    await tester.runAsync(() async {
+      await transport.close();
+      await channel.remoteClose();
+    });
+  });
+
   setUpAll(() {
     registerFallbackValue(Uint8List(0));
     registerFallbackValue(SshExecPriority.normal);
@@ -277,7 +398,7 @@ void main() {
       "a'b",
       'x y',
     ], isWindows: true);
-    final script = _decodePowerShellScript(windows);
+    final script = decodeEncodedPowerShell(windows);
     expect(script, contains(powerShellProfilePathPreamble));
     expect(
       script,
@@ -598,7 +719,7 @@ void main() {
       ) async {
         final command = invocation.positionalArguments.single as String;
         commands.add(command);
-        final script = _decodePowerShellScript(command);
+        final script = decodeEncodedPowerShell(command);
         final channel = _TestChannel();
         scheduleMicrotask(() async {
           if (script.contains("'start'")) {
@@ -655,7 +776,7 @@ void main() {
       await service.stop(session, _bridgeId);
 
       expect(commands, hasLength(4));
-      final script = _decodePowerShellScript(commands.first);
+      final script = decodeEncodedPowerShell(commands.first);
       expect(
         script,
         contains(r"$__flAcpHelper='C:\Users\demo\.monkeyssh\monkeymux.exe'"),
@@ -663,7 +784,7 @@ void main() {
       expect(script, contains("'Copilot''s CLI'"));
       expect(script, contains(r"'C:\Users\demo\project folder'"));
       expect(
-        _decodePowerShellScript(commands.last),
+        decodeEncodedPowerShell(commands.last),
         contains("\$__flAcpArgs=@('acp','stop','$_bridgeId')"),
       );
     },

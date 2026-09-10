@@ -10,7 +10,7 @@ from pathlib import Path
 
 import store_media
 
-from PIL import Image
+from PIL import Image, ImageChops
 
 ROOT = Path(__file__).resolve().parents[1]
 SCREENSHOT_COUNT = 8
@@ -105,28 +105,28 @@ def _validate_copilot_image_frame(path: Path) -> None:
     with Image.open(path) as image:
         rgb = image.convert('RGB')
         width, height = rgb.size
-        target = (64, 196, 255)
-
-        def is_frame_pixel(x: int, y: int) -> bool:
-            pixel = rgb.getpixel((x, y))
-            if not isinstance(pixel, tuple) or len(pixel) < 3:
-                return False
-            red, green, blue = pixel[:3]
-            return (
-                abs(red - target[0]) <= 18
-                and abs(green - target[1]) <= 18
-                and abs(blue - target[2]) <= 12
+        channels = [
+            channel.point([
+                255 if abs(value - target) <= tolerance else 0
+                for value in range(256)
+            ])
+            for channel, target, tolerance in zip(
+                rgb.split(), (64, 196, 255), (18, 18, 12),
             )
+        ]
+        mask = ImageChops.multiply(
+            ImageChops.multiply(channels[0], channels[1]), channels[2],
+        )
 
         horizontal_rows = [
             y
             for y in range(height)
-            if sum(is_frame_pixel(x, y) for x in range(width)) >= width * 0.2
+            if mask.crop((0, y, width, y + 1)).histogram()[255] >= width * 0.2
         ]
         vertical_columns = [
             x
             for x in range(width)
-            if sum(is_frame_pixel(x, y) for y in range(height)) >= height * 0.1
+            if mask.crop((x, 0, x + 1, height)).histogram()[255] >= height * 0.1
         ]
 
     def group_count(values: list[int]) -> int:

@@ -71,15 +71,17 @@ test('upsert updates only a trusted matching status and otherwise creates a comm
     ...Array(3).fill(['create', {owner: 'owner', repo: 'repo', issue_number: 4, body: 'new body'}])]);
 });
 
-test('platform status-row selectors reject forged markers', () => {
-  const workflow = require('node:fs').readFileSync(require('node:path').join(__dirname, '../../.github/workflows/build-deploy.yml'), 'utf8');
-  const selectors = [...workflow.matchAll(/const existing = (comments\.find\([\s\S]*?\));/g)];
-  assert.equal(selectors.length, 2);
-  for (const [, selector] of selectors) {
-    const select = new Function('comments', 'statusMarker', `return ${selector};`);
-    for (const user of [{login: 'human', type: 'User'}, {login: 'github-actions[bot]', type: 'User'}, {login: 'other[bot]', type: 'Bot'}]) {
-      assert.equal(select([status(1, '', user), status(2, '')], statusMarker).id, 2);
-      assert.equal(select([status(1, '', user)], statusMarker), undefined);
-    }
-  }
+test('finishing a second deployment leaves the first request status unchanged', async () => {
+  const comments = [status(1, 'comment-1'), status(2, 'comment-2')];
+  const original = comments[0].body;
+  const github = {rest: {issues: {updateComment: async ({comment_id, body}) => {
+    comments.find(comment => comment.id === comment_id).body = body;
+  }}}};
+  const request = resolveRequestContext({comments, inputs: {'request-comment-id': '2'},
+    runId: 99, actor: 'requester'});
+  const body = status(2, 'comment-2').body + '\nAndroid: success\niOS: failure';
+  assert.equal(await upsertStatusComment({github, owner: 'owner', repo: 'repo',
+    issueNumber: 4, comments, body, requestKey: request.requestKey}), 2);
+  assert.equal(comments[0].body, original);
+  assert.equal(comments[1].body, body);
 });

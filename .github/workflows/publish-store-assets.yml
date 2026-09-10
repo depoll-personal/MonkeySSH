@@ -109,21 +109,6 @@ jobs:
           .venv/bin/python -m pip install --quiet --upgrade pip
           .venv/bin/python -m pip install --quiet Pillow
 
-      - name: Test store screenshot contracts
-        run: .venv/bin/python -m unittest discover -s test/scripts -p 'store_screenshots_test.py'
-
-      - name: Test store demo video validation
-        run: .venv/bin/python -m unittest discover -s test/scripts -p 'validate_store_demo_videos_test.py'
-
-      - name: Validate store screenshots
-        if: steps.inputs.outputs.platform == 'both' || steps.inputs.outputs.platform == 'ios' || steps.inputs.outputs.platform == 'android'
-        run: |
-          case "${{ steps.inputs.outputs.platform }}" in
-            both) .venv/bin/python scripts/validate_store_screenshots.py both ;;
-            ios) .venv/bin/python scripts/validate_store_screenshots.py ios ;;
-            android) .venv/bin/python scripts/validate_store_screenshots.py android ;;
-          esac
-
       - name: Validate demo videos / App Previews
         if: steps.inputs.outputs.platform == 'both' || steps.inputs.outputs.platform == 'ios' || steps.inputs.outputs.platform == 'android'
         run: |

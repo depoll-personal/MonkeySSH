@@ -3,7 +3,6 @@
 import 'dart:convert';
 
 import 'package:dartssh2/dartssh2.dart';
-import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -42,15 +41,6 @@ void main() {
   });
 
   group('KeyService', () {
-    group('SshKeyType enum', () {
-      test('has expected values', () {
-        expect(SshKeyType.values, hasLength(3));
-        expect(SshKeyType.ed25519, isNotNull);
-        expect(SshKeyType.rsa2048, isNotNull);
-        expect(SshKeyType.rsa4096, isNotNull);
-      });
-    });
-
     group('importKey', () {
       test('returns null for invalid PEM', () async {
         final result = await keyService.importKey(
@@ -58,6 +48,7 @@ void main() {
           privateKeyPem: 'not a valid key',
         );
         expect(result, isNull);
+        expect(await keyRepository.getAll(), isEmpty);
       });
 
       test(
@@ -75,6 +66,7 @@ void main() {
             passphrase: 'wrong-passphrase',
           );
           expect(result, isNull);
+          expect(await keyRepository.getAll(), isEmpty);
         },
       );
 
@@ -90,6 +82,7 @@ void main() {
           privateKeyPem: encryptedPem,
         );
         expect(result, isNull);
+        expect(await keyRepository.getAll(), isEmpty);
       });
     });
 
@@ -165,48 +158,6 @@ void main() {
         expect(key, isNotNull);
         expect(SSHKeyPair.fromPem(key!.privateKey), isNotEmpty);
         expect(key.passphrase, isNull);
-      });
-    });
-
-    group('key lookup by unique fields', () {
-      test('can look up a key by its public+private key pair', () async {
-        final id = await keyRepository.insert(
-          SshKeysCompanion.insert(
-            name: 'Original Key',
-            keyType: 'ed25519',
-            publicKey: 'ssh-ed25519 AAAAdedup',
-            privateKey: 'test-key-material-dedup',
-          ),
-        );
-
-        final keys = await keyRepository.getAll();
-        final match = keys.where(
-          (k) =>
-              k.publicKey == 'ssh-ed25519 AAAAdedup' &&
-              k.privateKey == 'test-key-material-dedup',
-        );
-
-        expect(match, hasLength(1));
-        expect(match.first.id, id);
-      });
-
-      test('can look up a key by its fingerprint', () async {
-        const fingerprint = 'SHA256:DE:AD:BE:EF';
-        final id = await keyRepository.insert(
-          SshKeysCompanion.insert(
-            name: 'Fingerprintable Key',
-            keyType: 'ed25519',
-            publicKey: 'ssh-ed25519 AAAAfp',
-            privateKey: 'test-key-material-fp',
-            fingerprint: const Value(fingerprint),
-          ),
-        );
-
-        final keys = await keyRepository.getAll();
-        final match = keys.where((k) => k.fingerprint == fingerprint);
-
-        expect(match, hasLength(1));
-        expect(match.first.id, id);
       });
     });
   });

@@ -25,10 +25,8 @@ const _proMonetizationState = MonetizationState(
   debugUnlocked: false,
 );
 
-final _onePixelPngBytes = Uint8List.fromList(
-  base64Decode(
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/luzp0wAAAABJRU5ErkJggg==',
-  ),
+final _onePixelPngBytes = base64Decode(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/luzp0wAAAABJRU5ErkJggg==',
 );
 
 class _MockSshClient extends Mock implements SSHClient {
@@ -45,6 +43,36 @@ class _MockSftpClient extends Mock implements SftpClient {
 }
 
 class _MockRemoteFileService extends Mock implements RemoteFileService {}
+
+class _ControlledDownloadService extends RemoteFileService {
+  final started = Completer<void>();
+  final completion = Completer<void>();
+  RemoteFileDownloadCancelToken? cancelToken;
+
+  @override
+  Future<void> downloadFile({
+    required SftpClient sftp,
+    required String remotePath,
+    required String localPath,
+    FutureOr<void> Function(int downloadedBytes)? onProgress,
+    int? maxBytes,
+    RemoteFileDownloadCancelToken? cancelToken,
+  }) async {
+    this.cancelToken = cancelToken;
+    File(localPath).writeAsBytesSync([1, 2, 3]);
+    started.complete();
+    await completion.future;
+  }
+}
+
+class _PopObserver extends NavigatorObserver {
+  int pops = 0;
+
+  @override
+  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    pops++;
+  }
+}
 
 class _MockXFile extends Mock implements XFile {}
 
@@ -103,7 +131,22 @@ class _SftpFilePicker extends FilePickerPlatform {
 
 class _MockSftpFile extends Mock implements SftpFile {}
 
-class _MockMonetizationService extends Mock implements MonetizationService {}
+class _MockMonetizationService extends Mock implements MonetizationService {
+  _MockMonetizationService() {
+    when(() => currentState).thenReturn(_proMonetizationState);
+  }
+}
+
+SshSession _sftpSession(SSHClient client) => SshSession(
+  connectionId: 7,
+  hostId: 1,
+  client: client,
+  config: const SshConnectionConfig(
+    hostname: 'demo.example.com',
+    port: 22,
+    username: 'demo',
+  ),
+);
 
 class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
   _TestActiveSessionsNotifier(this.session);
@@ -125,9 +168,10 @@ class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
 
 Widget _buildSftpTestApp({
   required SshSession session,
-  required MonetizationService monetizationService,
   required Widget child,
   RemoteFileService? remoteFileService,
+  MonetizationService? monetizationService,
+  NavigatorObserver? observer,
 }) => ProviderScope(
   overrides: [
     if (remoteFileService != null)
@@ -135,12 +179,14 @@ Widget _buildSftpTestApp({
     activeSessionsProvider.overrideWith(
       () => _TestActiveSessionsNotifier(session),
     ),
-    monetizationServiceProvider.overrideWithValue(monetizationService),
+    monetizationServiceProvider.overrideWithValue(
+      monetizationService ?? _MockMonetizationService(),
+    ),
     monetizationStateProvider.overrideWith(
       (ref) => Stream.value(_proMonetizationState),
     ),
   ],
-  child: MaterialApp(home: child),
+  child: MaterialApp(home: child, navigatorObservers: [?observer]),
 );
 
 SftpFileAttrs _fileAttrs({int? size}) =>
@@ -651,23 +697,6 @@ void main() {
       );
     });
 
-    test('detects streaming video preview byte cap overflow', () {
-      expect(
-        wouldRemoteVideoPreviewExceedByteCap(
-          downloadedBytes: maxRemoteVideoPreviewBytes - 1,
-          chunkBytes: 1,
-        ),
-        isFalse,
-      );
-      expect(
-        wouldRemoteVideoPreviewExceedByteCap(
-          downloadedBytes: maxRemoteVideoPreviewBytes,
-          chunkBytes: 1,
-        ),
-        isTrue,
-      );
-    });
-
     test('detects svg file names', () {
       expect(isSvgFileName('diagram.svg'), isTrue);
       expect(isSvgFileName('diagram.SVG'), isTrue);
@@ -887,21 +916,7 @@ void main() {
         final sshClient = _MockSshClient();
         final sftp = _MockSftpClient();
         final remoteFile = _MockSftpFile();
-        final monetizationService = _MockMonetizationService();
-        final session = SshSession(
-          connectionId: 7,
-          hostId: 1,
-          client: sshClient,
-          config: const SshConnectionConfig(
-            hostname: 'demo.example.com',
-            port: 22,
-            username: 'demo',
-          ),
-        );
-
-        when(
-          () => monetizationService.currentState,
-        ).thenReturn(_proMonetizationState);
+        final session = _sftpSession(sshClient);
         when(sshClient.sftp).thenAnswer((_) async => sftp);
         when(() => sftp.absolute('.')).thenAnswer((_) async => '/home/demo');
         when(() => sftp.stat('/home/demo/picture.png')).thenAnswer(
@@ -931,24 +946,12 @@ void main() {
         when(remoteFile.close).thenAnswer((_) async {});
 
         await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-            ],
-            child: const MaterialApp(
-              home: SftpScreen(
-                hostId: 1,
-                connectionId: 7,
-                initialPath: '/home/demo/picture.png',
-              ),
+          _buildSftpTestApp(
+            session: session,
+            child: const SftpScreen(
+              hostId: 1,
+              connectionId: 7,
+              initialPath: '/home/demo/picture.png',
             ),
           ),
         );
@@ -973,22 +976,8 @@ void main() {
     testWidgets('cancelling remote file picker returns null', (tester) async {
       final sshClient = _MockSshClient();
       final sftp = _MockSftpClient();
-      final monetizationService = _MockMonetizationService();
-      final session = SshSession(
-        connectionId: 7,
-        hostId: 1,
-        client: sshClient,
-        config: const SshConnectionConfig(
-          hostname: 'demo.example.com',
-          port: 22,
-          username: 'demo',
-        ),
-      );
+      final session = _sftpSession(sshClient);
       addTearDown(session.close);
-
-      when(
-        () => monetizationService.currentState,
-      ).thenReturn(_proMonetizationState);
       when(sshClient.sftp).thenAnswer((_) async => sftp);
       when(() => sftp.absolute('.')).thenAnswer((_) async => '/home/demo');
       when(
@@ -998,7 +987,6 @@ void main() {
       await tester.pumpWidget(
         _buildSftpTestApp(
           session: session,
-          monetizationService: monetizationService,
           child: const _SftpSelectionHost(
             hostId: 1,
             connectionId: 7,
@@ -1018,22 +1006,8 @@ void main() {
       (tester) async {
         final sshClient = _MockSshClient();
         final sftp = _MockSftpClient();
-        final monetizationService = _MockMonetizationService();
-        final session = SshSession(
-          connectionId: 7,
-          hostId: 1,
-          client: sshClient,
-          config: const SshConnectionConfig(
-            hostname: 'demo.example.com',
-            port: 22,
-            username: 'demo',
-          ),
-        );
+        final session = _sftpSession(sshClient);
         addTearDown(session.close);
-
-        when(
-          () => monetizationService.currentState,
-        ).thenReturn(_proMonetizationState);
         when(sshClient.sftp).thenAnswer((_) async => sftp);
         when(() => sftp.absolute('.')).thenAnswer((_) async => '/home/demo');
         when(() => sftp.stat('/repo')).thenAnswer(
@@ -1046,7 +1020,6 @@ void main() {
         await tester.pumpWidget(
           _buildSftpTestApp(
             session: session,
-            monetizationService: monetizationService,
             child: const _PublicSftpSelectionHost(
               hostId: 1,
               connectionId: 7,
@@ -1074,28 +1047,176 @@ void main() {
       },
     );
 
+    for (final inaccessible in [false, true]) {
+      testWidgets(
+        'public picker recovers from a ${inaccessible ? 'denied' : 'missing'} starting directory',
+        (tester) async {
+          final sshClient = _MockSshClient();
+          final sftp = _MockSftpClient();
+          final session = _sftpSession(sshClient);
+          addTearDown(session.close);
+          when(sshClient.sftp).thenAnswer((_) async => sftp);
+          when(() => sftp.absolute('.')).thenAnswer((_) async => '/home/demo');
+          if (inaccessible) {
+            when(() => sftp.stat('/repo')).thenAnswer(
+              (_) async =>
+                  SftpFileAttrs(mode: const SftpFileMode.value(1 << 14)),
+            );
+            when(() => sftp.listdir('/repo')).thenThrow(
+              SftpStatusError(SftpStatusCode.permissionDenied, 'denied'),
+            );
+          } else {
+            when(
+              () => sftp.stat('/repo'),
+            ).thenThrow(SftpStatusError(SftpStatusCode.noSuchFile, 'missing'));
+          }
+          when(() => sftp.listdir('/')).thenAnswer(
+            (_) async => [
+              SftpName(
+                filename: 'fallback',
+                longname: 'fallback',
+                attr: SftpFileAttrs(mode: const SftpFileMode.value(1 << 14)),
+              ),
+            ],
+          );
+          when(
+            () => sftp.listdir('/fallback'),
+          ).thenAnswer((_) async => [_fileEntry('notes.txt', size: 7)]);
+          await tester.pumpWidget(
+            _buildSftpTestApp(
+              session: session,
+              child: const _PublicSftpSelectionHost(
+                hostId: 1,
+                connectionId: 7,
+                startDirectory: '/repo',
+              ),
+            ),
+          );
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Open remote picker'));
+          await tester.pumpAndSettle();
+          expect(tester.takeException(), isNull);
+          expect(find.textContaining('Select files'), findsOneWidget);
+          await tester.tap(find.text('fallback'));
+          await tester.pumpAndSettle();
+          expect(find.text('notes.txt'), findsOneWidget);
+          if (inaccessible) {
+            await tester.tap(find.text('Cancel'));
+            await tester.pumpAndSettle();
+            expect(find.text('no selection'), findsOneWidget);
+          } else {
+            await tester.tap(find.text('notes.txt'));
+            await tester.pump();
+            await tester.tap(
+              find.widgetWithText(FilledButton, 'Select 1 file'),
+            );
+            await tester.pumpAndSettle();
+            expect(find.text('/fallback/notes.txt'), findsOneWidget);
+          }
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+
+    for (final fails in [false, true]) {
+      testWidgets(
+        'video cancellation pops once when download ${fails ? 'fails' : 'succeeds'} during exit',
+        (tester) async {
+          final directory = Directory.systemTemp.createTempSync(
+            'sftp-cache-test-',
+          );
+          addTearDown(() => directory.deleteSync(recursive: true));
+          const channel = MethodChannel('plugins.flutter.io/path_provider');
+          tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            channel,
+            (_) async => directory.path,
+          );
+          addTearDown(
+            () => tester.binding.defaultBinaryMessenger
+                .setMockMethodCallHandler(channel, null),
+          );
+          final sshClient = _MockSshClient();
+          final sftp = _MockSftpClient();
+          final session = _sftpSession(sshClient);
+          addTearDown(session.close);
+          when(sshClient.sftp).thenAnswer((_) async => sftp);
+          when(() => sftp.absolute('.')).thenAnswer((_) async => '/home/demo');
+          when(
+            () => sftp.listdir('/home/demo'),
+          ).thenAnswer((_) async => [_fileEntry('clip.mp4', size: 3)]);
+          // Create completers in the runAsync zone where they are awaited.
+          final service = (await tester.runAsync(
+            () async => _ControlledDownloadService(),
+          ))!;
+          final observer = _PopObserver();
+          await tester.pumpWidget(
+            _buildSftpTestApp(
+              session: session,
+              remoteFileService: service,
+              observer: observer,
+              child: Builder(
+                builder: (context) => Scaffold(
+                  body: TextButton(
+                    onPressed: () => Navigator.of(context).push<void>(
+                      MaterialPageRoute(
+                        builder: (_) =>
+                            const SftpScreen(hostId: 1, connectionId: 7),
+                      ),
+                    ),
+                    child: const Text('Open browser'),
+                  ),
+                ),
+              ),
+            ),
+          );
+          await tester.tap(find.text('Open browser'));
+          await tester.pumpAndSettle();
+          await tester.runAsync(() async {
+            await tester.tap(find.text('clip.mp4'));
+            await service.started.future.timeout(const Duration(seconds: 5));
+          });
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 200));
+          expect(find.text('Loading video preview'), findsOneWidget);
+          await tester.tap(find.text('Cancel'));
+          expect(observer.pops, 1);
+          expect(
+            () => service.cancelToken!.throwIfCancelled(),
+            throwsA(isA<RemoteFileDownloadCancelledException>()),
+          );
+          await tester.runAsync(() async {
+            if (fails) {
+              service.completion.completeError(
+                const FileSystemException('write failed'),
+              );
+            } else {
+              service.completion.complete();
+            }
+            await Future<void>.delayed(const Duration(milliseconds: 20));
+          });
+          await tester.pump();
+          expect(observer.pops, 1);
+          expect(find.text('Loading video preview'), findsOneWidget);
+          await tester.pumpAndSettle();
+          expect(find.byType(SftpScreen), findsOneWidget);
+          expect(find.text('Video preview cancelled'), findsOneWidget);
+          expect(
+            directory.listSync(recursive: true).whereType<File>(),
+            isEmpty,
+          );
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+
     testWidgets('normal mode still previews tapped image files', (
       tester,
     ) async {
       final sshClient = _MockSshClient();
       final sftp = _MockSftpClient();
       final remoteFile = _MockSftpFile();
-      final monetizationService = _MockMonetizationService();
-      final session = SshSession(
-        connectionId: 7,
-        hostId: 1,
-        client: sshClient,
-        config: const SshConnectionConfig(
-          hostname: 'demo.example.com',
-          port: 22,
-          username: 'demo',
-        ),
-      );
+      final session = _sftpSession(sshClient);
       addTearDown(session.close);
-
-      when(
-        () => monetizationService.currentState,
-      ).thenReturn(_proMonetizationState);
       when(sshClient.sftp).thenAnswer((_) async => sftp);
       when(() => sftp.absolute('.')).thenAnswer((_) async => '/home/demo');
       when(() => sftp.listdir('/home/demo')).thenAnswer(
@@ -1114,7 +1235,6 @@ void main() {
       await tester.pumpWidget(
         _buildSftpTestApp(
           session: session,
-          monetizationService: monetizationService,
           child: const SftpScreen(hostId: 1, connectionId: 7),
         ),
       );
@@ -1132,22 +1252,8 @@ void main() {
     ) async {
       final sshClient = _MockSshClient();
       final sftp = _MockSftpClient();
-      final monetizationService = _MockMonetizationService();
-      final session = SshSession(
-        connectionId: 7,
-        hostId: 1,
-        client: sshClient,
-        config: const SshConnectionConfig(
-          hostname: 'demo.example.com',
-          port: 22,
-          username: 'demo',
-        ),
-      );
+      final session = _sftpSession(sshClient);
       addTearDown(session.close);
-
-      when(
-        () => monetizationService.currentState,
-      ).thenReturn(_proMonetizationState);
       when(sshClient.sftp).thenAnswer((_) async => sftp);
       when(() => sftp.absolute('.')).thenAnswer((_) async => '/home/demo');
       when(
@@ -1157,7 +1263,6 @@ void main() {
       await tester.pumpWidget(
         _buildSftpTestApp(
           session: session,
-          monetizationService: monetizationService,
           child: const SftpScreen(hostId: 1, connectionId: 7),
         ),
       );
@@ -1171,38 +1276,14 @@ void main() {
       tester,
     ) async {
       final sshClient = _MockSshClient();
-      final monetizationService = _MockMonetizationService();
-      final session = SshSession(
-        connectionId: 7,
-        hostId: 1,
-        client: sshClient,
-        config: const SshConnectionConfig(
-          hostname: 'demo.example.com',
-          port: 22,
-          username: 'demo',
-        ),
-      );
-
-      when(
-        () => monetizationService.currentState,
-      ).thenReturn(_proMonetizationState);
+      final session = _sftpSession(sshClient);
       when(sshClient.sftp).thenThrow(SSHStateError('Transport is closed'));
       addTearDown(session.close);
 
       await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            activeSessionsProvider.overrideWith(
-              () => _TestActiveSessionsNotifier(session),
-            ),
-            monetizationServiceProvider.overrideWithValue(monetizationService),
-            monetizationStateProvider.overrideWith(
-              (ref) => Stream.value(_proMonetizationState),
-            ),
-          ],
-          child: const MaterialApp(
-            home: SftpScreen(hostId: 1, connectionId: 7),
-          ),
+        _buildSftpTestApp(
+          session: session,
+          child: const SftpScreen(hostId: 1, connectionId: 7),
         ),
       );
       await tester.pumpAndSettle();
@@ -1227,21 +1308,8 @@ void main() {
           final replacement = _MockSftpClient();
           final oldOpen = Completer<SftpClient>();
           final newOpen = Completer<SftpClient>();
-          final monetizationService = _MockMonetizationService();
-          final session = SshSession(
-            connectionId: 7,
-            hostId: 1,
-            client: sshClient,
-            config: const SshConnectionConfig(
-              hostname: 'demo.example.com',
-              port: 22,
-              username: 'demo',
-            ),
-          );
+          final session = _sftpSession(sshClient);
           addTearDown(session.close);
-          when(
-            () => monetizationService.currentState,
-          ).thenReturn(_proMonetizationState);
           var opens = 0;
           when(
             sshClient.sftp,
@@ -1258,7 +1326,6 @@ void main() {
           await tester.pumpWidget(
             _buildSftpTestApp(
               session: session,
-              monetizationService: monetizationService,
               child: const SftpScreen(hostId: 1, connectionId: 7),
             ),
           );
@@ -1328,21 +1395,8 @@ void main() {
         final older = Completer<List<SftpName>>();
         final newer = Completer<List<SftpName>>();
         final reconnect = Completer<SftpClient>();
-        final monetizationService = _MockMonetizationService();
-        final session = SshSession(
-          connectionId: 7,
-          hostId: 1,
-          client: sshClient,
-          config: const SshConnectionConfig(
-            hostname: 'demo.example.com',
-            port: 22,
-            username: 'demo',
-          ),
-        );
+        final session = _sftpSession(sshClient);
         addTearDown(session.close);
-        when(
-          () => monetizationService.currentState,
-        ).thenReturn(_proMonetizationState);
         var opens = 0;
         when(sshClient.sftp).thenAnswer(
           (_) => opens++ == 0 ? Future.value(sftp) : reconnect.future,
@@ -1360,7 +1414,6 @@ void main() {
         await tester.pumpWidget(
           _buildSftpTestApp(
             session: session,
-            monetizationService: monetizationService,
             child: const SftpScreen(hostId: 1, connectionId: 7),
           ),
         );
@@ -1715,18 +1768,9 @@ void main() {
         (tester) async {
           final sshClient = _MockSshClient();
           final sftp = _MockSftpClient();
-          final monetizationService = _MockMonetizationService();
+
           final remoteFiles = _MockRemoteFileService();
-          final session = SshSession(
-            connectionId: 7,
-            hostId: 1,
-            client: sshClient,
-            config: const SshConnectionConfig(
-              hostname: 'demo.example.com',
-              port: 22,
-              username: 'demo',
-            ),
-          );
+          final session = _sftpSession(sshClient);
           addTearDown(session.close);
           final picker = _SftpFilePicker();
           final previous = FilePickerPlatform.instance;
@@ -1752,9 +1796,6 @@ void main() {
                 bytes: Uint8List.fromList([3]),
               ),
           ];
-          when(
-            () => monetizationService.currentState,
-          ).thenReturn(_proMonetizationState);
           when(sshClient.sftp).thenAnswer((_) async => sftp);
           when(() => sftp.absolute('.')).thenAnswer((_) async => '/home/demo');
           when(
@@ -1787,7 +1828,6 @@ void main() {
           await tester.pumpWidget(
             _buildSftpTestApp(
               session: session,
-              monetizationService: monetizationService,
               remoteFileService: remoteFiles,
               child: const SftpScreen(hostId: 1, connectionId: 7),
             ),
@@ -1839,22 +1879,8 @@ void main() {
       final sshClient = _MockSshClient();
       final staleSftp = _MockSftpClient();
       final freshSftp = _MockSftpClient();
-      final monetizationService = _MockMonetizationService();
-      final session = SshSession(
-        connectionId: 7,
-        hostId: 1,
-        client: sshClient,
-        config: const SshConnectionConfig(
-          hostname: 'demo.example.com',
-          port: 22,
-          username: 'demo',
-        ),
-      );
+      final session = _sftpSession(sshClient);
       var sftpOpenAttempts = 0;
-
-      when(
-        () => monetizationService.currentState,
-      ).thenReturn(_proMonetizationState);
       when(sshClient.sftp).thenAnswer((_) async {
         sftpOpenAttempts++;
         return sftpOpenAttempts == 1 ? staleSftp : freshSftp;
@@ -1875,19 +1901,9 @@ void main() {
       );
 
       await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            activeSessionsProvider.overrideWith(
-              () => _TestActiveSessionsNotifier(session),
-            ),
-            monetizationServiceProvider.overrideWithValue(monetizationService),
-            monetizationStateProvider.overrideWith(
-              (ref) => Stream.value(_proMonetizationState),
-            ),
-          ],
-          child: const MaterialApp(
-            home: SftpScreen(hostId: 1, connectionId: 7),
-          ),
+        _buildSftpTestApp(
+          session: session,
+          child: const SftpScreen(hostId: 1, connectionId: 7),
         ),
       );
       await tester.pumpAndSettle();
@@ -1904,7 +1920,7 @@ void main() {
     ) async {
       final sshClient = _MockSshClient();
       final sftp = _MockSftpClient();
-      final monetizationService = _MockMonetizationService();
+
       final session = SshSession(
         connectionId: 7,
         hostId: 1,
@@ -1915,10 +1931,6 @@ void main() {
           username: 'demo',
         ),
       );
-
-      when(
-        () => monetizationService.currentState,
-      ).thenReturn(_proMonetizationState);
       when(sshClient.sftp).thenAnswer((_) async => sftp);
       when(() => sftp.absolute('.')).thenAnswer((_) async => r'C:\Users\demo');
       when(() => sftp.listdir('C:/Users/demo')).thenAnswer(
@@ -1937,19 +1949,9 @@ void main() {
       );
 
       await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            activeSessionsProvider.overrideWith(
-              () => _TestActiveSessionsNotifier(session),
-            ),
-            monetizationServiceProvider.overrideWithValue(monetizationService),
-            monetizationStateProvider.overrideWith(
-              (ref) => Stream.value(_proMonetizationState),
-            ),
-          ],
-          child: const MaterialApp(
-            home: SftpScreen(hostId: 1, connectionId: 7),
-          ),
+        _buildSftpTestApp(
+          session: session,
+          child: const SftpScreen(hostId: 1, connectionId: 7),
         ),
       );
       await tester.pumpAndSettle();

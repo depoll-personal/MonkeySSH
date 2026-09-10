@@ -11,20 +11,14 @@
 library;
 
 import 'dart:convert';
-import 'dart:typed_data';
 
+import '../../domain/models/acp_attachment.dart';
 import '../../domain/models/acp_content.dart' as d;
 import '../../domain/models/acp_protocol.dart' as d;
 import '../../domain/models/acp_session_state.dart' as d;
 import '../../domain/models/acp_timeline.dart' as d;
 import '../../domain/models/acp_updates.dart' as d;
 import 'acp_timeline.dart';
-
-/// Maximum decoded image bytes embedded inline while mapping a domain image.
-///
-/// Larger images fall back to their URI (when present) so a single prompt can
-/// never force an unbounded decode into memory.
-const int kAcpMapperMaxInlineImageBytes = 5 * 1024 * 1024;
 
 /// Maximum characters of formatted tool input/output surfaced by the mapper.
 const int kAcpMapperMaxToolTextChars = 16 * 1024;
@@ -58,7 +52,7 @@ final class _CachedTimelinePreview {
 ///
 /// Theme changes, navigation, and parent mux rebuilds commonly rebuild the
 /// chat with the identical session object. Reusing this result avoids walking
-/// the full transcript and decoding old image payloads again.
+/// the full transcript and rebuilding old image payloads again.
 class AcpTimelineMapperCache {
   /// Creates a timeline mapper cache.
   AcpTimelineMapperCache();
@@ -391,19 +385,15 @@ AcpImageContent? _mapImage(d.AcpImageContent block) {
   // Preflight the decoded size from the base64 length before ever decoding, so
   // an oversized payload can never force an unbounded allocation into memory.
   if (data.isNotEmpty &&
-      _base64DecodedLength(data) <= kAcpMapperMaxInlineImageBytes) {
-    try {
-      final bytes = base64.decode(data);
-      if (bytes.length <= kAcpMapperMaxInlineImageBytes) {
-        return AcpImageContent(
-          bytes: Uint8List.fromList(bytes),
-          uri: uri,
-          mimeType: block.mimeType.isEmpty ? null : block.mimeType,
-        );
-      }
-    } on FormatException {
-      // Fall through to a URI-backed image when the payload is not base64.
-    }
+      _base64DecodedLength(data) <= kAcpAttachmentImageDisplayMaxBytes) {
+    final mime = block.mimeType.isEmpty
+        ? 'application/octet-stream'
+        : block.mimeType;
+    return AcpImageContent(
+      dataUri: 'data:$mime;base64,$data',
+      uri: uri,
+      mimeType: block.mimeType.isEmpty ? null : block.mimeType,
+    );
   }
   if (uri != null && uri.isNotEmpty) {
     return AcpImageContent(
@@ -440,7 +430,7 @@ String? _imageMarkdown(d.AcpImageContent block) {
   }
   final data = block.data;
   if (data.isNotEmpty &&
-      _base64DecodedLength(data) <= kAcpMapperMaxInlineImageBytes) {
+      _base64DecodedLength(data) <= kAcpAttachmentImageDisplayMaxBytes) {
     final mime = block.mimeType.isEmpty
         ? 'application/octet-stream'
         : block.mimeType;

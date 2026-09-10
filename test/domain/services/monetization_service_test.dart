@@ -19,6 +19,8 @@ import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
+import '../../helpers/recording_diagnostics_logger.dart';
+
 class MockInAppPurchase extends Mock implements InAppPurchase {}
 
 class MockPurchaseDetails extends Mock implements PurchaseDetails {}
@@ -31,37 +33,24 @@ class MockInAppPurchaseAndroidPlatformAddition extends Mock
 
 class _FakePurchaseParam extends Fake implements PurchaseParam {}
 
-class _CapturingDiagnosticsLogger implements DiagnosticsLogger {
-  final List<({String category, String message, Map<String, Object?> fields})>
-  entries = [];
+class _DelayedEntitlementSettings extends SettingsService {
+  _DelayedEntitlementSettings(super.db);
+
+  final clearStarted = Completer<void>();
+  final allowClear = Completer<void>();
+  int clearCount = 0;
 
   @override
-  void debug(
-    String category,
-    String message, {
-    Map<String, Object?> fields = const <String, Object?>{},
-  }) => entries.add((category: category, message: message, fields: fields));
-
-  @override
-  void info(
-    String category,
-    String message, {
-    Map<String, Object?> fields = const <String, Object?>{},
-  }) => entries.add((category: category, message: message, fields: fields));
-
-  @override
-  void warning(
-    String category,
-    String message, {
-    Map<String, Object?> fields = const <String, Object?>{},
-  }) => entries.add((category: category, message: message, fields: fields));
-
-  @override
-  void error(
-    String category,
-    String message, {
-    Map<String, Object?> fields = const <String, Object?>{},
-  }) => entries.add((category: category, message: message, fields: fields));
+  Future<void> delete(String key) async {
+    if (key == SettingKeys.monetizationActiveProductId) {
+      clearCount++;
+      if (!clearStarted.isCompleted) {
+        clearStarted.complete();
+      }
+      await allowClear.future;
+    }
+    await super.delete(key);
+  }
 }
 
 void main() {
@@ -427,6 +416,26 @@ void main() {
       await database.close();
     });
 
+    MonetizationService buildService({
+      SettingsService? store,
+      DiagnosticsLogger? diagnostics,
+      bool android = false,
+      Duration restoreTimeout = const Duration(seconds: 45),
+      Duration restoreEmptyResultGracePeriod = const Duration(seconds: 2),
+    }) {
+      final service = MonetizationService(
+        store ?? settings,
+        diagnostics: diagnostics,
+        inAppPurchase: inAppPurchase,
+        androidPlatformAddition: android ? androidPlatformAddition : null,
+        allowDebugUnlock: false,
+        restoreTimeout: restoreTimeout,
+        restoreEmptyResultGracePeriod: restoreEmptyResultGracePeriod,
+      );
+      addTearDown(service.dispose);
+      return service;
+    }
+
     test('initializes cached entitlements from settings', () async {
       debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
       addTearDown(() => debugDefaultTargetPlatformOverride = null);
@@ -445,12 +454,7 @@ void main() {
         updatedAt.toIso8601String(),
       );
 
-      final service = MonetizationService(
-        settings,
-        inAppPurchase: inAppPurchase,
-        allowDebugUnlock: false,
-      );
-      addTearDown(service.dispose);
+      final service = buildService();
 
       await service.initialize();
 
@@ -510,12 +514,7 @@ void main() {
         debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
         addTearDown(() => debugDefaultTargetPlatformOverride = null);
 
-        final service = MonetizationService(
-          settings,
-          inAppPurchase: inAppPurchase,
-          allowDebugUnlock: false,
-        );
-        addTearDown(service.dispose);
+        final service = buildService();
 
         await service.initialize();
 
@@ -631,7 +630,7 @@ void main() {
           ),
         );
 
-        final diagnostics = _CapturingDiagnosticsLogger();
+        final diagnostics = RecordingDiagnosticsLogger();
         final service = MonetizationService(
           settings,
           inAppPurchase: inAppPurchase,
@@ -643,7 +642,7 @@ void main() {
 
         await service.initialize();
 
-        final catalogEntry = diagnostics.entries.lastWhere(
+        final catalogEntry = diagnostics.events.lastWhere(
           (entry) =>
               entry.category == 'monetization' &&
               entry.message == 'catalog_loaded',
@@ -670,12 +669,7 @@ void main() {
           () => inAppPurchase.isAvailable(),
         ).thenAnswer((_) => availabilityCompleter.future);
 
-        final service = MonetizationService(
-          settings,
-          inAppPurchase: inAppPurchase,
-          allowDebugUnlock: false,
-        );
-        addTearDown(service.dispose);
+        final service = buildService();
 
         var secondInitializeCompleted = false;
         final firstInitialize = service.initialize();
@@ -697,20 +691,12 @@ void main() {
     test(
       'purchase stream activates lifetime entitlement when a redeemed lifetime product arrives',
       () async {
-        final service = MonetizationService(
-          settings,
-          inAppPurchase: inAppPurchase,
-          allowDebugUnlock: false,
-        );
-        addTearDown(service.dispose);
+        final service = buildService();
 
-        final purchase = MockPurchaseDetails();
-        when(
-          () => purchase.productID,
-        ).thenReturn(MonetizationProductIds.iosProLifetimeProd);
-        when(() => purchase.status).thenReturn(PurchaseStatus.purchased);
-        when(() => purchase.pendingCompletePurchase).thenReturn(true);
-        when(() => purchase.transactionDate).thenReturn('1712732400000');
+        final purchase = _purchase(
+          MonetizationProductIds.iosProLifetimeProd,
+          PurchaseStatus.purchased,
+        );
         when(
           () => inAppPurchase.completePurchase(purchase),
         ).thenAnswer((_) async {});
@@ -756,20 +742,12 @@ void main() {
           'monthly-base-offer',
         );
 
-        final service = MonetizationService(
-          settings,
-          inAppPurchase: inAppPurchase,
-          allowDebugUnlock: false,
-        );
-        addTearDown(service.dispose);
+        final service = buildService();
 
-        final purchase = MockPurchaseDetails();
-        when(
-          () => purchase.productID,
-        ).thenReturn(MonetizationProductIds.iosProLifetimeProd);
-        when(() => purchase.status).thenReturn(PurchaseStatus.purchased);
-        when(() => purchase.pendingCompletePurchase).thenReturn(true);
-        when(() => purchase.transactionDate).thenReturn('1712732400000');
+        final purchase = _purchase(
+          MonetizationProductIds.iosProLifetimeProd,
+          PurchaseStatus.purchased,
+        );
         when(
           () => inAppPurchase.completePurchase(purchase),
         ).thenAnswer((_) async {});
@@ -802,12 +780,7 @@ void main() {
         debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
         addTearDown(() => debugDefaultTargetPlatformOverride = null);
 
-        final service = MonetizationService(
-          settings,
-          inAppPurchase: inAppPurchase,
-          allowDebugUnlock: false,
-        );
-        addTearDown(service.dispose);
+        final service = buildService();
 
         final lifetime = MockPurchaseDetails();
         when(
@@ -886,13 +859,7 @@ void main() {
           ),
         );
 
-        final service = MonetizationService(
-          settings,
-          inAppPurchase: inAppPurchase,
-          androidPlatformAddition: androidPlatformAddition,
-          allowDebugUnlock: false,
-        );
-        addTearDown(service.dispose);
+        final service = buildService(android: true);
 
         await service.initialize();
 
@@ -938,13 +905,7 @@ void main() {
         (_) async => QueryPurchaseDetailsResponse(pastPurchases: [purchase]),
       );
 
-      final service = MonetizationService(
-        settings,
-        inAppPurchase: inAppPurchase,
-        androidPlatformAddition: androidPlatformAddition,
-        allowDebugUnlock: false,
-      );
-      addTearDown(service.dispose);
+      final service = buildService(android: true);
 
       final restore = service.restorePurchases();
       await completionStarted.future;
@@ -984,12 +945,7 @@ void main() {
           MonetizationProductIds.iosProLifetimeProd,
         );
 
-        final service = MonetizationService(
-          settings,
-          inAppPurchase: inAppPurchase,
-          allowDebugUnlock: false,
-        );
-        addTearDown(service.dispose);
+        final service = buildService();
 
         final result = await service.restorePurchases();
 
@@ -1018,21 +974,12 @@ void main() {
         when(
           () => inAppPurchase.queryProductDetails(any()),
         ).thenThrow(StateError('Catalog unavailable'));
-        final service = MonetizationService(
-          settings,
-          inAppPurchase: inAppPurchase,
-          allowDebugUnlock: false,
+        final service = buildService();
+
+        final purchase = _purchase(
+          MonetizationProductIds.androidPro,
+          PurchaseStatus.purchased,
         );
-
-        addTearDown(service.dispose);
-
-        final purchase = MockPurchaseDetails();
-        when(
-          () => purchase.productID,
-        ).thenReturn(MonetizationProductIds.androidPro);
-        when(() => purchase.status).thenReturn(PurchaseStatus.purchased);
-        when(() => purchase.pendingCompletePurchase).thenReturn(true);
-        when(() => purchase.transactionDate).thenReturn('1712732400000');
         when(
           () => inAppPurchase.completePurchase(purchase),
         ).thenAnswer((_) async {});
@@ -1081,26 +1028,16 @@ void main() {
             notFoundIDs: const [],
           ),
         );
-        final purchase = MockPurchaseDetails();
-        when(
-          () => purchase.productID,
-        ).thenReturn(MonetizationProductIds.androidPro);
-        when(() => purchase.status).thenReturn(PurchaseStatus.purchased);
-        when(() => purchase.pendingCompletePurchase).thenReturn(true);
-        when(() => purchase.transactionDate).thenReturn('1712732400000');
+        final purchase = _purchase(
+          MonetizationProductIds.androidPro,
+          PurchaseStatus.purchased,
+        );
         when(
           () => inAppPurchase.completePurchase(purchase),
         ).thenAnswer((_) async {});
 
-        final diagnostics = _CapturingDiagnosticsLogger();
-        final service = MonetizationService(
-          settings,
-          inAppPurchase: inAppPurchase,
-          androidPlatformAddition: androidPlatformAddition,
-          allowDebugUnlock: false,
-          diagnostics: diagnostics,
-        );
-        addTearDown(service.dispose);
+        final diagnostics = RecordingDiagnosticsLogger();
+        final service = buildService(android: true, diagnostics: diagnostics);
 
         await service.initialize();
         final annualOfferId = service.currentState.offers
@@ -1146,7 +1083,7 @@ void main() {
         expect(service.currentState.isLoading, isFalse);
         expect(service.currentState.lastError, launchFailure.message);
         expect(service.currentState.isProUnlocked, isFalse);
-        final diagnostic = diagnostics.entries.singleWhere(
+        final diagnostic = diagnostics.events.singleWhere(
           (entry) => entry.message == 'purchase_launch_failed',
         );
         expect(diagnostic.category, 'billing');
@@ -1200,13 +1137,7 @@ void main() {
           ),
         );
 
-        final service = MonetizationService(
-          settings,
-          inAppPurchase: inAppPurchase,
-          androidPlatformAddition: androidPlatformAddition,
-          allowDebugUnlock: false,
-        );
-        addTearDown(service.dispose);
+        final service = buildService(android: true);
 
         await service.initialize();
         final offerId = service.currentState.offers.first.id;
@@ -1255,13 +1186,7 @@ void main() {
           ),
         );
 
-        final service = MonetizationService(
-          settings,
-          inAppPurchase: inAppPurchase,
-          androidPlatformAddition: androidPlatformAddition,
-          allowDebugUnlock: false,
-        );
-        addTearDown(service.dispose);
+        final service = buildService(android: true);
 
         await service.initialize();
         final monthlyOfferId = service.currentState.offers
@@ -1325,24 +1250,15 @@ void main() {
           (_) async => QueryPurchaseDetailsResponse(pastPurchases: const []),
         );
 
-        final purchase = MockPurchaseDetails();
-        when(
-          () => purchase.productID,
-        ).thenReturn(MonetizationProductIds.androidPro);
-        when(() => purchase.status).thenReturn(PurchaseStatus.purchased);
-        when(() => purchase.pendingCompletePurchase).thenReturn(true);
-        when(() => purchase.transactionDate).thenReturn('1712732400000');
+        final purchase = _purchase(
+          MonetizationProductIds.androidPro,
+          PurchaseStatus.purchased,
+        );
         when(
           () => inAppPurchase.completePurchase(purchase),
         ).thenAnswer((_) async {});
 
-        final service = MonetizationService(
-          settings,
-          inAppPurchase: inAppPurchase,
-          androidPlatformAddition: androidPlatformAddition,
-          allowDebugUnlock: false,
-        );
-        addTearDown(service.dispose);
+        final service = buildService(android: true);
 
         await service.initialize();
         final monthlyOfferId = service.currentState.offers
@@ -1397,13 +1313,7 @@ void main() {
           ),
         ).thenAnswer((_) => buyStartedCompleter.future);
 
-        final service = MonetizationService(
-          settings,
-          inAppPurchase: inAppPurchase,
-          androidPlatformAddition: androidPlatformAddition,
-          allowDebugUnlock: false,
-        );
-        addTearDown(service.dispose);
+        final service = buildService(android: true);
 
         await service.initialize();
         final purchaseFuture = service.purchaseOffer(
@@ -1449,13 +1359,7 @@ void main() {
           (_) async => QueryPurchaseDetailsResponse(pastPurchases: []),
         );
 
-        final service = MonetizationService(
-          settings,
-          inAppPurchase: inAppPurchase,
-          androidPlatformAddition: androidPlatformAddition,
-          allowDebugUnlock: false,
-        );
-        addTearDown(service.dispose);
+        final service = buildService(android: true);
 
         await service.initialize();
 
@@ -1488,13 +1392,7 @@ void main() {
           ),
         );
 
-        final service = MonetizationService(
-          settings,
-          inAppPurchase: inAppPurchase,
-          androidPlatformAddition: androidPlatformAddition,
-          allowDebugUnlock: false,
-        );
-        addTearDown(service.dispose);
+        final service = buildService(android: true);
 
         final result = await service.restorePurchases();
 
@@ -1507,6 +1405,145 @@ void main() {
       },
     );
 
+    test('throwing restore preserves cached Pro and permits retry', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      final updatedAt = DateTime.utc(2026, 4, 10);
+      await settings.setBool(SettingKeys.monetizationProUnlocked, value: true);
+      final cachedStrings = {
+        SettingKeys.monetizationActiveProductId:
+            MonetizationProductIds.iosMonthlyProd,
+        SettingKeys.monetizationActiveOfferId: 'monthly-offer',
+        SettingKeys.monetizationEntitlementUpdatedAt: updatedAt
+            .toIso8601String(),
+      };
+      for (final entry in cachedStrings.entries) {
+        await settings.setString(entry.key, entry.value);
+      }
+      when(
+        () => inAppPurchase.restorePurchases(),
+      ).thenThrow(Exception('offline'));
+      final service = buildService(
+        restoreEmptyResultGracePeriod: Duration.zero,
+      );
+
+      for (var attempt = 0; attempt < 2; attempt++) {
+        final result = await service.restorePurchases();
+        await Future<void>.delayed(Duration.zero);
+
+        expect(result.success, isFalse);
+        expect(result.message, 'Could not restore purchases. Try again.');
+        expect(service.currentState.lastError, result.message);
+        expect(service.currentState.isLoading, isFalse);
+        expect(service.currentState.isProUnlocked, isTrue);
+        expect(
+          service.currentState.activeProductId,
+          MonetizationProductIds.iosMonthlyProd,
+        );
+        expect(service.currentState.activeOfferId, 'monthly-offer');
+        expect(service.currentState.entitlementUpdatedAt, updatedAt.toLocal());
+        expect(
+          await settings.getBool(SettingKeys.monetizationProUnlocked),
+          isTrue,
+        );
+        for (final entry in cachedStrings.entries) {
+          expect(await settings.getString(entry.key), entry.value);
+        }
+      }
+      verify(() => inAppPurchase.restorePurchases()).called(2);
+    });
+
+    for (final productId in [
+      MonetizationProductIds.iosMonthlyProd,
+      MonetizationProductIds.iosProLifetimeProd,
+      null,
+    ]) {
+      test(
+        'restore during entitlement clearing: ${productId ?? 'duplicate empty callbacks'}',
+        () async {
+          debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+          addTearDown(() => debugDefaultTargetPlatformOverride = null);
+          final delayedSettings = _DelayedEntitlementSettings(database);
+          final purchase = MockPurchaseDetails();
+          if (productId != null) {
+            await settings.setBool(
+              SettingKeys.monetizationProUnlocked,
+              value: true,
+            );
+            await settings.setString(
+              SettingKeys.monetizationActiveProductId,
+              MonetizationProductIds.iosMonthlyProd,
+            );
+            when(() => purchase.productID).thenReturn(productId);
+            when(() => purchase.status).thenReturn(PurchaseStatus.restored);
+            when(() => purchase.pendingCompletePurchase).thenReturn(true);
+            when(() => purchase.transactionDate).thenReturn('1712732400000');
+            when(
+              () => inAppPurchase.completePurchase(purchase),
+            ).thenAnswer((_) async {});
+          }
+          when(() => inAppPurchase.restorePurchases()).thenAnswer((_) async {
+            purchaseController.add(const []);
+          });
+          final service = buildService(store: delayedSettings);
+
+          final restore = service.restorePurchases();
+          await delayedSettings.clearStarted.future;
+          if (productId == null) {
+            purchaseController
+              ..add(const [])
+              ..add(const []);
+          } else {
+            purchaseController.add([purchase]);
+          }
+          await Future<void>.delayed(Duration.zero);
+          if (productId == null) {
+            expect(delayedSettings.clearCount, 1);
+          } else {
+            verifyNever(() => inAppPurchase.completePurchase(purchase));
+          }
+          delayedSettings.allowClear.complete();
+
+          final result = await restore;
+          if (productId == null) {
+            await Future<void>.delayed(Duration.zero);
+            expect(result.success, isFalse);
+            expect(result.message, contains('No active'));
+            expect(service.currentState.isLoading, isFalse);
+            expect(service.currentState.isProUnlocked, isFalse);
+            expect(delayedSettings.clearCount, 1);
+            return;
+          }
+          expect(result.success, isTrue);
+          expect(service.currentState.isProUnlocked, isTrue);
+          expect(service.currentState.isLoading, isFalse);
+          expect(service.currentState.activeProductId, productId);
+          expect(
+            await settings.getBool(SettingKeys.monetizationProUnlocked),
+            isTrue,
+          );
+          expect(
+            await settings.getString(SettingKeys.monetizationActiveProductId),
+            productId,
+          );
+          expect(
+            await settings.getString(SettingKeys.monetizationActiveOfferId),
+            service.currentState.activeOfferId,
+          );
+          expect(
+            await settings.getString(
+              SettingKeys.monetizationEntitlementUpdatedAt,
+            ),
+            DateTime.fromMillisecondsSinceEpoch(
+              1712732400000,
+              isUtc: true,
+            ).toIso8601String(),
+          );
+          verify(() => inAppPurchase.completePurchase(purchase)).called(1);
+        },
+      );
+    }
+
     test('restore timeout clears a stale cached store entitlement', () async {
       debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
       addTearDown(() => debugDefaultTargetPlatformOverride = null);
@@ -1518,13 +1555,7 @@ void main() {
 
       when(() => inAppPurchase.restorePurchases()).thenAnswer((_) async {});
 
-      final service = MonetizationService(
-        settings,
-        inAppPurchase: inAppPurchase,
-        allowDebugUnlock: false,
-        restoreTimeout: Duration.zero,
-      );
-      addTearDown(service.dispose);
+      final service = buildService(restoreTimeout: Duration.zero);
 
       final result = await service.restorePurchases();
 
@@ -1545,26 +1576,19 @@ void main() {
       () async {
         debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
         addTearDown(() => debugDefaultTargetPlatformOverride = null);
-        final purchase = MockPurchaseDetails();
-        when(
-          () => purchase.productID,
-        ).thenReturn(MonetizationProductIds.androidPro);
-        when(() => purchase.status).thenReturn(PurchaseStatus.restored);
-        when(() => purchase.pendingCompletePurchase).thenReturn(true);
-        when(() => purchase.transactionDate).thenReturn('1712732400000');
+        final purchase = _purchase(
+          MonetizationProductIds.androidPro,
+          PurchaseStatus.restored,
+        );
         when(
           () => inAppPurchase.completePurchase(purchase),
         ).thenAnswer((_) => Completer<void>().future);
         when(() => inAppPurchase.restorePurchases()).thenAnswer((_) async {});
 
-        final service = MonetizationService(
-          settings,
-          inAppPurchase: inAppPurchase,
-          androidPlatformAddition: androidPlatformAddition,
-          allowDebugUnlock: false,
+        final service = buildService(
+          android: true,
           restoreTimeout: const Duration(milliseconds: 10),
         );
-        addTearDown(service.dispose);
 
         await service.initialize();
         unawaited(
@@ -1594,14 +1618,10 @@ void main() {
       // nothing to restore, so the restore must resolve on its own.
       when(() => inAppPurchase.restorePurchases()).thenAnswer((_) async {});
 
-      final service = MonetizationService(
-        settings,
-        inAppPurchase: inAppPurchase,
-        allowDebugUnlock: false,
+      final service = buildService(
         restoreTimeout: const Duration(seconds: 30),
         restoreEmptyResultGracePeriod: const Duration(milliseconds: 20),
       );
-      addTearDown(service.dispose);
 
       // The outer timeout guards the test: without the grace finalization
       // this would block for the full 30s restore timeout.
@@ -1637,16 +1657,12 @@ void main() {
         purchaseController.add(const <PurchaseDetails>[]);
       });
 
-      final service = MonetizationService(
-        settings,
-        inAppPurchase: inAppPurchase,
-        allowDebugUnlock: false,
+      final service = buildService(
         restoreTimeout: const Duration(seconds: 30),
         // A long grace period proves the empty-list path resolves without
         // waiting for either the grace period or the restore timeout.
         restoreEmptyResultGracePeriod: const Duration(seconds: 30),
       );
-      addTearDown(service.dispose);
 
       final result = await service.restorePurchases().timeout(
         const Duration(seconds: 5),
@@ -1666,13 +1682,10 @@ void main() {
       debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
       addTearDown(() => debugDefaultTargetPlatformOverride = null);
 
-      final purchase = MockPurchaseDetails();
-      when(
-        () => purchase.productID,
-      ).thenReturn(MonetizationProductIds.iosMonthlyProd);
-      when(() => purchase.status).thenReturn(PurchaseStatus.restored);
-      when(() => purchase.pendingCompletePurchase).thenReturn(true);
-      when(() => purchase.transactionDate).thenReturn('1712732400000');
+      final purchase = _purchase(
+        MonetizationProductIds.iosMonthlyProd,
+        PurchaseStatus.restored,
+      );
       when(
         () => inAppPurchase.completePurchase(purchase),
       ).thenAnswer((_) async {});
@@ -1680,16 +1693,12 @@ void main() {
         purchaseController.add([purchase]);
       });
 
-      final service = MonetizationService(
-        settings,
-        inAppPurchase: inAppPurchase,
-        allowDebugUnlock: false,
+      final service = buildService(
         restoreTimeout: const Duration(seconds: 30),
         // Long enough that the observed purchase resolves the restore
         // before the empty-result finalization could ever run.
         restoreEmptyResultGracePeriod: const Duration(seconds: 5),
       );
-      addTearDown(service.dispose);
 
       final result = await service.restorePurchases().timeout(
         const Duration(seconds: 5),
@@ -1726,24 +1735,15 @@ void main() {
           ),
         ).thenAnswer((_) async => true);
 
-        final purchase = MockPurchaseDetails();
-        when(
-          () => purchase.productID,
-        ).thenReturn(MonetizationProductIds.androidPro);
-        when(() => purchase.status).thenReturn(PurchaseStatus.purchased);
-        when(() => purchase.pendingCompletePurchase).thenReturn(true);
-        when(() => purchase.transactionDate).thenReturn('1712732400000');
+        final purchase = _purchase(
+          MonetizationProductIds.androidPro,
+          PurchaseStatus.purchased,
+        );
         when(
           () => inAppPurchase.completePurchase(purchase),
         ).thenThrow(Exception('billing finalize failed'));
 
-        final service = MonetizationService(
-          settings,
-          inAppPurchase: inAppPurchase,
-          androidPlatformAddition: androidPlatformAddition,
-          allowDebugUnlock: false,
-        );
-        addTearDown(service.dispose);
+        final service = buildService(android: true);
 
         await service.initialize();
         final resultFuture = service.purchaseOffer(
@@ -1888,3 +1888,12 @@ GooglePlayPurchaseDetails _androidPastLifetimePurchase({
   ),
   status: PurchaseStatus.restored,
 );
+
+MockPurchaseDetails _purchase(String productId, PurchaseStatus status) {
+  final purchase = MockPurchaseDetails();
+  when(() => purchase.productID).thenReturn(productId);
+  when(() => purchase.status).thenReturn(status);
+  when(() => purchase.pendingCompletePurchase).thenReturn(true);
+  when(() => purchase.transactionDate).thenReturn('1712732400000');
+  return purchase;
+}

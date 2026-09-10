@@ -162,15 +162,10 @@ def _run_target(
             store_screenshots._ios_simulator_name(screenshot_target),
         )
         store_screenshots._reset_ios_app_state(device_id)
-        restore_android = None
     else:
         device_id = store_screenshots._android_device_id()
-        restore_android = store_screenshots._configure_android_display(
-            screenshot_target,
-            device_id,
-        )
 
-    try:
+    with store_screenshots._android_display_override(screenshot_target, device_id):
         with tempfile.TemporaryDirectory(prefix='monkeyssh-demo-video-') as tmpdir:
             suffix = '.mov' if screenshot_target.platform == 'ios' else '.mp4'
             raw_path = Path(tmpdir) / f'raw{suffix}'
@@ -188,9 +183,6 @@ def _run_target(
                     raw_path=raw_path,
                     beat_offsets=beat_offsets,
                 )
-    finally:
-        if restore_android is not None:
-            restore_android()
 
 
 def _compose_output(

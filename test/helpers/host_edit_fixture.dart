@@ -105,8 +105,10 @@ class HostEditFixture {
 
   Future<void> pump(
     WidgetTester tester, {
+    bool createHost = false,
     List<Snippet> snippets = const [],
     List<Override> overrides = const [],
+    HostRepository? hostRepository,
   }) async {
     final router = GoRouter(
       routes: [
@@ -116,7 +118,8 @@ class HostEditFixture {
         ),
         GoRoute(
           path: '/edit',
-          builder: (context, state) => HostEditScreen(hostId: host.id),
+          builder: (context, state) =>
+              HostEditScreen(hostId: createHost ? null : host.id),
         ),
       ],
     );
@@ -125,7 +128,9 @@ class HostEditFixture {
       ProviderScope(
         overrides: [
           databaseProvider.overrideWithValue(database),
-          hostRepositoryProvider.overrideWithValue(hostRepository),
+          hostRepositoryProvider.overrideWithValue(
+            hostRepository ?? this.hostRepository,
+          ),
           keyRepositoryProvider.overrideWithValue(
             FakeKeyRepository(
               database: database,

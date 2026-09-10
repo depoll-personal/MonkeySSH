@@ -15,6 +15,8 @@ import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/windows_remote_powershell.dart';
 
+import '../../helpers/powershell_test_helpers.dart';
+
 class _MockSshClient extends Mock implements SSHClient {}
 
 class _MockExecSession extends Mock implements SSHSession {}
@@ -49,24 +51,46 @@ SshSession _remoteSession(_MockSshClient client, {int connectionId = 77}) =>
       ),
     );
 
-String _decodePowerShellCommand(String command) {
-  final compressed = RegExp(
-    r"FromBase64String\('([^']+)'\)",
-  ).firstMatch(command);
-  if (compressed != null) {
-    return utf8.decode(gzip.decode(base64.decode(compressed[1]!)));
-  }
-  const marker = '-EncodedCommand ';
-  final encoded = command.substring(command.indexOf(marker) + marker.length);
-  final bytes = base64.decode(encoded.trim());
-  final units = <int>[];
-  for (var index = 0; index + 1 < bytes.length; index += 2) {
-    units.add(bytes[index] | (bytes[index + 1] << 8));
-  }
-  return String.fromCharCodes(units);
-}
-
 void main() {
+  testWidgets('stalled probe open fails and releases its queue slot', (
+    tester,
+  ) async {
+    final opening = Completer<SSHSession>();
+    final client = _MockSshClient();
+    when(
+      () => client.execute(any(), pty: any(named: 'pty')),
+    ).thenAnswer((_) => opening.future);
+    final session = _remoteSession(client);
+    final result = _unlockedManagementService(
+      _MockDiscovery(),
+    ).refreshAll(session);
+    var completed = false;
+    unawaited(
+      result.then((_) {
+        completed = true;
+      }),
+    );
+    await tester.pump();
+    expect(activeQueuedSshExecCountForTesting(session.connectionId), 1);
+    await tester.pump(const Duration(milliseconds: 7999));
+    expect(completed, isFalse);
+    await tester.pump(const Duration(milliseconds: 1));
+    expect(completed, isTrue);
+    final runtimes = await result;
+    expect(runtimes, isNotEmpty);
+    expect(
+      runtimes.every((runtime) => runtime.status == AgentRuntimeStatus.failed),
+      isTrue,
+    );
+    expect(runtimes.first.message, contains('TimeoutException'));
+    expect(activeQueuedSshExecCountForTesting(session.connectionId), 0);
+    expect(pendingQueuedSshExecCountForTesting(session.connectionId), 0);
+    final late = _execOutput('late');
+    opening.complete(late);
+    await tester.pump();
+    verify(late.close).called(1);
+  });
+
   tearDown(resetQueuedSshExecsForTesting);
   group('parseAgentVersion', () {
     test('parses common CLI version output', () {
@@ -150,7 +174,7 @@ void main() {
             update: update,
             detectionSource: 'npm global',
           )!;
-          final script = windows ? _decodePowerShellCommand(command) : command;
+          final script = windows ? decodeEncodedPowerShell(command) : command;
           expect(script, contains(package));
           expect(script, isNot(contains('@mariozechner/')));
         }
@@ -160,7 +184,7 @@ void main() {
           update: true,
           executablePath: windows ? r'C:\tools\pi.cmd' : '/usr/local/bin/pi',
         )!;
-        final script = windows ? _decodePowerShellCommand(command) : command;
+        final script = windows ? decodeEncodedPowerShell(command) : command;
         expect(script, contains("'update' '--self'"));
         expect(script, isNot(contains('npm install')));
         expect(
@@ -189,7 +213,7 @@ void main() {
             ).thenAnswer((invocation) async {
               final command = invocation.positionalArguments.first as String;
               final script = windows
-                  ? _decodePowerShellCommand(command)
+                  ? decodeEncodedPowerShell(command)
                   : command;
               commands.add(script);
               if (script.contains('__monkeyssh_agent_path__')) {
@@ -248,9 +272,7 @@ void main() {
             invocation,
           ) async {
             final command = invocation.positionalArguments.first as String;
-            final script = windows
-                ? _decodePowerShellCommand(command)
-                : command;
+            final script = windows ? decodeEncodedPowerShell(command) : command;
             final output = StringBuffer();
             final probe = script.contains('__monkeyssh_agent_path__');
             for (final definition in agentRuntimeDefinitions) {
@@ -556,7 +578,7 @@ esac
         update: true,
       );
       expect(windows, isNotNull);
-      final script = _decodePowerShellCommand(windows!);
+      final script = decodeEncodedPowerShell(windows!);
       expect(script, contains(r'$PROFILE.CurrentUserAllHosts'));
       expect(
         script,
@@ -590,7 +612,7 @@ esac
           update: false,
         );
         expect(
-          _decodePowerShellCommand(windows!),
+          decodeEncodedPowerShell(windows!),
           contains(
             'npm install -g --foreground-scripts --ignore-scripts=false',
           ),
@@ -617,7 +639,7 @@ esac
         ),
       );
 
-      final windows = _decodePowerShellCommand(
+      final windows = decodeEncodedPowerShell(
         buildAgentInstallCommand(
           openCode,
           windows: true,
@@ -684,7 +706,7 @@ esac
           detectionSource: 'PATH',
           executablePath: entry.$2,
         );
-        final script = _decodePowerShellCommand(windows!);
+        final script = decodeEncodedPowerShell(windows!);
         expect(script, contains("& '${entry.$2}' $quotedArguments"));
       }
     });
@@ -718,7 +740,7 @@ esac
         update: true,
       );
       expect(
-        _decodePowerShellCommand(windows!),
+        decodeEncodedPowerShell(windows!),
         contains("& py -m pip install --user --upgrade 'hermes-agent'"),
       );
     });
@@ -1369,7 +1391,7 @@ esac
         if (command == null) continue;
         expect(command, contains('-OutputFormat Text'));
         expect(
-          _decodePowerShellCommand(command),
+          decodeEncodedPowerShell(command),
           startsWith(r"$ProgressPreference = 'SilentlyContinue';"),
         );
       }
@@ -1391,7 +1413,7 @@ esac
         ];
         for (final (index, command) in commands.indexed) {
           expect(command.length, lessThan(7500), reason: 'index $index');
-          final script = _decodePowerShellCommand(command);
+          final script = decodeEncodedPowerShell(command);
           expect(script, contains('__monkeyssh_agent_runtime__='));
         }
       },
@@ -1403,7 +1425,7 @@ esac
         addTearDown(() => root.delete(recursive: true));
         final launcher = File('${root.path}/copilot.cmd');
         await launcher.writeAsString('@echo off\r\necho 1.2.3\r\n');
-        final original = _decodePowerShellCommand(
+        final original = decodeEncodedPowerShell(
           buildAgentBatchProbeCommand(agentRuntimeDefinitions, windows: true),
         );
         // Isolate the fixture from installed agents and user profile side effects.
@@ -1642,7 +1664,7 @@ esac
           final command = buildAgentMetadataProbeCommand([
             definition,
           ], windows: windows);
-          final script = windows ? _decodePowerShellCommand(command) : command;
+          final script = windows ? decodeEncodedPowerShell(command) : command;
           expect(script, contains('npm view'));
           expect(script, contains(definition.packageName));
           expect(script, contains('npm list -g'));
@@ -1681,7 +1703,7 @@ esac
     test(
       'Windows probe timeouts terminate descendants and handle cleanup failures',
       () async {
-        final script = _decodePowerShellCommand(
+        final script = decodeEncodedPowerShell(
           buildAgentBatchProbeCommand([], windows: true),
         );
         final root = await Directory.systemTemp.createTemp(
@@ -1789,7 +1811,7 @@ foreach ($scenario in @('tree-success', 'tree-failure', 'unavailable', 'exit-rac
       final command = buildAgentBatchProbeCommand([
         agentCliRuntimeDefinitions.first,
       ], windows: true);
-      final script = _decodePowerShellCommand(command);
+      final script = decodeEncodedPowerShell(command);
       expect(script, contains(r'$PROFILE.CurrentUserAllHosts'));
       expect(script, contains('Get-Command'));
       expect(

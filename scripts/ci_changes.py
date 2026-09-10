@@ -23,6 +23,9 @@ MOBILE_PATHS = [
     'pubspec.lock',
     'assets/**',
     'remote/monkeymux/**',
+    '!remote/monkeymux/**/*_test.go',
+    'remote/monkeymux/conpty/**',
+    '!remote/monkeymux/README.md',
     'third_party/**',
     'android/**',
     '!android/fastlane/metadata-*/**',
@@ -51,7 +54,13 @@ MOBILE_PATHS = [
 def classify(paths):
     result = dict.fromkeys(OUTPUTS, False)
     for path in paths:
-        payload = path.startswith('remote/monkeymux/') or path in PAYLOAD_SCRIPTS
+        daemon = path.startswith('remote/monkeymux/') and path != 'remote/monkeymux/README.md'
+        # conpty/ files are packaged regardless of their extension. Unknown
+        # daemon inputs remain conservative; only ordinary tests are excluded.
+        payload = (
+            daemon and (not path.endswith('_test.go')
+                        or path.startswith('remote/monkeymux/conpty/'))
+        ) or path in PAYLOAD_SCRIPTS
         workflow = path.startswith(('.github/workflows/', '.github/actions/'))
         tooling = (
             workflow
@@ -60,7 +69,7 @@ def classify(paths):
             or '/fastlane/' in path
         )
         result['tooling'] |= tooling
-        result['go'] |= payload or path == '.github/workflows/ci.yml'
+        result['go'] |= daemon or payload or path == '.github/workflows/ci.yml'
 
         # Changes to the CI builder itself must exercise all its build jobs.
         # Other workflow/tooling edits use the independent tooling job.
