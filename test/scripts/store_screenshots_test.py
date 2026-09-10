@@ -5,7 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from PIL import Image, ImageChops, ImageFont, ImageOps
 
@@ -148,6 +148,14 @@ class ProCaptionTest(unittest.TestCase):
                 with patch.object(validate, '_ocr_texts', return_value={path: valid.replace(missing, '')}):
                     with self.assertRaisesRegex(ValueError, 'missing expected'):
                         validate._validate_ocr_content([path])
+
+    def test_screenshot_ocr_uses_shared_completeness_check(self):
+        path = ROOT / 'ios/fastlane/screenshots/en-US/08_iphone_6_9.png'
+        with patch.object(validate.platform, 'system', return_value='Darwin'), \
+             patch.object(validate.shutil, 'which', return_value='swift'), \
+             patch.object(validate.store_media.subprocess, 'run', return_value=Mock(stdout='')):
+            with self.assertRaisesRegex(ValueError, 'OCR did not return text for .*08_iphone_6_9.png'):
+                validate._validate_ocr_content([path])
 
     def test_manager_scene_requires_real_app_labels_and_badge(self):
         path = ROOT / 'ios/fastlane/screenshots/en-US/08_iphone_6_9.png'

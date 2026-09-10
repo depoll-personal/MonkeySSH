@@ -607,8 +607,7 @@ final class MonkeyMuxAcpTransport implements AcpDecodedTransport {
         _outgoingFrame.clear();
         if (frame.isNotEmpty && frame.last == 0x0d) frame.removeLast();
         if (frame.isEmpty) continue;
-        _validateAcpInputFrame(frame);
-        _enqueuePendingInput(Uint8List.fromList(frame));
+        _enqueuePendingInput(_prepareAcpInputFrame(frame));
         continue;
       }
       _outgoingFrame.add(byte);
@@ -1474,11 +1473,7 @@ final class MonkeyMuxAcpTransport implements AcpDecodedTransport {
     while (_pendingInputFrames.isNotEmpty && _connected) {
       final frame = _removePendingInput();
       try {
-        _sendWire({
-          'version': monkeyMuxAcpBridgeProtocolVersion,
-          'type': 'input',
-          'data': jsonDecode(utf8.decode(frame, allowMalformed: false)),
-        });
+        _channel!.write(frame);
       } on Object catch (error) {
         _enqueuePendingInput(frame, first: true);
         _handleChannelLoss(_generation, error);
@@ -1495,14 +1490,7 @@ final class MonkeyMuxAcpTransport implements AcpDecodedTransport {
         'The SSH bridge channel is detached.',
       );
     }
-    final bytes = utf8.encode('${jsonEncode(message)}\n');
-    if (bytes.length > monkeyMuxAcpBridgeMaxFrameBytes) {
-      throw const MonkeyMuxAcpBridgeException(
-        MonkeyMuxAcpBridgeErrorKind.frameTooLarge,
-        'The bridge frame exceeded the protocol limit.',
-      );
-    }
-    channel.write(Uint8List.fromList(bytes));
+    channel.write(_encodeWire(message));
   }
 
   void _handleChannelLoss(int generation, Object? error) {
@@ -1903,13 +1891,7 @@ void _requireType(Map<String, Object?> message, String expected) {
   }
 }
 
-void _validateAcpInputFrame(List<int> frame) {
-  if (frame.length > monkeyMuxAcpBridgeMaxFrameBytes) {
-    throw const MonkeyMuxAcpBridgeException(
-      MonkeyMuxAcpBridgeErrorKind.frameTooLarge,
-      'The ACP input frame exceeded the bridge limit.',
-    );
-  }
+Uint8List _prepareAcpInputFrame(List<int> frame) {
   Object? decoded;
   try {
     decoded = jsonDecode(utf8.decode(frame, allowMalformed: false));
@@ -1925,6 +1907,22 @@ void _validateAcpInputFrame(List<int> frame) {
       'ACP input must be a JSON object.',
     );
   }
+  return _encodeWire({
+    'version': monkeyMuxAcpBridgeProtocolVersion,
+    'type': 'input',
+    'data': decoded,
+  });
+}
+
+Uint8List _encodeWire(Map<String, Object?> message) {
+  final bytes = utf8.encode('${jsonEncode(message)}\n');
+  if (bytes.length > monkeyMuxAcpBridgeMaxFrameBytes) {
+    throw const MonkeyMuxAcpBridgeException(
+      MonkeyMuxAcpBridgeErrorKind.frameTooLarge,
+      'The bridge frame exceeded the protocol limit.',
+    );
+  }
+  return bytes;
 }
 
 String _providerHash(String providerId) =>

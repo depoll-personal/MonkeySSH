@@ -2726,7 +2726,7 @@ func TestTerminalOutputHasVisibleContent(t *testing.T) {
 func TestTerminalBellParserHonorsControlSequenceCancellation(t *testing.T) {
 	for _, cancel := range []byte{0x18, 0x1a} {
 		window := &muxWindow{}
-		observed := window.observeTerminalBellLocked(
+		observed := window.observeTerminalOutputStateLocked(
 			append([]byte("\x1b]title"), cancel, '\a'),
 		)
 		if !observed {
@@ -5081,10 +5081,39 @@ func TestRestartedRedrawPauseRefreshesUsableFallback(t *testing.T) {
 	}
 }
 
-// TestClosedWindowReleasesRedrawFallback verifies a window closed mid-pause does
-// not retain its snapshot: closed windows stay in s.windows for the life of the
-// server, and resumePausedAttachForwarding returns early on them, so nothing
-// else would ever free the buffers.
+func TestClosedWindowsReleaseStorage(t *testing.T) {
+	for _, explicit := range []bool{false, true} {
+		t.Run(fmt.Sprint(explicit), func(t *testing.T) {
+			server := newMuxServer("test")
+			server.windows = []*muxWindow{{id: "@anchor"}}
+			server.activeID = "@anchor"
+			for i := 0; i < 20; i++ {
+				window := &muxWindow{id: fmt.Sprintf("@%d", i)}
+				window.appendHistoryLocked([]byte("history"))
+				window.observeKittyGraphicsLocked([]byte("\x1b_Gi=7,f=100;AAAA\x1b\\"))
+				if len(window.kittyImages) == 0 {
+					t.Fatal("image not retained before close")
+				}
+				server.windows = append(server.windows, window)
+				storage := server.windows[:cap(server.windows)]
+				if explicit {
+					if _, err := server.closeWindow(window.id); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					server.markWindowClosed(window.id)
+				}
+				server.markWindowClosed(window.id)
+				server.handleWindowOutput(window.id, []byte("late output"))
+				if len(server.windows) != 1 || storage[1] != nil || !window.closed ||
+					window.history != nil || window.kittyImages != nil || window.kittyImageToken != nil {
+					t.Fatal("closed window retained storage")
+				}
+			}
+		})
+	}
+}
+
 func TestClosedWindowReleasesRedrawFallback(t *testing.T) {
 	server := newMuxServer("test")
 	window := &muxWindow{
@@ -6904,6 +6933,10 @@ func TestInactiveWindowBellParsing(t *testing.T) {
 		{"OSC terminator does not mark alert", [][]byte{[]byte("\x1b]0;build\x07")}, false, "build"},
 		{"OSC UTF-8 payload does not mark alert", [][]byte{{'\x1b', ']', '0', ';', 'u', 't', 'f', '8', ' ', 0xc5, 0x9c, '\a'}}, false, ""},
 		{"split OSC terminator does not mark alert", [][]byte{[]byte("\x1b]0;bui"), []byte("ld\x07")}, false, "build"},
+		{"C1 OSC terminator does not mark alert", [][]byte{[]byte("\x9d0;build\a")}, false, ""},
+		{"split C1 OSC terminator does not mark alert", [][]byte{[]byte("\x9d0;bui"), []byte("ld\a")}, false, ""},
+		{"bell after C1 ST marks alert", [][]byte{[]byte("\x9d0;build\x9c\a")}, true, ""},
+		{"split UTF-8 continuation does not start OSC", [][]byte{{0xe2, 0x80}, {0x9d, '\a'}}, true, ""},
 		{"bell after OSC marks alert", [][]byte{[]byte("\x1b]0;build\x07\a")}, true, ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -8152,6 +8185,31 @@ func TestActiveOutputStillPassesTerminalQueriesThrough(t *testing.T) {
 	waitForRecordedOutput(t, attach, "live\x1b[c\x1b]11;?\x07query")
 }
 
+func newThemeQueryTestServer(t *testing.T, window *muxWindow) (*os.File, *muxServer) {
+	t.Helper()
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := foregroundProcessGroupForWindow
+	pid := window.foregroundPid
+	t.Cleanup(func() {
+		foregroundProcessGroupForWindow = original
+		_ = reader.Close()
+		_ = writer.Close()
+	})
+	window.pty = wrapPty(t, writer)
+	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
+		if candidate == window {
+			return pid
+		}
+		return 0
+	}
+	server := newMuxServer("test")
+	server.windows = []*muxWindow{window}
+	return reader, server
+}
+
 // TestActiveOutputStripsLocallyAnsweredThemeQueryFromAttach guards against the
 // "hermes spew" regression: when MonkeyMux can answer an OSC theme query from
 // its cached theme hint, the query bytes must be removed from the chunk
@@ -8160,36 +8218,15 @@ func TestActiveOutputStillPassesTerminalQueriesThrough(t *testing.T) {
 // the attach input pipe into the active window's PTY, where the TUI renders
 // it as literal text.
 func TestActiveOutputStripsLocallyAnsweredThemeQueryFromAttach(t *testing.T) {
-	inputReader, inputWriter, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = inputReader.Close()
-		_ = inputWriter.Close()
-	})
-
 	window := &muxWindow{
 		id:                "@1",
 		foregroundCommand: "unknown-tui",
 		foregroundPid:     42,
-		pty:               wrapPty(t, inputWriter),
 		lastActivity:      time.Now(),
 	}
-	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
-	defer func() {
-		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
-	}()
-	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
-		if candidate == window {
-			return 42
-		}
-		return 0
-	}
+	inputReader, server := newThemeQueryTestServer(t, window)
 
 	attach := &recordingConn{}
-	server := newMuxServer("test")
-	server.windows = []*muxWindow{window}
 	server.activeID = "@1"
 	registerTestAttachClient(t, server, attach, "primary", server.width, server.height)
 	const backgroundReport = "\x1b]11;rgb:1111/2222/3333\x1b\\"
@@ -8208,36 +8245,15 @@ func TestActiveOutputStripsLocallyAnsweredThemeQueryFromAttach(t *testing.T) {
 }
 
 func TestActiveOutputStripsSplitLocallyAnsweredThemeQueryFromAttach(t *testing.T) {
-	inputReader, inputWriter, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = inputReader.Close()
-		_ = inputWriter.Close()
-	})
-
 	window := &muxWindow{
 		id:                "@1",
 		foregroundCommand: "unknown-tui",
 		foregroundPid:     42,
-		pty:               wrapPty(t, inputWriter),
 		lastActivity:      time.Now(),
 	}
-	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
-	defer func() {
-		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
-	}()
-	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
-		if candidate == window {
-			return 42
-		}
-		return 0
-	}
+	inputReader, server := newThemeQueryTestServer(t, window)
 
 	attach := &recordingConn{}
-	server := newMuxServer("test")
-	server.windows = []*muxWindow{window}
 	server.activeID = "@1"
 	registerTestAttachClient(t, server, attach, "primary", server.width, server.height)
 	const backgroundReport = "\x1b]11;rgb:1111/2222/3333\x1b\\"
@@ -8541,35 +8557,14 @@ func TestThemeHintRefreshDataKeepsModeReportUnderWin32InputMode(t *testing.T) {
 // the default foreground/background reports as well, and everything written
 // into the pty must be win32-input-mode encoded.
 func TestWin32InputModeAnswersPaletteQueryWithEncodedDefaults(t *testing.T) {
-	inputReader, inputWriter, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = inputReader.Close()
-		_ = inputWriter.Close()
-	})
-
 	window := &muxWindow{
 		id:                "@1",
 		foregroundCommand: "copilot",
 		foregroundPid:     42,
-		pty:               wrapPty(t, inputWriter),
 		lastActivity:      time.Now(),
 	}
-	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
-	defer func() {
-		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
-	}()
-	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
-		if candidate == window {
-			return 42
-		}
-		return 0
-	}
+	inputReader, server := newThemeQueryTestServer(t, window)
 
-	server := newMuxServer("test")
-	server.windows = []*muxWindow{window}
 	const foregroundReport = "\x1b]10;rgb:aaaa/bbbb/cccc\x1b\\"
 	const backgroundReport = "\x1b]11;rgb:1111/2222/3333\x1b\\"
 	const paletteReport = "\x1b]4;0;rgb:0000/0000/0000\x1b\\"
@@ -8594,35 +8589,14 @@ func TestWin32InputModeAnswersPaletteQueryWithEncodedDefaults(t *testing.T) {
 // private mode 9001 is reset, theme answers are written raw again and default
 // colour reports are no longer volunteered.
 func TestWin32InputModeResetRestoresRawThemeAnswers(t *testing.T) {
-	inputReader, inputWriter, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = inputReader.Close()
-		_ = inputWriter.Close()
-	})
-
 	window := &muxWindow{
 		id:                "@1",
 		foregroundCommand: "unknown-tui",
 		foregroundPid:     42,
-		pty:               wrapPty(t, inputWriter),
 		lastActivity:      time.Now(),
 	}
-	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
-	defer func() {
-		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
-	}()
-	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
-		if candidate == window {
-			return 42
-		}
-		return 0
-	}
+	inputReader, server := newThemeQueryTestServer(t, window)
 
-	server := newMuxServer("test")
-	server.windows = []*muxWindow{window}
 	const backgroundReport = "\x1b]11;rgb:1111/2222/3333\x1b\\"
 	server.themeHint = []byte(backgroundReport)
 
@@ -10364,7 +10338,7 @@ func TestDiscoverCodexSessionIDsReservesArgvOwnedSiblingSession(t *testing.T) {
 		201: {pid: 201, ppid: 101, comm: "codex", args: "codex"},
 	}
 
-	got := discoverCodexSessionIDs(processes, map[int]struct{}{100: {}, 101: {}})
+	got := discoverAgentSessionIDs("codex", processes, map[int]struct{}{100: {}, 101: {}})
 	if got[100] != sessionID || got[101] != "" {
 		t.Fatalf("Codex sibling assignments = %#v, want only argv-owned pane", got)
 	}
@@ -10399,7 +10373,7 @@ func TestDiscoverClaudeSessionIDsReservesArgvOwnedSiblingSession(t *testing.T) {
 		201: {pid: 201, ppid: 101, comm: "claude", args: "claude"},
 	}
 
-	got := discoverClaudeSessionIDs(processes, map[int]struct{}{100: {}, 101: {}})
+	got := discoverAgentSessionIDs("claude", processes, map[int]struct{}{100: {}, 101: {}})
 	if got[100] != sessionID || got[101] != "" {
 		t.Fatalf("Claude sibling assignments = %#v, want only argv-owned pane", got)
 	}
@@ -10438,7 +10412,7 @@ func TestDiscoverCodexSessionIDsUsesOpenRolloutFile(t *testing.T) {
 		},
 	}
 
-	sessions := discoverCodexSessionIDs(processes, map[int]struct{}{100: {}})
+	sessions := discoverAgentSessionIDs("codex", processes, map[int]struct{}{100: {}})
 
 	if got := sessions[100]; got != sessionID {
 		t.Fatalf("codex session id = %q, want %q", got, sessionID)
@@ -10496,7 +10470,7 @@ func TestDiscoverCodexSessionIDsFallsBackToRecentRolloutForCwd(t *testing.T) {
 	}
 	processWorkingDirectoryForMetadata = func(int) string { return "" }
 
-	sessions := discoverCodexSessionIDs(
+	sessions := discoverAgentSessionIDs("codex",
 		processes,
 		map[int]struct{}{100: {}},
 		map[int]string{100: "/work/project"},
@@ -10553,7 +10527,7 @@ func TestDiscoverCodexSessionIDsSkipsAmbiguousCwdFallback(t *testing.T) {
 		201: {pid: 201, ppid: 101, comm: "codex", args: "codex"},
 	}
 
-	sessions := discoverCodexSessionIDs(
+	sessions := discoverAgentSessionIDs("codex",
 		processes,
 		map[int]struct{}{100: {}, 101: {}},
 	)
@@ -10597,7 +10571,7 @@ func TestDiscoverOpenCodeSessionIDsUsesProcessArgs(t *testing.T) {
 		200: {pid: 200, ppid: 100, comm: "opencode", args: "opencode --session ses_arg"},
 	}
 
-	sessions := discoverOpenCodeSessionIDs(processes, map[int]struct{}{100: {}})
+	sessions := discoverAgentSessionIDs("opencode", processes, map[int]struct{}{100: {}})
 
 	if got := sessions[100]; got != "ses_arg" {
 		t.Fatalf("opencode session id = %q, want ses_arg", got)
@@ -10638,7 +10612,7 @@ func TestDiscoverOpenCodeSessionIDsUsesWorkingDirectory(t *testing.T) {
 	}
 
 	processWorkingDirectoryForMetadata = func(int) string { return "" }
-	sessions := discoverOpenCodeSessionIDs(
+	sessions := discoverAgentSessionIDs("opencode",
 		processes,
 		map[int]struct{}{100: {}},
 		map[int]string{100: "/work/project"},
@@ -10674,7 +10648,7 @@ func TestDiscoverOpenCodeSessionIDsSkipsAmbiguousWorkingDirectory(t *testing.T) 
 		201: {pid: 201, ppid: 101, comm: "opencode", args: "opencode"},
 	}
 
-	sessions := discoverOpenCodeSessionIDs(
+	sessions := discoverAgentSessionIDs("opencode",
 		processes,
 		map[int]struct{}{100: {}, 101: {}},
 	)
@@ -10712,7 +10686,7 @@ func TestDiscoverClaudeSessionIDsUsesOpenProjectFile(t *testing.T) {
 		200: {pid: 200, ppid: 100, comm: "claude", args: "claude"},
 	}
 
-	sessions := discoverClaudeSessionIDs(processes, map[int]struct{}{100: {}})
+	sessions := discoverAgentSessionIDs("claude", processes, map[int]struct{}{100: {}})
 
 	if got := sessions[100]; got != sessionID {
 		t.Fatalf("claude session id = %q, want %q", got, sessionID)
@@ -10761,7 +10735,7 @@ func TestDiscoverClaudeSessionIDsFallsBackToRecentProjectFileForCwd(t *testing.T
 		200: {pid: 200, ppid: 100, comm: "claude", args: "claude"},
 	}
 
-	sessions := discoverClaudeSessionIDs(processes, map[int]struct{}{100: {}})
+	sessions := discoverAgentSessionIDs("claude", processes, map[int]struct{}{100: {}})
 
 	if got := sessions[100]; got != sessionID {
 		t.Fatalf("claude session id = %q, want %q", got, sessionID)
@@ -10839,7 +10813,7 @@ func TestDiscoverClaudeSessionIDsResumesSessionThatMovedIntoWorktree(t *testing.
 		200: {pid: 200, ppid: 100, comm: "claude", args: "claude"},
 	}
 
-	sessions := discoverClaudeSessionIDs(processes, map[int]struct{}{100: {}})
+	sessions := discoverAgentSessionIDs("claude", processes, map[int]struct{}{100: {}})
 
 	if got := sessions[100]; got != sessionID {
 		t.Fatalf("claude session id = %q, want %q", got, sessionID)
@@ -10884,7 +10858,7 @@ func TestDiscoverClaudeSessionIDsIgnoresSessionThatLeftTheWorkingDirectory(t *te
 		200: {pid: 200, ppid: 100, comm: "claude", args: "claude"},
 	}
 
-	sessions := discoverClaudeSessionIDs(processes, map[int]struct{}{100: {}})
+	sessions := discoverAgentSessionIDs("claude", processes, map[int]struct{}{100: {}})
 
 	if len(sessions) != 0 {
 		t.Fatalf("relocated Claude session leaked to the original directory: %#v", sessions)
@@ -10971,7 +10945,7 @@ func TestDiscoverClaudeSessionIDsResumesAfterAgentChangedDirectory(t *testing.T)
 		200: {pid: 200, ppid: 100, comm: "claude", args: "claude"},
 	}
 
-	sessions := discoverClaudeSessionIDs(processes, map[int]struct{}{100: {}})
+	sessions := discoverAgentSessionIDs("claude", processes, map[int]struct{}{100: {}})
 
 	if got := sessions[100]; got != sessionID {
 		t.Fatalf("claude session id = %q, want %q", got, sessionID)
@@ -11077,7 +11051,7 @@ func TestDiscoverClaudeSessionIDsDoesNotResumeSessionFromBeforeFreshProcess(t *t
 		200: {pid: 200, ppid: 100, comm: "claude", args: "claude"},
 	}
 
-	sessions := discoverClaudeSessionIDs(processes, map[int]struct{}{100: {}})
+	sessions := discoverAgentSessionIDs("claude", processes, map[int]struct{}{100: {}})
 
 	if len(sessions) != 0 {
 		t.Fatalf("fresh Claude process inherited stale sessions %#v, want none", sessions)
@@ -11143,6 +11117,7 @@ func TestCloseNativeWindowWaitsForRetryableBridgeStop(t *testing.T) {
 			lastActivity:      time.Now(),
 		},
 	}
+	window := server.windows[0]
 	server.activeID = "@1"
 
 	stopNativeAcpBridgeForWindow = func(id string) error {
@@ -11158,7 +11133,7 @@ func TestCloseNativeWindowWaitsForRetryableBridgeStop(t *testing.T) {
 	if shouldShutdown {
 		t.Fatal("failed close requested server shutdown")
 	}
-	if server.windows[0].closed || server.windows[0].closing {
+	if window.closed || window.closing {
 		t.Fatal("failed bridge stop did not preserve a retryable open window")
 	}
 	if snapshots := server.snapshots(); len(snapshots) != 1 {
@@ -11166,7 +11141,7 @@ func TestCloseNativeWindowWaitsForRetryableBridgeStop(t *testing.T) {
 	}
 
 	stopNativeAcpBridgeForWindow = func(id string) error {
-		if server.windows[0].closed {
+		if window.closed {
 			t.Fatal("window closed before bridge stop succeeded")
 		}
 		return nil
@@ -11178,7 +11153,7 @@ func TestCloseNativeWindowWaitsForRetryableBridgeStop(t *testing.T) {
 	if !shouldShutdown {
 		t.Fatal("successful native close did not request shutdown")
 	}
-	if !server.windows[0].closed {
+	if !window.closed || len(server.windows) != 0 {
 		t.Fatal("window remained open after bridge stop succeeded")
 	}
 }
@@ -11191,6 +11166,8 @@ func TestCloseActiveWindowSelectsNextWindowImmediately(t *testing.T) {
 		{id: "@2", index: 1, history: []byte("two"), lastActivity: time.Now()},
 		{id: "@3", index: 2, history: []byte("three"), lastActivity: time.Now()},
 	}
+	closedWindow := server.windows[1]
+	replacement := server.windows[2]
 	server.activeID = "@2"
 	registerTestAttachClient(t, server, attach, "primary", server.width, server.height)
 
@@ -11205,10 +11182,10 @@ func TestCloseActiveWindowSelectsNextWindowImmediately(t *testing.T) {
 	if got := server.activeWindowID(); got != "@3" {
 		t.Fatalf("active window = %q, want next window @3", got)
 	}
-	if !server.windows[1].closed {
+	if !closedWindow.closed || len(server.windows) != 2 {
 		t.Fatal("closed window was not marked closed immediately")
 	}
-	want := replayPrefixForTest(server.windows[2]) + "three" +
+	want := replayPrefixForTest(replacement) + "three" +
 		replayPostHistorySuffixForTest(true)
 	waitForRecordedOutput(t, attach, want)
 }
@@ -11660,8 +11637,9 @@ func TestLiveCursorWindowPublishesSessionFromFalseConversationMetadata(t *testin
 		t.Fatal(err)
 	}
 
-	window := &muxWindow{cwd: project, agentTool: "cursor-agent"}
-	window.refreshCursorSessionMetadataLocked(201)
+	window := &muxWindow{id: "@1", cwd: project, agentTool: "cursor-agent", foregroundPid: 201}
+	_, server := newThemeQueryTestServer(t, window)
+	server.refreshProcessMetadata(window.id)
 
 	if window.agentSessionID != "live-chat" {
 		t.Fatalf("live Cursor session = %q, want live-chat", window.agentSessionID)
@@ -11987,35 +11965,15 @@ func TestThemeHintVerifiesForegroundPidWithoutThrottle(t *testing.T) {
 // later unsolicited pushes surface as literal "]11;rgb:..." text in their
 // input composer.
 func TestThemeHintDoesNotReSendObservedBackgroundReport(t *testing.T) {
-	inputReader, inputWriter, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = inputReader.Close()
-		_ = inputWriter.Close()
-	})
-
 	window := &muxWindow{
 		id:                "@1",
 		foregroundCommand: "unknown-tui",
 		foregroundPid:     42,
-		pty:               wrapPty(t, inputWriter),
 	}
-	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
-	defer func() {
-		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
-	}()
-	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
-		if candidate == window {
-			return 42
-		}
-		return 0
-	}
+	inputReader, server := newThemeQueryTestServer(t, window)
+
 	window.observeTerminalMetadataLocked([]byte("\x1b]11;?\x1b\\"))
 	window.observeTerminalModesLocked([]byte("\x1b[?1004h"))
-	server := newMuxServer("test")
-	server.windows = []*muxWindow{window}
 	server.activeID = "@1"
 
 	const backgroundReport = "\x1b]11;rgb:ffff/ffff/ffff\x1b\\"
@@ -12040,33 +11998,13 @@ func TestThemeHintDoesNotReSendObservedBackgroundReport(t *testing.T) {
 }
 
 func TestThemeHintAnswersFutureBackgroundQuery(t *testing.T) {
-	inputReader, inputWriter, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = inputReader.Close()
-		_ = inputWriter.Close()
-	})
-
 	window := &muxWindow{
 		id:                "@1",
 		foregroundCommand: "unknown-tui",
 		foregroundPid:     42,
-		pty:               wrapPty(t, inputWriter),
 	}
-	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
-	defer func() {
-		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
-	}()
-	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
-		if candidate == window {
-			return 42
-		}
-		return 0
-	}
-	server := newMuxServer("test")
-	server.windows = []*muxWindow{window}
+	inputReader, server := newThemeQueryTestServer(t, window)
+
 	server.activeID = "@1"
 
 	const backgroundReport = "\x1b]11;rgb:1111/2222/3333\x1b\\"
@@ -12085,33 +12023,13 @@ func TestThemeHintAnswersFutureBackgroundQuery(t *testing.T) {
 }
 
 func TestThemeHintAnswersFuturePaletteQuery(t *testing.T) {
-	inputReader, inputWriter, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = inputReader.Close()
-		_ = inputWriter.Close()
-	})
-
 	window := &muxWindow{
 		id:                "@1",
 		foregroundCommand: "unknown-tui",
 		foregroundPid:     42,
-		pty:               wrapPty(t, inputWriter),
 	}
-	originalForegroundProcessGroupForWindow := foregroundProcessGroupForWindow
-	defer func() {
-		foregroundProcessGroupForWindow = originalForegroundProcessGroupForWindow
-	}()
-	foregroundProcessGroupForWindow = func(candidate *muxWindow) int {
-		if candidate == window {
-			return 42
-		}
-		return 0
-	}
-	server := newMuxServer("test")
-	server.windows = []*muxWindow{window}
+	inputReader, server := newThemeQueryTestServer(t, window)
+
 	server.activeID = "@1"
 
 	const backgroundReport = "\x1b]11;rgb:1111/2222/3333\x1b\\"
@@ -13210,7 +13128,7 @@ func TestWithheldAttachOscSuffixTrimmedRequiresSuffixMatch(t *testing.T) {
 	}
 }
 
-func TestCommandNameForPIDUsesCachedProcessTable(t *testing.T) {
+func TestCommandNameForProcessGroupUsesCachedProcessTable(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte("#!/bin/sh\nprintf '42 1 42 zsh zsh\\n'\n"), 0o700); err != nil {
 		t.Fatal(err)
@@ -13228,13 +13146,13 @@ func TestCommandNameForPIDUsesCachedProcessTable(t *testing.T) {
 		cache.processes, cache.loadedAt = previous, loaded
 		cache.mu.Unlock()
 	}()
-	if got := commandNameForPID(42); got != "copilot" {
+	if got := commandNameForProcessGroup(42); got != "copilot" {
 		t.Fatalf("cached command = %q", got)
 	}
-	if got := commandNameForPID(-1); got != "" {
+	if got := commandNameForProcessGroup(-1); got != "" {
 		t.Fatalf("invalid pid = %q", got)
 	}
-	if got := commandNameForPID(99999999); got != "" {
+	if got := commandNameForProcessGroup(99999999); got != "" {
 		t.Fatalf("missing pid = %q", got)
 	}
 	if got := cachedProcessTable(now.Add(499 * time.Millisecond))[42].comm; got != "node" {
@@ -13244,7 +13162,93 @@ func TestCommandNameForPIDUsesCachedProcessTable(t *testing.T) {
 	if info, ok := table[42]; !ok || info.comm != "zsh" {
 		t.Fatalf("cache did not refresh at 500 ms: %+v", info)
 	}
-	if got, want := commandNameForPID(42), commandNameFromProcessFields(table[42].comm, table[42].args); got != want {
+	if got, want := commandNameForProcessGroup(42), commandNameFromProcessFields(table[42].comm, table[42].args); got != want {
 		t.Fatalf("refreshed command = %q, want %q", got, want)
+	}
+}
+
+func TestFailedProcessTableRefreshIsCached(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PATH", dir)
+	cache := &commandProcessTableCache
+	cache.mu.Lock()
+	previous, loaded := cache.processes, cache.loadedAt
+	cache.processes, cache.loadedAt = nil, time.Time{}
+	cache.mu.Unlock()
+	t.Cleanup(func() {
+		cache.mu.Lock()
+		cache.processes, cache.loadedAt = previous, loaded
+		cache.mu.Unlock()
+	})
+	if got := cachedProcessTable(time.Now()); got != nil {
+		t.Fatalf("missing ps returned process table: %v", got)
+	}
+	cache.mu.Lock()
+	failedAt := cache.loadedAt
+	cache.mu.Unlock()
+	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte("#!/bin/sh\nprintf '42 1 42 zsh zsh\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := cachedProcessTable(failedAt.Add(499 * time.Millisecond)); got != nil {
+		t.Fatalf("failed cache refreshed early: %v", got)
+	}
+	if got := cachedProcessTable(failedAt.Add(500 * time.Millisecond))[42].comm; got != "zsh" {
+		t.Fatalf("failed cache did not expire: %q", got)
+	}
+}
+
+func TestMetadataDiscoveryReleasesServerLockAndRejectsChangedProcess(t *testing.T) {
+	window := &muxWindow{id: "@1", foregroundPid: 42, foregroundCommand: "zsh"}
+	_, server := newThemeQueryTestServer(t, window)
+	foregroundProcessGroupForWindow = func(w *muxWindow) int { return w.foregroundPid }
+	t.Setenv("HOME", t.TempDir())
+	cache := &commandProcessTableCache
+	cache.mu.Lock()
+	previous, loaded := cache.processes, cache.loadedAt
+	cache.processes = map[int]processInfo{42: {comm: "cursor-agent", args: "cursor-agent"}}
+	cache.loadedAt = time.Now()
+	cache.mu.Unlock()
+	originalStart := processStartedAtForMetadata
+	t.Cleanup(func() {
+		processStartedAtForMetadata = originalStart
+		cache.mu.Lock()
+		cache.processes, cache.loadedAt = previous, loaded
+		cache.mu.Unlock()
+	})
+	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	processStartedAtForMetadata = func(int) time.Time {
+		close(entered)
+		<-release
+		return time.Now()
+	}
+	go func() {
+		server.handleWindowOutput(window.id, []byte("output"))
+		close(done)
+	}()
+	t.Cleanup(func() { close(release); <-done })
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("metadata discovery did not start")
+	}
+	changed := make(chan struct{})
+	go func() {
+		server.mu.Lock()
+		window.foregroundPid = 43
+		server.mu.Unlock()
+		close(changed)
+	}()
+	select {
+	case <-changed:
+	case <-time.After(time.Second):
+		t.Fatal("metadata discovery held server mutex")
+	}
+	release <- struct{}{}
+	<-done
+	if window.foregroundCommand != "zsh" || window.agentSessionID != "" {
+		t.Fatalf("stale metadata committed: command=%q session=%q", window.foregroundCommand, window.agentSessionID)
+	}
+	if string(window.history) != "output" {
+		t.Fatalf("output after discovery = %q", window.history)
 	}
 }

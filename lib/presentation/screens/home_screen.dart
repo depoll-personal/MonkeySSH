@@ -13,14 +13,11 @@ import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
 import '../../domain/commands/duplicate_host_command.dart';
-import '../../domain/models/acp_native_preview.dart';
 import '../../domain/models/acp_provider.dart';
 import '../../domain/models/acp_session_state.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/remote_multiplexer.dart';
-import '../../domain/models/terminal_preview.dart';
-import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/acp_session_manager.dart';
@@ -1285,35 +1282,75 @@ class _HostRow extends ConsumerWidget {
               final connection = sessionsNotifier.getActiveConnection(
                 connectionId,
               );
-              return _ConnectionSelectionTile(
-                connectionId: connectionId,
-                state:
-                    connectionStates[connectionId] ??
-                    SshConnectionState.disconnected,
-                endpoint: '${host.username}@${host.hostname}:${host.port}',
-                preview: connection?.preview,
-                previewSnapshot: connection?.previewSnapshot,
-                nativeAcpPreviewSnapshot: connection?.nativeAcpPreviewSnapshot,
-                terminalTheme:
-                    connection?.terminalTheme ??
-                    resolveConnectionPreviewTheme(
-                      brightness: Theme.of(context).brightness,
-                      themeSettings: terminalThemeSettings,
-                      availableThemes: terminalThemes,
-                      lightThemeId:
-                          connection?.terminalThemeLightId ??
-                          host.terminalThemeLightId,
-                      darkThemeId:
-                          connection?.terminalThemeDarkId ??
-                          host.terminalThemeDarkId,
-                    ),
-                sessionTitle: connection?.sessionTitle,
-                windowTitle: connection?.windowTitle,
-                iconName: connection?.iconName,
-                workingDirectory: connection?.workingDirectory,
-                shellStatus: connection?.shellStatus,
-                lastExitCode: connection?.lastExitCode,
-                createdAt: sessionsNotifier.getSession(connectionId)?.createdAt,
+              final createdAt = sessionsNotifier
+                  .getSession(connectionId)
+                  ?.createdAt;
+              final endpoint = '${host.username}@${host.hostname}:${host.port}';
+              final subtitle = createdAt == null
+                  ? endpoint
+                  : '$endpoint\nOpened ${createdAt.hour.toString().padLeft(2, '0')}:${createdAt.minute.toString().padLeft(2, '0')}';
+              final terminalTheme =
+                  connection?.terminalTheme ??
+                  resolveConnectionPreviewTheme(
+                    brightness: Theme.of(context).brightness,
+                    themeSettings: terminalThemeSettings,
+                    availableThemes: terminalThemes,
+                    lightThemeId:
+                        connection?.terminalThemeLightId ??
+                        host.terminalThemeLightId,
+                    darkThemeId:
+                        connection?.terminalThemeDarkId ??
+                        host.terminalThemeDarkId,
+                  );
+              return ListTile(
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
+                minTileHeight: 64,
+                minVerticalPadding: 10,
+                leading: const Icon(Icons.terminal),
+                title: Text(
+                  'Connection #$connectionId',
+                  style: FluttyTheme.displayMono(
+                    fontSize: 15,
+                    color: Theme.of(context).colorScheme.onSurface,
+                  ),
+                ),
+                subtitle: ConnectionPreviewSnippet(
+                  endpoint: subtitle,
+                  endpointStyle: FluttyTheme.monoStyle.copyWith(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                  preview: connection?.preview,
+                  previewSnapshot: connection?.previewSnapshot,
+                  nativeAcpPreviewSnapshot:
+                      connection?.nativeAcpPreviewSnapshot,
+                  sessionTitle: connection?.sessionTitle,
+                  windowTitle: connection?.windowTitle,
+                  iconName: connection?.iconName,
+                  workingDirectory: connection?.workingDirectory,
+                  shellStatus: connection?.shellStatus,
+                  lastExitCode: connection?.lastExitCode,
+                  terminalTheme: terminalTheme,
+                ),
+                isThreeLine: connection?.preview?.trim().isNotEmpty ?? false,
+                trailing: Text(
+                  switch (connectionStates[connectionId] ??
+                      SshConnectionState.disconnected) {
+                    SshConnectionState.connected => 'Connected',
+                    SshConnectionState.connecting => 'Connecting',
+                    SshConnectionState.authenticating => 'Auth',
+                    SshConnectionState.reconnecting => 'Reconnecting',
+                    SshConnectionState.error => 'Error',
+                    SshConnectionState.disconnected => 'Disconnected',
+                  },
+                  style: FluttyTheme.monoStyle.copyWith(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
                 onTap: () => Navigator.pop(context, 'connection:$connectionId'),
               );
             },
@@ -1658,247 +1695,44 @@ class _HostRow extends ConsumerWidget {
   }
 }
 
-class _ConnectionSelectionTile extends StatelessWidget {
-  const _ConnectionSelectionTile({
-    required this.connectionId,
-    required this.state,
-    required this.endpoint,
-    required this.onTap,
-    this.preview,
-    this.previewSnapshot,
-    this.nativeAcpPreviewSnapshot,
-    this.sessionTitle,
-    this.windowTitle,
-    this.iconName,
-    this.workingDirectory,
-    this.shellStatus,
-    this.lastExitCode,
-    this.terminalTheme,
-    this.createdAt,
-  });
-
-  final int connectionId;
-  final SshConnectionState state;
-  final String endpoint;
-  final String? preview;
-  final TerminalPreviewSnapshot? previewSnapshot;
-  final AcpNativePreviewSnapshot? nativeAcpPreviewSnapshot;
-  final String? sessionTitle;
-  final String? windowTitle;
-  final String? iconName;
-  final Uri? workingDirectory;
-  final TerminalShellStatus? shellStatus;
-  final int? lastExitCode;
-  final TerminalThemeData? terminalTheme;
-  final DateTime? createdAt;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final subtitle = createdAt == null
-        ? endpoint
-        : '$endpoint\nOpened ${_formatTime(createdAt!)}';
-    return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      minTileHeight: 64,
-      minVerticalPadding: 10,
-      leading: const Icon(Icons.terminal),
-      title: Text(
-        'Connection #$connectionId',
-        style: FluttyTheme.displayMono(
-          fontSize: 15,
-          color: Theme.of(context).colorScheme.onSurface,
-        ),
-      ),
-      subtitle: _ConnectionPreviewText(
-        endpoint: subtitle,
-        preview: preview,
-        previewSnapshot: previewSnapshot,
-        nativeAcpPreviewSnapshot: nativeAcpPreviewSnapshot,
-        sessionTitle: sessionTitle,
-        windowTitle: windowTitle,
-        iconName: iconName,
-        workingDirectory: workingDirectory,
-        shellStatus: shellStatus,
-        lastExitCode: lastExitCode,
-        terminalTheme: terminalTheme,
-      ),
-      isThreeLine: preview?.trim().isNotEmpty ?? false,
-      trailing: Text(
-        _stateLabel(state),
-        style: FluttyTheme.monoStyle.copyWith(
-          fontSize: 12,
-          color: Theme.of(context).colorScheme.onSurfaceVariant,
-        ),
-      ),
-      onTap: onTap,
-    );
-  }
-
-  String _stateLabel(SshConnectionState state) => switch (state) {
-    SshConnectionState.connected => 'Connected',
-    SshConnectionState.connecting => 'Connecting',
-    SshConnectionState.authenticating => 'Auth',
-    SshConnectionState.reconnecting => 'Reconnecting',
-    SshConnectionState.error => 'Error',
-    SshConnectionState.disconnected => 'Disconnected',
-  };
-
-  String _formatTime(DateTime time) {
-    final hour = time.hour.toString().padLeft(2, '0');
-    final minute = time.minute.toString().padLeft(2, '0');
-    return '$hour:$minute';
-  }
-}
-
 class _ConnectionsPanel extends ConsumerWidget {
   const _ConnectionsPanel();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    final hostsAsync = ref.watch(allHostsProvider);
-    final connectionStates = ref.watch(activeSessionsProvider);
-    final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
-    final terminalThemeSettings = ref.watch(terminalThemeSettingsProvider);
-    final terminalThemes =
-        ref.watch(allTerminalThemesProvider).asData?.value ??
-        TerminalThemes.all;
-    final monetizationState =
-        ref.watch(monetizationStateProvider).asData?.value ??
-        ref.read(monetizationServiceProvider).currentState;
-    final hasHostThemeAccess = monetizationState.allowsFeature(
-      MonetizationFeature.hostSpecificThemes,
-    );
-    final connections = sessionsNotifier.getActiveConnections();
-    final hosts = hostsAsync.asData?.value ?? <Host>[];
+    final connectionIds = ref.watch(connectionIdsProvider);
+    final hosts = ref.watch(allHostsProvider).asData?.value ?? <Host>[];
     final hostLookup = {for (final host in hosts) host.id: host};
+    final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const PanelHeader(title: 'connections'),
         Expanded(
-          child: connections.isEmpty
-              ? _buildEmptyState(context)
+          child: connectionIds.isEmpty
+              ? const Center(
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 24),
+                    child: BrandEmptyState(
+                      title: 'no active sessions',
+                      message:
+                          'Open a host and your live terminals show up here.',
+                    ),
+                  ),
+                )
               : ListView.builder(
                   padding: const EdgeInsets.symmetric(vertical: 4),
-                  itemCount: connections.length,
+                  itemCount: connectionIds.length,
                   itemBuilder: (context, index) {
-                    final connection = connections[index];
-                    final host = hostLookup[connection.hostId];
-                    final state =
-                        connectionStates[connection.connectionId] ??
-                        connection.state;
-                    final endpoint =
-                        '${connection.config.username}@'
-                        '${connection.config.hostname}:${connection.config.port}';
-                    void openConnection() => _openTerminalRoute(
-                      context,
-                      '/terminal/${connection.hostId}'
-                      '?connectionId=${connection.connectionId}',
+                    final connectionId = connectionIds[index];
+                    final connection = sessionsNotifier.getActiveConnection(
+                      connectionId,
                     );
-                    final previewEntry = buildConnectionPreviewStackEntry(
-                      connectionId: connection.connectionId,
-                      state: state,
-                      brightness: theme.brightness,
-                      themeSettings: terminalThemeSettings,
-                      availableThemes: terminalThemes,
-                      preview: connection.preview,
-                      previewSnapshot: connection.previewSnapshot,
-                      nativeAcpPreviewSnapshot:
-                          connection.nativeAcpPreviewSnapshot,
-                      activeTerminalTheme: connection.terminalTheme,
-                      sessionTitle: connection.sessionTitle,
-                      windowTitle: connection.windowTitle,
-                      iconName: connection.iconName,
-                      workingDirectory: connection.workingDirectory,
-                      shellStatus: connection.shellStatus,
-                      lastExitCode: connection.lastExitCode,
-                      hostLightThemeId: hasHostThemeAccess
-                          ? host?.terminalThemeLightId
-                          : null,
-                      hostDarkThemeId: hasHostThemeAccess
-                          ? host?.terminalThemeDarkId
-                          : null,
-                      connectionLightThemeId: connection.terminalThemeLightId,
-                      connectionDarkThemeId: connection.terminalThemeDarkId,
-                    );
-                    final preferredTmuxSessionName =
-                        resolvePreferredTmuxSessionName(
-                          structuredSessionName: host?.tmuxSessionName,
-                          autoConnectCommand: host?.autoConnectCommand,
-                        );
-
-                    return Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        ListTile(
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: _connectionTileHorizontalPadding,
-                          ),
-                          horizontalTitleGap: _connectionTileHorizontalTitleGap,
-                          minLeadingWidth: _connectionTileMinLeadingWidth,
-                          leading: Icon(
-                            Icons.terminal,
-                            color: state == SshConnectionState.connected
-                                ? colorScheme.primary
-                                : colorScheme.onSurfaceVariant,
-                          ),
-                          title: Text(
-                            host?.label ?? 'Host ${connection.hostId}',
-                          ),
-                          subtitle: Text(
-                            '$endpoint  •  Connection #${connection.connectionId}',
-                          ),
-                          trailing: IconButton(
-                            icon: const Icon(Icons.close),
-                            tooltip: 'Disconnect',
-                            onPressed: () => unawaited(
-                              _disconnectConnection(
-                                ref,
-                                connection.connectionId,
-                              ),
-                            ),
-                          ),
-                          onTap: openConnection,
-                        ),
-                        GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTap: openConnection,
-                          child: Padding(
-                            padding: const EdgeInsets.fromLTRB(
-                              _connectionPreviewLeadingInset,
-                              0,
-                              _connectionTileHorizontalPadding,
-                              8,
-                            ),
-                            child: ConnectionPreviewStack(
-                              entries: [previewEntry],
-                              onTap: openConnection,
-                            ),
-                          ),
-                        ),
-                        if (state == SshConnectionState.connected)
-                          _TmuxConnectionBadge(
-                            key: ValueKey(
-                              'tmux-badge-${connection.connectionId}',
-                            ),
-                            connectionId: connection.connectionId,
-                            preferredSessionName:
-                                connection.remoteMuxSessionName ??
-                                preferredTmuxSessionName,
-                            configuredMuxBackend:
-                                connection.remoteMuxBackend ??
-                                RemoteMuxBackendPresentation.fromStorageValue(
-                                  host?.remoteMuxBackend,
-                                ) ??
-                                RemoteMuxBackend.tmux,
-                            tmuxExtraFlags: host?.tmuxExtraFlags,
-                            onTap: openConnection,
-                          ),
-                      ],
+                    return _ConnectionRow(
+                      key: ValueKey(connectionId),
+                      connectionId: connectionId,
+                      host: hostLookup[connection?.hostId],
                     );
                   },
                 ),
@@ -1906,63 +1740,114 @@ class _ConnectionsPanel extends ConsumerWidget {
       ],
     );
   }
-
-  Widget _buildEmptyState(BuildContext context) => const Center(
-    child: Padding(
-      padding: EdgeInsets.symmetric(horizontal: 24),
-      child: BrandEmptyState(
-        title: 'no active sessions',
-        message: 'Open a host and your live terminals show up here.',
-      ),
-    ),
-  );
 }
 
-class _ConnectionPreviewText extends StatelessWidget {
-  const _ConnectionPreviewText({
-    required this.endpoint,
-    this.preview,
-    this.previewSnapshot,
-    this.nativeAcpPreviewSnapshot,
-    this.sessionTitle,
-    this.windowTitle,
-    this.iconName,
-    this.workingDirectory,
-    this.shellStatus,
-    this.lastExitCode,
-    this.terminalTheme,
-  });
+class _ConnectionRow extends ConsumerWidget {
+  const _ConnectionRow({required this.connectionId, this.host, super.key});
 
-  final String endpoint;
-  final String? preview;
-  final TerminalPreviewSnapshot? previewSnapshot;
-  final AcpNativePreviewSnapshot? nativeAcpPreviewSnapshot;
-  final String? sessionTitle;
-  final String? windowTitle;
-  final String? iconName;
-  final Uri? workingDirectory;
-  final TerminalShellStatus? shellStatus;
-  final int? lastExitCode;
-  final TerminalThemeData? terminalTheme;
+  final int connectionId;
+  final Host? host;
 
   @override
-  Widget build(BuildContext context) => ConnectionPreviewSnippet(
-    endpoint: endpoint,
-    endpointStyle: FluttyTheme.monoStyle.copyWith(
-      fontSize: 12,
-      color: Theme.of(context).colorScheme.onSurfaceVariant,
-    ),
-    preview: preview,
-    previewSnapshot: previewSnapshot,
-    nativeAcpPreviewSnapshot: nativeAcpPreviewSnapshot,
-    sessionTitle: sessionTitle,
-    windowTitle: windowTitle,
-    iconName: iconName,
-    workingDirectory: workingDirectory,
-    shellStatus: shellStatus,
-    lastExitCode: lastExitCode,
-    terminalTheme: terminalTheme,
-  );
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final previewEntry = ref.watch(
+      connectionPreviewProvider((
+        connectionId: connectionId,
+        lightThemeId: host?.terminalThemeLightId,
+        darkThemeId: host?.terminalThemeDarkId,
+        isDark: theme.brightness == Brightness.dark,
+      )),
+    );
+    ref.watch(
+      activeSessionsProvider.select((states) {
+        final connection = ref
+            .read(activeSessionsProvider.notifier)
+            .getActiveConnection(connectionId);
+        return (
+          states[connectionId],
+          connection?.remoteMuxSessionName,
+          connection?.remoteMuxBackend,
+        );
+      }),
+    );
+    final connection = ref
+        .read(activeSessionsProvider.notifier)
+        .getActiveConnection(connectionId);
+    if (connection == null) return const SizedBox.shrink();
+    final state = connection.state;
+    final endpoint =
+        '${connection.config.username}@'
+        '${connection.config.hostname}:${connection.config.port}';
+    void openConnection() => _openTerminalRoute(
+      context,
+      '/terminal/${connection.hostId}?connectionId=$connectionId',
+    );
+    final preferredTmuxSessionName = resolvePreferredTmuxSessionName(
+      structuredSessionName: host?.tmuxSessionName,
+      autoConnectCommand: host?.autoConnectCommand,
+    );
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        ListTile(
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: _connectionTileHorizontalPadding,
+          ),
+          horizontalTitleGap: _connectionTileHorizontalTitleGap,
+          minLeadingWidth: _connectionTileMinLeadingWidth,
+          leading: Icon(
+            Icons.terminal,
+            color: state == SshConnectionState.connected
+                ? colorScheme.primary
+                : colorScheme.onSurfaceVariant,
+          ),
+          title: Text(host?.label ?? 'Host ${connection.hostId}'),
+          subtitle: Text('$endpoint  •  Connection #$connectionId'),
+          trailing: IconButton(
+            icon: const Icon(Icons.close),
+            tooltip: 'Disconnect',
+            onPressed: () =>
+                unawaited(_disconnectConnection(ref, connectionId)),
+          ),
+          onTap: openConnection,
+        ),
+        GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: openConnection,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(
+              _connectionPreviewLeadingInset,
+              0,
+              _connectionTileHorizontalPadding,
+              8,
+            ),
+            child: ConnectionPreviewStack(
+              entries: [previewEntry],
+              onTap: openConnection,
+            ),
+          ),
+        ),
+        if (state == SshConnectionState.connected)
+          _TmuxConnectionBadge(
+            key: ValueKey('tmux-badge-$connectionId'),
+            connectionId: connectionId,
+            preferredSessionName:
+                connection.remoteMuxSessionName ?? preferredTmuxSessionName,
+            configuredMuxBackend:
+                connection.remoteMuxBackend ??
+                RemoteMuxBackendPresentation.fromStorageValue(
+                  host?.remoteMuxBackend,
+                ) ??
+                RemoteMuxBackend.tmux,
+            tmuxExtraFlags: host?.tmuxExtraFlags,
+            onTap: openConnection,
+          ),
+      ],
+    );
+  }
 }
 
 class _ActionButton extends StatelessWidget {

@@ -81,6 +81,10 @@ void main() {
         resolveTmuxClientFlagsFromExtraFlags('-S /tmp/socket ; set status off'),
         "-S '/tmp/socket'",
       );
+      expect(
+        resolveTmuxClientFlagsFromExtraFlags("""-S "" -L ''"""),
+        "-S '' -L ''",
+      );
     });
 
     test(
@@ -448,6 +452,49 @@ void main() {
       verify(() => client.execute(any(), pty: any(named: 'pty'))).called(2);
       service.invalidateInstalledAgentTools(session.connectionId);
     });
+
+    for (final clearConnection in [false, true]) {
+      test(
+        'late tool probe cannot refill cache after clear=$clearConnection',
+        () async {
+          final client = _MockSshClient();
+          final session = _buildSession(client, connectionId: 23);
+          const service = TmuxService();
+          final pending = Completer<SSHSession>();
+          var opens = 0;
+          when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer(
+            (_) => opens++ == 0
+                ? pending.future
+                : Future.value(
+                    _buildOpenExecSession(
+                      stdout: '/bin/opencode\n${_doneMarker()}',
+                    ),
+                  ),
+          );
+          addTearDown(() => service.clearCache(23));
+          final old = service.detectInstalledAgentTools(session);
+          await untilCalled(
+            () => client.execute(any(), pty: any(named: 'pty')),
+          );
+          if (clearConnection) {
+            await service.clearCache(23);
+          } else {
+            service.invalidateInstalledAgentTools(23);
+          }
+          expect(await service.detectInstalledAgentTools(session), {
+            AgentLaunchTool.openCode,
+          });
+          pending.complete(
+            _buildOpenExecSession(stdout: '/bin/claude\n${_doneMarker()}'),
+          );
+          expect(await old, {AgentLaunchTool.claudeCode});
+          expect(await service.detectInstalledAgentTools(session), {
+            AgentLaunchTool.openCode,
+          });
+          expect(opens, 2);
+        },
+      );
+    }
 
     test('prefetchInstalledAgentTools warms the detection cache', () async {
       final client = _MockSshClient();
@@ -1086,113 +1133,64 @@ void main() {
       expect(snapshot.window.id, '@3');
     });
 
-    test('returns null for other subscriptions', () {
-      expect(
-        parseTmuxWindowChangeEventFromControlLine(
-          r'%subscription-changed other-subscription $1 @1 1 %1 : updated',
-          subscriptionName: subscriptionName,
-        ),
-        isNull,
-      );
-    });
-
     test(
       'returns reload events for lifecycle notifications without snapshots',
       () {
-        expect(
-          parseTmuxWindowChangeEventFromControlLine(
-            '%window-add @1',
-            subscriptionName: subscriptionName,
-          ),
-          isA<TmuxWindowReloadEvent>(),
-        );
-        expect(
-          parseTmuxWindowChangeEventFromControlLine(
-            '%window-close @1',
-            subscriptionName: subscriptionName,
-          ),
-          isA<TmuxWindowReloadEvent>(),
-        );
-        expect(
-          parseTmuxWindowChangeEventFromControlLine(
-            '%unlinked-window-add @1',
-            subscriptionName: subscriptionName,
-          ),
-          isA<TmuxWindowReloadEvent>(),
-        );
-        expect(
-          parseTmuxWindowChangeEventFromControlLine(
-            '%unlinked-window-close @1',
-            subscriptionName: subscriptionName,
-          ),
-          isA<TmuxWindowReloadEvent>(),
-        );
-        expect(
-          parseTmuxWindowChangeEventFromControlLine(
-            '%pane-mode-changed %1',
-            subscriptionName: subscriptionName,
-          ),
-          isA<TmuxWindowReloadEvent>(),
-        );
+        for (final line in [
+          '%window-add @1',
+          '%window-close @1',
+          '%unlinked-window-add @1',
+          '%unlinked-window-close @1',
+          '%pane-mode-changed %1',
+        ]) {
+          expect(
+            parseTmuxWindowChangeEventFromControlLine(
+              line,
+              subscriptionName: subscriptionName,
+            ),
+            isA<TmuxWindowReloadEvent>(),
+          );
+        }
       },
     );
 
     test(
       'ignores noise and notifications that should rely on snapshots instead',
       () {
-        expect(
-          parseTmuxWindowChangeEventFromControlLine(
-            '%window-renamed @1 🔥 test-emoji',
-            subscriptionName: subscriptionName,
-          ),
-          isNull,
-        );
-        expect(
-          parseTmuxWindowChangeEventFromControlLine(
-            r'%session-window-changed $1 @1',
-            subscriptionName: subscriptionName,
-          ),
-          isNull,
-        );
-        expect(
-          parseTmuxWindowChangeEventFromControlLine(
-            '%begin 1 2 0',
-            subscriptionName: subscriptionName,
-          ),
-          isNull,
-        );
-        expect(
-          parseTmuxWindowChangeEventFromControlLine(
-            '%output %1 hello',
-            subscriptionName: subscriptionName,
-          ),
-          isNull,
-        );
-        expect(
-          parseTmuxWindowChangeEventFromControlLine(
-            '',
-            subscriptionName: subscriptionName,
-          ),
-          isNull,
-        );
+        for (final line in [
+          r'%subscription-changed other-subscription $1 @1 1 %1 : updated',
+          '%window-renamed @1 🔥 test-emoji',
+          r'%session-window-changed $1 @1',
+          '%begin 1 2 0',
+          '%output %1 hello',
+          '',
+        ]) {
+          expect(
+            parseTmuxWindowChangeEventFromControlLine(
+              line,
+              subscriptionName: subscriptionName,
+            ),
+            isNull,
+          );
+        }
       },
     );
   });
 
   group('diagnosticTmuxControlLineKind', () {
     test('returns only the control marker category', () {
-      expect(
-        diagnosticTmuxControlLineKind(
+      for (final (line, kind) in [
+        (
           r'%subscription-changed flutty-1-42 $1 @1 1 %1 : private details',
+          'subscription_changed',
         ),
-        'subscription_changed',
-      );
-      expect(
-        diagnosticTmuxControlLineKind('%window-renamed @1 private-name'),
-        'window_renamed',
-      );
-      expect(diagnosticTmuxControlLineKind(''), 'empty');
-      expect(diagnosticTmuxControlLineKind('unrecognized payload'), 'other');
+        ('%window-renamed @1 private-name', 'window_renamed'),
+        ('', 'empty'),
+        ('unrecognized payload', 'other'),
+      ]) {
+        expect(diagnosticTmuxControlLineKind(line), kind);
+        expect(diagnosticTmuxControlLineKind('\x1bP1000p$line\x1b\\'), kind);
+      }
     });
   });
 
@@ -1202,71 +1200,52 @@ void main() {
     test(
       'schedules fallback reloads for window signals that may miss snapshots',
       () {
-        expect(
-          shouldScheduleTmuxWindowReloadFallback(
-            r'%subscription-changed flutty-1-42 $1 @1 1 %1 : malformed',
-            subscriptionName: subscriptionName,
-          ),
-          isTrue,
-        );
-        expect(
-          shouldScheduleTmuxWindowReloadFallback(
-            r'%session-window-changed $1 @1',
-            subscriptionName: subscriptionName,
-          ),
-          isTrue,
-        );
-        expect(
-          shouldScheduleTmuxWindowReloadFallback(
-            '%window-add @1',
-            subscriptionName: subscriptionName,
-          ),
-          isTrue,
-        );
-        expect(
-          shouldScheduleTmuxWindowReloadFallback(
-            '%window-renamed @1 renamed-window',
-            subscriptionName: subscriptionName,
-          ),
-          isTrue,
-        );
+        for (final line in [
+          r'%subscription-changed flutty-1-42 $1 @1 1 %1 : malformed',
+          r'%session-window-changed $1 @1',
+          '%window-add @1',
+          '%window-renamed @1 renamed-window',
+        ]) {
+          expect(
+            shouldScheduleTmuxWindowReloadFallback(
+              line,
+              subscriptionName: subscriptionName,
+            ),
+            isTrue,
+          );
+        }
       },
     );
 
     test('ignores unrelated control-mode noise', () {
-      expect(
-        shouldScheduleTmuxWindowReloadFallback(
-          r'%subscription-changed other-subscription $1 @1 1 %1 : value',
-          subscriptionName: subscriptionName,
-        ),
-        isFalse,
-      );
-      expect(
-        shouldScheduleTmuxWindowReloadFallback(
-          '%output %1 hello',
-          subscriptionName: subscriptionName,
-        ),
-        isFalse,
-      );
+      for (final line in [
+        r'%subscription-changed other-subscription $1 @1 1 %1 : value',
+        '%output %1 hello',
+      ]) {
+        expect(
+          shouldScheduleTmuxWindowReloadFallback(
+            line,
+            subscriptionName: subscriptionName,
+          ),
+          isFalse,
+        );
+      }
     });
 
     test('preserves add and close reloads through later snapshots', () {
-      expect(
-        shouldPreserveTmuxWindowReloadThroughSnapshots('%window-add @1'),
-        isTrue,
-      );
-      expect(
-        shouldPreserveTmuxWindowReloadThroughSnapshots(
-          '%unlinked-window-close @1',
-        ),
-        isTrue,
-      );
-      expect(
-        shouldPreserveTmuxWindowReloadThroughSnapshots(
-          r'%session-window-changed $1 @1',
-        ),
-        isFalse,
-      );
+      for (final (line, preserved) in [
+        ('%window-add @1', true),
+        ('%unlinked-window-close @1', true),
+        (r'%session-window-changed $1 @1', false),
+      ]) {
+        expect(shouldPreserveTmuxWindowReloadThroughSnapshots(line), preserved);
+        expect(
+          shouldPreserveTmuxWindowReloadThroughSnapshots(
+            '\x1bP1000p$line\x1b\\',
+          ),
+          preserved,
+        );
+      }
     });
   });
 
@@ -1717,6 +1696,64 @@ void main() {
     );
 
     test(
+      'resubscribe replaces a disposing watcher and keeps shared ownership',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 76);
+        const service = TmuxService();
+        final closing = Completer<void>();
+        final oldOutput = StreamController<Uint8List>();
+        final newOutput = StreamController<Uint8List>();
+        final oldControl = _buildInteractiveExecSession(
+          stdoutController: oldOutput,
+          stdinClose: closing.future,
+        );
+        final newControl = _buildInteractiveExecSession(
+          stdoutController: newOutput,
+        );
+        final sessions = Queue<SSHSession>.from([
+          _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+          oldControl,
+          newControl,
+        ]);
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => sessions.removeFirst());
+        final first = service
+            .watchWindowChanges(session, 'main')
+            .listen((_) {});
+        await untilCalled(() => oldControl.write(any()));
+        await first.cancel();
+        final events = <TmuxWindowChangeEvent>[];
+        final replacementStream = service.watchWindowChanges(session, 'main');
+        final replacement = replacementStream.listen(events.add);
+        addTearDown(() async {
+          if (!closing.isCompleted) closing.complete();
+          await replacement.cancel();
+          await service.clearCache(76);
+          await oldOutput.close();
+          await newOutput.close();
+        });
+        await untilCalled(() => newControl.write(any()));
+        closing.complete();
+        await untilCalled(oldControl.close);
+        await Future<void>.delayed(Duration.zero);
+        final sharedEvents = <TmuxWindowChangeEvent>[];
+        final shared = service
+            .watchWindowChanges(session, 'main')
+            .listen(sharedEvents.add);
+        newOutput.add(_utf8Bytes('%window-add @2\n'));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        expect(events, contains(isA<TmuxWindowReloadEvent>()));
+        expect(sharedEvents, contains(isA<TmuxWindowReloadEvent>()));
+        await shared.cancel();
+        verifyNever(newControl.close);
+        verify(() => client.execute(any(), pty: any(named: 'pty'))).called(3);
+        expect(sessions, isEmpty);
+      },
+    );
+
+    test(
       'clearCache waits for disposal that subscription cancel started',
       () async {
         final client = _MockSshClient();
@@ -2075,135 +2112,61 @@ void main() {
       },
     );
 
-    test(
-      'selectWindow completes when stdout stays open after the done marker',
-      () async {
+    const service = TmuxService();
+    for (final (name, action, flags, id, command) in [
+      (
+        'selectWindow completes when stdout stays open after the done marker',
+        service.selectWindow,
+        null,
+        null,
+        "tmux -u select-window -t 'main':2",
+      ),
+      (
+        'selectWindow uses only reusable client flags when provided',
+        service.selectWindow,
+        r'-S /tmp/socket -x 160 \; set status off',
+        null,
+        "tmux -u -S '/tmp/socket' select-window -t 'main':2",
+      ),
+      (
+        'selectWindow targets stable window IDs when provided',
+        service.selectWindow,
+        null,
+        '@12',
+        "tmux -u select-window -t '@12'",
+      ),
+      (
+        'killWindow targets stable window IDs when provided',
+        service.killWindow,
+        null,
+        '@12',
+        "tmux -u kill-window -t '@12'",
+      ),
+      (
+        'killWindow waits for the done marker so failures can surface',
+        service.killWindow,
+        null,
+        null,
+        "tmux -u kill-window -t 'main':2",
+      ),
+    ]) {
+      test(name, () async {
         final client = _MockSshClient();
         final session = _buildSession(client);
-        const service = TmuxService();
         final execSession = _buildOpenExecSession(stdout: _doneMarker());
-
         when(
           () => client.execute(any(), pty: any(named: 'pty')),
         ).thenAnswer((_) async => execSession);
-
-        await service.selectWindow(session, 'main', 2);
-
+        await action(session, 'main', 2, extraFlags: flags, windowId: id);
         verify(
           () => client.execute(
-            any(
-              that: contains(
-                'tmux -u select-window -t '
-                "'main':2",
-              ),
-            ),
+            any(that: contains(command)),
             pty: any(named: 'pty'),
           ),
         ).called(1);
         verify(execSession.close).called(1);
-      },
-    );
-
-    test(
-      'selectWindow uses only reusable client flags when provided',
-      () async {
-        final client = _MockSshClient();
-        final session = _buildSession(client);
-        const service = TmuxService();
-        final execSession = _buildOpenExecSession(stdout: _doneMarker());
-
-        when(
-          () => client.execute(any(), pty: any(named: 'pty')),
-        ).thenAnswer((_) async => execSession);
-
-        await service.selectWindow(
-          session,
-          'main',
-          2,
-          extraFlags: r'-S /tmp/socket -x 160 \; set status off',
-        );
-
-        verify(
-          () => client.execute(
-            any(
-              that: contains(
-                "tmux -u -S '/tmp/socket' select-window -t 'main':2",
-              ),
-            ),
-            pty: any(named: 'pty'),
-          ),
-        ).called(1);
-      },
-    );
-
-    test('selectWindow targets stable window IDs when provided', () async {
-      final client = _MockSshClient();
-      final session = _buildSession(client);
-      const service = TmuxService();
-      final execSession = _buildOpenExecSession(stdout: _doneMarker());
-
-      when(
-        () => client.execute(any(), pty: any(named: 'pty')),
-      ).thenAnswer((_) async => execSession);
-
-      await service.selectWindow(session, 'main', 2, windowId: '@12');
-
-      verify(
-        () => client.execute(
-          any(that: contains("tmux -u select-window -t '@12'")),
-          pty: any(named: 'pty'),
-        ),
-      ).called(1);
-    });
-
-    test('killWindow targets stable window IDs when provided', () async {
-      final client = _MockSshClient();
-      final session = _buildSession(client);
-      const service = TmuxService();
-      final execSession = _buildOpenExecSession(stdout: _doneMarker());
-
-      when(
-        () => client.execute(any(), pty: any(named: 'pty')),
-      ).thenAnswer((_) async => execSession);
-
-      await service.killWindow(session, 'main', 2, windowId: '@12');
-
-      verify(
-        () => client.execute(
-          any(that: contains("tmux -u kill-window -t '@12'")),
-          pty: any(named: 'pty'),
-        ),
-      ).called(1);
-    });
-
-    test(
-      'killWindow waits for the done marker so failures can surface',
-      () async {
-        final client = _MockSshClient();
-        final session = _buildSession(client);
-        const service = TmuxService();
-        final execSession = _buildOpenExecSession(stdout: _doneMarker());
-
-        when(
-          () => client.execute(any(), pty: any(named: 'pty')),
-        ).thenAnswer((_) async => execSession);
-
-        await service.killWindow(session, 'main', 2);
-
-        verify(
-          () => client.execute(
-            any(
-              that: contains(
-                'tmux -u kill-window -t '
-                "'main':2",
-              ),
-            ),
-            pty: any(named: 'pty'),
-          ),
-        ).called(1);
-        verify(execSession.close).called(1);
-      },
-    );
+      });
+    }
 
     test('killWindow propagates missing marker failures', () async {
       final client = _MockSshClient();
@@ -2314,52 +2277,36 @@ void main() {
     const heartbeat = Duration(seconds: 5);
 
     test('noop while control-mode notifications are flowing', () {
-      expect(
-        decideTmuxHeartbeatAction(
-          silence: Duration.zero,
-          heartbeatInterval: heartbeat,
-        ),
-        TmuxControlHeartbeatAction.noop,
-      );
-      expect(
-        decideTmuxHeartbeatAction(
-          silence: const Duration(milliseconds: 4999),
-          heartbeatInterval: heartbeat,
-        ),
-        TmuxControlHeartbeatAction.noop,
-      );
+      for (final silence in [
+        Duration.zero,
+        const Duration(milliseconds: 4999),
+      ]) {
+        expect(
+          decideTmuxHeartbeatAction(
+            silence: silence,
+            heartbeatInterval: heartbeat,
+          ),
+          TmuxControlHeartbeatAction.noop,
+        );
+      }
     });
 
     test('synthesizes a refresh once the channel has been silent for the '
         'heartbeat interval', () {
-      expect(
-        decideTmuxHeartbeatAction(
-          silence: heartbeat,
-          heartbeatInterval: heartbeat,
-        ),
-        TmuxControlHeartbeatAction.refresh,
-      );
-      expect(
-        decideTmuxHeartbeatAction(
-          silence: const Duration(seconds: 20),
-          heartbeatInterval: heartbeat,
-        ),
-        TmuxControlHeartbeatAction.refresh,
-      );
-    });
-
-    test(
-      'continues refreshing instead of restarting after prolonged silence',
-      () {
+      for (final silence in [
+        heartbeat,
+        const Duration(seconds: 20),
+        const Duration(minutes: 5),
+      ]) {
         expect(
           decideTmuxHeartbeatAction(
-            silence: const Duration(minutes: 5),
+            silence: silence,
             heartbeatInterval: heartbeat,
           ),
           TmuxControlHeartbeatAction.refresh,
         );
-      },
-    );
+      }
+    });
   });
 
   group('tmuxCommandNeedsLoginProfile', () {

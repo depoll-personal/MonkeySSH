@@ -33,3 +33,18 @@ class MediaProbeTest(unittest.TestCase):
             with self.assertRaises(subprocess.CalledProcessError) as raised:
                 store_media._video_duration(Path('/video.mp4'))
             self.assertEqual(raised.exception.stderr, 'invalid media')
+
+    def test_ocr_rejects_errors_missing_and_unfinished_results(self):
+        for output, error in (
+            ('FILE\t/bad.png\tERROR\tCould not load image\n', 'OCR failed for /bad.png: Could not load image'),
+            ('FILE\t/other.png\nHello\nEND_FILE\n', 'OCR did not return text for /bad.png'),
+            ('FILE\t/bad.png\nHello\n', 'OCR did not return text for /bad.png'),
+            ('', 'OCR did not return text for /bad.png'),
+        ):
+            with self.subTest(output=output), patch.object(store_media.subprocess, 'run', return_value=Mock(stdout=output)):
+                with self.assertRaisesRegex(ValueError, error):
+                    store_media._ocr_texts([Path('/bad.png')])
+
+    def test_ocr_accepts_completed_empty_text(self):
+        with patch.object(store_media.subprocess, 'run', return_value=Mock(stdout='FILE\t/blank.png\n\nEND_FILE\n')):
+            self.assertEqual(store_media._ocr_texts([Path('/blank.png')]), {Path('/blank.png'): ''})

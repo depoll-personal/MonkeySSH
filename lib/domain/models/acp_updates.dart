@@ -209,9 +209,6 @@ extension type const AcpToolKind(String value) {
   /// External data fetch.
   static const fetch = AcpToolKind('fetch');
 
-  /// Session mode switch.
-  static const switchMode = AcpToolKind('switch_mode');
-
   /// Other tool category.
   static const other = AcpToolKind('other');
 }

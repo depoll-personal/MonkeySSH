@@ -32,7 +32,7 @@ def classify(paths, platform='', app='both'):
                 result['android'] = result['android_screenshots'] = True
             if path in {
                 'scripts/store_assets.sh', 'scripts/validate_store_screenshots.py',
-                'scripts/validate_store_demo_videos.py',
+                'scripts/validate_store_demo_videos.py', 'scripts/store_media.py',
                 '.github/workflows/sync-metadata.yml', 'scripts/metadata_changes.py',
             }:
                 result = dict.fromkeys(result, True)

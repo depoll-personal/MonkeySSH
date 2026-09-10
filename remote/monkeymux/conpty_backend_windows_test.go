@@ -332,6 +332,32 @@ func TestLateSplitPasteStartAfterTimeoutStaysOrdinary(t *testing.T) {
 	}
 }
 
+func TestConPtyRejectsInvalidInputBeforeCreate(t *testing.T) {
+	backend := &conPtyBackend{create: func(windows.Coord, windows.Handle, windows.Handle, uint32, *windows.Handle) error {
+		t.Error("invalid input reached pseudoconsole creation")
+		return windows.ERROR_INVALID_PARAMETER
+	}}
+	for _, test := range []struct {
+		command, dir string
+		env          []string
+		want         string
+	}{
+		{"cmd\x00", "", nil, "encode command line:"},
+		{"cmd", "dir\x00", nil, "encode working directory:"},
+		{"cmd", "", []string{"KEY=value\x00"}, "encode environment:"},
+	} {
+		t.Run(test.want, func(t *testing.T) {
+			write, read, console, process, pid, err := startConPtyWithBackend(backend, test.command, test.env, test.dir, 80, 24)
+			if err == nil || !strings.HasPrefix(err.Error(), test.want) {
+				t.Fatalf("start error = %v, want %s", err, test.want)
+			}
+			if write != 0 || read != 0 || console != 0 || process != 0 || pid != 0 {
+				t.Fatalf("failure returned resources: %v %v %v %v %v", write, read, console, process, pid)
+			}
+		})
+	}
+}
+
 func TestConPtyStartFallsBackAndReturnsActualBackend(t *testing.T) {
 	if os.Getenv("MONKEYMUX_CONPTY_TEST_HELPER") == "1" {
 		runConPtyTestHelper()
@@ -352,6 +378,19 @@ func TestConPtyStartFallsBackAndReturnsActualBackend(t *testing.T) {
 			_ = windows.FreeLibrary(windows.Handle(fallback.dll.Handle()))
 		}
 	})
+	closed := 0
+	closeConsole := fallback.close
+	fallback.close = func(handle windows.Handle) {
+		closed++
+		closeConsole(handle)
+	}
+	write, read, console, process, pid, startErr := startConPtyWithBackend(fallback, `"`+t.TempDir()+`\missing.exe"`, nil, "", 80, 24)
+	if startErr == nil || !strings.HasPrefix(startErr.Error(), "create process:") {
+		t.Fatalf("missing executable error = %v", startErr)
+	}
+	if write != 0 || read != 0 || console != 0 || process != 0 || pid != 0 || closed != 1 {
+		t.Fatalf("failed launch resources = %v %v %v %v %v, console closes = %d", write, read, console, process, pid, closed)
+	}
 	preferred := &conPtyBackend{
 		name: "injected-failure",
 		create: func(

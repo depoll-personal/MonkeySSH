@@ -1492,6 +1492,47 @@ bool terminalTextLooksLikeSensitiveInputPrompt(String? textBeforeCursor) {
   return _terminalSensitivePromptPattern.hasMatch(normalizedLine);
 }
 
+/// Reads a wrapped cursor prefix, returning null when its trimmed text is too long.
+@visibleForTesting
+String? terminalSensitivePromptTextBeforeCursor(Terminal terminal) {
+  final buffer = terminal.buffer;
+  var row = buffer.absoluteCursorY;
+  if (row < 0 || row >= buffer.height) {
+    return null;
+  }
+  var column = buffer.cursorX.clamp(0, buffer.viewWidth);
+  final characters = <int>[];
+  var length = 0;
+  while (true) {
+    final line = buffer.lines[row];
+    while (column > 0) {
+      column--;
+      if (column > 0 && line.getWidth(column - 1) == 2) {
+        column--;
+      } else if (line.getWidth(column) == 2 && column + 1 < buffer.viewWidth) {
+        // The cursor is inside this cell, before its text offset advances.
+        continue;
+      }
+      final codePoint = line.getCodePoint(column);
+      final character = codePoint == 0 ? 0x20 : codePoint;
+      if (characters.isEmpty &&
+          String.fromCharCode(character).trimRight().isEmpty) {
+        continue;
+      }
+      length += character > 0xffff ? 2 : 1;
+      if (length > 220) {
+        return null;
+      }
+      characters.add(character);
+    }
+    if (row == 0 || !line.isWrapped) {
+      return String.fromCharCodes(characters.reversed);
+    }
+    row--;
+    column = buffer.viewWidth;
+  }
+}
+
 const _minTerminalFontSize = 8.0;
 const _maxTerminalFontSize = 32.0;
 const _terminalFollowOutputTolerance = 1.0;
@@ -3630,16 +3671,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       <String, _VerifiedTerminalPath>{};
   final Set<String> _verifyingTerminalPathCacheKeys = <String>{};
   String? _terminalPathCacheScope;
-  String? _pendingTerminalLinkTap;
-  int? _pendingTerminalLinkTapPointer;
-  Offset? _pendingTerminalLinkTapDownPosition;
-  Duration? _pendingTerminalLinkTapDownTimestamp;
-  String? _recentlyOpenedTerminalLinkTap;
-  String? _pendingTerminalPathTap;
-  int? _pendingTerminalPathTapPointer;
-  Offset? _pendingTerminalPathTapDownPosition;
-  Duration? _pendingTerminalPathTapDownTimestamp;
-  String? _recentlyOpenedTerminalPathTap;
+  String? _pendingTerminalTargetTap;
+  int? _pendingTerminalTargetTapPointer;
+  Offset? _pendingTerminalTargetTapDownPosition;
+  Duration? _pendingTerminalTargetTapDownTimestamp;
+  String? _recentlyOpenedTerminalTargetTap;
   final Set<_TerminalExclusiveAction> _exclusiveTerminalActions =
       <_TerminalExclusiveAction>{};
   int? _pendingTerminalDoubleTapPointer;
@@ -4609,7 +4645,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
     final detectedSensitiveKeyboardPrompt =
         _isMobilePlatform &&
-        terminalTextLooksLikeSensitiveInputPrompt(_terminalTextBeforeCursor());
+        terminalTextLooksLikeSensitiveInputPrompt(
+          terminalSensitivePromptTextBeforeCursor(_terminal),
+        );
     final sensitiveKeyboardPromptChanged =
         detectedSensitiveKeyboardPrompt != _detectedSensitiveKeyboardPrompt;
     if (!scrollPolicyChanged && !sensitiveKeyboardPromptChanged) {
@@ -9152,25 +9190,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       command,
       importedNeedsReview: host.autoConnectRequiresConfirmation,
     );
-    if (review.requiresReview) {
-      final decision = await _reviewImportedAutoConnectCommand(review);
-      if (!mounted || decision == _AutoConnectReviewDecision.skip) {
-        return;
-      }
-      if (decision == _AutoConnectReviewDecision.trustAndRun) {
-        final updatedHost = host.copyWith(
-          autoConnectRequiresConfirmation: false,
-        );
-        await ref
-            .read(hostRepositoryProvider)
-            .updateFields(
-              updatedHost.id,
-              const HostsCompanion(
-                autoConnectRequiresConfirmation: drift.Value(false),
-              ),
-            );
-        _host = updatedHost;
-      }
+    if (review.requiresReview &&
+        !await _reviewImportedAutoConnectCommand(review, host)) {
+      return;
     }
 
     shell.write(utf8.encode(formatAutoConnectCommandForShell(command)));
@@ -9213,25 +9235,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           attachCommand.backend != RemoteMuxBackend.monkeyMux &&
           host.autoConnectRequiresConfirmation,
     );
-    if (review.requiresReview) {
-      final decision = await _reviewImportedAutoConnectCommand(review);
-      if (!mounted || decision == _AutoConnectReviewDecision.skip) {
-        return null;
-      }
-      if (decision == _AutoConnectReviewDecision.trustAndRun) {
-        final updatedHost = host.copyWith(
-          autoConnectRequiresConfirmation: false,
-        );
-        await ref
-            .read(hostRepositoryProvider)
-            .updateFields(
-              updatedHost.id,
-              const HostsCompanion(
-                autoConnectRequiresConfirmation: drift.Value(false),
-              ),
-            );
-        _host = updatedHost;
-      }
+    if (review.requiresReview &&
+        !await _reviewImportedAutoConnectCommand(review, host)) {
+      return null;
     }
     return (
       backend: attachCommand.backend,
@@ -10035,25 +10041,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       attachCommand,
       importedNeedsReview: host.autoConnectRequiresConfirmation,
     );
-    if (review.requiresReview) {
-      final decision = await _reviewImportedAutoConnectCommand(review);
-      if (!mounted || decision == _AutoConnectReviewDecision.skip) {
-        return null;
-      }
-      if (decision == _AutoConnectReviewDecision.trustAndRun) {
-        final updatedHost = host.copyWith(
-          autoConnectRequiresConfirmation: false,
-        );
-        await ref
-            .read(hostRepositoryProvider)
-            .updateFields(
-              updatedHost.id,
-              const HostsCompanion(
-                autoConnectRequiresConfirmation: drift.Value(false),
-              ),
-            );
-        _host = updatedHost;
-      }
+    if (review.requiresReview &&
+        !await _reviewImportedAutoConnectCommand(review, host)) {
+      return null;
     }
 
     return (
@@ -15730,44 +15720,34 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   );
 
   String? _resolveTerminalLinkTap(CellOffset offset) {
-    final externalLink = _resolveTerminalExternalLinkAtOffset(
+    var target = _resolveTerminalExternalLinkAtOffset(
       offset,
       forgiving: _isMobilePlatform,
     );
-    if (externalLink != null) {
-      _pendingTerminalPathTap = null;
-      if (_consumeRecentlyOpenedTerminalLinkTap(externalLink)) {
-        return null;
+    if (target == null && ref.read(terminalPathLinksNotifierProvider)) {
+      final detectedPath = _resolveTerminalFilePathAtOffset(
+        offset,
+        forgiving: _isMobilePlatform,
+      );
+      if (detectedPath != null) {
+        target = '$_terminalSftpPathPrefix$detectedPath';
+      } else {
+        final pendingTarget = _pendingTerminalTargetTap;
+        if (pendingTarget != null &&
+            pendingTarget.startsWith(_terminalSftpPathPrefix) &&
+            _isInteractiveTerminalFilePath(
+              pendingTarget.substring(_terminalSftpPathPrefix.length),
+            )) {
+          target = pendingTarget;
+        }
       }
-      return externalLink;
     }
-
-    if (!ref.read(terminalPathLinksNotifierProvider)) {
-      _pendingTerminalPathTap = null;
+    _clearPendingTerminalTargetTap();
+    if (_recentlyOpenedTerminalTargetTap == target) {
+      _recentlyOpenedTerminalTargetTap = null;
       return null;
     }
-
-    final detectedPath = _resolveTerminalFilePathAtOffset(
-      offset,
-      forgiving: _isMobilePlatform,
-    );
-    if (detectedPath == null) {
-      final pendingPath = _pendingTerminalPathTap;
-      _clearPendingTerminalPathTap();
-      if (pendingPath == null || !_isInteractiveTerminalFilePath(pendingPath)) {
-        return null;
-      }
-      if (_consumeRecentlyOpenedTerminalPathTap(pendingPath)) {
-        return null;
-      }
-      return '$_terminalSftpPathPrefix$pendingPath';
-    }
-
-    _clearPendingTerminalPathTap();
-    if (_consumeRecentlyOpenedTerminalPathTap(detectedPath)) {
-      return null;
-    }
-    return '$_terminalSftpPathPrefix$detectedPath';
+    return target;
   }
 
   String? _resolveTerminalExternalLinkAtOffset(
@@ -15869,14 +15849,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
     }
     if (forgiving) {
-      return _resolveSingleInteractiveTerminalFilePathOnRow(offset.y);
+      final segments = _resolveInteractiveTerminalPathSegmentsOnRow(offset.y);
+      return segments.length == 1 ? segments.single.path : null;
     }
     return null;
-  }
-
-  String? _resolveSingleInteractiveTerminalFilePathOnRow(int row) {
-    final segments = _resolveInteractiveTerminalPathSegmentsOnRow(row);
-    return segments.length == 1 ? segments.single.path : null;
   }
 
   String? _detectTerminalFilePathAtCell(CellOffset offset) {
@@ -16069,34 +16045,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     setState(() => _hoveredTerminalPathUnderline = underline);
   }
 
-  void _clearPendingTerminalPathTap() {
-    _pendingTerminalPathTap = null;
-    _pendingTerminalPathTapPointer = null;
-    _pendingTerminalPathTapDownPosition = null;
-    _pendingTerminalPathTapDownTimestamp = null;
-  }
-
-  void _clearPendingTerminalLinkTap() {
-    _pendingTerminalLinkTap = null;
-    _pendingTerminalLinkTapPointer = null;
-    _pendingTerminalLinkTapDownPosition = null;
-    _pendingTerminalLinkTapDownTimestamp = null;
-  }
-
-  bool _consumeRecentlyOpenedTerminalLinkTap(String link) {
-    if (_recentlyOpenedTerminalLinkTap != link) {
-      return false;
-    }
-    _recentlyOpenedTerminalLinkTap = null;
-    return true;
-  }
-
-  bool _consumeRecentlyOpenedTerminalPathTap(String path) {
-    if (_recentlyOpenedTerminalPathTap != path) {
-      return false;
-    }
-    _recentlyOpenedTerminalPathTap = null;
-    return true;
+  void _clearPendingTerminalTargetTap() {
+    _pendingTerminalTargetTap = null;
+    _pendingTerminalTargetTapPointer = null;
+    _pendingTerminalTargetTapDownPosition = null;
+    _pendingTerminalTargetTapDownTimestamp = null;
   }
 
   void _clearPendingTerminalDoubleTap() {
@@ -16154,38 +16107,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _handleTerminalPointerDown(PointerDownEvent event) {
     _pauseTerminalOutputFollowForTouch(event);
-    _handleTerminalLinkPointerDown(event);
-    if (_pendingTerminalLinkTap == null) {
-      _handleTerminalPathPointerDown(event);
-    } else {
-      _clearPendingTerminalPathTap();
-    }
+    _handleTerminalTargetPointerDown(event);
     _handleTerminalDoubleTapPointerDown(
       event,
-      allowDoubleTap:
-          _pendingTerminalLinkTap == null && _pendingTerminalPathTap == null,
+      allowDoubleTap: _pendingTerminalTargetTap == null,
     );
     _handleTerminalMouseTapPointerDown(
       event,
       allowTap:
-          _pendingTerminalLinkTap == null &&
-          _pendingTerminalPathTap == null &&
+          _pendingTerminalTargetTap == null &&
           _terminalDoubleTapConsumedPointer != event.pointer,
     );
   }
 
   void _handleTerminalPointerMove(PointerMoveEvent event) {
-    _handleTerminalLinkPointerMove(event);
-    _handleTerminalPathPointerMove(event);
+    _handleTerminalTargetPointerMove(event);
     _handleTerminalDoubleTapPointerMove(event);
     _handleTerminalMouseTapPointerMove(event);
   }
 
   void _handleTerminalPointerUp(PointerUpEvent event) {
-    final linkTapConsumed = _handleTerminalLinkPointerUp(event);
-    final pathTapConsumed =
-        !linkTapConsumed && _handleTerminalPathPointerUp(event);
-    if (!linkTapConsumed && !pathTapConsumed) {
+    if (!_handleTerminalTargetPointerUp(event)) {
       _handleTerminalDoubleTapPointerUp(event);
       _handleTerminalMouseTapPointerUp(event);
     } else {
@@ -16196,85 +16138,85 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _handleTerminalPointerCancel(PointerCancelEvent event) {
-    _handleTerminalLinkPointerCancel(event);
-    _handleTerminalPathPointerCancel(event);
+    if (_pendingTerminalTargetTapPointer == event.pointer) {
+      _clearPendingTerminalTargetTap();
+    }
     _handleTerminalDoubleTapPointerCancel(event);
     _clearPendingTerminalMouseTap(event.pointer);
     _resumeTerminalOutputFollowForTouch(event.pointer);
   }
 
-  void _handleTerminalLinkPointerDown(PointerDownEvent event) {
+  void _handleTerminalTargetPointerDown(PointerDownEvent event) {
+    _clearPendingTerminalTargetTap();
     final terminalViewState = _terminalViewKey.currentState;
-    _clearPendingTerminalLinkTap();
-    if (event.kind != PointerDeviceKind.touch || terminalViewState == null) {
+    if (terminalViewState == null) {
+      _clearHoveredTerminalPathUnderline();
       return;
     }
-
-    final terminalLocalPosition = terminalViewState.renderTerminal
-        .globalToLocal(event.position);
+    final localPosition = terminalViewState.renderTerminal.globalToLocal(
+      event.position,
+    );
     final offset = terminalViewState.renderTerminal.getCellOffset(
-      terminalLocalPosition,
+      localPosition,
     );
-    final tappedLink = _resolveTerminalExternalLinkAtOffset(
-      offset,
-      forgiving: true,
-    );
-    if (tappedLink == null) {
+    final link = event.kind == PointerDeviceKind.touch
+        ? _resolveTerminalExternalLinkAtOffset(offset, forgiving: true)
+        : null;
+    final path = link == null
+        ? _resolveTerminalPointerPath(event, offset, localPosition)
+        : null;
+    final target =
+        link ?? (path == null ? null : '$_terminalSftpPathPrefix$path');
+    if (target == null) {
       return;
     }
-
-    _terminalTextInputController.suppressNextTouchKeyboardRequest();
-    _pendingTerminalLinkTap = tappedLink;
-    _pendingTerminalLinkTapPointer = event.pointer;
-    _pendingTerminalLinkTapDownPosition = event.position;
-    _pendingTerminalLinkTapDownTimestamp = event.timeStamp;
+    if (link != null) {
+      _terminalTextInputController.suppressNextTouchKeyboardRequest();
+    }
+    _pendingTerminalTargetTap = target;
+    _pendingTerminalTargetTapPointer = event.pointer;
+    _pendingTerminalTargetTapDownPosition = event.position;
+    _pendingTerminalTargetTapDownTimestamp = event.timeStamp;
   }
 
-  void _handleTerminalLinkPointerMove(PointerMoveEvent event) {
-    if (_pendingTerminalLinkTapPointer != event.pointer) {
+  void _handleTerminalTargetPointerMove(PointerMoveEvent event) {
+    if (_pendingTerminalTargetTapPointer != event.pointer) {
       return;
     }
-    final downPosition = _pendingTerminalLinkTapDownPosition;
+    final downPosition = _pendingTerminalTargetTapDownPosition;
     if (downPosition != null &&
         (event.position - downPosition).distance > kTouchSlop) {
-      _clearPendingTerminalLinkTap();
+      _clearPendingTerminalTargetTap();
     }
   }
 
-  bool _handleTerminalLinkPointerUp(PointerUpEvent event) {
+  bool _handleTerminalTargetPointerUp(PointerUpEvent event) {
     if (event.kind != PointerDeviceKind.touch) {
       return false;
     }
 
-    final pendingLink = _pendingTerminalLinkTap;
-    final downPosition = _pendingTerminalLinkTapDownPosition;
-    final downTimestamp = _pendingTerminalLinkTapDownTimestamp;
-    if (pendingLink == null ||
-        _pendingTerminalLinkTapPointer != event.pointer ||
+    final pendingTarget = _pendingTerminalTargetTap;
+    final downPosition = _pendingTerminalTargetTapDownPosition;
+    final downTimestamp = _pendingTerminalTargetTapDownTimestamp;
+    if (pendingTarget == null ||
+        _pendingTerminalTargetTapPointer != event.pointer ||
         downPosition == null ||
         downTimestamp == null ||
         event.timeStamp - downTimestamp > kLongPressTimeout ||
         (event.position - downPosition).distance > kTouchSlop) {
-      _clearPendingTerminalLinkTap();
-      return pendingLink != null;
+      _clearPendingTerminalTargetTap();
+      return pendingTarget != null;
     }
 
-    _clearPendingTerminalLinkTap();
-    _clearPendingTerminalPathTap();
-    _recentlyOpenedTerminalLinkTap = pendingLink;
+    _clearPendingTerminalTargetTap();
+    _recentlyOpenedTerminalTargetTap = pendingTarget;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_recentlyOpenedTerminalLinkTap == pendingLink) {
-        _recentlyOpenedTerminalLinkTap = null;
+      if (_recentlyOpenedTerminalTargetTap == pendingTarget) {
+        _recentlyOpenedTerminalTargetTap = null;
       }
     });
-    _handleTerminalLinkTap(pendingLink);
+    _handleTerminalLinkTap(pendingTarget);
     return true;
-  }
-
-  void _handleTerminalLinkPointerCancel(PointerCancelEvent event) {
-    if (_pendingTerminalLinkTapPointer == event.pointer) {
-      _clearPendingTerminalLinkTap();
-    }
   }
 
   void _handleTerminalMouseTapPointerDown(
@@ -16416,26 +16358,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  void _handleTerminalPathPointerDown(PointerDownEvent event) {
-    final terminalViewState = _terminalViewKey.currentState;
-    final pathLinksEnabled = ref.read(terminalPathLinksNotifierProvider);
-    _clearPendingTerminalPathTap();
-    if (terminalViewState == null || !pathLinksEnabled) {
-      if (_hoveredTerminalPathUnderline != null) {
-        _clearHoveredTerminalPathUnderline();
-      }
-      return;
+  String? _resolveTerminalPointerPath(
+    PointerDownEvent event,
+    CellOffset offset,
+    Offset terminalLocalPosition,
+  ) {
+    if (!ref.read(terminalPathLinksNotifierProvider)) {
+      _clearHoveredTerminalPathUnderline();
+      return null;
     }
-
-    final terminalLocalPosition = terminalViewState.renderTerminal
-        .globalToLocal(event.position);
-    final terminalViewObject = terminalViewState.context.findRenderObject();
+    final terminalViewObject = _terminalViewKey.currentState!.context
+        .findRenderObject();
     final terminalViewLocalPosition = terminalViewObject is RenderBox
         ? terminalViewObject.globalToLocal(event.position)
         : terminalLocalPosition;
-    final offset = terminalViewState.renderTerminal.getCellOffset(
-      terminalLocalPosition,
-    );
     final candidatePath = _detectTerminalFilePathAtOffset(
       offset,
       forgiving: event.kind == PointerDeviceKind.touch,
@@ -16454,58 +16390,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         !_isInteractiveTerminalFilePath(candidatePath)) {
       _primeTerminalFilePathVerification(candidatePath);
     }
-    if (tappedPath != null && _isInteractiveTerminalFilePath(tappedPath)) {
-      _pendingTerminalPathTap = tappedPath;
-      _pendingTerminalPathTapPointer = event.pointer;
-      _pendingTerminalPathTapDownPosition = event.position;
-      _pendingTerminalPathTapDownTimestamp = event.timeStamp;
-    }
-  }
-
-  void _handleTerminalPathPointerMove(PointerMoveEvent event) {
-    if (_pendingTerminalPathTapPointer != event.pointer) {
-      return;
-    }
-    final downPosition = _pendingTerminalPathTapDownPosition;
-    if (downPosition != null &&
-        (event.position - downPosition).distance > kTouchSlop) {
-      _clearPendingTerminalPathTap();
-    }
-  }
-
-  bool _handleTerminalPathPointerUp(PointerUpEvent event) {
-    if (event.kind != PointerDeviceKind.touch) {
-      return false;
-    }
-
-    final pendingPath = _pendingTerminalPathTap;
-    final downPosition = _pendingTerminalPathTapDownPosition;
-    final downTimestamp = _pendingTerminalPathTapDownTimestamp;
-    if (pendingPath == null ||
-        _pendingTerminalPathTapPointer != event.pointer ||
-        downPosition == null ||
-        downTimestamp == null ||
-        event.timeStamp - downTimestamp > kLongPressTimeout ||
-        (event.position - downPosition).distance > kTouchSlop) {
-      _clearPendingTerminalPathTap();
-      return pendingPath != null;
-    }
-
-    _clearPendingTerminalPathTap();
-    _recentlyOpenedTerminalPathTap = pendingPath;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_recentlyOpenedTerminalPathTap == pendingPath) {
-        _recentlyOpenedTerminalPathTap = null;
-      }
-    });
-    _handleTerminalLinkTap('$_terminalSftpPathPrefix$pendingPath');
-    return true;
-  }
-
-  void _handleTerminalPathPointerCancel(PointerCancelEvent event) {
-    if (_pendingTerminalPathTapPointer == event.pointer) {
-      _clearPendingTerminalPathTap();
-    }
+    return tappedPath != null && _isInteractiveTerminalFilePath(tappedPath)
+        ? tappedPath
+        : null;
   }
 
   void _clearHoveredTerminalPathUnderline() {
@@ -16849,26 +16736,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     final builder = StringBuffer();
-    final rowStarts = <int>[];
-    final columnOffsets = <List<int>>[];
+    final cursorColumn = buffer.cursorX.clamp(0, buffer.viewWidth);
+    var cursorOffset = 0;
     for (var lineIndex = startRow; lineIndex <= endRow; lineIndex++) {
-      rowStarts.add(builder.length);
       final lineSnapshot = _buildTerminalLineSnapshot(
         buffer.lines[lineIndex],
         buffer.viewWidth,
         preserveTrailingPadding: lineIndex < endRow,
-        preserveOffset: lineIndex == row
-            ? buffer.cursorX.clamp(0, buffer.viewWidth)
-            : 0,
+        preserveOffset: lineIndex == row ? cursorColumn : 0,
       );
+      if (lineIndex == row) {
+        cursorOffset =
+            builder.length + lineSnapshot.columnOffsets[cursorColumn];
+      }
       builder.write(lineSnapshot.text);
-      columnOffsets.add(lineSnapshot.columnOffsets);
     }
 
-    final rowIndex = row - startRow;
-    final cursorColumn = buffer.cursorX.clamp(0, buffer.viewWidth);
-    final cursorOffset =
-        rowStarts[rowIndex] + columnOffsets[rowIndex][cursorColumn];
     return (text: builder.toString(), cursorOffset: cursorOffset);
   }
 
@@ -19272,8 +19155,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  Future<_AutoConnectReviewDecision> _reviewImportedAutoConnectCommand(
+  Future<bool> _reviewImportedAutoConnectCommand(
     TerminalCommandReview review,
+    Host host,
   ) async {
     final decision = await showDialog<_AutoConnectReviewDecision>(
       context: context,
@@ -19304,7 +19188,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ],
       ),
     );
-    return decision ?? _AutoConnectReviewDecision.skip;
+    if (!mounted ||
+        decision == null ||
+        decision == _AutoConnectReviewDecision.skip) {
+      return false;
+    }
+    if (decision == _AutoConnectReviewDecision.trustAndRun) {
+      await ref
+          .read(hostRepositoryProvider)
+          .updateFields(
+            host.id,
+            const HostsCompanion(
+              autoConnectRequiresConfirmation: drift.Value(false),
+            ),
+          );
+      _host = host.copyWith(autoConnectRequiresConfirmation: false);
+    }
+    return mounted;
   }
 
   Future<bool> _confirmCommandInsertion({
@@ -19339,7 +19239,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required String message,
   }) {
     final reasons = describeTerminalCommandReview(review);
-    final commandPreview = _terminalCommandReviewPreview(review.command);
+    const maxPreviewLength = 2000;
+    final command = review.command;
+    final commandPreview = command.length <= maxPreviewLength
+        ? command
+        : '${command.substring(0, maxPreviewLength)}\n'
+              '... truncated ${command.length - maxPreviewLength} characters ...';
     return SingleChildScrollView(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -19380,16 +19285,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ],
       ),
     );
-  }
-
-  String _terminalCommandReviewPreview(String command) {
-    const maxPreviewLength = 2000;
-    if (command.length <= maxPreviewLength) {
-      return command;
-    }
-    final omittedCount = command.length - maxPreviewLength;
-    return '${command.substring(0, maxPreviewLength)}\n'
-        '... truncated $omittedCount characters ...';
   }
 }
 

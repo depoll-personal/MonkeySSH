@@ -14,6 +14,7 @@ import 'package:flutter/foundation.dart'
         defaultTargetPlatform,
         kIsWeb,
         listEquals,
+        mapEquals,
         visibleForTesting;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -42,7 +43,6 @@ import 'package:xterm/src/ui/custom_text_edit.dart';
 import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/src/ui/keyboard_listener.dart';
 import 'package:xterm/src/ui/keyboard_visibility.dart';
-import 'package:xterm/src/ui/palette_builder.dart';
 import 'package:xterm/src/ui/paragraph_cache.dart';
 import 'package:xterm/src/ui/painter.dart';
 import 'package:xterm/src/ui/pointer_input.dart';
@@ -127,57 +127,6 @@ double _contrastRatio(Color a, Color b) {
   return (brightest + 0.05) / (darkest + 0.05);
 }
 
-/// Resolves xterm palette colors while preserving xterm-256color semantics.
-///
-/// Palette entries 0-15 are theme-controlled ANSI colors; entries 16-255 are
-/// fixed xterm color-cube/grayscale colors.
-@visibleForTesting
-Color resolveMonkeyTerminalPaletteColor(TerminalTheme theme, int colorIndex) {
-  switch (colorIndex) {
-    case 0:
-      return theme.black;
-    case 1:
-      return theme.red;
-    case 2:
-      return theme.green;
-    case 3:
-      return theme.yellow;
-    case 4:
-      return theme.blue;
-    case 5:
-      return theme.magenta;
-    case 6:
-      return theme.cyan;
-    case 7:
-      return theme.white;
-    case 8:
-      return theme.brightBlack;
-    case 9:
-      return theme.brightRed;
-    case 10:
-      return theme.brightGreen;
-    case 11:
-      return theme.brightYellow;
-    case 12:
-      return theme.brightBlue;
-    case 13:
-      return theme.brightMagenta;
-    case 14:
-      return theme.brightCyan;
-    case 15:
-      return theme.brightWhite;
-    default:
-      return PaletteBuilder(theme).paletteColor(colorIndex);
-  }
-}
-
-List<Color> _buildMonkeyTerminalPalette(TerminalTheme theme) =>
-    List<Color>.generate(
-      256,
-      (index) => resolveMonkeyTerminalPaletteColor(theme, index),
-      growable: false,
-    );
-
 bool _terminalThemesEqual(TerminalTheme a, TerminalTheme b) =>
     a.cursor == b.cursor &&
     a.selection == b.selection &&
@@ -201,7 +150,8 @@ bool _terminalThemesEqual(TerminalTheme a, TerminalTheme b) =>
     a.brightWhite == b.brightWhite &&
     a.searchHitBackground == b.searchHitBackground &&
     a.searchHitBackgroundCurrent == b.searchHitBackgroundCurrent &&
-    a.searchHitForeground == b.searchHitForeground;
+    a.searchHitForeground == b.searchHitForeground &&
+    mapEquals(a.paletteOverrides, b.paletteOverrides);
 
 /// Resolves SGR 2 faint text while preserving readable contrast.
 ///
@@ -1464,10 +1414,6 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     return handledDown || handledUp;
   }
 
-  Rect get cursorRect {
-    return renderTerminal.cursorOffset & renderTerminal.cellSize;
-  }
-
   Rect get globalCursorRect {
     return renderTerminal.localToGlobal(renderTerminal.cursorOffset) &
         renderTerminal.cellSize;
@@ -2155,9 +2101,9 @@ class MonkeyTerminalPainter extends TerminalPainter {
     required super.theme,
     required super.textStyle,
     required super.textScaler,
-  }) : _palette = _buildMonkeyTerminalPalette(theme);
+  });
 
-  List<Color> _palette;
+  final _rectPaint = Paint();
   final _paragraphCache = ParagraphCache(10240);
   // Paragraphs for multi-cell foreground runs (see `_paintLineForegroundsInto`),
   // keyed by run text + resolved style. Kept separate from the per-cell
@@ -2225,7 +2171,6 @@ class MonkeyTerminalPainter extends TerminalPainter {
       return;
     }
     super.theme = value;
-    _palette = _buildMonkeyTerminalPalette(value);
     _clearCaches();
   }
 
@@ -2639,7 +2584,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
         line.length * cellSize.width,
         cellSize.height,
       ),
-      Paint()..color = theme.background,
+      _rectPaint..color = theme.background,
     );
   }
 
@@ -2652,7 +2597,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
     }
 
     final charCode = cellData.content & CellContent.codepointMask;
-    final paint = Paint()
+    final paint = _rectPaint
       ..color = _resolveCellBackgroundPaintColor(
         cellData,
         toneNeutralBackgrounds: !_isRectPaintedBlockElement(charCode),
@@ -2811,7 +2756,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
     final height = cellSize.height;
     final halfWidth = width / 2;
     final halfHeight = height / 2;
-    final paint = Paint()..color = color;
+    final paint = _rectPaint..color = color;
 
     void drawRect(
       double left,
@@ -3009,40 +2954,6 @@ class MonkeyTerminalPainter extends TerminalPainter {
       terminalBackground: theme.background,
       toneNeutralBackgrounds: !inverse && toneNeutralBackgrounds,
     );
-  }
-
-  @override
-  Color resolveForegroundColor(int cellColor) {
-    final colorType = cellColor & CellColor.typeMask;
-    final colorValue = cellColor & CellColor.valueMask;
-
-    switch (colorType) {
-      case CellColor.normal:
-        return theme.foreground;
-      case CellColor.named:
-      case CellColor.palette:
-        return _palette[colorValue];
-      case CellColor.rgb:
-      default:
-        return Color(colorValue | 0xFF000000);
-    }
-  }
-
-  @override
-  Color resolveBackgroundColor(int cellColor) {
-    final colorType = cellColor & CellColor.typeMask;
-    final colorValue = cellColor & CellColor.valueMask;
-
-    switch (colorType) {
-      case CellColor.normal:
-        return theme.background;
-      case CellColor.named:
-      case CellColor.palette:
-        return _palette[colorValue];
-      case CellColor.rgb:
-      default:
-        return Color(colorValue | 0xFF000000);
-    }
   }
 }
 
@@ -3273,6 +3184,7 @@ class MonkeyRenderTerminal extends RenderBox
   _pendingTerminalResize;
 
   final MonkeyTerminalPainter _painter;
+  final _imagePaint = Paint()..filterQuality = FilterQuality.medium;
 
   final Set<int> _visibleGraphicsImageIds = <int>{};
   bool _hasPaintedGraphicsVisibility = false;
@@ -4671,7 +4583,7 @@ class MonkeyRenderTerminal extends RenderBox
           image,
           Rect.fromLTWH(srcLeft, srcTop, srcWidth, srcHeight),
           destination,
-          Paint()..filterQuality = FilterQuality.medium,
+          _imagePaint,
         );
       } on Object catch (_) {
         // Intentionally swallowed: a failed image draw must never crash the
@@ -5011,7 +4923,6 @@ class MonkeyRenderTerminal extends RenderBox
       return a.cellCol - b.cellCol;
     });
 
-    final paint = Paint()..filterQuality = FilterQuality.medium;
     final imageCache = <String, TerminalImage?>{};
 
     var i = 0;
@@ -5086,7 +4997,7 @@ class MonkeyRenderTerminal extends RenderBox
           image,
           srcRect,
           Rect.fromLTWH(topLeft.dx, topLeft.dy, dstWidth, cellHeight),
-          paint,
+          _imagePaint,
         );
       } on Object catch (_) {
         // Placeholder graphics are optional terminal adornment; never let a

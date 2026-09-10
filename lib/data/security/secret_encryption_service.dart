@@ -116,10 +116,6 @@ class SecretEncryptionService {
     }
   }
 
-  /// Decrypts a required value loaded from database persistence.
-  Future<String> decryptRequired(String storedValue) async =>
-      (await decryptNullable(storedValue)) ?? '';
-
   SecretBox _decodeEnvelope(String value) {
     if (!isEncryptedValue(value)) {
       throw const FormatException('Unexpected plaintext secret value');

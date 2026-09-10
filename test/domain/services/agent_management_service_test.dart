@@ -36,16 +36,17 @@ SSHSession _execOutput(String output, {int exitCode = 0}) {
   return exec;
 }
 
-SshSession _remoteSession(_MockSshClient client) => SshSession(
-  connectionId: 77,
-  hostId: 3,
-  client: client,
-  config: const SshConnectionConfig(
-    hostname: 'agent.example.com',
-    port: 22,
-    username: 'dev',
-  ),
-);
+SshSession _remoteSession(_MockSshClient client, {int connectionId = 77}) =>
+    SshSession(
+      connectionId: connectionId,
+      hostId: 3,
+      client: client,
+      config: const SshConnectionConfig(
+        hostname: 'agent.example.com',
+        port: 22,
+        username: 'dev',
+      ),
+    );
 
 String _decodePowerShellCommand(String command) {
   const marker = '-EncodedCommand ';
@@ -246,7 +247,7 @@ void main() {
             final output = StringBuffer();
             final probe = script.contains('__monkeyssh_agent_path__');
             for (final definition in agentRuntimeDefinitions) {
-              if (!probe && !script.contains(definition.id)) continue;
+              if (!script.contains(definition.id)) continue;
               output.writeln('__monkeyssh_agent_runtime__=${definition.id}');
               if (probe) {
                 output.writeln(
@@ -262,10 +263,6 @@ void main() {
                   ..writeln('__monkeyssh_agent_latest__=1.1.0');
               }
               output.writeln('__monkeyssh_agent_runtime_end__');
-            }
-            // Single probes do not have runtime delimiters in their command.
-            if (probe && mode == 'inspect') {
-              return _execOutput('__monkeyssh_agent_path__=/bin/agent\n');
             }
             return _execOutput(output.toString());
           });
@@ -759,7 +756,9 @@ esac
         final command = invocation.positionalArguments.first as String;
         if (command.contains('__monkeyssh_agent_path__')) {
           return _execOutput(
-            '__monkeyssh_agent_path__=/usr/local/bin/claude\n',
+            '__monkeyssh_agent_runtime__=cli:claude\n'
+            '__monkeyssh_agent_path__=/usr/local/bin/claude\n'
+            '__monkeyssh_agent_runtime_end__\n',
           );
         }
         if (command.contains('__monkeyssh_agent_source__')) {
@@ -800,8 +799,10 @@ esac
         executeCount += 1;
         if (executeCount == 1) {
           return _execOutput(
+            '__monkeyssh_agent_runtime__=cli:opencode\n'
             '__monkeyssh_agent_path__=/usr/local/bin/opencode\n'
-            '__monkeyssh_agent_repair__\n',
+            '__monkeyssh_agent_repair__\n'
+            '__monkeyssh_agent_runtime_end__\n',
           );
         }
         return _execOutput(
@@ -834,7 +835,11 @@ esac
       ) async {
         executeCount += 1;
         if (executeCount == 1) {
-          return _execOutput('__monkeyssh_agent_path__=/usr/local/bin/npx\n');
+          return _execOutput(
+            '__monkeyssh_agent_runtime__=acp:antigravity\n'
+            '__monkeyssh_agent_path__=/usr/local/bin/npx\n'
+            '__monkeyssh_agent_runtime_end__\n',
+          );
         }
         return _execOutput(
           '__monkeyssh_agent_runtime__=acp:antigravity\n'
@@ -875,6 +880,59 @@ esac
         expect(calls, 2);
       },
     );
+
+    test('evicts expired connections on lookup and insertion', () async {
+      final client = _MockSshClient();
+      when(() => client.remoteVersion).thenReturn('SSH-2.0-OpenSSH_9.9');
+      var calls = 0;
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        _,
+      ) async {
+        calls++;
+        return _execOutput('');
+      });
+      var now = DateTime.utc(2026);
+      final service = AgentManagementService(
+        _MockDiscovery(),
+        canManageAgents: () async => true,
+        now: () => now,
+      );
+      final older = _remoteSession(client, connectionId: 1);
+      final current = _remoteSession(client, connectionId: 2);
+      await service.checkForUpdates(older);
+      now = now.add(const Duration(minutes: 1));
+      await service.checkForUpdates(current);
+      now = now.add(const Duration(minutes: 14));
+      await service.checkForUpdates(current);
+      expect(calls, 2);
+      expect(service.cachedConnectionCount, 1);
+      now = now.add(const Duration(minutes: 1));
+      await service.refreshAll(older);
+      expect(calls, 3);
+      expect(service.cachedConnectionCount, 1);
+    });
+
+    test('bounds the cache and keeps the newest connection cached', () async {
+      final client = _MockSshClient();
+      when(() => client.remoteVersion).thenReturn('SSH-2.0-OpenSSH_9.9');
+      var calls = 0;
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        _,
+      ) async {
+        calls++;
+        return _execOutput('');
+      });
+      final service = _unlockedManagementService(_MockDiscovery());
+      for (var id = 0; id < 33; id++) {
+        await service.checkForUpdates(_remoteSession(client, connectionId: id));
+      }
+      expect(service.cachedConnectionCount, 32);
+      await service.checkForUpdates(_remoteSession(client, connectionId: 32));
+      expect(calls, 33);
+      await service.checkForUpdates(_remoteSession(client, connectionId: 0));
+      expect(calls, 34);
+      expect(service.cachedConnectionCount, 32);
+    });
 
     test('free access blocks every management operation before SSH', () async {
       final client = _MockSshClient();
@@ -1113,7 +1171,7 @@ esac
           ..writeAsStringSync(command);
         final probe = File('${root.path}/probe.sh')
           ..writeAsStringSync(
-            buildAgentProbeCommand(definition, windows: false),
+            buildAgentBatchProbeCommand([definition], windows: false),
           );
         for (final shell in [
           'bash',
@@ -1172,7 +1230,8 @@ esac
         count++;
         return _execOutput(
           count == 2
-              ? '__monkeyssh_agent_path__=/home/dev/.bun/bin/opencode\n__monkeyssh_agent_repair__\n'
+              ? '__monkeyssh_agent_runtime__=cli:opencode\n'
+                    '__monkeyssh_agent_path__=/home/dev/.bun/bin/opencode\n__monkeyssh_agent_repair__\n__monkeyssh_agent_runtime_end__\n'
               : '',
         );
       });
@@ -1240,7 +1299,9 @@ esac
       ) async {
         if (++count == 2) throw StateError('registry unavailable');
         return _execOutput(
-          '__monkeyssh_agent_path__=/bin/claude\n__monkeyssh_agent_version__=2.0.0\n',
+          '__monkeyssh_agent_runtime__=cli:claude\n'
+          '__monkeyssh_agent_path__=/bin/claude\n__monkeyssh_agent_version__=2.0.0\n'
+          '__monkeyssh_agent_runtime_end__\n',
         );
       });
       final info = await _unlockedManagementService(
@@ -1258,8 +1319,10 @@ esac
       when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer(
         (_) async => _execOutput(
           'installed 1 package\n'
+          '__monkeyssh_agent_runtime__=cli:claude\n'
           '__monkeyssh_agent_path__=/bin/claude\n'
-          '__monkeyssh_agent_version__=2.0.0\n',
+          '__monkeyssh_agent_version__=2.0.0\n'
+          '__monkeyssh_agent_runtime_end__\n',
         ),
       );
       when(() => discovery.invalidateSession(session)).thenReturn(null);
@@ -1497,12 +1560,11 @@ esac
     });
   });
 
-  group('buildAgentProbeCommand', () {
+  group('single-runtime batch probe', () {
     test('sources login profiles and checks candidate paths on POSIX', () {
-      final command = buildAgentProbeCommand(
+      final command = buildAgentBatchProbeCommand([
         agentCliRuntimeDefinitions.first,
-        windows: false,
-      );
+      ], windows: false);
       expect(command, contains('~/.zprofile'));
       expect(
         command.replaceAll(r"'\''", "'"),
@@ -1621,10 +1683,9 @@ foreach ($scenario in @('tree-success', 'tree-failure', 'unavailable', 'exit-rac
     );
 
     test('uses Get-Command and one-line markers on Windows', () {
-      final command = buildAgentProbeCommand(
+      final command = buildAgentBatchProbeCommand([
         agentCliRuntimeDefinitions.first,
-        windows: true,
-      );
+      ], windows: true);
       final script = _decodePowerShellCommand(command);
       expect(script, contains(r'$PROFILE.CurrentUserAllHosts'));
       expect(script, contains('Get-Command'));

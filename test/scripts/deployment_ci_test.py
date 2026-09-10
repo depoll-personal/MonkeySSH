@@ -44,7 +44,7 @@ class MetadataChangesTest(unittest.TestCase):
 
     def test_missing_base_and_pipeline_edits_validate_all_media(self):
         for paths in [None, ['scripts/store_assets.sh'], ['scripts/validate_store_screenshots.py'],
-                      ['.github/workflows/sync-metadata.yml']]:
+                      ['.github/workflows/sync-metadata.yml'], ['scripts/store_media.py']]:
             result = classify(paths)
             self.assertTrue(all(result[key] for key in
                                 ['ios', 'android', 'ios_screenshots', 'ios_app_previews', 'android_screenshots']))
@@ -73,6 +73,34 @@ class DeploymentContractsTest(unittest.TestCase):
         script = "require 'yaml'; require 'json'; puts JSON.generate(ARGV.to_h { |f| [File.basename(f), YAML.load_file(f)] })"
         cls.workflows = json.loads(subprocess.check_output(
             ['ruby', '-e', script, *map(str, (ROOT / '.github/workflows').glob('*.yml'))], text=True))
+
+    def test_comment_helpers_are_loaded_from_the_workflow_revision(self):
+        for filename, names in [('preview-deploy.yml', ['comment-start', 'comment-finish']),
+                                ('preview-deploy-command.yml', ['dispatch'])]:
+            for name in names:
+                job = self.workflows[filename]['jobs'][name]
+                self.assertEqual(job['permissions']['contents'], 'read')
+                checkout, script = job['steps']
+                self.assertEqual(checkout['with']['ref'], '${{ github.workflow_sha }}')
+                self.assertFalse(checkout['with']['persist-credentials'])
+                self.assertIn('scripts/preview_deploy_comments.cjs', script['with']['script'])
+                self.assertIn('upsertStatusComment({', script['with']['script'])
+
+    def test_deploy_preserves_apple_actions_across_source_checkout(self):
+        steps = self.workflows['build-deploy.yml']['jobs']['build-ios']['steps']
+        preserve = next(i for i, s in enumerate(steps) if s.get('name') ==
+                        'Preserve Apple cache actions from the workflow commit')
+        restore = next(i for i, s in enumerate(steps) if s.get('name') ==
+                       'Restore Apple cache actions from the workflow commit')
+        source = next(i for i, s in enumerate(steps) if s.get('name') == 'Checkout resolved source SHA for iOS build')
+        self.assertLess(preserve, source)
+        self.assertLess(source, restore)
+        for index in [preserve, restore]:
+            self.assertNotIn('if', steps[index])
+            self.assertIn('"$RUNNER_TEMP/apple-cache-actions.tar"', steps[index]['run'])
+        for action in ['apple-cache-restore', 'apple-cache-save']:
+            self.assertIn('.github/actions/' + action, steps[preserve]['run'])
+        self.assertEqual(steps[0]['with']['ref'], '${{ github.sha }}')
 
     def test_main_builds_once_per_platform_and_reuses_identical_binary(self):
         jobs = self.workflows['deploy-private.yml']['jobs']

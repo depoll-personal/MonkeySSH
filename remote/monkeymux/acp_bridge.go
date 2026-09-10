@@ -837,24 +837,50 @@ func (b *acpBridge) waitForProviderOutput() {
 	<-b.providerOutputDone
 }
 
+type acpEnvelope struct {
+	ID     json.RawMessage `json:"id"`
+	Method json.RawMessage `json:"method"`
+	Params json.RawMessage `json:"params"`
+	Result json.RawMessage `json:"result"`
+	Error  json.RawMessage `json:"error"`
+	method string
+}
+
+func parseAcpEnvelope(raw json.RawMessage) acpEnvelope {
+	var envelope acpEnvelope
+	if json.Unmarshal(raw, &envelope) != nil || len(envelope.ID) == 0 || string(envelope.ID) == "null" {
+		return acpEnvelope{}
+	}
+	if len(envelope.Method) > 0 {
+		_ = json.Unmarshal(envelope.Method, &envelope.method)
+	}
+	return envelope
+}
+
+func acpSessionID(raw json.RawMessage) string {
+	var session struct {
+		SessionID string `json:"sessionId"`
+	}
+	if json.Unmarshal(raw, &session) != nil || !validAcpSessionID(session.SessionID) {
+		return ""
+	}
+	return session.SessionID
+}
+
 // Register requests before writing stdin: a provider can respond before Write
 // returns. Only a successful setup response commits the session identity;
 // failed writes release all registrations.
-func (b *acpBridge) trackClientRequest(raw json.RawMessage) (string, bool) {
-	id, hasID, hasMethod := acpJSONRPCIdentity(raw)
-	if !hasID || !hasMethod {
+func (b *acpBridge) trackClientRequest(envelope acpEnvelope) (string, bool) {
+	if len(envelope.ID) == 0 || len(envelope.Method) == 0 {
 		return "", false
 	}
-	method, sessionID := acpJSONRPCRequestSession(raw)
-	if !validAcpSessionID(sessionID) {
-		sessionID = ""
-	}
+	id := string(envelope.ID)
 	b.mu.Lock()
 	b.inFlightTurns[id] = struct{}{}
-	if isAcpSessionSetupMethod(method) {
-		b.sessionSetupRequests[id] = sessionID
+	if isAcpSessionSetupMethod(envelope.method) {
+		b.sessionSetupRequests[id] = acpSessionID(envelope.Params)
 	}
-	if method == "initialize" {
+	if envelope.method == "initialize" {
 		if b.initializeRequestIDs == nil {
 			b.initializeRequestIDs = map[string]struct{}{}
 		}
@@ -872,29 +898,20 @@ func (b *acpBridge) untrackClientRequest(id string) {
 	b.mu.Unlock()
 }
 
-func (b *acpBridge) cachedInitializeResponse(raw json.RawMessage) json.RawMessage {
-	id, hasID, hasMethod := acpJSONRPCIdentity(raw)
-	if !hasID || !hasMethod {
-		return nil
-	}
-	method, _ := acpJSONRPCRequestSession(raw)
-	if method != "initialize" {
+func (b *acpBridge) cachedInitializeResponse(envelope acpEnvelope) json.RawMessage {
+	if len(envelope.ID) == 0 || envelope.method != "initialize" {
 		return nil
 	}
 	b.mu.Lock()
-	result := append(json.RawMessage(nil), b.initializeResult...)
+	result := b.initializeResult
 	b.mu.Unlock()
 	if len(result) == 0 {
 		return nil
 	}
-	response, err := json.Marshal(struct {
-		JSONRPC string          `json:"jsonrpc"`
-		ID      json.RawMessage `json:"id"`
-		Result  json.RawMessage `json:"result"`
-	}{
-		JSONRPC: "2.0",
-		ID:      json.RawMessage(id),
-		Result:  result,
+	response, err := json.Marshal(map[string]json.RawMessage{
+		"jsonrpc": json.RawMessage(`"2.0"`),
+		"id":      envelope.ID,
+		"result":  result,
 	})
 	if err != nil {
 		return nil
@@ -902,31 +919,18 @@ func (b *acpBridge) cachedInitializeResponse(raw json.RawMessage) json.RawMessag
 	return response
 }
 
-func (b *acpBridge) observeClientMessage(raw json.RawMessage) {
-	id, hasID, hasMethod := acpJSONRPCIdentity(raw)
-	if !hasID {
+func (b *acpBridge) observeClientMessage(envelope acpEnvelope) {
+	if len(envelope.ID) == 0 {
 		return
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if !hasMethod {
+	if len(envelope.Method) == 0 {
+		id := string(envelope.ID)
 		delete(b.pendingRequests, id)
 		b.releasePendingReplayLocked(id)
 	}
 	b.lastActivity = time.Now()
-}
-
-func acpJSONRPCRequestSession(raw json.RawMessage) (string, string) {
-	var envelope struct {
-		Method string `json:"method"`
-		Params struct {
-			SessionID string `json:"sessionId"`
-		} `json:"params"`
-	}
-	if json.Unmarshal(raw, &envelope) != nil {
-		return "", ""
-	}
-	return envelope.Method, envelope.Params.SessionID
 }
 
 func isAcpSessionSetupMethod(method string) bool {
@@ -943,51 +947,6 @@ func validAcpSessionID(sessionID string) bool {
 		!strings.ContainsRune(sessionID, 0)
 }
 
-func acpJSONRPCResponseResult(raw json.RawMessage) (json.RawMessage, bool) {
-	var envelope struct {
-		Result json.RawMessage `json:"result"`
-		Error  json.RawMessage `json:"error"`
-	}
-	if json.Unmarshal(raw, &envelope) != nil || len(envelope.Error) > 0 ||
-		len(envelope.Result) == 0 || string(envelope.Result) == "null" {
-		return nil, false
-	}
-	return append(json.RawMessage(nil), envelope.Result...), true
-}
-
-// Keep success separate from the session ID: a successful load may omit the ID
-// (including a null result), but an error must never commit the requested ID.
-func acpJSONRPCResponseSessionID(raw json.RawMessage) (string, bool) {
-	var envelope struct {
-		Result json.RawMessage `json:"result"`
-		Error  json.RawMessage `json:"error"`
-	}
-	if json.Unmarshal(raw, &envelope) != nil || len(envelope.Error) > 0 ||
-		len(envelope.Result) == 0 {
-		return "", false
-	}
-	var result struct {
-		SessionID string `json:"sessionId"`
-	}
-	if json.Unmarshal(envelope.Result, &result) != nil ||
-		!validAcpSessionID(result.SessionID) {
-		return "", true
-	}
-	return result.SessionID, true
-}
-
-func acpJSONRPCIdentity(raw json.RawMessage) (string, bool, bool) {
-	var envelope struct {
-		ID     json.RawMessage `json:"id"`
-		Method json.RawMessage `json:"method"`
-	}
-	if json.Unmarshal(raw, &envelope) != nil || len(envelope.ID) == 0 ||
-		string(envelope.ID) == "null" {
-		return "", false, false
-	}
-	return string(envelope.ID), true, len(envelope.Method) > 0
-}
-
 func (b *acpBridge) publish(
 	eventType string,
 	data json.RawMessage,
@@ -996,12 +955,14 @@ func (b *acpBridge) publish(
 ) bool {
 	pendingID := ""
 	providerResponseID := ""
+	var envelope acpEnvelope
 	if eventType == "output" {
-		if id, hasID, hasMethod := acpJSONRPCIdentity(data); hasID {
-			if hasMethod {
-				pendingID = id
+		envelope = parseAcpEnvelope(data)
+		if len(envelope.ID) > 0 {
+			if len(envelope.Method) > 0 {
+				pendingID = string(envelope.ID)
 			} else {
-				providerResponseID = id
+				providerResponseID = string(envelope.ID)
 			}
 		}
 	}
@@ -1019,14 +980,14 @@ func (b *acpBridge) publish(
 	if providerResponseID != "" {
 		delete(b.inFlightTurns, providerResponseID)
 		if _, ok := b.initializeRequestIDs[providerResponseID]; ok {
-			if result, valid := acpJSONRPCResponseResult(data); valid {
-				b.initializeResult = result
+			if len(envelope.Error) == 0 && len(envelope.Result) > 0 && string(envelope.Result) != "null" {
+				b.initializeResult = envelope.Result
 			}
 			delete(b.initializeRequestIDs, providerResponseID)
 		}
 		if requestedSessionID, ok := b.sessionSetupRequests[providerResponseID]; ok {
-			if sessionID, success := acpJSONRPCResponseSessionID(data); success {
-				if sessionID != "" {
+			if len(envelope.Error) == 0 && len(envelope.Result) > 0 {
+				if sessionID := acpSessionID(envelope.Result); sessionID != "" {
 					b.sessionID = sessionID
 				} else if validAcpSessionID(requestedSessionID) {
 					b.sessionID = requestedSessionID
@@ -1370,11 +1331,12 @@ func (b *acpBridge) handleAttach(
 				})
 				continue
 			}
-			if response := b.cachedInitializeResponse(message.Data); len(response) > 0 {
+			envelope := parseAcpEnvelope(message.Data)
+			if response := b.cachedInitializeResponse(envelope); len(response) > 0 {
 				b.publish("output", response, "", nil)
 				continue
 			}
-			requestID, trackedRequest := b.trackClientRequest(message.Data)
+			requestID, trackedRequest := b.trackClientRequest(envelope)
 			if err := b.writeProvider(message.Data); err != nil {
 				if trackedRequest {
 					b.untrackClientRequest(requestID)
@@ -1386,7 +1348,7 @@ func (b *acpBridge) handleAttach(
 				})
 				continue
 			}
-			b.observeClientMessage(message.Data)
+			b.observeClientMessage(envelope)
 		case "status":
 			info := b.snapshot()
 			b.enqueue(client, acpWireMessage{

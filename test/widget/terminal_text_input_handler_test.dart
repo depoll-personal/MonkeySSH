@@ -68,8 +68,6 @@ enum _ResetTrigger {
   markerLoss,
 }
 
-int _graphemeLength(String text) => text.characters.length;
-
 TextEditingValue _userValue(
   String text, {
   required int selectionBase,
@@ -93,12 +91,12 @@ String _dropLastGrapheme(String text) {
 
 _MatrixScenario _insertBeforeMiddleScenario(_SegmentSeed seed) {
   final initial = '${seed.before}${seed.middle}${seed.after}';
-  final insertionOffset = _graphemeLength(seed.before);
+  final insertionOffset = seed.before.length;
   final updated = '${seed.before}X${seed.middle}${seed.after}';
   return (
     name: '${seed.name}: inserts before the edited segment',
     sequence: [
-      _userValue(initial, selectionBase: _graphemeLength(initial)),
+      _userValue(initial, selectionBase: initial.length),
       _userValue(initial, selectionBase: insertionOffset),
       _userValue(updated, selectionBase: insertionOffset + 1),
     ],
@@ -109,12 +107,12 @@ _MatrixScenario _insertBeforeMiddleScenario(_SegmentSeed seed) {
 
 _MatrixScenario _insertAfterMiddleScenario(_SegmentSeed seed) {
   final initial = '${seed.before}${seed.middle}${seed.after}';
-  final insertionOffset = _graphemeLength('${seed.before}${seed.middle}');
+  final insertionOffset = '${seed.before}${seed.middle}'.length;
   final updated = '${seed.before}${seed.middle};${seed.after}';
   return (
     name: '${seed.name}: inserts after the edited segment',
     sequence: [
-      _userValue(initial, selectionBase: _graphemeLength(initial)),
+      _userValue(initial, selectionBase: initial.length),
       _userValue(initial, selectionBase: insertionOffset),
       _userValue(updated, selectionBase: insertionOffset + 1),
     ],
@@ -125,13 +123,13 @@ _MatrixScenario _insertAfterMiddleScenario(_SegmentSeed seed) {
 
 _MatrixScenario _replaceMiddleScenario(_SegmentSeed seed) {
   final initial = '${seed.before}${seed.middle}${seed.after}';
-  final selectionBase = _graphemeLength(seed.before);
-  final selectionExtent = selectionBase + _graphemeLength(seed.middle);
+  final selectionBase = seed.before.length;
+  final selectionExtent = selectionBase + seed.middle.length;
   final updated = '${seed.before}ZX${seed.after}';
   return (
     name: '${seed.name}: replaces the edited segment',
     sequence: [
-      _userValue(initial, selectionBase: _graphemeLength(initial)),
+      _userValue(initial, selectionBase: initial.length),
       _userValue(
         initial,
         selectionBase: selectionBase,
@@ -147,16 +145,16 @@ _MatrixScenario _replaceMiddleScenario(_SegmentSeed seed) {
 _MatrixScenario _backspaceWithinMiddleScenario(_SegmentSeed seed) {
   final initial = '${seed.before}${seed.middle}${seed.after}';
   final shortenedMiddle = _dropLastGrapheme(seed.middle);
-  final caretOffset = _graphemeLength('${seed.before}${seed.middle}');
+  final caretOffset = '${seed.before}${seed.middle}'.length;
   final updated = '${seed.before}$shortenedMiddle${seed.after}';
   return (
     name: '${seed.name}: backspaces within the edited segment',
     sequence: [
-      _userValue(initial, selectionBase: _graphemeLength(initial)),
+      _userValue(initial, selectionBase: initial.length),
       _userValue(initial, selectionBase: caretOffset),
       _userValue(
         updated,
-        selectionBase: _graphemeLength('${seed.before}$shortenedMiddle'),
+        selectionBase: '${seed.before}$shortenedMiddle'.length,
       ),
     ],
     textFieldEchoes: null,
@@ -166,13 +164,13 @@ _MatrixScenario _backspaceWithinMiddleScenario(_SegmentSeed seed) {
 
 _MatrixScenario _deleteMiddleSelectionScenario(_SegmentSeed seed) {
   final initial = '${seed.before}${seed.middle}${seed.after}';
-  final selectionBase = _graphemeLength(seed.before);
-  final selectionExtent = selectionBase + _graphemeLength(seed.middle);
+  final selectionBase = seed.before.length;
+  final selectionExtent = selectionBase + seed.middle.length;
   final updated = '${seed.before}${seed.after}';
   return (
     name: '${seed.name}: deletes the edited segment selection',
     sequence: [
-      _userValue(initial, selectionBase: _graphemeLength(initial)),
+      _userValue(initial, selectionBase: initial.length),
       _userValue(
         initial,
         selectionBase: selectionBase,
@@ -1135,6 +1133,28 @@ Map<dynamic, dynamic> _latestTextInputSetClientConfiguration(
 }
 
 void main() {
+  test('generated emoji scenarios use UTF-16 selection boundaries', () {
+    final scenarios = _buildGeneratedComparisonScenarios().where(
+      (scenario) => scenario.name.startsWith('emoji-boundary:'),
+    );
+    expect(
+      [
+        for (final scenario in scenarios)
+          [
+            for (final value in scenario.sequence)
+              (value.selection.baseOffset, value.selection.extentOffset),
+          ],
+      ],
+      [
+        [(14, 14), (3, 3), (4, 4)],
+        [(14, 14), (10, 10), (11, 11)],
+        [(14, 14), (3, 10), (5, 5)],
+        [(14, 14), (10, 10), (3, 3)],
+        [(14, 14), (3, 10), (3, 3)],
+      ],
+    );
+  });
+
   group('terminalTextLooksLikeSensitiveInputPrompt', () {
     test('detects common password-like prompts', () {
       const prompts = [
@@ -3538,33 +3558,17 @@ void main() {
       (tester) async {
         debugDefaultTargetPlatformOverride = TargetPlatform.android;
         tester.view.viewInsets = const FakeViewPadding(bottom: 300);
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add)
-          ..write('\x1b[>9u');
-        final focusNode = FocusNode();
         final controller = TerminalTextInputHandlerController();
+        TerminalInputHarness? harness;
 
         try {
-          await tester.pumpWidget(
-            MaterialApp(
-              home: Scaffold(
-                body: Focus(
-                  focusNode: focusNode,
-                  child: TerminalTextInputHandler(
-                    terminal: terminal,
-                    focusNode: focusNode,
-                    controller: controller,
-                    deleteDetection: true,
-                    manageFocus: false,
-                    child: const SizedBox.expand(),
-                  ),
-                ),
-              ),
-            ),
+          harness = await pumpTerminalInputHarness(
+            tester,
+            manageFocus: false,
+            initialTerminalOutput: '\x1b[>9u',
+            controller: controller,
           );
-
-          focusNode.requestFocus();
-          await tester.pump();
+          final terminalOutput = harness.terminalOutput;
 
           expect(tester.testTextInput.isVisible, isTrue);
           expect(tester.view.viewInsets.bottom, greaterThan(0));
@@ -3617,9 +3621,9 @@ void main() {
 
           expect(terminalOutput.join(), contains('\x1b[127;2u'));
         } finally {
-          await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
-          await tester.pump();
-          focusNode.dispose();
+          if (harness != null) {
+            await disposeTerminalInputHarness(tester, harness);
+          }
           controller.dispose();
           tester.view.resetViewInsets();
           debugDefaultTargetPlatformOverride = null;
@@ -3633,36 +3637,20 @@ void main() {
         debugDefaultTargetPlatformOverride = TargetPlatform.android;
         tester.view.viewInsets = const FakeViewPadding(bottom: 300);
         var ctrlActive = true;
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add)
-          ..write('\x1b[>1u');
-        final focusNode = FocusNode();
         final controller = TerminalTextInputHandlerController();
+        TerminalInputHarness? harness;
 
         try {
-          await tester.pumpWidget(
-            MaterialApp(
-              home: Scaffold(
-                body: Focus(
-                  focusNode: focusNode,
-                  child: TerminalTextInputHandler(
-                    terminal: terminal,
-                    focusNode: focusNode,
-                    controller: controller,
-                    deleteDetection: true,
-                    manageFocus: false,
-                    resolveTerminalKeyModifiers: () =>
-                        (ctrl: ctrlActive, alt: false, shift: false),
-                    consumeTerminalKeyModifiers: () => ctrlActive = false,
-                    child: const SizedBox.expand(),
-                  ),
-                ),
-              ),
-            ),
+          harness = await pumpTerminalInputHarness(
+            tester,
+            manageFocus: false,
+            initialTerminalOutput: '\x1b[>1u',
+            resolveTerminalKeyModifiers: () =>
+                (ctrl: ctrlActive, alt: false, shift: false),
+            consumeTerminalKeyModifiers: () => ctrlActive = false,
+            controller: controller,
           );
-
-          focusNode.requestFocus();
-          await tester.pump();
+          final terminalOutput = harness.terminalOutput;
 
           controller.debugRecordAndroidPhysicalKey(
             TerminalKey.backspace,
@@ -3691,9 +3679,9 @@ void main() {
           expect(terminalOutput, <String>['\x1b[127;5u']);
           expect(ctrlActive, isFalse);
         } finally {
-          await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
-          await tester.pump();
-          focusNode.dispose();
+          if (harness != null) {
+            await disposeTerminalInputHarness(tester, harness);
+          }
           controller.dispose();
           tester.view.resetViewInsets();
           debugDefaultTargetPlatformOverride = null;
@@ -3738,33 +3726,18 @@ void main() {
       'Android IME replacement after HID Backspace does not delete twice',
       (tester) async {
         debugDefaultTargetPlatformOverride = TargetPlatform.android;
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add)
-          ..write('\x1b[>1u');
-        final focusNode = FocusNode();
         final controller = TerminalTextInputHandlerController();
+        TerminalInputHarness? harness;
 
         try {
-          await tester.pumpWidget(
-            MaterialApp(
-              home: Scaffold(
-                body: Focus(
-                  focusNode: focusNode,
-                  child: TerminalTextInputHandler(
-                    terminal: terminal,
-                    focusNode: focusNode,
-                    controller: controller,
-                    deleteDetection: true,
-                    manageFocus: false,
-                    child: const SizedBox.expand(),
-                  ),
-                ),
-              ),
-            ),
+          harness = await pumpTerminalInputHarness(
+            tester,
+            manageFocus: false,
+            initialTerminalOutput: '\x1b[>1u',
+            controller: controller,
           );
+          final terminalOutput = harness.terminalOutput;
 
-          focusNode.requestFocus();
-          await tester.pump();
           tester.testTextInput.updateEditingValue(
             _editingValue('CC', selectionOffset: 2),
           );
@@ -3793,9 +3766,9 @@ void main() {
 
           expect(terminalOutput, <String>['\x7f', '\x7f', 'D']);
         } finally {
-          await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
-          await tester.pump();
-          focusNode.dispose();
+          if (harness != null) {
+            await disposeTerminalInputHarness(tester, harness);
+          }
           controller.dispose();
           debugDefaultTargetPlatformOverride = null;
         }
@@ -3806,33 +3779,18 @@ void main() {
       'Android IME append after omitted Backspace drops stale buffer text',
       (tester) async {
         debugDefaultTargetPlatformOverride = TargetPlatform.android;
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add)
-          ..write('\x1b[>1u');
-        final focusNode = FocusNode();
         final controller = TerminalTextInputHandlerController();
+        TerminalInputHarness? harness;
 
         try {
-          await tester.pumpWidget(
-            MaterialApp(
-              home: Scaffold(
-                body: Focus(
-                  focusNode: focusNode,
-                  child: TerminalTextInputHandler(
-                    terminal: terminal,
-                    focusNode: focusNode,
-                    controller: controller,
-                    deleteDetection: true,
-                    manageFocus: false,
-                    child: const SizedBox.expand(),
-                  ),
-                ),
-              ),
-            ),
+          harness = await pumpTerminalInputHarness(
+            tester,
+            manageFocus: false,
+            initialTerminalOutput: '\x1b[>1u',
+            controller: controller,
           );
+          final terminalOutput = harness.terminalOutput;
 
-          focusNode.requestFocus();
-          await tester.pump();
           tester.testTextInput.updateEditingValue(
             _editingValue('A', selectionOffset: 1),
           );
@@ -3859,9 +3817,9 @@ void main() {
             _editingValue('B', selectionOffset: 1),
           );
         } finally {
-          await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
-          await tester.pump();
-          focusNode.dispose();
+          if (harness != null) {
+            await disposeTerminalInputHarness(tester, harness);
+          }
           controller.dispose();
           debugDefaultTargetPlatformOverride = null;
         }
@@ -3872,34 +3830,19 @@ void main() {
       'rejected replacement preserves an applied Android IME Backspace',
       (tester) async {
         debugDefaultTargetPlatformOverride = TargetPlatform.android;
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add)
-          ..write('\x1b[>1u');
-        final focusNode = FocusNode();
         final controller = TerminalTextInputHandlerController();
+        TerminalInputHarness? harness;
 
         try {
-          await tester.pumpWidget(
-            MaterialApp(
-              home: Scaffold(
-                body: Focus(
-                  focusNode: focusNode,
-                  child: TerminalTextInputHandler(
-                    terminal: terminal,
-                    focusNode: focusNode,
-                    controller: controller,
-                    deleteDetection: true,
-                    manageFocus: false,
-                    onReviewInsertedText: (_) async => false,
-                    child: const SizedBox.expand(),
-                  ),
-                ),
-              ),
-            ),
+          harness = await pumpTerminalInputHarness(
+            tester,
+            manageFocus: false,
+            initialTerminalOutput: '\x1b[>1u',
+            onReviewInsertedText: (_) async => false,
+            controller: controller,
           );
+          final terminalOutput = harness.terminalOutput;
 
-          focusNode.requestFocus();
-          await tester.pump();
           tester.testTextInput.updateEditingValue(
             _editingValue('AB', selectionOffset: 2),
           );
@@ -3933,9 +3876,9 @@ void main() {
 
           expect(terminalOutput, <String>['\x7f', 'C']);
         } finally {
-          await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
-          await tester.pump();
-          focusNode.dispose();
+          if (harness != null) {
+            await disposeTerminalInputHarness(tester, harness);
+          }
           controller.dispose();
           debugDefaultTargetPlatformOverride = null;
         }
@@ -3946,33 +3889,18 @@ void main() {
       tester,
     ) async {
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
-      final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add)
-        ..write('\x1b[>1u');
-      final focusNode = FocusNode();
       final controller = TerminalTextInputHandlerController();
+      TerminalInputHarness? harness;
 
       try {
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: Focus(
-                focusNode: focusNode,
-                child: TerminalTextInputHandler(
-                  terminal: terminal,
-                  focusNode: focusNode,
-                  controller: controller,
-                  deleteDetection: true,
-                  manageFocus: false,
-                  child: const SizedBox.expand(),
-                ),
-              ),
-            ),
-          ),
+        harness = await pumpTerminalInputHarness(
+          tester,
+          manageFocus: false,
+          initialTerminalOutput: '\x1b[>1u',
+          controller: controller,
         );
+        final terminalOutput = harness.terminalOutput;
 
-        focusNode.requestFocus();
-        await tester.pump();
         tester.testTextInput.updateEditingValue(
           _editingValue('CC', selectionOffset: 2),
         );
@@ -4011,9 +3939,9 @@ void main() {
           TerminalKeyEventType.release,
         );
       } finally {
-        await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
-        await tester.pump();
-        focusNode.dispose();
+        if (harness != null) {
+          await disposeTerminalInputHarness(tester, harness);
+        }
         controller.dispose();
         debugDefaultTargetPlatformOverride = null;
       }
@@ -4024,36 +3952,21 @@ void main() {
     ) async {
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
       var ctrlActive = true;
-      final terminalOutput = <String>[];
-      final terminal = Terminal(onOutput: terminalOutput.add)
-        ..write('\x1b[>1u');
-      final focusNode = FocusNode();
       final controller = TerminalTextInputHandlerController();
+      TerminalInputHarness? harness;
 
       try {
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: Focus(
-                focusNode: focusNode,
-                child: TerminalTextInputHandler(
-                  terminal: terminal,
-                  focusNode: focusNode,
-                  controller: controller,
-                  deleteDetection: true,
-                  manageFocus: false,
-                  resolveTerminalKeyModifiers: () =>
-                      (ctrl: ctrlActive, alt: false, shift: false),
-                  consumeTerminalKeyModifiers: () => ctrlActive = false,
-                  child: const SizedBox.expand(),
-                ),
-              ),
-            ),
-          ),
+        harness = await pumpTerminalInputHarness(
+          tester,
+          manageFocus: false,
+          initialTerminalOutput: '\x1b[>1u',
+          resolveTerminalKeyModifiers: () =>
+              (ctrl: ctrlActive, alt: false, shift: false),
+          consumeTerminalKeyModifiers: () => ctrlActive = false,
+          controller: controller,
         );
+        final terminalOutput = harness.terminalOutput;
 
-        focusNode.requestFocus();
-        await tester.pump();
         tester.testTextInput.updateEditingValue(
           _editingValue('CC', selectionOffset: 2),
         );
@@ -4093,9 +4006,9 @@ void main() {
           TerminalKeyEventType.release,
         );
       } finally {
-        await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
-        await tester.pump();
-        focusNode.dispose();
+        if (harness != null) {
+          await disposeTerminalInputHarness(tester, harness);
+        }
         controller.dispose();
         debugDefaultTargetPlatformOverride = null;
       }
@@ -4106,36 +4019,21 @@ void main() {
       (tester) async {
         debugDefaultTargetPlatformOverride = TargetPlatform.android;
         var ctrlActive = true;
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add)
-          ..write('\x1b[>11u');
-        final focusNode = FocusNode();
         final controller = TerminalTextInputHandlerController();
+        TerminalInputHarness? harness;
 
         try {
-          await tester.pumpWidget(
-            MaterialApp(
-              home: Scaffold(
-                body: Focus(
-                  focusNode: focusNode,
-                  child: TerminalTextInputHandler(
-                    terminal: terminal,
-                    focusNode: focusNode,
-                    controller: controller,
-                    deleteDetection: true,
-                    manageFocus: false,
-                    resolveTerminalKeyModifiers: () =>
-                        (ctrl: ctrlActive, alt: false, shift: false),
-                    consumeTerminalKeyModifiers: () => ctrlActive = false,
-                    child: const SizedBox.expand(),
-                  ),
-                ),
-              ),
-            ),
+          harness = await pumpTerminalInputHarness(
+            tester,
+            manageFocus: false,
+            initialTerminalOutput: '\x1b[>11u',
+            resolveTerminalKeyModifiers: () =>
+                (ctrl: ctrlActive, alt: false, shift: false),
+            consumeTerminalKeyModifiers: () => ctrlActive = false,
+            controller: controller,
           );
+          final terminalOutput = harness.terminalOutput;
 
-          focusNode.requestFocus();
-          await tester.pump();
           tester.testTextInput.updateEditingValue(
             _editingValue('CC', selectionOffset: 2),
           );
@@ -4175,9 +4073,9 @@ void main() {
             '\x1b[127;5:3u',
           ]);
         } finally {
-          await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
-          await tester.pump();
-          focusNode.dispose();
+          if (harness != null) {
+            await disposeTerminalInputHarness(tester, harness);
+          }
           controller.dispose();
           debugDefaultTargetPlatformOverride = null;
         }

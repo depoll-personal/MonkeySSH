@@ -31,6 +31,14 @@ class _PausedEncryptionService extends SecretEncryptionService {
 
   final started = Completer<void>();
   final resume = Completer<void>();
+  int validationCount = 0;
+
+  @override
+  bool isValidEncryptedEnvelope(String value) {
+    validationCount++;
+    return super.isValidEncryptedEnvelope(value);
+  }
+
   bool pauseDecrypt = false;
   bool pauseEncrypt = false;
 
@@ -72,6 +80,41 @@ void main() {
   });
 
   for (final kind in ['host', 'key']) {
+    test('$kind cache hits skip envelope validation until cleared', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final encryption = _PausedEncryptionService();
+      final hosts = HostRepository(db, encryption);
+      final keys = KeyRepository(db, encryption);
+      await hosts.insert(
+        HostsCompanion.insert(
+          label: 'Host',
+          hostname: 'example.com',
+          username: 'user',
+          password: const Value('secret'),
+        ),
+      );
+      await _insertKeysWithSecrets(keys, 1);
+      Future<void> read() async {
+        if (kind == 'host') {
+          expect((await hosts.getAll()).single.password, 'secret');
+        } else {
+          final key = (await keys.getAll()).single;
+          expect(key.privateKey, 'encrypted-key-payload-0');
+          expect(key.passphrase, 'passphrase-0');
+        }
+      }
+
+      await read();
+      encryption.validationCount = 0;
+      await read();
+      expect(encryption.validationCount, 0);
+      hosts.clearDecryptionCache();
+      keys.clearDecryptionCache();
+      await read();
+      expect(encryption.validationCount, kind == 'host' ? 1 : 2);
+    });
+
     for (final operation in [
       'decrypt',
       'migration',

@@ -48,7 +48,7 @@ class _SshSessionRuntime {
   int _shellStdinCharCount = 0;
   TerminalWindowMetrics? _terminalWindowMetrics;
   String _terminalWindowQueryPendingInput = '';
-  String _terminalTmuxPassthroughPendingInput = '';
+  final _terminalTmuxPassthroughDecoder = TerminalTmuxPassthroughDecoder();
   String _terminalControlModeUpdatePendingInput = '';
   String _terminalInsertModePendingInput = '';
   int _terminalInsertModePendingScanOffset = 0;
@@ -689,7 +689,7 @@ if(!$__flResolved){$__flResolved='cmd'}
           (data) {
             _recordShellIo(stdoutChars: data.length);
             _shellOutputChunkSequence += 1;
-            final terminalData = _unwrapTerminalTmuxPassthrough(data);
+            final terminalData = _terminalTmuxPassthroughDecoder.add(data);
             if (identical(_shell, shell) &&
                 (terminalData.isNotEmpty || data.isNotEmpty)) {
               _enqueueShellOutput(
@@ -935,7 +935,7 @@ if(!$__flResolved){$__flResolved='cmd'}
     _clearPendingShellOutput();
     _session._resetShellRuntimeMetadata();
     _terminalWindowQueryPendingInput = '';
-    _terminalTmuxPassthroughPendingInput = '';
+    _terminalTmuxPassthroughDecoder.reset();
     _terminalControlModeUpdatePendingInput = '';
     _terminalColorSchemeUpdatesMode = false;
     _terminalWin32InputMode = false;
@@ -1543,15 +1543,6 @@ if(!$__flResolved){$__flResolved='cmd'}
     }
 
     _shell?.write(utf8.encode(response));
-  }
-
-  String _unwrapTerminalTmuxPassthrough(String data) {
-    final result = unwrapTerminalTmuxPassthroughSequences(
-      input: data,
-      pendingInput: _terminalTmuxPassthroughPendingInput,
-    );
-    _terminalTmuxPassthroughPendingInput = result.pendingInput;
-    return result.output;
   }
 
   TerminalControlModeState _terminalModeState(Terminal terminal) => (

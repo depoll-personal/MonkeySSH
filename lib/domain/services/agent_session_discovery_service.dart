@@ -506,6 +506,33 @@ int _calculateDiscoveryScanLimit(
   return scaledLimit;
 }
 
+Iterable<String> _nonEmptyLines(String output) => output
+    .trim()
+    .split('\n')
+    .map((line) => line.trim())
+    .where((line) => line.isNotEmpty);
+
+int _sessionScanLimit(
+  int max, {
+  required bool previewOnly,
+  int previewMultiplier = 8,
+  int previewMinimum = 24,
+  int previewMaximum = 40,
+  int multiplier = 10,
+  int minimum = 60,
+  int maximum = 120,
+}) => _calculateDiscoveryScanLimit(
+  max,
+  multiplier: previewOnly ? previewMultiplier : multiplier,
+  minimum: previewOnly ? previewMinimum : minimum,
+  maximum: previewOnly ? previewMaximum : maximum,
+);
+
+int _sessionMetadataReadLimit(int max, {required bool previewOnly}) =>
+    previewOnly
+    ? _calculateDiscoveryScanLimit(max, multiplier: 4, minimum: 6, maximum: 12)
+    : calculateRecentSessionMetadataReadLimit(max);
+
 /// Parses Copilot CLI workspace metadata from `workspace.yaml`.
 ({String? summary, String? workingDirectory, DateTime? updatedAt})
 parseCopilotWorkspaceYamlMetadata(String raw) {
@@ -1500,37 +1527,6 @@ class AgentSessionDiscoveryService {
     _inFlightRelatedWorkingDirectories.removeWhere((key, _) => matches(key));
   }
 
-  /// Discovers recent sessions across all supported tools for the given
-  /// [workingDirectory] on the remote host.
-  ///
-  /// Each tool's sessions are discovered separately, normalized to drop
-  /// noisy placeholder entries, and then sorted globally by recency.
-  /// Limits to [maxPerTool] sessions per tool to keep results manageable.
-  ///
-  /// Returns both the successfully parsed sessions and any tool histories that
-  /// could not be loaded, so the UI can distinguish parse failures from an
-  /// actually empty history.
-  ///
-  /// When [workingDirectory] is available, sessions are filtered to that
-  /// directory whenever the tool exposes enough path information to do so.
-  Future<DiscoveredSessionsResult> discoverSessions(
-    SshSession session, {
-    String? workingDirectory,
-    int maxPerTool = 12,
-    String? toolName,
-  }) async {
-    DiscoveredSessionsResult? latestResult;
-    await for (final result in discoverSessionsStream(
-      session,
-      workingDirectory: workingDirectory,
-      maxPerTool: maxPerTool,
-      toolName: toolName,
-    )) {
-      latestResult = result;
-    }
-    return latestResult ?? DiscoveredSessionsResult(sessions: const []);
-  }
-
   /// Warms the discovery cache for the given scope without changing UI state.
   ///
   /// This is useful for preloading likely session views ahead of user
@@ -1806,112 +1802,57 @@ class AgentSessionDiscoveryService {
     required String? toolName,
     required bool previewOnly,
   }) {
-    final tools = toolName == null
-        ? const [
-            'OpenCode',
-            'Codex',
-            'Copilot CLI',
-            'Claude Code',
-            'Antigravity',
-            'Cursor Agent',
-            'Pi',
-            'Hermes',
-            'Grok Build',
-          ]
-        : [toolName];
-    return tools
-        .map(
-          (name) => _discoverSessionsForTool(
-            name,
-            session,
-            workingDirectory: workingDirectory,
-            relatedWorkingDirectories: relatedWorkingDirectories,
-            maxPerTool: previewOnly ? 1 : maxPerTool,
-            previewOnly: toolName == null && previewOnly,
-            useAcp: toolName != null,
-          ),
-        )
-        .toList();
+    final handlers =
+        <
+          String,
+          Future<_ToolDiscoveryResult> Function(
+            SshSession,
+            String?,
+            List<String>,
+            int, {
+            bool previewOnly,
+          })
+        >{
+          'OpenCode':
+              (session, cwd, related, max, {bool previewOnly = false}) =>
+                  _discoverOpenCodeSessions(
+                    session,
+                    cwd,
+                    related,
+                    max,
+                    previewOnly: previewOnly,
+                    useAcp: toolName != null,
+                  ),
+          'Codex': _discoverCodexSessions,
+          'Copilot CLI':
+              (session, cwd, related, max, {bool previewOnly = false}) =>
+                  _discoverCopilotSessions(
+                    session,
+                    cwd,
+                    related,
+                    max,
+                    previewOnly: previewOnly,
+                    useAcp: toolName != null,
+                  ),
+          'Claude Code': _discoverClaudeSessions,
+          'Antigravity': _discoverAntigravitySessions,
+          'Cursor Agent': _discoverCursorSessions,
+          'Pi': _discoverPiSessions,
+          'Hermes': _discoverHermesSessions,
+          'Grok Build': _discoverGrokSessions,
+        };
+    return [
+      for (final name in toolName == null ? handlers.keys : [toolName])
+        handlers[name]?.call(
+              session,
+              workingDirectory,
+              relatedWorkingDirectories,
+              previewOnly ? 1 : maxPerTool,
+              previewOnly: toolName == null && previewOnly,
+            ) ??
+            Future.value(_ToolDiscoveryResult.success(name, const [])),
+    ];
   }
-
-  Future<_ToolDiscoveryResult> _discoverSessionsForTool(
-    String toolName,
-    SshSession session, {
-    required String? workingDirectory,
-    required List<String> relatedWorkingDirectories,
-    required int maxPerTool,
-    required bool previewOnly,
-    required bool useAcp,
-  }) => switch (toolName) {
-    'OpenCode' => _discoverOpenCodeSessions(
-      session,
-      workingDirectory,
-      relatedWorkingDirectories,
-      maxPerTool,
-      previewOnly: previewOnly,
-      useAcp: useAcp,
-    ),
-    'Codex' => _discoverCodexSessions(
-      session,
-      workingDirectory,
-      relatedWorkingDirectories,
-      maxPerTool,
-      previewOnly: previewOnly,
-    ),
-    'Copilot CLI' => _discoverCopilotSessions(
-      session,
-      workingDirectory,
-      relatedWorkingDirectories,
-      maxPerTool,
-      previewOnly: previewOnly,
-      useAcp: useAcp,
-    ),
-    'Claude Code' => _discoverClaudeSessions(
-      session,
-      workingDirectory,
-      relatedWorkingDirectories,
-      maxPerTool,
-      previewOnly: previewOnly,
-    ),
-    'Antigravity' => _discoverAntigravitySessions(
-      session,
-      workingDirectory,
-      relatedWorkingDirectories,
-      maxPerTool,
-      previewOnly: previewOnly,
-    ),
-    'Cursor Agent' => _discoverCursorSessions(
-      session,
-      workingDirectory,
-      relatedWorkingDirectories,
-      maxPerTool,
-      previewOnly: previewOnly,
-    ),
-    'Pi' => _discoverPiSessions(
-      session,
-      workingDirectory,
-      relatedWorkingDirectories,
-      maxPerTool,
-      previewOnly: previewOnly,
-    ),
-    'Hermes' => _discoverHermesSessions(
-      session,
-      workingDirectory,
-      relatedWorkingDirectories,
-      maxPerTool,
-      previewOnly: previewOnly,
-    ),
-    'Grok Build' => _discoverGrokSessions(
-      session,
-      workingDirectory,
-      relatedWorkingDirectories,
-      maxPerTool,
-      previewOnly: previewOnly,
-    ),
-    _ => Future<_ToolDiscoveryResult>.value(
-      _ToolDiscoveryResult.success(toolName, const <ToolSessionInfo>[]),
-    ),
-  };
 
   DiscoveredSessionsResult _buildToolDiscoveryPreviewResult(
     _ToolDiscoveryResult result, {
@@ -2256,22 +2197,11 @@ class AgentSessionDiscoveryService {
     bool previewOnly = false,
   }) async {
     try {
-      final scanLimit = previewOnly
-          ? _calculateDiscoveryScanLimit(
-              max,
-              multiplier: 8,
-              minimum: 24,
-              maximum: 40,
-            )
-          : _calculateDiscoveryScanLimit(max, multiplier: 10, maximum: 120);
-      final metadataReadLimit = previewOnly
-          ? _calculateDiscoveryScanLimit(
-              max,
-              multiplier: 4,
-              minimum: 6,
-              maximum: 12,
-            )
-          : calculateRecentSessionMetadataReadLimit(max);
+      final scanLimit = _sessionScanLimit(max, previewOnly: previewOnly);
+      final metadataReadLimit = _sessionMetadataReadLimit(
+        max,
+        previewOnly: previewOnly,
+      );
       final output = session.remoteIsWindows
           ? await _execWindowsPowerShell(
               session,
@@ -2283,19 +2213,16 @@ class AgentSessionDiscoveryService {
             )
           : await _exec(
               session,
-              'find ~/.codex/sessions -name "rollout-*.jsonl" -type f '
-              '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit',
+              posixListNewestFilesCommand(
+                'find ~/.codex/sessions -name "rollout-*.jsonl" -type f',
+                scanLimit,
+              ),
             );
       if (output.trim().isEmpty) {
         return const _ToolDiscoveryResult.success('Codex', []);
       }
 
-      final rolloutPaths = output
-          .trim()
-          .split('\n')
-          .map((line) => line.trim())
-          .where((line) => line.isNotEmpty)
-          .toList(growable: false);
+      final rolloutPaths = _nonEmptyLines(output).toList(growable: false);
       final recentRolloutPaths = rolloutPaths
           .take(metadataReadLimit)
           .toList(growable: false);
@@ -2352,22 +2279,12 @@ class AgentSessionDiscoveryService {
           ),
         );
       }
-      final scopedSessions =
-          workingDirectory != null && workingDirectory.isNotEmpty
-          ? sessions
-                .where(
-                  (info) => matchesDiscoveredSessionWorkingDirectory(
-                    workingDirectory,
-                    info.workingDirectory,
-                    relatedWorkingDirectories: relatedWorkingDirectories,
-                  ),
-                )
-                .toList(growable: false)
-          : sessions;
       return _ToolDiscoveryResult.success(
         'Codex',
-        sortAndLimitDiscoveredSessions(
-          scopedSessions.isNotEmpty ? scopedSessions : sessions,
+        _scopeSessions(
+          sessions,
+          workingDirectory,
+          relatedWorkingDirectories,
           max,
         ),
         hadError: hadError,
@@ -2433,19 +2350,13 @@ class AgentSessionDiscoveryService {
     bool previewOnly = false,
   }) async {
     try {
-      final scanLimit = previewOnly
-          ? _calculateDiscoveryScanLimit(
-              max,
-              multiplier: 8,
-              minimum: 24,
-              maximum: 40,
-            )
-          : _calculateDiscoveryScanLimit(
-              max,
-              multiplier: 20,
-              minimum: 120,
-              maximum: 240,
-            );
+      final scanLimit = _sessionScanLimit(
+        max,
+        previewOnly: previewOnly,
+        multiplier: 20,
+        minimum: 120,
+        maximum: 240,
+      );
       if (useAcp) {
         final acpSessions = await _discoverAcpSessions(
           session,
@@ -2464,14 +2375,10 @@ class AgentSessionDiscoveryService {
         }
       }
 
-      final metadataReadLimit = previewOnly
-          ? _calculateDiscoveryScanLimit(
-              max,
-              multiplier: 4,
-              minimum: 6,
-              maximum: 12,
-            )
-          : calculateRecentSessionMetadataReadLimit(max);
+      final metadataReadLimit = _sessionMetadataReadLimit(
+        max,
+        previewOnly: previewOnly,
+      );
       final workspacePaths = await _listCopilotWorkspacePaths(
         session,
         scanLimit,
@@ -2795,23 +2702,12 @@ print(json.dumps(sessions))
         }
       }
 
-      final scopedSessions =
-          workingDirectory != null && workingDirectory.isNotEmpty
-          ? sessions
-                .where(
-                  (info) => matchesDiscoveredSessionWorkingDirectory(
-                    workingDirectory,
-                    info.workingDirectory,
-                    relatedWorkingDirectories: relatedWorkingDirectories,
-                  ),
-                )
-                .toList(growable: false)
-          : sessions;
-
       return _ToolDiscoveryResult.success(
         'Antigravity',
-        sortAndLimitDiscoveredSessions(
-          scopedSessions.isNotEmpty ? scopedSessions : sessions,
+        _scopeSessions(
+          sessions,
+          workingDirectory,
+          relatedWorkingDirectories,
           max,
         ),
         hadError: hadError,
@@ -2829,22 +2725,11 @@ print(json.dumps(sessions))
     bool previewOnly = false,
   }) async {
     try {
-      final scanLimit = previewOnly
-          ? _calculateDiscoveryScanLimit(
-              max,
-              multiplier: 8,
-              minimum: 24,
-              maximum: 40,
-            )
-          : _calculateDiscoveryScanLimit(max, multiplier: 10, maximum: 120);
-      final metadataReadLimit = previewOnly
-          ? _calculateDiscoveryScanLimit(
-              max,
-              multiplier: 4,
-              minimum: 6,
-              maximum: 12,
-            )
-          : calculateRecentSessionMetadataReadLimit(max);
+      final scanLimit = _sessionScanLimit(max, previewOnly: previewOnly);
+      final metadataReadLimit = _sessionMetadataReadLimit(
+        max,
+        previewOnly: previewOnly,
+      );
       final sessions = <ToolSessionInfo>[];
       final seenSessionIds = <String>{};
       var hadError = false;
@@ -2863,13 +2748,9 @@ print(json.dumps(sessions))
           rootEnvironmentVariables: _windowsUserDataRootEnvironmentVariables,
         ),
       );
-      final jsonPaths = jsonPathOutput
-          .trim()
-          .split('\n')
-          .map((line) => line.trim())
-          .where((line) => line.isNotEmpty)
-          .take(metadataReadLimit)
-          .toList(growable: false);
+      final jsonPaths = _nonEmptyLines(
+        jsonPathOutput,
+      ).take(metadataReadLimit).toList(growable: false);
       final jsonSnapshots = await _readRemoteFileSnapshots(
         session,
         jsonPaths,
@@ -2914,13 +2795,9 @@ print(json.dumps(sessions))
           pathLikeFilters: const ['*/conversations/*', '*/implicit/*'],
         ),
       );
-      final conversationPaths = conversationPathOutput
-          .trim()
-          .split('\n')
-          .map((line) => line.trim())
-          .where((line) => line.isNotEmpty)
-          .take(metadataReadLimit)
-          .toList(growable: false);
+      final conversationPaths = _nonEmptyLines(
+        conversationPathOutput,
+      ).take(metadataReadLimit).toList(growable: false);
       if (conversationPaths.isNotEmpty) {
         final historyOutput = await _execWindowsPowerShell(
           session,
@@ -2971,22 +2848,12 @@ print(json.dumps(sessions))
         }
       }
 
-      final scopedSessions =
-          workingDirectory != null && workingDirectory.isNotEmpty
-          ? sessions
-                .where(
-                  (info) => matchesDiscoveredSessionWorkingDirectory(
-                    workingDirectory,
-                    info.workingDirectory,
-                    relatedWorkingDirectories: relatedWorkingDirectories,
-                  ),
-                )
-                .toList(growable: false)
-          : sessions;
       return _ToolDiscoveryResult.success(
         'Antigravity',
-        sortAndLimitDiscoveredSessions(
-          scopedSessions.isNotEmpty ? scopedSessions : sessions,
+        _scopeSessions(
+          sessions,
+          workingDirectory,
+          relatedWorkingDirectories,
           max,
         ),
         hadError: hadError,
@@ -3010,22 +2877,11 @@ print(json.dumps(sessions))
     bool previewOnly = false,
   }) async {
     try {
-      final scanLimit = previewOnly
-          ? _calculateDiscoveryScanLimit(
-              max,
-              multiplier: 8,
-              minimum: 24,
-              maximum: 40,
-            )
-          : _calculateDiscoveryScanLimit(max, multiplier: 10, maximum: 120);
-      final metadataReadLimit = previewOnly
-          ? _calculateDiscoveryScanLimit(
-              max,
-              multiplier: 4,
-              minimum: 6,
-              maximum: 12,
-            )
-          : calculateRecentSessionMetadataReadLimit(max);
+      final scanLimit = _sessionScanLimit(max, previewOnly: previewOnly);
+      final metadataReadLimit = _sessionMetadataReadLimit(
+        max,
+        previewOnly: previewOnly,
+      );
       final output = session.remoteIsWindows
           ? await _execWindowsPowerShell(
               session,
@@ -3037,19 +2893,16 @@ print(json.dumps(sessions))
             )
           : await _exec(
               session,
-              'find ~/.cursor/chats -name meta.json -type f '
-              '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit',
+              posixListNewestFilesCommand(
+                'find ~/.cursor/chats -name meta.json -type f',
+                scanLimit,
+              ),
             );
       if (output.trim().isEmpty) {
         return const _ToolDiscoveryResult.success('Cursor Agent', []);
       }
 
-      final metaPaths = output
-          .trim()
-          .split('\n')
-          .map((line) => line.trim())
-          .where((line) => line.isNotEmpty)
-          .toList(growable: false);
+      final metaPaths = _nonEmptyLines(output).toList(growable: false);
       final recentMetaPaths = metaPaths
           .take(metadataReadLimit)
           .toList(growable: false);
@@ -3102,22 +2955,12 @@ print(json.dumps(sessions))
           ),
         );
       }
-      final scopedSessions =
-          workingDirectory != null && workingDirectory.isNotEmpty
-          ? sessions
-                .where(
-                  (info) => matchesDiscoveredSessionWorkingDirectory(
-                    workingDirectory,
-                    info.workingDirectory,
-                    relatedWorkingDirectories: relatedWorkingDirectories,
-                  ),
-                )
-                .toList(growable: false)
-          : sessions;
       return _ToolDiscoveryResult.success(
         'Cursor Agent',
-        sortAndLimitDiscoveredSessions(
-          scopedSessions.isNotEmpty ? scopedSessions : sessions,
+        _scopeSessions(
+          sessions,
+          workingDirectory,
+          relatedWorkingDirectories,
           max,
         ),
         hadError: hadError,
@@ -3151,22 +2994,11 @@ print(json.dumps(sessions))
     bool previewOnly = false,
   }) async {
     try {
-      final scanLimit = previewOnly
-          ? _calculateDiscoveryScanLimit(
-              max,
-              multiplier: 8,
-              minimum: 24,
-              maximum: 40,
-            )
-          : _calculateDiscoveryScanLimit(max, multiplier: 10, maximum: 120);
-      final metadataReadLimit = previewOnly
-          ? _calculateDiscoveryScanLimit(
-              max,
-              multiplier: 4,
-              minimum: 6,
-              maximum: 12,
-            )
-          : calculateRecentSessionMetadataReadLimit(max);
+      final scanLimit = _sessionScanLimit(max, previewOnly: previewOnly);
+      final metadataReadLimit = _sessionMetadataReadLimit(
+        max,
+        previewOnly: previewOnly,
+      );
 
       final scopedDirectoryNames = <String>{
         if (workingDirectory != null && workingDirectory.isNotEmpty)
@@ -3196,23 +3028,17 @@ print(json.dumps(sessions))
         output = await _exec(
           session,
           r'GROK_SESSIONS_ROOT="${GROK_HOME:-$HOME/.grok}/sessions"; '
-          '${roots.isEmpty ? r'find "$GROK_SESSIONS_ROOT"' : 'find $roots -maxdepth 2'} '
-          '-name summary.json -type f '
-          '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit',
+          '${posixListNewestFilesCommand('${roots.isEmpty ? r'find "$GROK_SESSIONS_ROOT"' : 'find $roots -maxdepth 2'} '
+          '-name summary.json -type f', scanLimit)}',
         );
       }
       if (output.trim().isEmpty) {
         return const _ToolDiscoveryResult.success('Grok Build', []);
       }
 
-      final summaryPaths = output
-          .trim()
-          .split('\n')
-          .map((line) => line.trim())
-          .where((line) => line.isNotEmpty)
-          .toSet()
-          .take(metadataReadLimit)
-          .toList(growable: false);
+      final summaryPaths = _nonEmptyLines(
+        output,
+      ).toSet().take(metadataReadLimit).toList(growable: false);
       final snapshots = await _readRemoteFileSnapshots(
         session,
         summaryPaths,
@@ -3260,22 +3086,12 @@ print(json.dumps(sessions))
         );
       }
 
-      final scopedSessions =
-          workingDirectory != null && workingDirectory.isNotEmpty
-          ? sessions
-                .where(
-                  (info) => matchesDiscoveredSessionWorkingDirectory(
-                    workingDirectory,
-                    info.workingDirectory,
-                    relatedWorkingDirectories: relatedWorkingDirectories,
-                  ),
-                )
-                .toList(growable: false)
-          : sessions;
       return _ToolDiscoveryResult.success(
         'Grok Build',
-        sortAndLimitDiscoveredSessions(
-          scopedSessions.isNotEmpty ? scopedSessions : sessions,
+        _scopeSessions(
+          sessions,
+          workingDirectory,
+          relatedWorkingDirectories,
           max,
         ),
         hadError: hadError,
@@ -3298,22 +3114,11 @@ print(json.dumps(sessions))
     bool previewOnly = false,
   }) async {
     try {
-      final scanLimit = previewOnly
-          ? _calculateDiscoveryScanLimit(
-              max,
-              multiplier: 8,
-              minimum: 24,
-              maximum: 40,
-            )
-          : _calculateDiscoveryScanLimit(max, multiplier: 10, maximum: 120);
-      final metadataReadLimit = previewOnly
-          ? _calculateDiscoveryScanLimit(
-              max,
-              multiplier: 4,
-              minimum: 6,
-              maximum: 12,
-            )
-          : calculateRecentSessionMetadataReadLimit(max);
+      final scanLimit = _sessionScanLimit(max, previewOnly: previewOnly);
+      final metadataReadLimit = _sessionMetadataReadLimit(
+        max,
+        previewOnly: previewOnly,
+      );
       final sessionPaths = await _listPiSessionPaths(
         session,
         workingDirectory,
@@ -3476,18 +3281,13 @@ print(json.dumps(sessions))
           )
         : await _exec(
             session,
-            '{ find ${buckets.map((bucket) => '"\$HOME"/.pi/agent/sessions/${shellEscapePosix(bucket)}').join(' ')} '
-            '-maxdepth 1 -name "*.jsonl" -type f '
-            '-exec ls -1t {} + 2>/dev/null || true; } | '
-            'head -n $scanLimit',
+            posixListNewestFilesCommand(
+              'find ${buckets.map((bucket) => '"\$HOME"/.pi/agent/sessions/${shellEscapePosix(bucket)}').join(' ')} '
+              '-maxdepth 1 -name "*.jsonl" -type f',
+              scanLimit,
+            ),
           );
-    return output
-        .trim()
-        .split('\n')
-        .map((line) => line.trim())
-        .where((line) => line.isNotEmpty)
-        .take(scanLimit)
-        .toList(growable: false);
+    return _nonEmptyLines(output).take(scanLimit).toList(growable: false);
   }
 
   // ── Hermes ─────────────────────────────────────────────────────────────
@@ -3506,14 +3306,13 @@ print(json.dumps(sessions))
       return const _ToolDiscoveryResult.success('Hermes', []);
     }
     try {
-      final scanLimit = previewOnly
-          ? _calculateDiscoveryScanLimit(
-              max,
-              multiplier: 4,
-              minimum: 6,
-              maximum: 24,
-            )
-          : _calculateDiscoveryScanLimit(max, multiplier: 10, maximum: 120);
+      final scanLimit = _sessionScanLimit(
+        max,
+        previewOnly: previewOnly,
+        previewMultiplier: 4,
+        previewMinimum: 6,
+        previewMaximum: 24,
+      );
       final scopedDirectories = <String>[
         if (workingDirectory != null && workingDirectory.isNotEmpty)
           workingDirectory,
@@ -3599,14 +3398,12 @@ print(json.dumps(sessions))
       );
     }
     try {
-      final scanLimit = previewOnly
-          ? _calculateDiscoveryScanLimit(
-              max,
-              multiplier: 8,
-              minimum: 12,
-              maximum: 24,
-            )
-          : _calculateDiscoveryScanLimit(max, multiplier: 10, maximum: 120);
+      final scanLimit = _sessionScanLimit(
+        max,
+        previewOnly: previewOnly,
+        previewMinimum: 12,
+        previewMaximum: 24,
+      );
       var hadError = false;
       if (useAcp) {
         final acpSessions = await _discoverAcpSessions(
@@ -3653,7 +3450,7 @@ print(json.dumps(sessions))
           final sessions = _parseOpenCodeCliJson(cliOutput);
           return _ToolDiscoveryResult.success(
             'OpenCode',
-            _scopeOpenCodeSessions(
+            _scopeSessions(
               sessions,
               workingDirectory,
               relatedWorkingDirectories,
@@ -3674,7 +3471,7 @@ print(json.dumps(sessions))
         final sessions = _parseOpenCodeDbOutput(dbOutput);
         return _ToolDiscoveryResult.success(
           'OpenCode',
-          _scopeOpenCodeSessions(
+          _scopeSessions(
             sessions,
             workingDirectory,
             relatedWorkingDirectories,
@@ -3698,22 +3495,16 @@ print(json.dumps(sessions))
     bool previewOnly = false,
   }) async {
     try {
-      final scanLimit = previewOnly
-          ? _calculateDiscoveryScanLimit(
-              max,
-              multiplier: 8,
-              minimum: 12,
-              maximum: 24,
-            )
-          : _calculateDiscoveryScanLimit(max, multiplier: 10, maximum: 120);
-      final metadataReadLimit = previewOnly
-          ? _calculateDiscoveryScanLimit(
-              max,
-              multiplier: 4,
-              minimum: 6,
-              maximum: 12,
-            )
-          : calculateRecentSessionMetadataReadLimit(max);
+      final scanLimit = _sessionScanLimit(
+        max,
+        previewOnly: previewOnly,
+        previewMinimum: 12,
+        previewMaximum: 24,
+      );
+      final metadataReadLimit = _sessionMetadataReadLimit(
+        max,
+        previewOnly: previewOnly,
+      );
       var hadError = false;
 
       final cliOutput = await _execWindowsPowerShell(
@@ -3725,7 +3516,7 @@ print(json.dumps(sessions))
           final sessions = _parseOpenCodeCliJson(cliOutput);
           return _ToolDiscoveryResult.success(
             'OpenCode',
-            _scopeOpenCodeSessions(
+            _scopeSessions(
               sessions,
               workingDirectory,
               relatedWorkingDirectories,
@@ -3755,13 +3546,9 @@ print(json.dumps(sessions))
         );
       }
 
-      final storagePaths = storagePathOutput
-          .trim()
-          .split('\n')
-          .map((line) => line.trim())
-          .where((line) => line.isNotEmpty)
-          .take(metadataReadLimit)
-          .toList(growable: false);
+      final storagePaths = _nonEmptyLines(
+        storagePathOutput,
+      ).take(metadataReadLimit).toList(growable: false);
       final snapshots = await _readRemoteFileSnapshots(
         session,
         storagePaths,
@@ -3804,7 +3591,7 @@ print(json.dumps(sessions))
 
       return _ToolDiscoveryResult.success(
         'OpenCode',
-        _scopeOpenCodeSessions(
+        _scopeSessions(
           sessions,
           workingDirectory,
           relatedWorkingDirectories,
@@ -3817,7 +3604,7 @@ print(json.dumps(sessions))
     }
   }
 
-  List<ToolSessionInfo> _scopeOpenCodeSessions(
+  List<ToolSessionInfo> _scopeSessions(
     List<ToolSessionInfo> sessions,
     String? workingDirectory,
     List<String> relatedWorkingDirectories,
@@ -4185,12 +3972,7 @@ print(json.dumps(sessions))
           limit: scanLimit,
         ),
       );
-      return output
-          .trim()
-          .split('\n')
-          .map((line) => line.trim())
-          .where((line) => line.isNotEmpty)
-          .toList(growable: false);
+      return _nonEmptyLines(output).toList(growable: false);
     }
 
     final scopedDirectories = relatedWorkingDirectories
@@ -4199,18 +3981,14 @@ print(json.dumps(sessions))
         .toSet()
         .toList(growable: false);
 
-    final globalCommand =
-        'find ~/.copilot/session-state -mindepth 2 -maxdepth 2 '
-        '-name workspace.yaml -type f '
-        '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit';
+    final globalCommand = posixListNewestFilesCommand(
+      'find ~/.copilot/session-state -mindepth 2 -maxdepth 2 '
+      '-name workspace.yaml -type f',
+      scanLimit,
+    );
     if (scopedDirectories.isEmpty) {
       final output = await _exec(session, globalCommand);
-      return output
-          .trim()
-          .split('\n')
-          .map((line) => line.trim())
-          .where((line) => line.isNotEmpty)
-          .toList(growable: false);
+      return _nonEmptyLines(output).toList(growable: false);
     }
 
     final scopedCommand = StringBuffer()
@@ -4230,21 +4008,18 @@ print(json.dumps(sessions))
         r'printf "%s\n" "$matching_paths" '
         '| while IFS= read -r path; do '
         r'[ -n "$path" ] && printf "%s\0" "$path"; '
-        'done | xargs -0 ls -1t 2>/dev/null '
-        '| head -n $scanLimit; '
-        'fi',
+        'done | xargs -0 sh -c ${shellEscapePosix(_posixFileTimestampsScript)} '
+        'sh 2>/dev/null; fi',
       );
 
-    final scopedOutput = await _exec(session, scopedCommand.toString());
+    final scopedOutput = await _exec(
+      session,
+      _newestFilePathsCommand('{ $scopedCommand; }', scanLimit),
+    );
     final output = scopedOutput.trim().isNotEmpty
         ? scopedOutput
         : await _exec(session, globalCommand);
-    return output
-        .trim()
-        .split('\n')
-        .map((line) => line.trim())
-        .where((line) => line.isNotEmpty)
-        .toList(growable: false);
+    return _nonEmptyLines(output).toList(growable: false);
   }
 
   Future<Map<String, _RemoteFileSnapshot>> _readRemoteFileSnapshots(
@@ -4854,12 +4629,32 @@ String _windowsNameLikeCondition(List<String> globs) => globs
     )
     .join(' -or ');
 
+const _posixFileTimestampsScript =
+    'if stat -c %Y / >/dev/null 2>&1; then '
+    "stat -c '%Y\t%n' \"\$@\"; "
+    "else stat -f '%m\t%N' \"\$@\"; fi";
+
+String _newestFilePathsCommand(String timestampsCommand, int limit) =>
+    '$timestampsCommand | LC_ALL=C sort -t "\t" -k1,1nr | '
+    'head -n $limit | cut -f2-';
+
+/// Globally sorts timestamp/path records from every batch of [findCommand].
+@visibleForTesting
+String posixListNewestFilesCommand(
+  String findCommand,
+  int limit,
+) => _newestFilePathsCommand(
+  '{ $findCommand -exec sh -c ${shellEscapePosix(_posixFileTimestampsScript)} '
+  'sh {} + 2>/dev/null || true; }',
+  limit,
+);
+
 /// Builds a PowerShell script listing files under [relativeRoot] below one or
 /// more Windows user roots that match any of [includeGlobs], newest first,
 /// limited to [limit].
 ///
 /// Emits one forward-slash path per line, mirroring
-/// `find <root> -name <glob> -type f -exec ls -1t {} + | head -n <limit>`. When
+/// [posixListNewestFilesCommand]. When
 /// [pathLikeFilters] is non-empty only files whose forward-slash path matches at
 /// least one `-like` pattern are emitted (mirroring `find ... -path <pattern>`).
 /// [additionalRelativeRoots] and [rootEnvironmentVariables] let callers include

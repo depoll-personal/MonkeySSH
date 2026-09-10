@@ -110,9 +110,17 @@ class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
   final List<int> reconfiguredHostIds = [];
 
   @override
-  Map<int, SshConnectionState> build() => {
-    for (final session in sessions) session.connectionId: connectionState,
-  };
+  Map<int, SshConnectionState> build() {
+    for (final session in sessions) {
+      final subscription = session.portForwardChanges.listen((_) {
+        state = {...state};
+      });
+      ref.onDispose(subscription.cancel);
+    }
+    return {
+      for (final session in sessions) session.connectionId: connectionState,
+    };
+  }
 
   @override
   SshSession? getSession(int connectionId) {
@@ -392,12 +400,30 @@ void main() {
     await tester.pump();
 
     expect(openedTunnels.map((tunnel) => tunnel.portForwardId), [-3000, 1]);
+    final activeTunnel = session.tunnels[1]!;
 
     await tester.tap(find.byKey(const Key('port-forward-switch-1')));
     await tester.pumpAndSettle();
 
     expect(session.stops, [1]);
     expect(find.text('Stopped • Auto-start'), findsOneWidget);
+
+    session.tunnels[1] = activeTunnel;
+    session.changes.add(null);
+    await tester.pumpAndSettle();
+    expect(find.text('Active now • Auto-start'), findsOneWidget);
+    session.tunnels.remove(1);
+    session.changes.add(null);
+    await tester.pumpAndSettle();
+    expect(find.text('Stopped • Auto-start'), findsOneWidget);
+
+    automaticOwner.tunnels.clear();
+    automaticOwner.changes.add(null);
+    await tester.pumpAndSettle();
+    expect(find.text('Port 3000'), findsNothing);
+    expect(find.text('Port 4000'), findsNothing);
+    expect(find.text('this saved host'), findsNothing);
+    expect(find.text('shared host services'), findsNothing);
 
     await tester.tap(find.text('Add Forward'));
     await tester.pumpAndSettle();

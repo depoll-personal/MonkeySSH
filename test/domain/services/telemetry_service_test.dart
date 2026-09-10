@@ -4,6 +4,7 @@ import 'package:drift/native.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/app/app_metadata.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/domain/services/diagnostics_log_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
@@ -160,6 +161,17 @@ void main() {
         'feature': 'agent_management',
         'source': 'feature_gate',
       });
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      await service.logAppStarted(
+        appMetadata: const AppMetadata(
+          appName: 'MonkeySSH',
+          version: '1',
+          buildNumber: '1',
+        ),
+      );
+      expect(analytics.events.last.name, 'app_started');
+      expect(analytics.events.last.parameters['platform'], 'i_os');
     });
 
     test('logs connection funnel with coarse buckets', () async {

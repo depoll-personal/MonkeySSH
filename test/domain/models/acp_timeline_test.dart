@@ -488,6 +488,51 @@ void main() {
       expect(entry.rawOutput, isNot('y' * 1000));
     });
 
+    for (final field in ['path', 'meta', 'extensions', 'title', 'total']) {
+      test('bounds oversized tool $field and preserves update identity', () {
+        final large = '😀' * (field == 'total' ? 150 : 1024 * 1024);
+        final titleOnly = field == 'title' || field == 'total';
+        const smallLocation = AcpToolLocation(path: '/keep.dart', line: 7);
+        final location = AcpToolLocation(
+          path: field == 'path' ? large : '/large.dart',
+          meta: field == 'meta' ? {'payload': large} : const {},
+          extensions: field == 'extensions' ? {'payload': large} : const {},
+        );
+        final builder =
+            AcpTimelineBuilder(
+              limits: const AcpTimelineLimits(
+                maxEntryBytes: 1024,
+                maxTotalBytes: 512,
+              ),
+            )..apply(
+              AcpToolCallUpdate(
+                toolCallId: 'bounded',
+                isInitial: true,
+                title: titleOnly ? large : 'Read',
+                status: AcpToolStatus.inProgress,
+                locations: [if (!titleOnly) location, smallLocation],
+              ),
+            );
+        final snapshot = builder.snapshot();
+        final entry = snapshot.entries.single as AcpToolCallEntry;
+        expect(snapshot.overflowed, isTrue);
+        expect(approximateTimelineEntryBytes(entry), lessThanOrEqualTo(512));
+        expect(entry.locations, [smallLocation]);
+        expect(entry.title, titleOnly ? '😀' * 64 : 'Read');
+        builder.apply(
+          const AcpToolCallUpdate(
+            toolCallId: 'bounded',
+            status: AcpToolStatus.completed,
+          ),
+        );
+        final merged = builder.snapshot().entries.single as AcpToolCallEntry;
+        expect(merged.toolCallId, 'bounded');
+        expect(merged.order, entry.order);
+        expect(merged.status, AcpToolStatus.completed);
+        expect(merged.locations, [smallLocation]);
+      });
+    }
+
     test('never drops below one entry even when it alone exceeds the '
         'total byte budget', () {
       final builder = AcpTimelineBuilder(

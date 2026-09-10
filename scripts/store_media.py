@@ -52,13 +52,20 @@ for url in urls {
                 check=True,
             )
 
+    for line in result.stdout.splitlines():
+        if line.startswith('FILE\t') and '\tERROR\t' in line:
+            path, error = line[5:].split('\tERROR\t', 1)
+            raise ValueError(f'OCR failed for {path}: {error}')
     texts: dict[Path, str] = {}
-    for block in result.stdout.split('END_FILE'):
+    for block in result.stdout.split('END_FILE')[:-1]:
         lines = [line for line in block.strip().splitlines() if line]
         if not lines or not lines[0].startswith('FILE\t'):
             continue
         path = Path(lines[0].split('\t', 1)[1])
         texts[path] = ' '.join(lines[1:])
+    missing = [str(path) for path in paths if path not in texts]
+    if missing:
+        raise ValueError(f'OCR did not return text for {", ".join(missing)}.')
     return texts
 
 

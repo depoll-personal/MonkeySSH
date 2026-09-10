@@ -143,7 +143,8 @@ func readSessionPID(session string) int {
 	if err != nil {
 		return 0
 	}
-	return readPIDFileOrZero(path)
+	pid, _ := readPIDFile(path)
+	return pid
 }
 
 func newMuxServer(session string) *muxServer {

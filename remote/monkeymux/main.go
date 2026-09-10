@@ -709,8 +709,6 @@ type muxWindow struct {
 	oscBuffer                   []byte
 	attachOscBuffer             []byte
 	csiBuffer                   []byte
-	terminalBellState           terminalBellParserState
-	terminalBellBytes           int
 	terminalOutputState         terminalOutputParserState
 	terminalOutputBytes         int
 	terminalOutputUtf8Remaining int
@@ -802,17 +800,6 @@ type muxWindow struct {
 	kittyGraphicsPendingScan int
 	kittyGraphicsPendingTerm int
 }
-
-type terminalBellParserState int
-
-const (
-	terminalBellParserGround terminalBellParserState = iota
-	terminalBellParserEscape
-	terminalBellParserOsc
-	terminalBellParserOscEscape
-	terminalBellParserString
-	terminalBellParserStringEscape
-)
 
 type terminalOutputParserState int
 
@@ -2575,14 +2562,6 @@ func clearAbandonedPIDFile(path string) bool {
 	return os.Remove(path) == nil
 }
 
-func readPIDFileOrZero(path string) int {
-	pid, err := readPIDFile(path)
-	if err != nil {
-		return 0
-	}
-	return pid
-}
-
 func readPIDFile(path string) (int, error) {
 	record, err := readPIDRecord(path)
 	if err != nil {
@@ -3070,9 +3049,9 @@ func enrichRestoreWithAgentSessionIDs(restore *serverRestore) {
 	if len(processes) > 0 {
 		processDiscoveredSessions = map[string]map[int]string{
 			"copilot":  discoverCopilotSessionIDs(processes, panePids),
-			"codex":    discoverCodexSessionIDs(processes, panePids, paneWorkingDirectories),
-			"opencode": discoverOpenCodeSessionIDs(processes, panePids, paneWorkingDirectories),
-			"claude":   discoverClaudeSessionIDs(processes, panePids, paneWorkingDirectories),
+			"codex":    discoverAgentSessionIDs("codex", processes, panePids, paneWorkingDirectories),
+			"opencode": discoverAgentSessionIDs("opencode", processes, panePids, paneWorkingDirectories),
+			"claude":   discoverAgentSessionIDs("claude", processes, panePids, paneWorkingDirectories),
 		}
 	}
 	for i := range restore.Windows {
@@ -4568,28 +4547,20 @@ var processOpenFilePathsForMetadata = defaultProcessOpenFilePathsForMetadata
 
 var processWorkingDirectoryForMetadata = defaultProcessWorkingDirectoryForMetadata
 
-func commandNameForPID(pid int) string {
-	if pid <= 0 {
-		return ""
-	}
-	table := cachedProcessTable(time.Now())
-	if info, ok := table[pid]; ok {
-		return commandNameFromProcessFields(info.comm, info.args)
-	}
-	return ""
-}
-
 func cachedProcessTable(now time.Time) map[int]processInfo {
 	commandProcessTableCache.mu.Lock()
 	defer commandProcessTableCache.mu.Unlock()
-	if commandProcessTableCache.processes != nil &&
-		!commandProcessTableCache.loadedAt.IsZero() &&
+	if !commandProcessTableCache.loadedAt.IsZero() &&
 		now.Sub(commandProcessTableCache.loadedAt) < processMetadataInterval {
 		return commandProcessTableCache.processes
 	}
+	started := time.Now()
 	processes := readProcessTable()
 	commandProcessTableCache.processes = processes
 	commandProcessTableCache.loadedAt = now
+	if processes == nil {
+		commandProcessTableCache.loadedAt = now.Add(time.Since(started))
+	}
 	return processes
 }
 
@@ -4900,75 +4871,75 @@ func agentWorkingDirectoryForMetadata(
 	return normalizedMetadataPath(fallbackWorkingDirectories[0][panePID])
 }
 
-func discoverCodexSessionIDs(
+func discoverAgentSessionIDs(
+	tool string,
 	processes map[int]processInfo,
 	panePids map[int]struct{},
 	fallbackWorkingDirectories ...map[int]string,
 ) map[int]string {
-	type unresolvedCodexProcess struct {
+	var decodeFile func(string) string
+	var recentSession func(string, time.Time) string
+	switch tool {
+	case "codex":
+		decodeFile = codexSessionIDFromRolloutFile
+		recentSession = codexRecentSessionIDForWorkingDirectory
+	case "claude":
+		decodeFile = claudeSessionIDFromProjectFile
+		recentSession = claudeRecentSessionIDForWorkingDirectory
+	case "opencode":
+		var entries []openCodeSessionEntry
+		loaded := false
+		recentSession = func(directory string, started time.Time) string {
+			if !loaded {
+				entries = readOpenCodeSessionEntries()
+				loaded = true
+			}
+			return openCodeSessionIDForWorkingDirectory(entries, directory, started)
+		}
+	default:
+		return nil
+	}
+	type unresolvedProcess struct {
 		panePid          int
 		workingDirectory string
 		processStarted   time.Time
 	}
 	sessions := map[int]string{}
-	unresolved := []unresolvedCodexProcess{}
-	unresolvedPanes := map[int]struct{}{}
+	unresolved := []unresolvedProcess{}
 	workingDirectoryCounts := map[string]int{}
-	countedWorkingDirectoryPanes := map[int]bool{}
-	for panePid, process := range agentProcessesByPane(processes, panePids, "codex") {
+	for panePid, process := range agentProcessesByPane(processes, panePids, tool) {
 		workingDirectory := agentWorkingDirectoryForMetadata(
-			process.pid,
-			panePid,
-			fallbackWorkingDirectories,
+			process.pid, panePid, fallbackWorkingDirectories,
 		)
-		if workingDirectory != "" && !countedWorkingDirectoryPanes[panePid] {
+		if workingDirectory != "" {
 			workingDirectoryCounts[workingDirectory]++
-			countedWorkingDirectoryPanes[panePid] = true
 		}
-		if sessionID := agentSessionIDFromArgs("codex", process.args); sessionID != "" {
-			sessions[panePid] = sessionID
-			continue
+		sessionID := agentSessionIDFromArgs(tool, process.args)
+		if sessionID == "" && decodeFile != nil {
+			for _, path := range processOpenFilePathsForMetadata(process.pid) {
+				if sessionID = decodeFile(path); sessionID != "" {
+					break
+				}
+			}
 		}
-		if sessionID := codexSessionIDFromOpenFiles(process.pid); sessionID != "" {
+		if sessionID != "" {
 			sessions[panePid] = sessionID
 			continue
 		}
 		processStarted := processStartedAtForMetadata(process.pid)
-		if workingDirectory == "" || processStarted.IsZero() {
-			continue
+		if workingDirectory != "" && !processStarted.IsZero() {
+			unresolved = append(unresolved, unresolvedProcess{panePid, workingDirectory, processStarted})
 		}
-		if _, ok := unresolvedPanes[panePid]; ok {
-			continue
-		}
-		unresolvedPanes[panePid] = struct{}{}
-		unresolved = append(unresolved, unresolvedCodexProcess{
-			panePid:          panePid,
-			workingDirectory: workingDirectory,
-			processStarted:   processStarted,
-		})
 	}
 	for _, candidate := range unresolved {
-		if sessions[candidate.panePid] != "" ||
-			workingDirectoryCounts[candidate.workingDirectory] != 1 {
+		if workingDirectoryCounts[candidate.workingDirectory] != 1 {
 			continue
 		}
-		if sessionID := codexRecentSessionIDForWorkingDirectory(
-			candidate.workingDirectory,
-			candidate.processStarted,
-		); sessionID != "" {
+		if sessionID := recentSession(candidate.workingDirectory, candidate.processStarted); sessionID != "" {
 			sessions[candidate.panePid] = sessionID
 		}
 	}
 	return sessions
-}
-
-func codexSessionIDFromOpenFiles(pid int) string {
-	for _, path := range processOpenFilePathsForMetadata(pid) {
-		if sessionID := codexSessionIDFromRolloutFile(path); sessionID != "" {
-			return sessionID
-		}
-	}
-	return ""
 }
 
 func codexRecentSessionIDForWorkingDirectory(
@@ -5088,75 +5059,6 @@ type openCodeSessionEntry struct {
 // lookup can be stubbed without a live OpenCode database.
 var openCodeSessionEntriesReader = defaultOpenCodeSessionEntries
 
-func discoverOpenCodeSessionIDs(
-	processes map[int]processInfo,
-	panePids map[int]struct{},
-	fallbackWorkingDirectories ...map[int]string,
-) map[int]string {
-	type unresolvedOpenCodeProcess struct {
-		panePid          int
-		workingDirectory string
-		processStarted   time.Time
-	}
-	sessions := map[int]string{}
-	unresolved := []unresolvedOpenCodeProcess{}
-	unresolvedPanes := map[int]struct{}{}
-	workingDirectoryCounts := map[string]int{}
-	countedWorkingDirectoryPanes := map[int]bool{}
-	for panePid, process := range agentProcessesByPane(processes, panePids, "opencode") {
-		workingDirectory := agentWorkingDirectoryForMetadata(
-			process.pid,
-			panePid,
-			fallbackWorkingDirectories,
-		)
-		if workingDirectory != "" && !countedWorkingDirectoryPanes[panePid] {
-			workingDirectoryCounts[workingDirectory]++
-			countedWorkingDirectoryPanes[panePid] = true
-		}
-		if sessionID := agentSessionIDFromArgs("opencode", process.args); sessionID != "" {
-			sessions[panePid] = sessionID
-			continue
-		}
-		if workingDirectory == "" {
-			continue
-		}
-		if _, ok := unresolvedPanes[panePid]; ok {
-			continue
-		}
-		unresolvedPanes[panePid] = struct{}{}
-		processStarted := processStartedAtForMetadata(process.pid)
-		if processStarted.IsZero() {
-			continue
-		}
-		unresolved = append(unresolved, unresolvedOpenCodeProcess{
-			panePid:          panePid,
-			workingDirectory: workingDirectory,
-			processStarted:   processStarted,
-		})
-	}
-	if len(unresolved) == 0 {
-		return sessions
-	}
-	entries := readOpenCodeSessionEntries()
-	if len(entries) == 0 {
-		return sessions
-	}
-	for _, candidate := range unresolved {
-		if sessions[candidate.panePid] != "" ||
-			workingDirectoryCounts[candidate.workingDirectory] != 1 {
-			continue
-		}
-		if sessionID := openCodeSessionIDForWorkingDirectory(
-			entries,
-			candidate.workingDirectory,
-			candidate.processStarted,
-		); sessionID != "" {
-			sessions[candidate.panePid] = sessionID
-		}
-	}
-	return sessions
-}
-
 func readOpenCodeSessionEntries() []openCodeSessionEntry {
 	return openCodeSessionEntriesReader()
 }
@@ -5251,77 +5153,6 @@ func defaultOpenCodeSessionEntries() []openCodeSessionEntry {
 var claudeSessionIDPattern = regexp.MustCompile(
 	`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`,
 )
-
-func discoverClaudeSessionIDs(
-	processes map[int]processInfo,
-	panePids map[int]struct{},
-	fallbackWorkingDirectories ...map[int]string,
-) map[int]string {
-	type unresolvedClaudeProcess struct {
-		panePid          int
-		workingDirectory string
-		processStarted   time.Time
-	}
-	sessions := map[int]string{}
-	unresolved := []unresolvedClaudeProcess{}
-	unresolvedPanes := map[int]struct{}{}
-	workingDirectoryCounts := map[string]int{}
-	countedWorkingDirectoryPanes := map[int]bool{}
-	for panePid, process := range agentProcessesByPane(processes, panePids, "claude") {
-		workingDirectory := agentWorkingDirectoryForMetadata(
-			process.pid,
-			panePid,
-			fallbackWorkingDirectories,
-		)
-		if workingDirectory != "" && !countedWorkingDirectoryPanes[panePid] {
-			workingDirectoryCounts[workingDirectory]++
-			countedWorkingDirectoryPanes[panePid] = true
-		}
-		if sessionID := agentSessionIDFromArgs("claude", process.args); sessionID != "" {
-			sessions[panePid] = sessionID
-			continue
-		}
-		if sessionID := claudeSessionIDFromOpenFiles(process.pid); sessionID != "" {
-			sessions[panePid] = sessionID
-			continue
-		}
-		processStarted := processStartedAtForMetadata(process.pid)
-		if workingDirectory == "" || processStarted.IsZero() {
-			continue
-		}
-		if _, ok := unresolvedPanes[panePid]; ok {
-			continue
-		}
-		unresolvedPanes[panePid] = struct{}{}
-		unresolved = append(unresolved, unresolvedClaudeProcess{
-			panePid:          panePid,
-			workingDirectory: workingDirectory,
-			processStarted:   processStarted,
-		})
-	}
-	for _, candidate := range unresolved {
-		if sessions[candidate.panePid] != "" ||
-			workingDirectoryCounts[candidate.workingDirectory] != 1 {
-			continue
-		}
-		if sessionID := claudeRecentSessionIDForWorkingDirectory(
-			candidate.workingDirectory,
-			candidate.processStarted,
-		); sessionID != "" {
-			sessions[candidate.panePid] = sessionID
-		}
-	}
-	return sessions
-}
-
-func claudeSessionIDFromOpenFiles(pid int) string {
-	for _, path := range processOpenFilePathsForMetadata(pid) {
-		if sessionID := claudeSessionIDFromProjectFile(path); sessionID != "" {
-			return sessionID
-		}
-	}
-	return ""
-}
 
 func claudeRecentSessionIDForWorkingDirectory(
 	workingDirectory string,
@@ -6467,19 +6298,24 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 		s.mu.Unlock()
 		return
 	}
+	before := window.broadcastIdentityLocked()
+	s.mu.Unlock()
+	s.refreshProcessMetadata(windowID)
+	s.mu.Lock()
+	if s.windowByIDLocked(windowID) != window || window.closed {
+		s.mu.Unlock()
+		return
+	}
 	window.terminalOutputForwarding =
 		s.activeID == windowID && s.attachCountLocked() > 0
-	before := window.broadcastIdentityLocked()
 	wasAlert := window.alert
 	window.lastActivity = now
-	window.refreshProcessMetadataLocked(now)
 	// Modes are observed before metadata so a `CSI ? 9001 h` arriving in the
 	// same chunk as a colour query is already reflected when the query is
 	// answered below (and when the answer is encoded in writeWindow).
 	window.observeTerminalModesLocked(chunk)
 	queryKeys := window.observeTerminalMetadataLocked(chunk)
-	terminalBell := window.observeTerminalBellLocked(chunk)
-	window.observeTerminalOutputStateLocked(chunk)
+	terminalBell := window.observeTerminalOutputStateLocked(chunk)
 	if len(queryKeys) > 0 && len(s.themeHint) > 0 {
 		themeHint = append([]byte(nil), s.themeHint...)
 		themeHintData = themeHintResponsesForKeys(themeHint, queryKeys)
@@ -6684,6 +6520,32 @@ func wrapSynchronizedTerminalOutput(prefix []byte, data []byte) []byte {
 	return output
 }
 
+func (s *muxServer) retireWindowLocked(window *muxWindow) {
+	window.closed = true
+	window.alert = false
+	window.releaseRedrawForwardingStateLocked()
+	window.clearKittyGraphicsPendingLocked()
+	window.clearKittyImagesLocked()
+	window.history = nil
+	window.oscBuffer = nil
+	window.attachOscBuffer = nil
+	window.csiBuffer = nil
+	window.pendingTerminalQueries = nil
+	window.pendingTerminalQueriesInFlight = nil
+	window.pendingTerminalQueryCarry = nil
+	window.secondaryQueryCarry = nil
+	window.secondaryQueryPrimary = nil
+	window.lastForwardedTerminalQueries = nil
+	for i, candidate := range s.windows {
+		if candidate == window {
+			copy(s.windows[i:], s.windows[i+1:])
+			s.windows[len(s.windows)-1] = nil
+			s.windows = s.windows[:len(s.windows)-1]
+			break
+		}
+	}
+}
+
 func (s *muxServer) markWindowClosed(windowID string) {
 	var replay []byte
 	var activeChanged bool
@@ -6703,12 +6565,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 		s.attachMu.Unlock()
 		return
 	}
-	window.closed = true
-	window.alert = false
-	// See closeWindow: a pause in flight would otherwise retain its buffers on
-	// a window that is never removed from s.windows.
-	window.releaseRedrawForwardingStateLocked()
-	window.clearKittyGraphicsPendingLocked()
+	s.retireWindowLocked(window)
 	if s.lastActiveID == windowID {
 		s.lastActiveID = ""
 	}
@@ -8687,6 +8544,7 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 			FocusChanged: result.primaryChanged,
 		})
 	case "query_active_context":
+		s.refreshProcessMetadata("")
 		s.mu.Lock()
 		window := s.windowByIDLocked(s.activeID)
 		if window == nil || window.closed {
@@ -8694,7 +8552,6 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 			client.sendError(request, errors.New("no active window"))
 			return
 		}
-		window.refreshProcessMetadataLocked(time.Now())
 		currentPath := window.cwd
 		currentCommand := window.currentCommandLocked()
 		s.mu.Unlock()
@@ -9036,6 +8893,7 @@ func (s *muxServer) broadcastWindowList(eventType string) {
 }
 
 func (s *muxServer) snapshots() []windowSnapshot {
+	s.refreshAllProcessMetadata()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.snapshotsLocked()
@@ -9053,6 +8911,7 @@ func (s *muxServer) snapshotsLocked() []windowSnapshot {
 }
 
 func (s *muxServer) restoreSnapshot() *serverRestore {
+	s.refreshAllProcessMetadata()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -9064,7 +8923,6 @@ func (s *muxServer) restoreSnapshot() *serverRestore {
 		if window.closed {
 			continue
 		}
-		window.refreshProcessMetadataLocked(time.Now())
 		state := restoreWindowState{
 			ID:                        window.id,
 			Index:                     window.index,
@@ -9106,13 +8964,13 @@ func (s *muxServer) restoreSnapshot() *serverRestore {
 }
 
 func (s *muxServer) snapshot(window *muxWindow) windowSnapshot {
+	s.refreshProcessMetadata(window.id)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.snapshotLocked(window)
 }
 
 func (s *muxServer) snapshotLocked(window *muxWindow) windowSnapshot {
-	window.refreshProcessMetadataLocked(time.Now())
 	flags := ""
 	if window.alert {
 		flags = "#"
@@ -9514,15 +9372,7 @@ func (s *muxServer) closeWindow(windowID string) (bool, error) {
 			s.pendingFocusRefreshConn = nil
 		}
 	}
-	window.closed = true
-	window.alert = false
-	// A window can be closed while a redraw pause is in flight, and
-	// resumePausedAttachForwarding bails out on closed windows before it
-	// reaches its own cleanup. Closed windows stay in s.windows for the life of
-	// the server, so release the retained frame and output buffers here or they
-	// leak for as long as the server runs.
-	window.releaseRedrawForwardingStateLocked()
-	window.clearKittyGraphicsPendingLocked()
+	s.retireWindowLocked(window)
 	if s.lastActiveID == windowID {
 		s.lastActiveID = ""
 	}
@@ -11281,7 +11131,6 @@ func (s *muxServer) createWindowFromActiveDirectory() error {
 	window := s.windowByIDLocked(s.activeID)
 	cwd := ""
 	if window != nil && !window.closed {
-		window.refreshProcessMetadataLocked(time.Now())
 		cwd = window.cwd
 	}
 	s.mu.Unlock()
@@ -11493,6 +11342,7 @@ func (s *muxServer) sendThemeHint(data string) bool {
 // id is returned even when nothing was pushed so the caller can still repaint
 // the intended window.
 func (s *muxServer) sendThemeHintToActiveWindow(data string) (string, bool) {
+	s.refreshProcessMetadata("")
 	themeHint := themeHintDataFromString(data)
 	var themeHintData []byte
 	s.mu.Lock()
@@ -11505,7 +11355,6 @@ func (s *muxServer) sendThemeHintToActiveWindow(data string) (string, bool) {
 		return "", false
 	}
 	windowID := window.id
-	window.refreshProcessMetadataLocked(time.Now())
 	sendFocusTransition := window.themeHintFocusTransitionLocked()
 	if len(themeHint) > 0 {
 		themeHintData = window.themeHintRefreshDataLocked(themeHint)
@@ -12028,104 +11877,20 @@ func stripFocusReportsFromAttachInput(data []byte) []byte {
 	return output
 }
 
-func (w *muxWindow) observeTerminalBellLocked(data []byte) bool {
-	if len(data) == 0 {
-		return false
-	}
-	observedBell := false
-	for _, b := range data {
-		if b == 0x18 || b == 0x1a {
-			w.resetTerminalBellParserLocked()
-			continue
-		}
-		switch w.terminalBellState {
-		case terminalBellParserGround:
-			switch b {
-			case '\a':
-				observedBell = true
-			case '\x1b':
-				w.terminalBellState = terminalBellParserEscape
-				w.terminalBellBytes = 1
-			}
-		case terminalBellParserEscape:
-			w.terminalBellBytes++
-			switch b {
-			case ']':
-				w.terminalBellState = terminalBellParserOsc
-			case 'P', 'X', '^', '_':
-				w.terminalBellState = terminalBellParserString
-			case '\x1b':
-				w.terminalBellState = terminalBellParserEscape
-				w.terminalBellBytes = 1
-			case '\a':
-				observedBell = true
-				w.resetTerminalBellParserLocked()
-			default:
-				w.resetTerminalBellParserLocked()
-			}
-		case terminalBellParserOsc:
-			w.terminalBellBytes++
-			switch b {
-			case '\a':
-				w.resetTerminalBellParserLocked()
-			case '\x1b':
-				w.terminalBellState = terminalBellParserOscEscape
-			}
-		case terminalBellParserOscEscape:
-			w.terminalBellBytes++
-			switch b {
-			case '\\':
-				w.resetTerminalBellParserLocked()
-			case '\x1b':
-				w.terminalBellState = terminalBellParserOscEscape
-			default:
-				w.terminalBellState = terminalBellParserOsc
-			}
-		case terminalBellParserString:
-			w.terminalBellBytes++
-			switch b {
-			case '\a':
-				w.resetTerminalBellParserLocked()
-			case '\x1b':
-				w.terminalBellState = terminalBellParserStringEscape
-			}
-		case terminalBellParserStringEscape:
-			w.terminalBellBytes++
-			switch b {
-			case '\\', '\a':
-				w.resetTerminalBellParserLocked()
-			case '\x1b':
-				w.terminalBellState = terminalBellParserStringEscape
-			default:
-				w.terminalBellState = terminalBellParserString
-			}
-		}
-		if w.terminalBellState != terminalBellParserGround &&
-			w.terminalBellBytes > oscBufferLimitBytes {
-			w.resetTerminalBellParserLocked()
-		}
-	}
-	return observedBell
-}
-
-func (w *muxWindow) resetTerminalBellParserLocked() {
-	w.terminalBellState = terminalBellParserGround
-	w.terminalBellBytes = 0
-}
-
-func (w *muxWindow) observeTerminalOutputStateLocked(data []byte) {
+func (w *muxWindow) observeTerminalOutputStateLocked(data []byte) bool {
 	parser := terminalOutputParserSnapshot{
 		state:         w.terminalOutputState,
 		bytes:         w.terminalOutputBytes,
 		utf8Remaining: w.terminalOutputUtf8Remaining,
 	}
-	parser.observe(data)
+	bell := parser.observe(data)
 	w.terminalOutputState = parser.state
 	w.terminalOutputBytes = parser.bytes
 	w.terminalOutputUtf8Remaining = parser.utf8Remaining
+	return bell
 }
 
-func (p *terminalOutputParserSnapshot) observe(data []byte) {
+func (p *terminalOutputParserSnapshot) observe(data []byte) (bell bool) {
 	for _, value := range data {
 		if p.utf8Remaining > 0 {
 			if value&0xc0 == 0x80 {
@@ -12141,6 +11906,9 @@ func (p *terminalOutputParserSnapshot) observe(data []byte) {
 		if value == 0x18 || value == 0x1a {
 			p.reset()
 			continue
+		}
+		if value == '\a' && p.state <= terminalOutputParserCsi {
+			bell = true
 		}
 		switch p.state {
 		case terminalOutputParserGround:
@@ -12226,6 +11994,7 @@ func (p *terminalOutputParserSnapshot) observe(data []byte) {
 			}
 		}
 	}
+	return bell
 }
 
 func terminalOutputHasVisibleContent(data []byte) bool {
@@ -14799,42 +14568,64 @@ func (w *muxWindow) broadcastIdentityLocked() windowBroadcastIdentity {
 	return identity
 }
 
-func (w *muxWindow) refreshProcessMetadataLocked(now time.Time) {
-	if w == nil || w.pty == nil {
-		return
+func (s *muxServer) refreshAllProcessMetadata() {
+	s.mu.Lock()
+	windows := append([]*muxWindow(nil), s.windows...)
+	s.mu.Unlock()
+	for _, window := range windows {
+		s.refreshProcessMetadata(window.id)
 	}
-	if !w.lastProcessMetadataRefresh.IsZero() &&
-		now.Sub(w.lastProcessMetadataRefresh) < processMetadataInterval {
+}
+
+func (s *muxServer) refreshProcessMetadata(windowID string) {
+	s.mu.Lock()
+	if windowID == "" {
+		windowID = s.activeID
+	}
+	w := s.windowByIDLocked(windowID)
+	now := time.Now()
+	if w == nil || w.closed || w.pty == nil ||
+		(!w.lastProcessMetadataRefresh.IsZero() &&
+			now.Sub(w.lastProcessMetadataRefresh) < processMetadataInterval) {
+		s.mu.Unlock()
 		return
 	}
 	w.lastProcessMetadataRefresh = now
-
 	pgrp := w.foregroundProcessGroupLocked()
-	if command := commandNameForProcessGroup(pgrp); command != "" {
+	pty, process := w.pty, w.proc
+	identity := w.broadcastIdentityLocked()
+	fallbackTool := (&muxWindow{
+		agentTool: w.agentTool, agentToolConfirmed: w.agentToolConfirmed,
+		paneTitle: w.paneTitle, name: w.name,
+	}).agentToolLocked()
+	sessionID := w.agentSessionID
+	s.mu.Unlock()
+
+	command := commandNameForProcessGroup(pgrp)
+	tool := identity.agentTool
+	if command != "" {
+		tool = firstNonEmptyString(agentToolFromCommandName(command), fallbackTool)
+	}
+	if sessionID == "" && tool == "cursor-agent" && pgrp > 0 {
+		if started := processStartedAtForMetadata(pgrp); !started.IsZero() {
+			sessionID = cursorSessionIDForWorkspace(readCursorChatEntries(), identity.cwd, started)
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.windowByIDLocked(windowID) != w || w.closed || w.pty != pty || w.proc != process ||
+		w.lastProcessMetadataRefresh != now || w.foregroundProcessGroupLocked() != pgrp ||
+		w.broadcastIdentityLocked() != identity {
+		return
+	}
+	if command != "" {
 		w.foregroundCommand = command
 	}
-	w.refreshCursorSessionMetadataLocked(pgrp)
-}
-
-func (w *muxWindow) refreshCursorSessionMetadataLocked(processID int) {
-	if w == nil || w.agentSessionID != "" ||
-		w.agentToolLocked() != "cursor-agent" || processID <= 0 {
-		return
+	if w.agentSessionID == "" && sessionID != "" {
+		w.agentSessionID = sessionID
+		w.agentSessionIdentityExact = true
 	}
-	processStarted := processStartedAtForMetadata(processID)
-	if processStarted.IsZero() {
-		return
-	}
-	sessionID := cursorSessionIDForWorkspace(
-		readCursorChatEntries(),
-		w.cwd,
-		processStarted,
-	)
-	if sessionID == "" {
-		return
-	}
-	w.agentSessionID = sessionID
-	w.agentSessionIdentityExact = true
 }
 
 // themeHintRefreshKeysLocked returns the OSC theme-query keys the daemon
@@ -14976,7 +14767,9 @@ func commandNameForProcessGroup(pgrp int) string {
 	if pgrp <= 0 {
 		return ""
 	}
-	directCommand := commandNameForPID(pgrp)
+	processes := cachedProcessTable(time.Now())
+	info := processes[pgrp]
+	directCommand := commandNameFromProcessFields(info.comm, info.args)
 	if directCommand != "" &&
 		!isGenericRuntimeCommandName(directCommand) &&
 		!isShellCommandName(directCommand) {
@@ -14988,7 +14781,6 @@ func commandNameForProcessGroup(pgrp int) string {
 		return fallback
 	}
 
-	processes := cachedProcessTable(time.Now())
 	if len(processes) == 0 {
 		return fallback
 	}
@@ -15127,43 +14919,35 @@ func monkeyMuxPiAgentLaunchCommand() string {
 	return "monkeymux pi-agent"
 }
 
+var agentCommands = map[string]struct {
+	executable       string
+	permissionFlags  string
+	resumeArgument   string
+	supportsContinue bool
+}{
+	"claude":       {"claude", "--dangerously-skip-permissions", "--resume", false},
+	"copilot":      {"copilot", "--yolo", "--resume", false},
+	"codex":        {"codex", "--yolo", "resume", false},
+	"opencode":     {"opencode", "", "--session", true},
+	"antigravity":  {"agy", "--dangerously-skip-permissions", "--conversation", true},
+	"cursor-agent": {"cursor-agent", "--force", "--resume", true},
+}
+
 func agentLaunchCommand(tool string, startInYoloMode bool) string {
-	switch tool {
-	case "claude":
-		if startInYoloMode {
-			return "claude --dangerously-skip-permissions"
-		}
-		return "claude"
-	case "copilot":
-		if startInYoloMode {
-			return "copilot --yolo"
-		}
-		return "copilot"
-	case "codex":
-		if startInYoloMode {
-			return "codex --yolo"
-		}
-		return "codex"
-	case "opencode":
-		if startInYoloMode {
-			return "OPENCODE_PERMISSION=" + shellQuote(`{"*":"allow"}`) + " opencode"
-		}
-		return "opencode"
-	case "antigravity":
-		if startInYoloMode {
-			return "agy --dangerously-skip-permissions"
-		}
-		return "agy"
-	case "cursor-agent":
-		if startInYoloMode {
-			return "cursor-agent --force"
-		}
-		return "cursor-agent"
-	case "pi":
+	if tool == "pi" {
 		return monkeyMuxPiAgentLaunchCommand()
-	default:
-		return ""
 	}
+	descriptor := agentCommands[tool]
+	command := descriptor.executable
+	if startInYoloMode {
+		if tool == "opencode" {
+			return "OPENCODE_PERMISSION=" + shellQuote(`{"*":"allow"}`) + " " + command
+		}
+		if descriptor.permissionFlags != "" {
+			command += " " + descriptor.permissionFlags
+		}
+	}
+	return command
 }
 
 func piLaunchCommand(sessionDir string) string {
@@ -15173,7 +14957,7 @@ func piLaunchCommand(sessionDir string) string {
 	}
 	argument, ok := shellArgument(sessionDir)
 	if !ok {
-		return monkeyMuxPiAgentLaunchCommand()
+		return ""
 	}
 	return monkeyMuxPiAgentLaunchCommand() + " --session-dir " + argument
 }
@@ -15190,7 +14974,7 @@ func piResumeCommand(sessionID string, sessionDir string, sessionPath string) st
 		return monkeyMuxPiAgentLaunchCommand() + " --session " + argument
 	}
 	launch := piLaunchCommand(sessionDir)
-	if strings.TrimSpace(sessionDir) != "" && launch == "pi" {
+	if launch == "" {
 		return ""
 	}
 	return launch + " --session " + sessionID
@@ -15201,59 +14985,21 @@ func agentResumeCommand(tool string, sessionID string, startInYoloMode bool) str
 	if !ok {
 		return ""
 	}
-	switch tool {
-	case "claude":
-		if startInYoloMode {
-			return "claude --dangerously-skip-permissions --resume " + quotedSessionID
-		}
-		return "claude --resume " + quotedSessionID
-	case "copilot":
-		if startInYoloMode {
-			return "copilot --yolo --resume " + quotedSessionID
-		}
-		return "copilot --resume " + quotedSessionID
-	case "codex":
-		if startInYoloMode {
-			return "codex --yolo resume " + quotedSessionID
-		}
-		return "codex resume " + quotedSessionID
-	case "opencode":
-		commandPrefix := ""
-		if startInYoloMode {
-			commandPrefix = "OPENCODE_PERMISSION=" + shellQuote(`{"*":"allow"}`) + " "
-		}
-		if sessionID == "_continue" {
-			return commandPrefix + "opencode --continue"
-		}
-		return commandPrefix + "opencode --session " + quotedSessionID
-	case "antigravity":
-		commandPrefix := ""
-		if startInYoloMode {
-			commandPrefix = "agy --dangerously-skip-permissions "
-		} else {
-			commandPrefix = "agy "
-		}
-		if sessionID == "_continue" {
-			return commandPrefix + "--continue"
-		}
-		return commandPrefix + "--conversation " + quotedSessionID
-	case "cursor-agent":
-		commandPrefix := "cursor-agent"
-		if startInYoloMode {
-			commandPrefix = "cursor-agent --force"
-		}
-		if sessionID == "_continue" {
-			return commandPrefix + " --continue"
-		}
-		return commandPrefix + " --resume " + quotedSessionID
-	case "pi":
+	if tool == "pi" {
 		if !safePiSessionIDPattern.MatchString(sessionID) {
 			return ""
 		}
-		return monkeyMuxPiAgentLaunchCommand() + " --session " + sessionID
-	default:
+		return piResumeCommand(sessionID, "", "")
+	}
+	launch := agentLaunchCommand(tool, startInYoloMode)
+	if launch == "" {
 		return ""
 	}
+	descriptor := agentCommands[tool]
+	if sessionID == "_continue" && descriptor.supportsContinue {
+		return launch + " --continue"
+	}
+	return launch + " " + descriptor.resumeArgument + " " + quotedSessionID
 }
 
 func canonicalAgentCommandName(command string) string {

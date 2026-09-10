@@ -67,64 +67,67 @@ typedef TerminalControlModeState = ({
   bool sgrMouseReportMode,
 });
 
-/// Unwraps tmux DCS passthrough sequences from shell output.
-///
-/// Apps running inside tmux wrap terminal queries as
-/// `DCS tmux; <escaped sequence> ST`. The inner ESC bytes are doubled by tmux;
-/// this returns a stream that xterm can parse normally while preserving split
-/// passthrough sequences across chunks.
-({String output, String pendingInput}) unwrapTerminalTmuxPassthroughSequences({
-  required String input,
-  required String pendingInput,
-}) {
-  final combinedInput = pendingInput + input;
-  final output = StringBuffer();
-  var cursor = 0;
+/// Incrementally unwraps tmux DCS passthroughs, including doubled ESC bytes.
+class TerminalTmuxPassthroughDecoder {
+  int _prefixLength = 0;
+  StringBuffer? _payload;
+  bool _escaped = false;
 
-  while (cursor < combinedInput.length) {
-    final startIndex = combinedInput.indexOf(
-      _terminalTmuxPassthroughStart,
-      cursor,
-    );
-    if (startIndex == -1) {
-      output.write(combinedInput.substring(cursor));
-      final outputValue = output.toString();
-      final pendingSuffix = _terminalTmuxPassthroughPendingSuffix(outputValue);
-      if (pendingSuffix.isEmpty) {
-        return (output: outputValue, pendingInput: '');
-      }
-
-      return (
-        output: outputValue.substring(
-          0,
-          outputValue.length - pendingSuffix.length,
-        ),
-        pendingInput: pendingSuffix,
-      );
-    }
-
-    output.write(combinedInput.substring(cursor, startIndex));
-    final payloadStart = startIndex + _terminalTmuxPassthroughStart.length;
-    final endIndex = _terminalTmuxPassthroughEndIndex(
-      combinedInput,
-      payloadStart,
-    );
-    if (endIndex == -1) {
-      return (
-        output: output.toString(),
-        pendingInput: combinedInput.substring(startIndex),
-      );
-    }
-
-    output.write(
-      combinedInput
-          .substring(payloadStart, endIndex)
-          .replaceAll(_escapedTerminalEscape, _terminalEscape),
-    );
-    cursor = endIndex + _terminalStringTerminator.length;
+  /// Discards an incomplete sequence when the shell is reset.
+  void reset() {
+    _prefixLength = 0;
+    _payload = null;
+    _escaped = false;
   }
 
-  return (output: output.toString(), pendingInput: '');
+  /// Decodes a chunk, retaining incomplete passthroughs until their terminator.
+  String add(String input) {
+    final output = StringBuffer();
+    var cursor = 0;
+    while (cursor < input.length) {
+      final payload = _payload;
+      if (payload != null) {
+        if (_escaped) {
+          final code = input.codeUnitAt(cursor++);
+          _escaped = false;
+          if (code == _terminalStringTerminatorCodeUnit) {
+            output.write(payload);
+            _payload = null;
+          } else {
+            payload.write(_terminalEscape);
+            if (code != _terminalEscapeCodeUnit) payload.writeCharCode(code);
+          }
+        } else {
+          final escape = input.indexOf(_terminalEscape, cursor);
+          final end = escape < 0 ? input.length : escape;
+          payload.write(input.substring(cursor, end));
+          _escaped = escape >= 0;
+          cursor = end + (_escaped ? 1 : 0);
+        }
+      } else if (_prefixLength > 0) {
+        if (input.codeUnitAt(cursor) ==
+            _terminalTmuxPassthroughStart.codeUnitAt(_prefixLength)) {
+          cursor++;
+          if (++_prefixLength == _terminalTmuxPassthroughStart.length) {
+            _prefixLength = 0;
+            _payload = StringBuffer();
+          }
+        } else {
+          output.write(
+            _terminalTmuxPassthroughStart.substring(0, _prefixLength),
+          );
+          _prefixLength = 0;
+        }
+      } else {
+        final escape = input.indexOf(_terminalEscape, cursor);
+        final end = escape < 0 ? input.length : escape;
+        output.write(input.substring(cursor, end));
+        _prefixLength = escape < 0 ? 0 : 1;
+        cursor = end + _prefixLength;
+      }
+    }
+    return output.toString();
+  }
 }
 
 /// Builds responses for terminal window/cell size and theme reports in shell
@@ -753,47 +756,10 @@ const _terminalSelectGraphicRenditionFinalCodeUnit = 0x6D;
 const _terminalInsertBlankCharacterSequence = '\x1b[@';
 const _terminalReverseIndexSequence = '\x1bM';
 const _terminalInsertLineSequence = '\x1b[L';
-const _escapedTerminalEscape = '$_terminalEscape$_terminalEscape';
-const _terminalStringTerminator = '$_terminalEscape\\';
 const _terminalTmuxPassthroughStart = '${_terminalEscape}Ptmux;';
 
 String _formatTerminalModeReport(int mode, int status) =>
     '\x1b[?$mode;$status\$y';
-
-int _terminalTmuxPassthroughEndIndex(String input, int payloadStart) {
-  var index = payloadStart;
-  while (index < input.length - 1) {
-    if (input[index] != _terminalEscape) {
-      index += 1;
-      continue;
-    }
-
-    final next = input[index + 1];
-    if (next == _terminalEscape) {
-      index += 2;
-      continue;
-    }
-    if (next == r'\') {
-      return index;
-    }
-    index += 1;
-  }
-  return -1;
-}
-
-String _terminalTmuxPassthroughPendingSuffix(String input) {
-  final maxSuffixLength =
-      input.length < _terminalTmuxPassthroughStart.length - 1
-      ? input.length
-      : _terminalTmuxPassthroughStart.length - 1;
-  for (var length = maxSuffixLength; length > 0; length -= 1) {
-    final suffix = input.substring(input.length - length);
-    if (_terminalTmuxPassthroughStart.startsWith(suffix)) {
-      return suffix;
-    }
-  }
-  return '';
-}
 
 /// Finds the end index of the escape sequence beginning at [start].
 ///
@@ -1385,11 +1351,17 @@ class SshConnectionResult {
   final List<SSHClient> dependentClients;
 
   /// Closes [client] and any dependent jump-host clients.
-  Future<void> closeAll() async {
+  Future<void> closeAll() => _closeSshClients(client, dependentClients);
+}
+
+Future<void> _closeSshClients(
+  SSHClient? client,
+  List<SSHClient> dependentClients,
+) async {
+  try {
     await client?.close();
-    for (final dependentClient in dependentClients) {
-      await dependentClient.close();
-    }
+  } finally {
+    await Future.wait(dependentClients.map((client) async => client.close()));
   }
 }
 
@@ -1893,8 +1865,7 @@ class SshService {
               : null,
         );
 
-        // Update last connected timestamp
-        await hostRepository!.updateLastConnected(hostId);
+        unawaited(_updateLastConnected(hostId));
         DiagnosticsLogService.instance.info(
           'ssh.connect',
           'connect_to_host_success',
@@ -1948,6 +1919,18 @@ class SshService {
     }
   }
 
+  Future<void> _updateLastConnected(int hostId) async {
+    try {
+      await hostRepository?.updateLastConnected(hostId);
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.connect',
+        'last_connected_update_failed',
+        fields: {'hostId': hostId, 'errorType': error.runtimeType},
+      );
+    }
+  }
+
   Future<SshConnectionResult> _connectToAppReviewDemoHost(
     Host host, {
     required bool useHostThemeOverrides,
@@ -1990,7 +1973,7 @@ class SshService {
           ? host.terminalThemeDarkId
           : null,
     );
-    await hostRepository?.updateLastConnected(host.id);
+    unawaited(_updateLastConnected(host.id));
     DiagnosticsLogService.instance.info(
       'ssh.connect',
       'app_review_demo_connected',
@@ -2322,78 +2305,28 @@ class SshService {
         'connect_cancelled',
         fields: {'isJumpHost': isJumpHost},
       );
-      await client?.close();
-      await _closeClients(dependentClients);
+      await _closeSshClients(client, dependentClients);
       return const SshConnectionResult.userCancelled();
-    } on HostKeyVerificationException catch (e) {
+    } on Object catch (e) {
+      final error = switch (e) {
+        HostKeyVerificationException(:final message) => message,
+        SSHHostkeyError(:final message) =>
+          'Host key verification failed: $message',
+        SSHAuthFailError(:final message) => 'Authentication failed: $message',
+        SocketException(:final message) => 'Connection failed: $message',
+        TimeoutException(:final message) => message ?? 'Connection timed out',
+        Exception() =>
+          'Connection failed. Check the host settings and try again.',
+        _ => null,
+      };
+      if (error == null) rethrow;
       DiagnosticsLogService.instance.warning(
         'ssh.connect',
         'connect_failed',
         fields: {'isJumpHost': isJumpHost, 'errorType': e.runtimeType},
       );
-      await client?.close();
-      await _closeClients(dependentClients);
-      return SshConnectionResult(success: false, error: e.message);
-    } on SSHHostkeyError catch (e) {
-      DiagnosticsLogService.instance.warning(
-        'ssh.connect',
-        'connect_failed',
-        fields: {'isJumpHost': isJumpHost, 'errorType': e.runtimeType},
-      );
-      await client?.close();
-      await _closeClients(dependentClients);
-      return SshConnectionResult(
-        success: false,
-        error: 'Host key verification failed: ${e.message}',
-      );
-    } on SSHAuthFailError catch (e) {
-      DiagnosticsLogService.instance.warning(
-        'ssh.connect',
-        'connect_failed',
-        fields: {'isJumpHost': isJumpHost, 'errorType': e.runtimeType},
-      );
-      await client?.close();
-      await _closeClients(dependentClients);
-      return SshConnectionResult(
-        success: false,
-        error: 'Authentication failed: ${e.message}',
-      );
-    } on SocketException catch (e) {
-      DiagnosticsLogService.instance.warning(
-        'ssh.connect',
-        'connect_failed',
-        fields: {'isJumpHost': isJumpHost, 'errorType': e.runtimeType},
-      );
-      await client?.close();
-      await _closeClients(dependentClients);
-      return SshConnectionResult(
-        success: false,
-        error: 'Connection failed: ${e.message}',
-      );
-    } on TimeoutException catch (e) {
-      DiagnosticsLogService.instance.warning(
-        'ssh.connect',
-        'connect_failed',
-        fields: {'isJumpHost': isJumpHost, 'errorType': e.runtimeType},
-      );
-      await client?.close();
-      await _closeClients(dependentClients);
-      return SshConnectionResult(
-        success: false,
-        error: e.message ?? 'Connection timed out',
-      );
-    } on Exception catch (e) {
-      DiagnosticsLogService.instance.warning(
-        'ssh.connect',
-        'connect_failed',
-        fields: {'isJumpHost': isJumpHost, 'errorType': e.runtimeType},
-      );
-      await client?.close();
-      await _closeClients(dependentClients);
-      return const SshConnectionResult(
-        success: false,
-        error: 'Connection failed. Check the host settings and try again.',
-      );
+      await _closeSshClients(client, dependentClients);
+      return SshConnectionResult(success: false, error: error);
     }
   }
 
@@ -2801,10 +2734,9 @@ class SshService {
       'disconnect_all',
       fields: {'connectionCount': _sessions.length},
     );
-    for (final session in _sessions.values) {
-      await session.close();
-    }
+    final sessions = _sessions.values.toList(growable: false);
     _sessions.clear();
+    await Future.wait(sessions.map((session) async => session.close()));
   }
 
   /// Get a session by connection ID.
@@ -2845,12 +2777,6 @@ class SshService {
       return SSHKeyPair.fromPem(privateKey);
     } on FormatException {
       return null;
-    }
-  }
-
-  static Future<void> _closeClients(List<SSHClient> clients) async {
-    for (final client in clients) {
-      await client.close();
     }
   }
 
@@ -6433,10 +6359,7 @@ while($true){
     await _portForwardChanges.close();
     await _connectionHealthFailures.close();
     await _terminalNotifications.close();
-    await client.close();
-    for (final dependentClient in dependentClients) {
-      await dependentClient.close();
-    }
+    await _closeSshClients(client, dependentClients);
   }
 
   void _reportConnectionHealthFailureIfClosed(
@@ -7794,72 +7717,117 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   }
 
   /// Disconnect from a connection.
-  Future<void> disconnect(int connectionId) async {
+  Future<void> disconnect(int connectionId) => _disconnect(connectionId);
+
+  Future<void> _disconnect(int connectionId, {String? message}) async {
     final session = _sshService.getSession(connectionId);
     final hostId = _connectionHostIds[connectionId] ?? session?.hostId;
     final endpointKey = session == null
         ? null
         : _sshEndpointKey(session.config);
-    DiagnosticsLogService.instance.info(
-      'ssh.active',
-      'disconnect',
-      fields: {'connectionId': connectionId},
+    if (message != null &&
+        hostId == null &&
+        session == null &&
+        !state.containsKey(connectionId)) {
+      DiagnosticsLogService.instance.debug(
+        'ssh.active',
+        'unexpected_disconnect_ignored',
+        fields: {'connectionId': connectionId},
+      );
+      return;
+    }
+    if (message == null) {
+      DiagnosticsLogService.instance.info(
+        'ssh.active',
+        'disconnect',
+        fields: {'connectionId': connectionId},
+      );
+    } else {
+      DiagnosticsLogService.instance.warning(
+        'ssh.active',
+        'unexpected_disconnect',
+        fields: {'connectionId': connectionId, 'hostId': hostId},
+      );
+    }
+    _detachConnection(
+      connectionId,
+      session,
+      message == null ? 'user' : 'unexpected',
     );
-    _detachSessionListeners(connectionId);
+    try {
+      final closing = _sshService.disconnect(connectionId);
+      state = {...state}..remove(connectionId);
+      if (hostId != null && message != null) {
+        reportConnectionAttemptError(hostId, message);
+      }
+      await closing;
+    } finally {
+      try {
+        if (hostId != null) {
+          await _reconfigureAutomaticPortForwardingAfterSessionRemoval(
+            hostId,
+            endpointKey,
+          );
+        }
+      } finally {
+        await _queueBackgroundStatusSync();
+      }
+    }
+  }
+
+  void _detachConnection(int connectionId, SshSession? session, String reason) {
+    _detachSessionListeners(connectionId, session: session);
     if (session != null) {
       unawaited(
         ref
             .read(telemetryServiceProvider)
             .logTerminalSessionEnded(
               duration: DateTime.now().difference(session.createdAt),
-              disconnectCategory: 'user',
+              disconnectCategory: reason,
               usedBackgroundService: false,
             ),
       );
     }
-    await _sshService.disconnect(connectionId);
     _connectionHostIds.remove(connectionId);
     _connectionSessionTitles.remove(connectionId);
-    final next = {...state}..remove(connectionId);
-    state = next;
-    if (hostId != null) {
-      await _reconfigureAutomaticPortForwardingAfterSessionRemoval(
-        hostId,
-        endpointKey,
-      );
-    }
-    await _queueBackgroundStatusSync();
   }
 
   /// Disconnect all active sessions.
   Future<void> disconnectAll() async {
+    final sessions = _sshService.sessions;
     DiagnosticsLogService.instance.info(
       'ssh.active',
       'disconnect_all',
-      fields: {'connectionCount': _sshService.sessions.length},
+      fields: {'connectionCount': sessions.length},
     );
-    for (final session in _sshService.sessions.values) {
-      _detachSessionListeners(session.connectionId, session: session);
-      unawaited(
-        ref
-            .read(telemetryServiceProvider)
-            .logTerminalSessionEnded(
-              duration: DateTime.now().difference(session.createdAt),
-              disconnectCategory: 'disconnect_all',
-              usedBackgroundService: false,
-            ),
-      );
+    for (final session in sessions.values) {
+      _detachConnection(session.connectionId, session, 'disconnect_all');
     }
-    await _sshService.disconnectAll();
-    _connectionHostIds.clear();
-    _connectionSessionTitles.clear();
     _connectionAttempts.clear();
     _automaticForwardDesiredExclusionsByHost.clear();
     _automaticForwardShellOwnedByEndpoint.clear();
-    _automaticForwardHostReconfigurationQueues.clear();
-    _automaticForwardReconfigurationQueues.clear();
-    state = {};
-    await _queueBackgroundStatusSync();
+    try {
+      final closing = _sshService.disconnectAll();
+      state = {...state}..removeWhere((id, _) => sessions.containsKey(id));
+      await closing;
+    } finally {
+      try {
+        await Future.wait(
+          {
+            for (final session in sessions.values)
+              (session.hostId, _sshEndpointKey(session.config)),
+          }.map(
+            (endpoint) =>
+                _reconfigureAutomaticPortForwardingAfterSessionRemoval(
+                  endpoint.$1,
+                  endpoint.$2,
+                ),
+          ),
+        );
+      } finally {
+        await _queueBackgroundStatusSync();
+      }
+    }
   }
 
   /// Get the state of a connection.
@@ -8856,54 +8824,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   Future<void> handleUnexpectedDisconnect(
     int connectionId, {
     required String message,
-  }) async {
-    final hostId = _connectionHostIds[connectionId];
-    final session = _sshService.getSession(connectionId);
-    final endpointKey = session == null
-        ? null
-        : _sshEndpointKey(session.config);
-    if (hostId == null && session == null && !state.containsKey(connectionId)) {
-      DiagnosticsLogService.instance.debug(
-        'ssh.active',
-        'unexpected_disconnect_ignored',
-        fields: {'connectionId': connectionId},
-      );
-      return;
-    }
-
-    DiagnosticsLogService.instance.warning(
-      'ssh.active',
-      'unexpected_disconnect',
-      fields: {'connectionId': connectionId, 'hostId': hostId},
-    );
-    _detachSessionListeners(connectionId, session: session);
-    if (session != null) {
-      unawaited(
-        ref
-            .read(telemetryServiceProvider)
-            .logTerminalSessionEnded(
-              duration: DateTime.now().difference(session.createdAt),
-              disconnectCategory: 'unexpected',
-              usedBackgroundService: false,
-            ),
-      );
-    }
-    await _sshService.disconnect(connectionId);
-    _connectionHostIds.remove(connectionId);
-    _connectionSessionTitles.remove(connectionId);
-    final next = {...state}..remove(connectionId);
-    state = next;
-    if (hostId != null) {
-      reportConnectionAttemptError(hostId, message);
-      await _reconfigureAutomaticPortForwardingAfterSessionRemoval(
-        hostId,
-        endpointKey,
-      );
-    } else {
-      state = {...state};
-    }
-    await _queueBackgroundStatusSync();
-  }
+  }) => _disconnect(connectionId, message: message);
 
   /// Update the session-specific terminal theme for an active connection.
   void updateSessionTheme(

@@ -840,48 +840,36 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       meta: meta,
       hasShortcutModifier: hasShortcutModifier,
     );
+    bool dispatchRepeat() {
+      if (!mounted) {
+        _stopHardwareKeyRepeat();
+        return false;
+      }
+      final repeatInput = _hardwareRepeatInput;
+      if (repeatInput == null) {
+        return false;
+      }
+      _sendHardwareTerminalKey(
+        repeatInput.key,
+        ctrl: repeatInput.ctrl,
+        alt: repeatInput.alt,
+        shift: repeatInput.shift,
+        meta: repeatInput.meta,
+        hasShortcutModifier: repeatInput.hasShortcutModifier,
+        type: TerminalKeyEventType.repeat,
+      );
+      return true;
+    }
+
     _hardwareKeyRepeatStartTimer = Timer(
       terminalIosHardwareKeyRepeatStartDelay,
       () {
-        if (!mounted) {
-          _stopHardwareKeyRepeat();
-          return;
+        if (dispatchRepeat()) {
+          _hardwareKeyRepeatTimer = Timer.periodic(
+            terminalIosHardwareKeyRepeatInterval,
+            (_) => dispatchRepeat(),
+          );
         }
-        final repeatInput = _hardwareRepeatInput;
-        if (repeatInput == null) {
-          return;
-        }
-        _sendHardwareTerminalKey(
-          repeatInput.key,
-          ctrl: repeatInput.ctrl,
-          alt: repeatInput.alt,
-          shift: repeatInput.shift,
-          meta: repeatInput.meta,
-          hasShortcutModifier: repeatInput.hasShortcutModifier,
-          type: TerminalKeyEventType.repeat,
-        );
-        _hardwareKeyRepeatTimer = Timer.periodic(
-          terminalIosHardwareKeyRepeatInterval,
-          (_) {
-            if (!mounted) {
-              _stopHardwareKeyRepeat();
-              return;
-            }
-            final repeatInput = _hardwareRepeatInput;
-            if (repeatInput == null) {
-              return;
-            }
-            _sendHardwareTerminalKey(
-              repeatInput.key,
-              ctrl: repeatInput.ctrl,
-              alt: repeatInput.alt,
-              shift: repeatInput.shift,
-              meta: repeatInput.meta,
-              hasShortcutModifier: repeatInput.hasShortcutModifier,
-              type: TerminalKeyEventType.repeat,
-            );
-          },
-        );
       },
     );
   }
@@ -1551,25 +1539,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         _connection!.show();
         _setInputConnectionShown(shown: true);
       }
-      _invalidatePendingEditingUpdates();
-      _sawImeComposition = false;
-      _lastProcessedUserSelectionWasValid = false;
-      _lastProcessedSelectionWasCollapsed = true;
-      _trimLeadingSuggestionSpaceAfterDelete = false;
-      _trimLeadingSwipeSpaceAfterBufferClear = false;
-      _allowSplitLeadingTokenNormalization = false;
-      _hasPendingPromptOutputImeReset = false;
-      _modifierChordResetTime = null;
-      _clearPendingDeleteResetBaseline();
-      _lastSentText = '';
-      _lastSentCursorOffset = 0;
-      _iosBackspaceRunwayLength = 0;
-      _clearPendingComposingEnterAction();
-      _pendingPerformedEnterText = null;
-      _pendingEnterActionSuppressions = 0;
-      _pendingAndroidHardwareBackspaces = 0;
-      _activeAndroidImeBackspace = null;
-      _currentEditingState = _initEditingState.copyWith();
+      _resetConnectionEditingState();
       _connection!.setEditingState(_initEditingState);
     }
   }
@@ -1606,6 +1576,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _connection = null;
     }
     _setInputConnectionShown(shown: false);
+    _resetConnectionEditingState();
+  }
+
+  void _resetConnectionEditingState() {
     _invalidatePendingEditingUpdates();
     _sawImeComposition = false;
     _lastProcessedUserSelectionWasValid = false;
@@ -3794,24 +3768,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _AndroidTerminalImeKeyBridge.setEnabled(this, enabled: false);
     _stopHardwareKeyRepeat();
     _cancelDeferredTrailingBackspaceImeClear();
-    _invalidatePendingEditingUpdates();
-    _sawImeComposition = false;
-    _hasPendingPromptOutputImeReset = false;
-    _lastSentText = '';
-    _lastSentCursorOffset = 0;
-    _iosBackspaceRunwayLength = 0;
-    _clearPendingComposingEnterAction();
-    _pendingPerformedEnterText = null;
-    _lastProcessedUserSelectionWasValid = false;
-    _lastProcessedSelectionWasCollapsed = true;
-    _trimLeadingSuggestionSpaceAfterDelete = false;
-    _trimLeadingSwipeSpaceAfterBufferClear = false;
-    _allowSplitLeadingTokenNormalization = false;
-    _modifierChordResetTime = null;
-    _pendingEnterActionSuppressions = 0;
-    _pendingAndroidHardwareBackspaces = 0;
-    _activeAndroidImeBackspace = null;
-    _currentEditingState = _initEditingState.copyWith();
+    _resetConnectionEditingState();
   }
 
   @override

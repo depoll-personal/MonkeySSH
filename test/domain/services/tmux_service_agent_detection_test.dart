@@ -103,89 +103,77 @@ void main() {
       expect(parseInstalledAgentTools('   \n  \n'), isEmpty);
     });
 
-    test('parses absolute paths to known CLI binaries', () {
-      const output =
-          '/opt/homebrew/bin/claude\n'
-          '/usr/local/bin/codex\n';
-      expect(parseInstalledAgentTools(output), {
-        AgentLaunchTool.claudeCode,
-        AgentLaunchTool.codex,
-      });
-    });
-
-    test('detects claude installed in ~/.local/bin (the regression case)', () {
-      // Reproduces the user-reported regression: claude lives in
-      // ~/.local/bin, which is added to PATH from ~/.zshrc rather
-      // than ~/.zprofile. The interactive-shell command builder
-      // resolves it; the parser must accept the path.
-      const output = '/Users/depoll/.local/bin/claude\n';
-      expect(parseInstalledAgentTools(output), {AgentLaunchTool.claudeCode});
-    });
-
-    test('parses Windows absolute paths and command shim extensions', () {
-      const output =
-          r'C:\Users\demo\AppData\Roaming\npm\claude.ps1'
-          '\n'
-          'C:/Users/demo/AppData/Roaming/npm/copilot.cmd\n'
-          r'C:\tools\codex.exe'
-          '\n'
-          r'\\server\share\opencode.bat'
-          '\n';
-      expect(parseInstalledAgentTools(output), {
-        AgentLaunchTool.claudeCode,
-        AgentLaunchTool.copilotCli,
-        AgentLaunchTool.codex,
-        AgentLaunchTool.openCode,
-      });
-    });
-
-    test('ignores bare names (shell builtins, aliases, missing CLIs)', () {
-      // `command -v` may print bare names for builtins/aliases or omit
-      // unknown commands entirely. Only absolute paths should count.
-      const output =
-          'claude\n'
-          'claude.cmd\n'
-          '/usr/local/bin/copilot\n'
-          'codex: not found\n';
-      expect(parseInstalledAgentTools(output), {AgentLaunchTool.copilotCli});
-    });
-
-    test('ignores unknown binaries', () {
-      const output = '/usr/bin/cat\n/usr/bin/grep\n/opt/bin/opencode\n';
-      expect(parseInstalledAgentTools(output), {AgentLaunchTool.openCode});
-    });
-
-    test('ignores an installed Gemini CLI now that it is unsupported', () {
-      const output =
-          '/opt/homebrew/bin/gemini\n'
-          r'C:\Users\demo\AppData\Roaming\npm\gemini.cmd'
-          '\n'
-          '/usr/local/bin/claude\n';
-      expect(parseInstalledAgentTools(output), {AgentLaunchTool.claudeCode});
-    });
-
-    test('handles all supported CLIs', () {
-      const output =
-          '/b/claude\n'
-          '/b/copilot\n'
-          '/b/codex\n'
-          '/b/opencode\n'
-          '/b/antigravity\n'
-          '/b/cursor-agent\n'
-          '/b/pi\n'
-          '/b/hermes\n'
-          '/b/openclaw\n'
-          '/b/grok\n';
-      expect(parseInstalledAgentTools(output), AgentLaunchTool.values.toSet());
-    });
-
-    test('tolerates trailing whitespace and CRLF line endings', () {
-      const output = '/usr/local/bin/claude  \r\n/opt/bin/opencode\r\n';
-      expect(parseInstalledAgentTools(output), {
-        AgentLaunchTool.claudeCode,
-        AgentLaunchTool.openCode,
-      });
-    });
+    for (final (name, output, expected) in [
+      (
+        'parses absolute paths to known CLI binaries',
+        '/opt/homebrew/bin/claude\n'
+            '/usr/local/bin/codex\n',
+        {AgentLaunchTool.claudeCode, AgentLaunchTool.codex},
+      ),
+      (
+        'detects claude installed in ~/.local/bin (the regression case)',
+        '/Users/depoll/.local/bin/claude\n',
+        {AgentLaunchTool.claudeCode},
+      ),
+      (
+        'parses Windows absolute paths and command shim extensions',
+        r'C:\Users\demo\AppData\Roaming\npm\claude.ps1'
+            '\n'
+            'C:/Users/demo/AppData/Roaming/npm/copilot.cmd\n'
+            r'C:\tools\codex.exe'
+            '\n'
+            r'\\server\share\opencode.bat'
+            '\n',
+        {
+          AgentLaunchTool.claudeCode,
+          AgentLaunchTool.copilotCli,
+          AgentLaunchTool.codex,
+          AgentLaunchTool.openCode,
+        },
+      ),
+      (
+        'ignores bare names (shell builtins, aliases, missing CLIs)',
+        'claude\n'
+            'claude.cmd\n'
+            '/usr/local/bin/copilot\n'
+            'codex: not found\n',
+        {AgentLaunchTool.copilotCli},
+      ),
+      (
+        'ignores unknown binaries',
+        '/usr/bin/cat\n/usr/bin/grep\n/opt/bin/opencode\n',
+        {AgentLaunchTool.openCode},
+      ),
+      (
+        'ignores an installed Gemini CLI now that it is unsupported',
+        '/opt/homebrew/bin/gemini\n'
+            r'C:\Users\demo\AppData\Roaming\npm\gemini.cmd'
+            '\n'
+            '/usr/local/bin/claude\n',
+        {AgentLaunchTool.claudeCode},
+      ),
+      (
+        'handles all supported CLIs',
+        '/b/claude\n'
+            '/b/copilot\n'
+            '/b/codex\n'
+            '/b/opencode\n'
+            '/b/antigravity\n'
+            '/b/cursor-agent\n'
+            '/b/pi\n'
+            '/b/hermes\n'
+            '/b/openclaw\n'
+            '/b/grok\n',
+        AgentLaunchTool.values.toSet(),
+      ),
+      (
+        'tolerates trailing whitespace and CRLF line endings',
+        '/usr/local/bin/claude  \r\n/opt/bin/opencode\r\n',
+        {AgentLaunchTool.claudeCode, AgentLaunchTool.openCode},
+      ),
+    ]) {
+      test(name, () => expect(parseInstalledAgentTools(output), expected));
+    }
   });
 
   group('agentToolForBinaryName', () {

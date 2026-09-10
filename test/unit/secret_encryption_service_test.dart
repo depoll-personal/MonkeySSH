@@ -64,7 +64,7 @@ void main() {
 
         expect(reencrypted, encrypted);
         await expectLater(
-          service.decryptRequired(reencrypted),
+          service.decryptNullable(reencrypted),
           completion(plaintext),
         );
       },
@@ -126,7 +126,7 @@ void main() {
               'ENCv1:${base64Url.encode(utf8.encode(jsonEncode(value)))}';
           expect(service.isValidEncryptedEnvelope(stored), isFalse);
           await expectLater(
-            service.decryptRequired(stored),
+            service.decryptNullable(stored),
             throwsFormatException,
           );
         }

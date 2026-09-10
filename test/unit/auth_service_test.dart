@@ -128,7 +128,6 @@ void main() {
         await authService.setupPin('1234');
 
         expect(writes['flutty_pin_salt'], isNotNull);
-        expect(writes['flutty_pin_kdf_metadata'], isNotNull);
         expect(writes['flutty_auth_enabled'], 'true');
         final pinPayload =
             jsonDecode(writes['flutty_pin_hash']!) as Map<String, dynamic>;
@@ -139,113 +138,65 @@ void main() {
     });
 
     group('verifyPin', () {
-      test('returns true for correct PIN', () async {
-        final storage = <String, String>{};
-        when(
-          () => mockStorage.write(
-            key: any(named: 'key'),
-            value: any(named: 'value'),
-          ),
-        ).thenAnswer((invocation) async {
-          storage[invocation.namedArguments[const Symbol('key')] as String] =
-              invocation.namedArguments[const Symbol('value')] as String;
-        });
-        when(() => mockStorage.read(key: any(named: 'key'))).thenAnswer(
-          (invocation) async =>
-              storage[invocation.namedArguments[const Symbol('key')]],
-        );
-
-        await authService.setupPin('1234');
-
-        final result = await authService.verifyPin('1234');
-
-        expect(result, true);
-      });
-
-      test('returns false for incorrect PIN', () async {
-        final storage = <String, String>{};
-        when(
-          () => mockStorage.write(
-            key: any(named: 'key'),
-            value: any(named: 'value'),
-          ),
-        ).thenAnswer((invocation) async {
-          storage[invocation.namedArguments[const Symbol('key')] as String] =
-              invocation.namedArguments[const Symbol('value')] as String;
-        });
-        when(() => mockStorage.read(key: any(named: 'key'))).thenAnswer(
-          (invocation) async =>
-              storage[invocation.namedArguments[const Symbol('key')]],
-        );
-
-        await authService.setupPin('1234');
-
-        final result = await authService.verifyPin('9999');
-
-        expect(result, false);
-      });
-
-      test('returns false for legacy PIN hash format', () async {
-        when(
-          () => mockStorage.read(key: 'flutty_pin_hash'),
-        ).thenAnswer((_) async => 'legacy-hash-value');
-
-        final result = await authService.verifyPin('1234');
-
-        expect(result, false);
-      });
-
-      test('returns false for unsupported PIN KDF version', () async {
-        when(() => mockStorage.read(key: 'flutty_pin_hash')).thenAnswer(
-          (_) async =>
-              jsonEncode({'version': 99, 'iterations': 120000, 'hash': 'hash'}),
-        );
-
-        final result = await authService.verifyPin('1234');
-
-        expect(result, false);
-      });
-
-      test('returns false for invalid PIN KDF iterations', () async {
-        when(() => mockStorage.read(key: 'flutty_pin_hash')).thenAnswer(
-          (_) async =>
-              jsonEncode({'version': 1, 'iterations': 0, 'hash': 'hash'}),
-        );
-
-        final result = await authService.verifyPin('1234');
-
-        expect(result, false);
-      });
-
-      test(
-        'returns false for decodable PIN hash with invalid length',
-        () async {
-          when(() => mockStorage.read(key: 'flutty_pin_hash')).thenAnswer(
-            (_) async => jsonEncode({
-              'version': 1,
-              'iterations': 120000,
-              'hash': _shortPinHash,
-            }),
+      for (final (description, pin, expected) in [
+        ('returns true for correct PIN', '1234', true),
+        ('returns false for incorrect PIN', '9999', false),
+      ]) {
+        test(description, () async {
+          final storage = <String, String>{};
+          when(
+            () => mockStorage.write(
+              key: any(named: 'key'),
+              value: any(named: 'value'),
+            ),
+          ).thenAnswer((invocation) async {
+            storage[invocation.namedArguments[const Symbol('key')] as String] =
+                invocation.namedArguments[const Symbol('value')] as String;
+          });
+          when(() => mockStorage.read(key: any(named: 'key'))).thenAnswer(
+            (invocation) async =>
+                storage[invocation.namedArguments[const Symbol('key')]],
           );
+
+          await authService.setupPin('1234');
+
+          final result = await authService.verifyPin(pin);
+
+          expect(result, expected);
+        });
+      }
+
+      for (final (description, stored) in [
+        ('legacy PIN hash format', 'legacy-hash-value'),
+        (
+          'unsupported PIN KDF version',
+          jsonEncode({'version': 99, 'iterations': 120000, 'hash': 'hash'}),
+        ),
+        (
+          'invalid PIN KDF iterations',
+          jsonEncode({'version': 1, 'iterations': 0, 'hash': 'hash'}),
+        ),
+        (
+          'decodable PIN hash with invalid length',
+          jsonEncode({
+            'version': 1,
+            'iterations': 120000,
+            'hash': _shortPinHash,
+          }),
+        ),
+        ('no PIN is set', null),
+      ]) {
+        test('returns false for $description', () async {
+          when(
+            () => mockStorage.read(key: 'flutty_pin_hash'),
+          ).thenAnswer((_) async => stored);
           when(
             () => mockStorage.read(key: 'flutty_pin_salt'),
           ).thenAnswer((_) async => _validPinSalt);
-
           final result = await authService.verifyPin('1234');
-
           expect(result, false);
-        },
-      );
-
-      test('returns false when no PIN is set', () async {
-        when(
-          () => mockStorage.read(key: 'flutty_pin_hash'),
-        ).thenAnswer((_) async => null);
-
-        final result = await authService.verifyPin('1234');
-
-        expect(result, false);
-      });
+        });
+      }
     });
 
     group('isDeviceAuthSupported', () {

@@ -42,29 +42,12 @@ class KeyService {
 
       if (keyPairs.isEmpty) return null;
 
-      final keyPair = keyPairs.first;
-      // Convert public key to OpenSSH format: type + space + base64-encoded key
-      final publicKeyBytes = keyPair.toPublicKey().encode();
-      // The algorithm name embedded at the start of the public-key blob is the
-      // canonical OpenSSH type token (e.g. 'ssh-rsa', 'ssh-ed25519') — the
-      // value expected in authorized_keys. keyPair.type is a signature type
-      // such as 'rsa-sha2-256', which is not a valid authorized_keys prefix.
-      final keyType = _readPublicKeyAlgorithm(publicKeyBytes);
-      final publicKey = '$keyType ${base64.encode(publicKeyBytes)}';
-      final fingerprint = computeOpenSshPublicKeyFingerprint(publicKey);
-
-      final id = await _keyRepository.insert(
-        SshKeysCompanion.insert(
-          name: name,
-          keyType: keyType,
-          publicKey: publicKey,
-          privateKey: privateKeyPem,
-          passphrase: Value(passphrase),
-          fingerprint: Value(fingerprint),
-        ),
+      return await _insertKey(
+        name: name,
+        privateKeyPem: privateKeyPem,
+        publicKeyBlob: keyPairs.first.toPublicKey().encode(),
+        passphrase: passphrase,
       );
-
-      return _keyRepository.getById(id);
     } on FormatException {
       return null;
     } on SSHError {
@@ -90,17 +73,39 @@ class KeyService {
         ? null
         : passphrase;
 
-    final privateKeyPem = await generateOpenSshPrivateKeyPem(
+    final generated = await generateOpenSshKey(
       keyType: keyType,
       comment: name,
       passphrase: normalizedPassphrase,
     );
 
-    return importKey(
+    return _insertKey(
       name: name,
-      privateKeyPem: privateKeyPem,
+      privateKeyPem: generated.privateKeyPem,
+      publicKeyBlob: generated.publicKeyBlob,
       passphrase: normalizedPassphrase,
     );
+  }
+
+  Future<SshKey?> _insertKey({
+    required String name,
+    required String privateKeyPem,
+    required List<int> publicKeyBlob,
+    String? passphrase,
+  }) async {
+    final keyType = _readPublicKeyAlgorithm(publicKeyBlob);
+    final publicKey = '$keyType ${base64Encode(publicKeyBlob)}';
+    final id = await _keyRepository.insert(
+      SshKeysCompanion.insert(
+        name: name,
+        keyType: keyType,
+        publicKey: publicKey,
+        privateKey: privateKeyPem,
+        passphrase: Value(passphrase),
+        fingerprint: Value(computeOpenSshPublicKeyFingerprint(publicKey)),
+      ),
+    );
+    return _keyRepository.getById(id);
   }
 
   /// Reads the algorithm name embedded at the start of an OpenSSH public-key

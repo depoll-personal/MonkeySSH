@@ -149,6 +149,8 @@ class KeyRepository {
     _KeySecretColumn column,
     int generation,
   ) async {
+    final cached = _decryptCache.lookup(storedSecret);
+    if (cached != null) return cached;
     if (_secretEncryptionService.isValidEncryptedEnvelope(storedSecret)) {
       return _decryptCache.decrypt(storedSecret, generation);
     }

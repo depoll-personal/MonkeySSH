@@ -17,6 +17,7 @@ Widget _buildRemoteEditorWithKeyboardInset({
           context,
         ).copyWith(viewInsets: EdgeInsets.only(bottom: inset)),
         child: buildRemoteTextEditorScreenForTesting(
+          onSave: (_) async {},
           fileName: 'notes.txt',
           controller: controller,
           horizontalScrollController: horizontalScrollController,
@@ -113,6 +114,7 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: buildRemoteTextEditorScreenForTesting(
+            onSave: (_) async {},
             fileName: 'notes.txt',
             controller: controller,
           ),
@@ -133,6 +135,7 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: buildRemoteTextEditorScreenForTesting(
+            onSave: (_) async {},
             fileName: 'notes.txt',
             filePath: '/home/demo/project/notes.txt',
             controller: controller,
@@ -158,6 +161,7 @@ void main() {
                 Navigator.of(context).push(
                   MaterialPageRoute<String>(
                     builder: (_) => buildRemoteTextEditorScreenForTesting(
+                      onSave: (_) async {},
                       fileName: 'notes.txt',
                       controller: controller,
                     ),
@@ -191,6 +195,7 @@ void main() {
         await tester.pumpWidget(
           MaterialApp(
             home: buildRemoteTextEditorScreenForTesting(
+              onSave: (_) async {},
               fileName: 'notes.txt',
               controller: controller,
             ),
@@ -221,6 +226,7 @@ void main() {
         await tester.pumpWidget(
           MaterialApp(
             home: buildRemoteTextEditorScreenForTesting(
+              onSave: (_) async {},
               fileName: 'notes.txt',
               controller: controller,
               horizontalScrollController: horizontalScrollController,
@@ -355,6 +361,7 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: buildRemoteTextEditorScreenForTesting(
+            onSave: (_) async {},
             fileName: 'notes.txt',
             controller: controller,
           ),
@@ -390,6 +397,7 @@ void main() {
         MaterialApp(
           theme: ThemeData(platform: TargetPlatform.macOS),
           home: buildRemoteTextEditorScreenForTesting(
+            onSave: (_) async {},
             fileName: 'notes.txt',
             controller: controller,
           ),
@@ -419,6 +427,7 @@ void main() {
         MaterialApp(
           theme: ThemeData(platform: TargetPlatform.iOS),
           home: buildRemoteTextEditorScreenForTesting(
+            onSave: (_) async {},
             fileName: 'notes.txt',
             controller: controller,
           ),
@@ -440,6 +449,7 @@ void main() {
           MaterialApp(
             theme: ThemeData(platform: TargetPlatform.iOS),
             home: buildRemoteTextEditorScreenForTesting(
+              onSave: (_) async {},
               fileName: 'notes.txt',
               controller: controller,
             ),

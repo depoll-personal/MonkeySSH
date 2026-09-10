@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart';
@@ -382,15 +383,24 @@ int _approximateMessageBytes(AcpMessageEntry entry) =>
       (total, block) => total + approximateContentBlockBytes(block),
     );
 
+int _approximateToolLocationBytes(AcpToolLocation location) =>
+    utf8.encode(location.path).length +
+    32 +
+    _approximateJsonBytes(location.meta) +
+    _approximateJsonBytes(location.extensions);
+
 int _approximateToolCallBytes(AcpToolCallEntry entry) =>
     entry.toolCallId.length +
     (entry.parentToolCallId?.length ?? 0) +
-    (entry.title?.length ?? 0) +
+    utf8.encode(entry.title ?? '').length +
     entry.content.fold<int>(
       0,
       (total, content) => total + _approximateToolContentBytes(content),
     ) +
-    entry.locations.length * 32 +
+    entry.locations.fold<int>(
+      0,
+      (total, location) => total + _approximateToolLocationBytes(location),
+    ) +
     _approximateJsonBytes(entry.rawInput) +
     _approximateJsonBytes(entry.rawOutput);
 
@@ -738,23 +748,47 @@ class AcpTimelineBuilder {
   /// Truncates a merged tool-call entry so its retained payload stays under
   /// [AcpTimelineLimits.maxEntryBytes].
   AcpToolCallEntry _boundedToolCall(AcpToolCallEntry entry) {
-    if (_approximateToolCallBytes(entry) <= _limits.maxEntryBytes) {
+    final budget = math.min(_limits.maxEntryBytes, _limits.maxTotalBytes);
+    if (_approximateToolCallBytes(entry) <= budget) {
       return entry;
     }
     _overflowed = true;
+    final rawInput = entry.rawInput == null ? null : const {'_truncated': true};
+    final rawOutput = entry.rawOutput == null
+        ? null
+        : const {'_truncated': true};
+    var remaining = math.max(
+      0,
+      budget -
+          entry.toolCallId.length -
+          (entry.parentToolCallId?.length ?? 0) -
+          _approximateJsonBytes(rawInput) -
+          _approximateJsonBytes(rawOutput),
+    );
+    var title = entry.title;
+    if (title != null) {
+      final titleBudget = math.min(remaining, 256);
+      if (utf8.encode(title).length > titleBudget) {
+        title = String.fromCharCodes(title.runes.take(titleBudget ~/ 4));
+      }
+      remaining -= utf8.encode(title).length;
+    }
+    final locations = <AcpToolLocation>[];
+    for (final location in entry.locations) {
+      final bytes = _approximateToolLocationBytes(location);
+      if (bytes > remaining) continue;
+      locations.add(location);
+      remaining -= bytes;
+    }
     return AcpToolCallEntry(
       toolCallId: entry.toolCallId,
       order: entry.order,
-      title: entry.title,
+      title: title,
       toolKind: entry.toolKind,
       status: entry.status,
-      locations: entry.locations,
-      rawInput: entry.rawInput == null
-          ? null
-          : const <String, Object?>{'_truncated': true},
-      rawOutput: entry.rawOutput == null
-          ? null
-          : const <String, Object?>{'_truncated': true},
+      locations: locations,
+      rawInput: rawInput,
+      rawOutput: rawOutput,
       parentToolCallId: entry.parentToolCallId,
       isSubagent: entry.isSubagent,
     );

@@ -84,7 +84,6 @@ class AuthService {
 
   static const _pinKey = 'flutty_pin_hash';
   static const _pinSaltKey = 'flutty_pin_salt';
-  static const _pinMetadataKey = 'flutty_pin_kdf_metadata';
   static const _authEnabledKey = 'flutty_auth_enabled';
   static const _biometricEnabledKey = 'flutty_biometric_enabled';
   static const _pinKdfVersion = 1;
@@ -198,7 +197,23 @@ class AuthService {
 
   /// Set up PIN authentication.
   Future<void> setupPin(String pin) async {
-    await _storePin(pin, enableAuth: true);
+    await _withPinWriteLock(() async {
+      final salt = await _getOrCreateSalt();
+      final hash = await _derivePinHash(
+        pin: pin,
+        salt: salt,
+        iterations: _pinKdfIterations,
+      );
+      await _writeStorageValue(
+        key: _pinKey,
+        value: jsonEncode({
+          'version': _pinKdfVersion,
+          'iterations': _pinKdfIterations,
+          'hash': hash,
+        }),
+      );
+      await _writeStorageValue(key: _authEnabledKey, value: 'true');
+    });
   }
 
   /// Enable or disable biometric authentication.
@@ -219,16 +234,6 @@ class AuthService {
     if (pinRecord == null) {
       return false;
     }
-    if (pinRecord.version != _pinKdfVersion) {
-      return false;
-    }
-    if (pinRecord.iterations <= 0 || pinRecord.iterations > 1000000) {
-      return false;
-    }
-    if (!_hasValidStoredPinHash(pinRecord.hash)) {
-      return false;
-    }
-
     final salt = await _readSalt();
     if (salt == null) return false;
 
@@ -267,35 +272,6 @@ class AuthService {
 
     await setupPin(newPin);
     return true;
-  }
-
-  Future<void> _storePin(String pin, {required bool enableAuth}) async {
-    await _withPinWriteLock(() async {
-      final salt = await _getOrCreateSalt();
-      final hash = await _derivePinHash(
-        pin: pin,
-        salt: salt,
-        iterations: _pinKdfIterations,
-      );
-      await _writeStorageValue(
-        key: _pinKey,
-        value: jsonEncode({
-          'version': _pinKdfVersion,
-          'iterations': _pinKdfIterations,
-          'hash': hash,
-        }),
-      );
-      await _writeStorageValue(
-        key: _pinMetadataKey,
-        value: jsonEncode({
-          'version': _pinKdfVersion,
-          'iterations': _pinKdfIterations,
-        }),
-      );
-      if (enableAuth) {
-        await _writeStorageValue(key: _authEnabledKey, value: 'true');
-      }
-    });
   }
 
   Future<List<int>> _getOrCreateSalt() async {
@@ -340,35 +316,25 @@ class AuthService {
     return base64Encode(hashBytes);
   }
 
-  _PinHashRecord? _parsePinRecord(String value) {
-    dynamic decoded;
+  ({int iterations, String hash})? _parsePinRecord(String value) {
     try {
-      decoded = jsonDecode(value);
+      final decoded = jsonDecode(value);
+      if (decoded is! Map<String, dynamic>) return null;
+      final version = decoded['version'];
+      final iterations = decoded['iterations'];
+      final hash = decoded['hash'];
+      if (version is! int ||
+          version != _pinKdfVersion ||
+          iterations is! int ||
+          iterations <= 0 ||
+          iterations > 1000000 ||
+          hash is! String ||
+          base64Decode(hash).length != _pinHashLength) {
+        return null;
+      }
+      return (iterations: iterations, hash: hash);
     } on FormatException {
       return null;
-    }
-
-    if (decoded is! Map<String, dynamic>) return null;
-
-    final version = decoded['version'];
-    final iterations = decoded['iterations'];
-    final hash = decoded['hash'];
-
-    if (version is! int || iterations is! int || hash is! String) {
-      return null;
-    }
-
-    return _PinHashRecord(version: version, iterations: iterations, hash: hash);
-  }
-
-  bool _hasValidStoredPinHash(String hash) {
-    if (hash.isEmpty) return false;
-
-    try {
-      final decodedHash = base64Decode(hash);
-      return decodedHash.length == _pinHashLength;
-    } on FormatException {
-      return false;
     }
   }
 
@@ -376,16 +342,7 @@ class AuthService {
     final storedPinData = await _readStorageValue(_pinKey);
     if (storedPinData == null) return false;
 
-    final pinRecord = _parsePinRecord(storedPinData);
-    if (pinRecord == null || !_hasValidStoredPinHash(pinRecord.hash)) {
-      return false;
-    }
-    if (pinRecord.version != _pinKdfVersion) {
-      return false;
-    }
-    if (pinRecord.iterations <= 0 || pinRecord.iterations > 1000000) {
-      return false;
-    }
+    if (_parsePinRecord(storedPinData) == null) return false;
 
     final salt = await _readSalt();
     return salt != null;
@@ -454,18 +411,6 @@ Future<String> _defaultLocalizedReason() async {
   final appName = packageInfo.appName.trim();
   final normalizedAppName = appName.isEmpty ? _defaultAuthAppName : appName;
   return 'Authenticate to access $normalizedAppName';
-}
-
-class _PinHashRecord {
-  _PinHashRecord({
-    required this.version,
-    required this.iterations,
-    required this.hash,
-  });
-
-  final int version;
-  final int iterations;
-  final String hash;
 }
 
 /// Provider for [AuthService].

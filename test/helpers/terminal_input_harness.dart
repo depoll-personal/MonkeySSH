@@ -16,6 +16,7 @@ Future<TerminalInputHarness> pumpTerminalInputHarness(
   WidgetTester tester, {
   bool attachController = true,
   TextEditingValue? initialEditingValue,
+  String? initialTerminalOutput,
   bool readOnly = false,
   bool deleteDetection = true,
   bool tapToShowKeyboard = true,
@@ -31,6 +32,9 @@ Future<TerminalInputHarness> pumpTerminalInputHarness(
 }) async {
   final terminalOutput = <String>[];
   final terminal = Terminal(onOutput: terminalOutput.add);
+  if (initialTerminalOutput != null) {
+    terminal.write(initialTerminalOutput);
+  }
   final focusNode = FocusNode();
   final effectiveController =
       controller ?? TerminalTextInputHandlerController();

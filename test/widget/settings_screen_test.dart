@@ -491,6 +491,52 @@ void main() {
       expect(find.text('Lifetime'), findsOneWidget);
     });
 
+    for (final (title, labels, setting, saved) in [
+      (
+        'Theme',
+        ['System default', 'Light', 'Dark'],
+        SettingKeys.themeMode,
+        'dark',
+      ),
+      (
+        'Cursor style',
+        ['Block', 'Underline', 'Bar'],
+        SettingKeys.cursorStyle,
+        'bar',
+      ),
+    ]) {
+      testWidgets('$title choices stay ordered and persist selection', (
+        tester,
+      ) async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        await _pumpSettingsScreen(tester, db: db);
+        await tester.scrollUntilVisible(
+          find.text(title),
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.text(title));
+        await tester.pumpAndSettle();
+        final dialog = find.byType(AlertDialog);
+        expect(
+          tester
+              .widgetList<Text>(
+                find.descendant(of: dialog, matching: find.byType(Text)),
+              )
+              .map((text) => text.data),
+          [title, ...labels],
+        );
+        await tester.tap(
+          find.descendant(of: dialog, matching: find.text(labels.last)),
+        );
+        await tester.pumpAndSettle();
+        expect(find.byType(AlertDialog), findsNothing);
+        expect(await SettingsService(db).getString(setting), saved);
+      });
+    }
+
     testWidgets('displays theme option', (tester) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);

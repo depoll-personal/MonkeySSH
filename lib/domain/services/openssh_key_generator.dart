@@ -21,6 +21,9 @@ typedef _GenerateParams = ({
   String? passphrase,
 });
 
+/// Generated OpenSSH private key and its encoded public key.
+typedef GeneratedOpenSshKey = ({String privateKeyPem, Uint8List publicKeyBlob});
+
 /// Generates a private key in the OpenSSH format
 /// (`-----BEGIN OPENSSH PRIVATE KEY-----`) entirely in Dart.
 ///
@@ -30,17 +33,17 @@ typedef _GenerateParams = ({
 ///
 /// The heavy cryptographic work (RSA prime search, bcrypt rounds) runs in a
 /// background isolate so the UI stays responsive.
-Future<String> generateOpenSshPrivateKeyPem({
+Future<GeneratedOpenSshKey> generateOpenSshKey({
   required SshKeyType keyType,
   required String comment,
   String? passphrase,
-}) => compute(_generateOpenSshPrivateKeyPem, (
+}) => compute(_generateOpenSshKey, (
   keyType: keyType,
   comment: comment,
   passphrase: passphrase,
 ));
 
-Future<String> _generateOpenSshPrivateKeyPem(_GenerateParams params) async {
+Future<GeneratedOpenSshKey> _generateOpenSshKey(_GenerateParams params) async {
   final passphrase = (params.passphrase?.isEmpty ?? true)
       ? null
       : params.passphrase;
@@ -55,7 +58,10 @@ Future<String> _generateOpenSshPrivateKeyPem(_GenerateParams params) async {
   }
 }
 
-Future<String> _buildEd25519Pem(String comment, String? passphrase) async {
+Future<GeneratedOpenSshKey> _buildEd25519Pem(
+  String comment,
+  String? passphrase,
+) async {
   // Force the pure-Dart implementation so generation is deterministic and safe
   // to run inside a background isolate (a platform-backed implementation could
   // rely on a message channel that is unavailable off the root isolate).
@@ -87,7 +93,7 @@ Future<String> _buildEd25519Pem(String comment, String? passphrase) async {
   );
 }
 
-String _buildRsaPem(int bits, String comment, String? passphrase) {
+GeneratedOpenSshKey _buildRsaPem(int bits, String comment, String? passphrase) {
   final pair = _generateRsaKeyPair(bits);
   final public = pair.publicKey as pc.RSAPublicKey;
   final private = pair.privateKey as pc.RSAPrivateKey;
@@ -146,7 +152,7 @@ pc.AsymmetricKeyPair<pc.PublicKey, pc.PrivateKey> _generateRsaKeyPair(
 
 /// Wraps [publicKeyBlob] and [privateSection] into the `openssh-key-v1`
 /// container, optionally encrypting the private half with [passphrase].
-String _assembleOpenSshKey({
+GeneratedOpenSshKey _assembleOpenSshKey({
   required Uint8List publicKeyBlob,
   required Uint8List privateSection,
   required String? passphrase,
@@ -211,7 +217,10 @@ String _assembleOpenSshKey({
     ..writeBytes(publicKeyBlob)
     ..writeBytes(privateBlob);
 
-  return _wrapPem(container.toBytes());
+  return (
+    privateKeyPem: _wrapPem(container.toBytes()),
+    publicKeyBlob: publicKeyBlob,
+  );
 }
 
 String _wrapPem(Uint8List content) {

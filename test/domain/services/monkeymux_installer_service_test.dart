@@ -176,73 +176,120 @@ void main() {
     },
   );
 
-  test('reused helper is not marked as installed during the call', () async {
-    final assetBytes = Uint8List.fromList(utf8.encode('monkeymux-binary'));
-    final expectedSha = sha256.convert(assetBytes).toString();
-    final remoteFileService = _FakeRemoteFileService()..uploaded = true;
-    final installer = MonkeyMuxInstallerService(
-      manifestFuture: Future.value(
-        MonkeyMuxManifest(
-          version: '9.9.9',
-          entries: [
-            MonkeyMuxManifestEntry(
-              platform: 'darwin-arm64',
-              asset: 'assets/test/monkeymux',
-              sha256: expectedSha,
-              size: assetBytes.length,
-            ),
-          ],
+  for (final scenario in [
+    (
+      name: 'reused helper is not marked as installed during the call',
+      connectionId: 246810,
+      launcherFails: false,
+      corrupt: false,
+    ),
+    (
+      name: 'launcher failure does not block a verified helper',
+      connectionId: 975310,
+      launcherFails: true,
+      corrupt: false,
+    ),
+    (
+      name: 'fresh install rejects a bundled checksum mismatch before upload',
+      connectionId: 975311,
+      launcherFails: false,
+      corrupt: true,
+    ),
+  ]) {
+    test(scenario.name, () async {
+      final assetBytes = Uint8List.fromList(utf8.encode('monkeymux-binary'));
+      final expectedSha = sha256.convert(assetBytes).toString();
+      final remoteFileService = _FakeRemoteFileService()
+        ..uploaded = !scenario.corrupt;
+      final installer = MonkeyMuxInstallerService(
+        manifestFuture: Future.value(
+          MonkeyMuxManifest(
+            version: '9.9.9',
+            entries: [
+              MonkeyMuxManifestEntry(
+                platform: 'darwin-arm64',
+                asset: 'assets/test/monkeymux',
+                sha256: expectedSha,
+                size: assetBytes.length,
+              ),
+            ],
+          ),
         ),
-      ),
-      remoteFileService: remoteFileService,
-      assetBundle: _FakeAssetBundle({'assets/test/monkeymux': assetBytes}),
-    );
-    const connectionId = 246810;
-    final client = _MockSshClient();
-    final sftp = _MockSftpClient();
-    final commands = <String>[];
-    when(sftp.close).thenAnswer((_) async {});
-    when(client.sftp).thenAnswer((_) async => sftp);
-    when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
-      invocation,
-    ) async {
-      final command = invocation.positionalArguments.single as String;
-      commands.add(command);
-      final output = _outputForCommand(
-        command,
-        expectedSha: expectedSha,
         remoteFileService: remoteFileService,
-      );
-      return _execSession(output);
-    });
-    final session = SshSession(
-      connectionId: connectionId,
-      hostId: 1,
-      client: client,
-      config: const SshConnectionConfig(
-        hostname: 'example.com',
-        port: 22,
-        username: 'proof',
-      ),
-    );
-    addTearDown(() => installer.clearCache(connectionId));
-
-    final installation = await installer.ensureInstalled(session);
-
-    expect(installation.version, '9.9.9');
-    expect(installation.installedDuringCall, isFalse);
-    expect(remoteFileService.uploadCount, 0);
-    expect(
-      commands,
-      contains(
-        allOf(
-          contains('.local/bin/monkeymux'),
-          contains('ln -s'),
-          contains('.monkeyssh/bin/monkeymux/'),
+        assetBundle: _FakeAssetBundle(
+          scenario.corrupt
+              ? {
+                  'assets/test/monkeymux': Uint8List.fromList([0]),
+                }
+              : {},
         ),
-      ),
-    );
-  });
+      );
+      final connectionId = scenario.connectionId;
+      final client = _MockSshClient();
+      final sftp = _MockSftpClient();
+      final commands = <String>[];
+      when(sftp.close).thenAnswer((_) async {});
+      when(client.sftp).thenAnswer((_) async => sftp);
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        invocation,
+      ) async {
+        final command = invocation.positionalArguments.single as String;
+        commands.add(command);
+        if (scenario.launcherFails &&
+            command.contains('.local/bin/monkeymux')) {
+          throw StateError('launcher directory is read-only');
+        }
+        final output = _outputForCommand(
+          command,
+          expectedSha: expectedSha,
+          remoteFileService: remoteFileService,
+        );
+        return _execSession(output);
+      });
+      final session = SshSession(
+        connectionId: connectionId,
+        hostId: 1,
+        client: client,
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'proof',
+        ),
+      );
+      addTearDown(() => installer.clearCache(connectionId));
+
+      if (scenario.corrupt) {
+        await expectLater(
+          installer.ensureInstalled(session, confirmInstall: (_) async => true),
+          throwsA(
+            isA<MonkeyMuxInstallException>().having(
+              (error) => error.message,
+              'message',
+              'Bundled MonkeyMux checksum does not match the manifest.',
+            ),
+          ),
+        );
+        expect(remoteFileService.uploadCount, 0);
+        verify(sftp.close).called(1);
+        return;
+      }
+      final installation = await installer.ensureInstalled(session);
+
+      expect(installation.version, '9.9.9');
+      expect(installation.installedDuringCall, isFalse);
+      expect(remoteFileService.uploadCount, 0);
+      expect(
+        commands,
+        contains(
+          allOf(
+            contains('.local/bin/monkeymux'),
+            contains('ln -s'),
+            contains('.monkeyssh/bin/monkeymux/'),
+          ),
+        ),
+      );
+    });
+  }
 
   test('installs the Windows helper via SFTP and native paths', () async {
     final assetBytes = Uint8List.fromList(
@@ -360,65 +407,6 @@ void main() {
       lessThan(launcherScript.indexOf(r'-Destination $path')),
     );
     expect(launcherScript, isNot(contains('Copy-Item')));
-  });
-
-  test('launcher failure does not block a verified helper', () async {
-    final assetBytes = Uint8List.fromList(utf8.encode('monkeymux-binary'));
-    final expectedSha = sha256.convert(assetBytes).toString();
-    final remoteFileService = _FakeRemoteFileService()..uploaded = true;
-    final installer = MonkeyMuxInstallerService(
-      manifestFuture: Future.value(
-        MonkeyMuxManifest(
-          version: '9.9.9',
-          entries: [
-            MonkeyMuxManifestEntry(
-              platform: 'darwin-arm64',
-              asset: 'assets/test/monkeymux',
-              sha256: expectedSha,
-              size: assetBytes.length,
-            ),
-          ],
-        ),
-      ),
-      remoteFileService: remoteFileService,
-      assetBundle: _FakeAssetBundle({'assets/test/monkeymux': assetBytes}),
-    );
-    const connectionId = 975310;
-    final client = _MockSshClient();
-    final sftp = _MockSftpClient();
-    when(sftp.close).thenAnswer((_) async {});
-    when(client.sftp).thenAnswer((_) async => sftp);
-    when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
-      invocation,
-    ) async {
-      final command = invocation.positionalArguments.single as String;
-      if (command.contains('.local/bin/monkeymux')) {
-        throw StateError('launcher directory is read-only');
-      }
-      return _execSession(
-        _outputForCommand(
-          command,
-          expectedSha: expectedSha,
-          remoteFileService: remoteFileService,
-        ),
-      );
-    });
-    final session = SshSession(
-      connectionId: connectionId,
-      hostId: 1,
-      client: client,
-      config: const SshConnectionConfig(
-        hostname: 'example.com',
-        port: 22,
-        username: 'proof',
-      ),
-    );
-    addTearDown(() => installer.clearCache(connectionId));
-
-    final installation = await installer.ensureInstalled(session);
-
-    expect(installation.version, '9.9.9');
-    expect(installation.installedDuringCall, isFalse);
   });
 }
 

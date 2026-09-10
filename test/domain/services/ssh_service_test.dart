@@ -27,6 +27,7 @@ import 'package:monkeyssh/domain/models/remote_multiplexer.dart';
 import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
 import 'package:monkeyssh/domain/services/background_ssh_service.dart';
+import 'package:monkeyssh/domain/services/diagnostics_log_service.dart';
 import 'package:monkeyssh/domain/services/host_key_verification.dart';
 import 'package:monkeyssh/domain/services/interactive_auth_prompt.dart';
 import 'package:monkeyssh/domain/services/local_notification_service.dart';
@@ -57,6 +58,10 @@ class _CapturingSshService extends SshService {
   });
 
   SshConnectionConfig? capturedConfig;
+  SshConnectionResult result = const SshConnectionResult(
+    success: false,
+    error: 'stubbed',
+  );
 
   @override
   Future<SshConnectionResult> connect(
@@ -66,7 +71,7 @@ class _CapturingSshService extends SshService {
     SshConnectionCancellationToken? cancellationToken,
   }) async {
     capturedConfig = config;
-    return const SshConnectionResult(success: false, error: 'stubbed');
+    return result;
   }
 }
 
@@ -127,11 +132,88 @@ class _CountingKeyRepository extends KeyRepository {
 
 class _MockSshClient extends Mock implements SSHClient {}
 
+class _AuthenticationFixture {
+  final client = _MockSshClient();
+  late final SshService service;
+  SSHPasswordRequestHandler? capturedPassword;
+  SSHUserInfoRequestHandler? capturedUserInfo;
+
+  static Future<_AuthenticationFixture> create({
+    required String hostname,
+    required List<int> keyBytes,
+    InteractiveAuthPromptHandler? promptHandler,
+    HostRepository? hostRepository,
+  }) async {
+    final fixture = _AuthenticationFixture();
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+    final knownHostsRepository = KnownHostsRepository(db);
+    final hostKeyBytes = _ed25519HostKeyBlob(keyBytes);
+    await _seedTrustedHost(
+      knownHostsRepository,
+      hostname: hostname,
+      hostKeyBytes: hostKeyBytes,
+    );
+    final sockets = [_FakeHostKeySocket(hostKeyBytes)];
+    var socketIndex = 0;
+    when(fixture.client.close).thenAnswer((_) async {});
+    fixture.service = SshService(
+      hostRepository: hostRepository,
+      knownHostsRepository: knownHostsRepository,
+      interactiveAuthPromptHandler: promptHandler,
+      socketConnector: (host, port, {timeout}) async => sockets[socketIndex++],
+      clientFactory:
+          (
+            socket, {
+            required username,
+            onVerifyHostKey,
+            onPasswordRequest,
+            onUserInfoRequest,
+            identities,
+            keepAliveInterval,
+          }) {
+            fixture
+              ..capturedPassword = onPasswordRequest
+              ..capturedUserInfo = onUserInfoRequest;
+            when(() => fixture.client.authenticated).thenAnswer((_) async {
+              final bytes = await (socket as HostKeySource).hostKeyBytes;
+              await onVerifyHostKey!(
+                'ssh-ed25519',
+                _hostKeyCallbackFingerprint(bytes),
+              );
+            });
+            return fixture.client;
+          },
+    );
+    return fixture;
+  }
+}
+
 class _MockExecSession extends Mock implements SSHSession {}
 
 class _MockSftpClient extends Mock implements SftpClient {}
 
 class _MockTelemetryService extends Mock implements TelemetryService {}
+
+class _RecordingSessionTelemetry extends TelemetryService {
+  _RecordingSessionTelemetry()
+    : super(
+        status: TelemetryServiceStatus.disabledByBuild,
+        collectionEnabled: false,
+        diagnosticsLogger: const NoopDiagnosticsLogger(),
+      );
+
+  final disconnectReasons = <String>[];
+
+  @override
+  Future<void> logTerminalSessionEnded({
+    required Duration duration,
+    required String disconnectCategory,
+    required bool usedBackgroundService,
+  }) async {
+    disconnectReasons.add(disconnectCategory);
+  }
+}
 
 class _MockSshService extends Mock implements SshService {}
 
@@ -665,6 +747,7 @@ class _FakeActiveSessionsSshService extends SshService {
   final Completer<void> connectStarted = Completer<void>();
   final Completer<void>? connectGate;
   int _nextConnectionId = 1;
+  Completer<void>? disconnectGate;
 
   @override
   Map<int, SshSession> get sessions => Map.unmodifiable(_sessions);
@@ -703,12 +786,14 @@ class _FakeActiveSessionsSshService extends SshService {
   Future<void> disconnect(int connectionId) async {
     _sessions.remove(connectionId);
     _clientDoneCompleters.remove(connectionId);
+    await disconnectGate?.future;
   }
 
   @override
   Future<void> disconnectAll() async {
     _sessions.clear();
     _clientDoneCompleters.clear();
+    await disconnectGate?.future;
   }
 
   @override
@@ -2257,59 +2342,91 @@ LISTEN ::1:4201
     });
 
     test('unwraps complete tmux passthrough sequences', () {
-      final result = unwrapTerminalTmuxPassthroughSequences(
-        input: 'before\x1bPtmux;\x1b\x1b]11;?\x07\x1b\\after',
-        pendingInput: '',
+      final decoder = TerminalTmuxPassthroughDecoder();
+      final result = decoder.add(
+        'before\x1bPtmux;\x1b\x1b]11;?\x07\x1b\\after',
       );
 
-      expect(result.output, 'before\x1b]11;?\x07after');
-      expect(result.pendingInput, isEmpty);
+      expect(result, 'before\x1b]11;?\x07after');
+      expect(decoder.add(''), isEmpty);
     });
 
     test('unwraps ST-terminated tmux passthrough OSC sequences', () {
-      final result = unwrapTerminalTmuxPassthroughSequences(
-        input: 'before\x1bPtmux;\x1b\x1b]11;?\x1b\x1b\\\x1b\\after',
-        pendingInput: '',
+      final decoder = TerminalTmuxPassthroughDecoder();
+      final result = decoder.add(
+        'before\x1bPtmux;\x1b\x1b]11;?\x1b\x1b\\\x1b\\after',
       );
 
-      expect(result.output, 'before\x1b]11;?\x1b\\after');
-      expect(result.pendingInput, isEmpty);
+      expect(result, 'before\x1b]11;?\x1b\\after');
+      expect(decoder.add(''), isEmpty);
     });
 
     test('preserves split tmux passthrough sequences across chunks', () {
-      final first = unwrapTerminalTmuxPassthroughSequences(
-        input: 'before\x1bPtmux;\x1b',
-        pendingInput: '',
-      );
+      final decoder = TerminalTmuxPassthroughDecoder();
+      final first = decoder.add('before\x1bPtmux;\x1b');
 
-      expect(first.output, 'before');
-      expect(first.pendingInput, '\x1bPtmux;\x1b');
+      expect(first, 'before');
+      expect(decoder.add(''), isEmpty);
 
-      final second = unwrapTerminalTmuxPassthroughSequences(
-        input: '\x1b[?1004\$p\x1b\\after',
-        pendingInput: first.pendingInput,
-      );
+      final second = decoder.add('\x1b[?1004\$p\x1b\\after');
 
-      expect(second.output, '\x1b[?1004\$pafter');
-      expect(second.pendingInput, isEmpty);
+      expect(second, '\x1b[?1004\$pafter');
+      expect(decoder.add(''), isEmpty);
     });
 
     test('preserves split tmux passthrough sequence starts', () {
-      final first = unwrapTerminalTmuxPassthroughSequences(
-        input: 'before\x1bPtm',
-        pendingInput: '',
-      );
+      final decoder = TerminalTmuxPassthroughDecoder();
+      final first = decoder.add('before\x1bPtm');
 
-      expect(first.output, 'before');
-      expect(first.pendingInput, '\x1bPtm');
+      expect(first, 'before');
+      expect(decoder.add(''), isEmpty);
 
-      final second = unwrapTerminalTmuxPassthroughSequences(
-        input: 'ux;\x1b\x1b[14t\x1b\\after',
-        pendingInput: first.pendingInput,
-      );
+      final second = decoder.add('ux;\x1b\x1b[14t\x1b\\after');
 
-      expect(second.output, '\x1b[14tafter');
-      expect(second.pendingInput, isEmpty);
+      expect(second, '\x1b[14tafter');
+      expect(decoder.add(''), isEmpty);
+    });
+
+    test(
+      'decodes a long fragmented passthrough without emitting a partial payload',
+      () {
+        final decoder = TerminalTmuxPassthroughDecoder();
+        final chunk = 'x' * 4096;
+        expect(decoder.add('before\x1bPtmux;'), 'before');
+        for (var index = 0; index < 256; index++) {
+          expect(decoder.add(chunk), isEmpty);
+        }
+        expect(decoder.add('\x1b'), isEmpty);
+        expect(decoder.add(r'\after'), '${chunk * 256}after');
+      },
+    );
+
+    test('preserves every split boundary and ordinary escape sequence', () {
+      const input = 'plain\x1b[31m\x1bPtm\x1bPtmux;A\x1b\x1b\\B\x1bX\x1b\\tail';
+      const expected = 'plain\x1b[31m\x1bPtmA\x1b\\B\x1bXtail';
+      for (var split = 0; split <= input.length; split++) {
+        final decoder = TerminalTmuxPassthroughDecoder();
+        expect(
+          decoder.add(input.substring(0, split)) +
+              decoder.add(input.substring(split)),
+          expected,
+        );
+      }
+      final decoder = TerminalTmuxPassthroughDecoder();
+      expect(input.split('').map(decoder.add).join(), expected);
+    });
+
+    test('reset discards partial prefixes, payloads and escape bytes', () {
+      final decoder = TerminalTmuxPassthroughDecoder();
+      for (final partial in [
+        '\x1bPtm',
+        '\x1bPtmux;discard',
+        '\x1bPtmux;discard\x1b',
+      ]) {
+        expect(decoder.add(partial), isEmpty);
+        decoder.reset();
+        expect(decoder.add('fresh\x1bPtmux;ok\x1b\\'), 'freshok');
+      }
     });
 
     test('answers terminal window and cell size reports', () {
@@ -4278,11 +4395,13 @@ LISTEN ::1:4201
   group('ActiveSessionsNotifier', () {
     late ProviderContainer container;
     late _FakeActiveSessionsSshService fakeSshService;
+    late _RecordingSessionTelemetry telemetry;
     late _DelayedTerminalNotificationService notificationService;
     late List<MethodCall> methodCalls;
 
     setUp(() {
       fakeSshService = _FakeActiveSessionsSshService();
+      telemetry = _RecordingSessionTelemetry();
       notificationService = _DelayedTerminalNotificationService();
       final hostRepository = _MockHostRepository();
       when(() => hostRepository.getById(any())).thenAnswer((_) async => null);
@@ -4296,6 +4415,7 @@ LISTEN ::1:4201
       container = ProviderContainer(
         overrides: [
           sshServiceProvider.overrideWithValue(fakeSshService),
+          telemetryServiceProvider.overrideWithValue(telemetry),
           hostRepositoryProvider.overrideWithValue(hostRepository),
           portForwardRepositoryProvider.overrideWithValue(
             _emptyPortForwardRepository(),
@@ -5781,6 +5901,46 @@ LISTEN ::1:4201
       expect(notifications, isEmpty);
     });
 
+    for (final reason in ['user', 'unexpected', 'disconnect_all']) {
+      test(
+        '$reason cleanup preserves a concurrent connection and logs once',
+        () async {
+          final notifier = container.read(activeSessionsProvider.notifier);
+          final first = await notifier.connect(42, forceNew: true);
+          final connectionId = first.connectionId!;
+          final gate = Completer<void>();
+          fakeSshService.disconnectGate = gate;
+          final closing = switch (reason) {
+            'user' => notifier.disconnect(connectionId),
+            'unexpected' => notifier.handleUnexpectedDisconnect(
+              connectionId,
+              message: 'Connection lost',
+            ),
+            _ => notifier.disconnectAll(),
+          };
+          expect(container.read(activeSessionsProvider), isEmpty);
+          final newest = await notifier.connect(42, forceNew: true);
+          final attempt = notifier.getConnectionAttempt(42);
+          await notifier.handleUnexpectedDisconnect(
+            connectionId,
+            message: 'Late duplicate',
+          );
+          gate.complete();
+          await closing;
+
+          expect(container.read(activeSessionsProvider), {
+            newest.connectionId!: SshConnectionState.connected,
+          });
+          expect(
+            notifier.getActiveConnections().single.connectionId,
+            newest.connectionId,
+          );
+          expect(notifier.getConnectionAttempt(42), same(attempt));
+          expect(telemetry.disconnectReasons, [reason]);
+        },
+      );
+    }
+
     test(
       'disconnectAll clears active sessions and connection attempts',
       () async {
@@ -5834,6 +5994,134 @@ LISTEN ::1:4201
       // Should not throw
       await sshService.disconnectAll();
     });
+
+    for (final demo in [false, true]) {
+      test(
+        'timestamp failure preserves ${demo ? 'demo' : 'authenticated'} session',
+        () async {
+          final host = _automaticForwardHost(enabled: false).copyWith(
+            label: demo ? 'App Review Demo · Timestamp' : 'Timestamp',
+            tags: const Value('app-review,demo'),
+          );
+          final repository = _MockHostRepository();
+          final timestamp = Completer<bool>();
+          when(() => repository.getById(host.id)).thenAnswer((_) async => host);
+          when(
+            () => repository.updateLastConnected(host.id),
+          ).thenAnswer((_) => timestamp.future);
+          final service = demo
+              ? SshService(hostRepository: repository)
+              : (await _AuthenticationFixture.create(
+                  hostname: host.hostname,
+                  keyBytes: [1, 3, 5],
+                  hostRepository: repository,
+                )).service;
+          addTearDown(service.disconnectAll);
+
+          final result = await service.connectToHost(host.id);
+          expect(result.success, isTrue);
+          expect(timestamp.isCompleted, isFalse);
+          expect(result.connectionId, isNotNull);
+          expect(
+            service.getSession(result.connectionId!)?.client,
+            same(result.client),
+          );
+          timestamp.completeError(Exception('timestamp write failed'));
+          await pumpEventQueue();
+          expect(service.isConnected(result.connectionId!), isTrue);
+          verify(() => repository.updateLastConnected(host.id)).called(1);
+        },
+      );
+    }
+
+    for (final failClose in [false, true]) {
+      test(
+        'bulk shutdown preserves new sessions when close fails: $failClose',
+        () async {
+          final repository = _MockHostRepository();
+          when(
+            () => repository.getById(any()),
+          ).thenAnswer((_) async => _automaticForwardHost(enabled: false));
+          when(
+            () => repository.updateLastConnected(any()),
+          ).thenAnswer((_) async => true);
+          final service = _CapturingSshService(
+            hostRepository: repository,
+            keyRepository: null,
+          );
+          addTearDown(service.disconnectAll);
+          final clients = List.generate(3, (_) => _MockSshClient());
+          final closing = Completer<void>();
+          final started = Completer<void>();
+          when(clients[0].close).thenAnswer((_) {
+            started.complete();
+            return closing.future;
+          });
+          for (final client in clients.skip(1)) {
+            when(client.close).thenAnswer((_) async {});
+          }
+          service.result = SshConnectionResult(
+            success: true,
+            client: clients[0],
+          );
+          final first = await service.connectToHost(42);
+          service.result = SshConnectionResult(
+            success: true,
+            client: clients[1],
+          );
+          final second = await service.connectToHost(42);
+          final failure = StateError('close failed');
+          final stopped = expectLater(
+            service.disconnectAll(),
+            failClose ? throwsA(same(failure)) : completes,
+          );
+          await started.future;
+          expect(service.sessions, isEmpty);
+          await service.disconnect(second.connectionId!);
+          service.result = SshConnectionResult(
+            success: true,
+            client: clients[2],
+          );
+          final newest = await service.connectToHost(42);
+          if (failClose) {
+            closing.completeError(failure);
+          } else {
+            closing.complete();
+          }
+          await stopped;
+
+          expect(service.isConnected(first.connectionId!), isFalse);
+          expect(service.isConnected(second.connectionId!), isFalse);
+          expect(service.sessions.keys, [newest.connectionId]);
+          verify(clients[0].close).called(1);
+          verify(clients[1].close).called(1);
+          verifyNever(clients[2].close);
+        },
+      );
+    }
+
+    for (final failureIndex in [0, 1]) {
+      test(
+        'closeAll closes every client when client $failureIndex fails',
+        () async {
+          final clients = List.generate(3, (_) => _MockSshClient());
+          final failure = StateError('client close failed');
+          for (final client in clients) {
+            when(client.close).thenAnswer((_) async {});
+          }
+          when(clients[failureIndex].close).thenThrow(failure);
+          final result = SshConnectionResult(
+            success: true,
+            client: clients[0],
+            dependentClients: clients.sublist(1),
+          );
+          await expectLater(result.closeAll(), throwsA(same(failure)));
+          for (final client in clients) {
+            verify(client.close).called(1);
+          }
+        },
+      );
+    }
 
     test('connectToHost fails when host not found', () async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
@@ -6543,53 +6831,15 @@ LISTEN ::1:4201
     });
 
     test('connect prompts interactively when host has no password', () async {
-      final db = AppDatabase.forTesting(NativeDatabase.memory());
-      addTearDown(db.close);
-      final knownHostsRepository = KnownHostsRepository(db);
-      final hostKeyBytes = _ed25519HostKeyBlob([9, 9, 9]);
-      await _seedTrustedHost(
-        knownHostsRepository,
-        hostname: 'prompt.example.com',
-        hostKeyBytes: hostKeyBytes,
-      );
-      final sockets = [_FakeHostKeySocket(hostKeyBytes)];
-      final client = _MockSshClient();
-      var socketIndex = 0;
       SshAuthChallenge? seenChallenge;
-      SSHPasswordRequestHandler? capturedPassword;
-      SSHUserInfoRequestHandler? capturedUserInfo;
 
-      when(client.close).thenAnswer((_) async {});
-
-      final service = SshService(
-        knownHostsRepository: knownHostsRepository,
-        interactiveAuthPromptHandler: (challenge) async {
+      final fixture = await _AuthenticationFixture.create(
+        hostname: 'prompt.example.com',
+        keyBytes: [9, 9, 9],
+        promptHandler: (challenge) async {
           seenChallenge = challenge;
           return ['typed-secret'];
         },
-        socketConnector: (host, port, {timeout}) async =>
-            sockets[socketIndex++],
-        clientFactory:
-            (
-              socket, {
-              required username,
-              onVerifyHostKey,
-              onPasswordRequest,
-              onUserInfoRequest,
-              identities,
-              keepAliveInterval,
-            }) {
-              capturedPassword = onPasswordRequest;
-              capturedUserInfo = onUserInfoRequest;
-              when(() => client.authenticated).thenAnswer((_) async {
-                final bytes = await (socket as HostKeySource).hostKeyBytes;
-                await onVerifyHostKey!(
-                  'ssh-ed25519',
-                  _hostKeyCallbackFingerprint(bytes),
-                );
-              });
-              return client;
-            },
       );
 
       const config = SshConnectionConfig(
@@ -6598,68 +6848,30 @@ LISTEN ::1:4201
         username: 'tester',
       );
 
-      final result = await service.connect(config);
+      final result = await fixture.service.connect(config);
 
       expect(result.success, isTrue);
       // Password auth is enabled and answered by the interactive prompt.
-      expect(capturedPassword, isNotNull);
-      expect(await capturedPassword!(), 'typed-secret');
+      expect(fixture.capturedPassword, isNotNull);
+      expect(await fixture.capturedPassword!(), 'typed-secret');
       expect(seenChallenge, isNotNull);
       expect(seenChallenge!.hostLabel, 'tester@prompt.example.com:22');
       expect(seenChallenge!.prompts, hasLength(1));
       expect(seenChallenge!.prompts.single.echo, isFalse);
       // Keyboard-interactive is also enabled so PAM logins can be answered.
-      expect(capturedUserInfo, isNotNull);
+      expect(fixture.capturedUserInfo, isNotNull);
     });
 
     test('connect uses stored password without prompting', () async {
-      final db = AppDatabase.forTesting(NativeDatabase.memory());
-      addTearDown(db.close);
-      final knownHostsRepository = KnownHostsRepository(db);
-      final hostKeyBytes = _ed25519HostKeyBlob([8, 8, 8]);
-      await _seedTrustedHost(
-        knownHostsRepository,
-        hostname: 'stored.example.com',
-        hostKeyBytes: hostKeyBytes,
-      );
-      final sockets = [_FakeHostKeySocket(hostKeyBytes)];
-      final client = _MockSshClient();
-      var socketIndex = 0;
       var promptCalls = 0;
-      SSHPasswordRequestHandler? capturedPassword;
-      SSHUserInfoRequestHandler? capturedUserInfo;
 
-      when(client.close).thenAnswer((_) async {});
-
-      final service = SshService(
-        knownHostsRepository: knownHostsRepository,
-        interactiveAuthPromptHandler: (challenge) async {
+      final fixture = await _AuthenticationFixture.create(
+        hostname: 'stored.example.com',
+        keyBytes: [8, 8, 8],
+        promptHandler: (challenge) async {
           promptCalls++;
           return null;
         },
-        socketConnector: (host, port, {timeout}) async =>
-            sockets[socketIndex++],
-        clientFactory:
-            (
-              socket, {
-              required username,
-              onVerifyHostKey,
-              onPasswordRequest,
-              onUserInfoRequest,
-              identities,
-              keepAliveInterval,
-            }) {
-              capturedPassword = onPasswordRequest;
-              capturedUserInfo = onUserInfoRequest;
-              when(() => client.authenticated).thenAnswer((_) async {
-                final bytes = await (socket as HostKeySource).hostKeyBytes;
-                await onVerifyHostKey!(
-                  'ssh-ed25519',
-                  _hostKeyCallbackFingerprint(bytes),
-                );
-              });
-              return client;
-            },
       );
 
       const config = SshConnectionConfig(
@@ -6669,16 +6881,16 @@ LISTEN ::1:4201
         password: 'stored-pass',
       );
 
-      final result = await service.connect(config);
+      final result = await fixture.service.connect(config);
 
       expect(result.success, isTrue);
-      expect(capturedPassword, isNotNull);
-      expect(await capturedPassword!(), 'stored-pass');
+      expect(fixture.capturedPassword, isNotNull);
+      expect(await fixture.capturedPassword!(), 'stored-pass');
       // A single hidden keyboard-interactive prompt reuses the stored
       // password instead of prompting the user.
-      expect(capturedUserInfo, isNotNull);
+      expect(fixture.capturedUserInfo, isNotNull);
       expect(
-        await capturedUserInfo!(
+        await fixture.capturedUserInfo!(
           SSHUserInfoRequest('', '', [SSHUserInfoPrompt('Password:', false)]),
         ),
         ['stored-pass'],
@@ -6689,48 +6901,9 @@ LISTEN ::1:4201
     test(
       'connect leaves password auth disabled without a prompt handler',
       () async {
-        final db = AppDatabase.forTesting(NativeDatabase.memory());
-        addTearDown(db.close);
-        final knownHostsRepository = KnownHostsRepository(db);
-        final hostKeyBytes = _ed25519HostKeyBlob([7, 7, 7]);
-        await _seedTrustedHost(
-          knownHostsRepository,
+        final fixture = await _AuthenticationFixture.create(
           hostname: 'nohandler.example.com',
-          hostKeyBytes: hostKeyBytes,
-        );
-        final sockets = [_FakeHostKeySocket(hostKeyBytes)];
-        final client = _MockSshClient();
-        var socketIndex = 0;
-        SSHPasswordRequestHandler? capturedPassword;
-        SSHUserInfoRequestHandler? capturedUserInfo;
-
-        when(client.close).thenAnswer((_) async {});
-
-        final service = SshService(
-          knownHostsRepository: knownHostsRepository,
-          socketConnector: (host, port, {timeout}) async =>
-              sockets[socketIndex++],
-          clientFactory:
-              (
-                socket, {
-                required username,
-                onVerifyHostKey,
-                onPasswordRequest,
-                onUserInfoRequest,
-                identities,
-                keepAliveInterval,
-              }) {
-                capturedPassword = onPasswordRequest;
-                capturedUserInfo = onUserInfoRequest;
-                when(() => client.authenticated).thenAnswer((_) async {
-                  final bytes = await (socket as HostKeySource).hostKeyBytes;
-                  await onVerifyHostKey!(
-                    'ssh-ed25519',
-                    _hostKeyCallbackFingerprint(bytes),
-                  );
-                });
-                return client;
-              },
+          keyBytes: [7, 7, 7],
         );
 
         const config = SshConnectionConfig(
@@ -6739,62 +6912,26 @@ LISTEN ::1:4201
           username: 'tester',
         );
 
-        final result = await service.connect(config);
+        final result = await fixture.service.connect(config);
 
         expect(result.success, isTrue);
-        expect(capturedPassword, isNull);
-        expect(capturedUserInfo, isNull);
+        expect(fixture.capturedPassword, isNull);
+        expect(fixture.capturedUserInfo, isNull);
       },
     );
 
     test(
       'connect maps keyboard-interactive prompts to the interactive handler',
       () async {
-        final db = AppDatabase.forTesting(NativeDatabase.memory());
-        addTearDown(db.close);
-        final knownHostsRepository = KnownHostsRepository(db);
-        final hostKeyBytes = _ed25519HostKeyBlob([6, 6, 6]);
-        await _seedTrustedHost(
-          knownHostsRepository,
-          hostname: 'kbi.example.com',
-          hostKeyBytes: hostKeyBytes,
-        );
-        final sockets = [_FakeHostKeySocket(hostKeyBytes)];
-        final client = _MockSshClient();
-        var socketIndex = 0;
         SshAuthChallenge? seenChallenge;
-        SSHUserInfoRequestHandler? capturedUserInfo;
 
-        when(client.close).thenAnswer((_) async {});
-
-        final service = SshService(
-          knownHostsRepository: knownHostsRepository,
-          interactiveAuthPromptHandler: (challenge) async {
+        final fixture = await _AuthenticationFixture.create(
+          hostname: 'kbi.example.com',
+          keyBytes: [6, 6, 6],
+          promptHandler: (challenge) async {
             seenChallenge = challenge;
             return ['otp-123', 'kbi-pass'];
           },
-          socketConnector: (host, port, {timeout}) async =>
-              sockets[socketIndex++],
-          clientFactory:
-              (
-                socket, {
-                required username,
-                onVerifyHostKey,
-                onPasswordRequest,
-                onUserInfoRequest,
-                identities,
-                keepAliveInterval,
-              }) {
-                capturedUserInfo = onUserInfoRequest;
-                when(() => client.authenticated).thenAnswer((_) async {
-                  final bytes = await (socket as HostKeySource).hostKeyBytes;
-                  await onVerifyHostKey!(
-                    'ssh-ed25519',
-                    _hostKeyCallbackFingerprint(bytes),
-                  );
-                });
-                return client;
-              },
         );
 
         const config = SshConnectionConfig(
@@ -6803,11 +6940,11 @@ LISTEN ::1:4201
           username: 'tester',
         );
 
-        final result = await service.connect(config);
+        final result = await fixture.service.connect(config);
 
         expect(result.success, isTrue);
-        expect(capturedUserInfo, isNotNull);
-        final responses = await capturedUserInfo!(
+        expect(fixture.capturedUserInfo, isNotNull);
+        final responses = await fixture.capturedUserInfo!(
           SSHUserInfoRequest('Two-factor', 'Enter your codes', [
             SSHUserInfoPrompt('Token:', true),
             SSHUserInfoPrompt('Password:', false),
@@ -6828,51 +6965,15 @@ LISTEN ::1:4201
     test(
       'connect only reuses the stored password for a real password prompt',
       () async {
-        final db = AppDatabase.forTesting(NativeDatabase.memory());
-        addTearDown(db.close);
-        final knownHostsRepository = KnownHostsRepository(db);
-        final hostKeyBytes = _ed25519HostKeyBlob([5, 5, 5]);
-        await _seedTrustedHost(
-          knownHostsRepository,
-          hostname: 'pam.example.com',
-          hostKeyBytes: hostKeyBytes,
-        );
-        final sockets = [_FakeHostKeySocket(hostKeyBytes)];
-        final client = _MockSshClient();
-        var socketIndex = 0;
         var promptCalls = 0;
-        SSHUserInfoRequestHandler? capturedUserInfo;
 
-        when(client.close).thenAnswer((_) async {});
-
-        final service = SshService(
-          knownHostsRepository: knownHostsRepository,
-          interactiveAuthPromptHandler: (challenge) async {
+        final fixture = await _AuthenticationFixture.create(
+          hostname: 'pam.example.com',
+          keyBytes: [5, 5, 5],
+          promptHandler: (challenge) async {
             promptCalls++;
             return ['user-entered'];
           },
-          socketConnector: (host, port, {timeout}) async =>
-              sockets[socketIndex++],
-          clientFactory:
-              (
-                socket, {
-                required username,
-                onVerifyHostKey,
-                onPasswordRequest,
-                onUserInfoRequest,
-                identities,
-                keepAliveInterval,
-              }) {
-                capturedUserInfo = onUserInfoRequest;
-                when(() => client.authenticated).thenAnswer((_) async {
-                  final bytes = await (socket as HostKeySource).hostKeyBytes;
-                  await onVerifyHostKey!(
-                    'ssh-ed25519',
-                    _hostKeyCallbackFingerprint(bytes),
-                  );
-                });
-                return client;
-              },
         );
 
         const config = SshConnectionConfig(
@@ -6882,13 +6983,13 @@ LISTEN ::1:4201
           password: 'stored-pass',
         );
 
-        final result = await service.connect(config);
+        final result = await fixture.service.connect(config);
         expect(result.success, isTrue);
-        expect(capturedUserInfo, isNotNull);
+        expect(fixture.capturedUserInfo, isNotNull);
 
         // A plain password prompt reuses the stored password without prompting.
         expect(
-          await capturedUserInfo!(
+          await fixture.capturedUserInfo!(
             SSHUserInfoRequest('', '', [SSHUserInfoPrompt('Password:', false)]),
           ),
           ['stored-pass'],
@@ -6897,7 +6998,7 @@ LISTEN ::1:4201
 
         // A one-time-code prompt must reach the user, not receive the password.
         expect(
-          await capturedUserInfo!(
+          await fixture.capturedUserInfo!(
             SSHUserInfoRequest('', '', [
               SSHUserInfoPrompt('Verification code:', false),
             ]),
@@ -6908,7 +7009,7 @@ LISTEN ::1:4201
 
         // A forced password-change prompt must also reach the user.
         expect(
-          await capturedUserInfo!(
+          await fixture.capturedUserInfo!(
             SSHUserInfoRequest('', 'You are required to change your password', [
               SSHUserInfoPrompt('New password:', false),
             ]),
@@ -6922,51 +7023,15 @@ LISTEN ::1:4201
     test(
       'connect answers a zero-prompt keyboard-interactive request emptily',
       () async {
-        final db = AppDatabase.forTesting(NativeDatabase.memory());
-        addTearDown(db.close);
-        final knownHostsRepository = KnownHostsRepository(db);
-        final hostKeyBytes = _ed25519HostKeyBlob([4, 4, 4]);
-        await _seedTrustedHost(
-          knownHostsRepository,
-          hostname: 'banner.example.com',
-          hostKeyBytes: hostKeyBytes,
-        );
-        final sockets = [_FakeHostKeySocket(hostKeyBytes)];
-        final client = _MockSshClient();
-        var socketIndex = 0;
         var promptCalls = 0;
-        SSHUserInfoRequestHandler? capturedUserInfo;
 
-        when(client.close).thenAnswer((_) async {});
-
-        final service = SshService(
-          knownHostsRepository: knownHostsRepository,
-          interactiveAuthPromptHandler: (challenge) async {
+        final fixture = await _AuthenticationFixture.create(
+          hostname: 'banner.example.com',
+          keyBytes: [4, 4, 4],
+          promptHandler: (challenge) async {
             promptCalls++;
             return null;
           },
-          socketConnector: (host, port, {timeout}) async =>
-              sockets[socketIndex++],
-          clientFactory:
-              (
-                socket, {
-                required username,
-                onVerifyHostKey,
-                onPasswordRequest,
-                onUserInfoRequest,
-                identities,
-                keepAliveInterval,
-              }) {
-                capturedUserInfo = onUserInfoRequest;
-                when(() => client.authenticated).thenAnswer((_) async {
-                  final bytes = await (socket as HostKeySource).hostKeyBytes;
-                  await onVerifyHostKey!(
-                    'ssh-ed25519',
-                    _hostKeyCallbackFingerprint(bytes),
-                  );
-                });
-                return client;
-              },
         );
 
         const config = SshConnectionConfig(
@@ -6975,14 +7040,14 @@ LISTEN ::1:4201
           username: 'tester',
         );
 
-        final result = await service.connect(config);
+        final result = await fixture.service.connect(config);
         expect(result.success, isTrue);
-        expect(capturedUserInfo, isNotNull);
+        expect(fixture.capturedUserInfo, isNotNull);
 
         // An informational (zero-prompt) request is answered with no responses
         // and must not surface an empty credential dialog.
         expect(
-          await capturedUserInfo!(
+          await fixture.capturedUserInfo!(
             SSHUserInfoRequest('Notice', 'Welcome to the server', const []),
           ),
           isEmpty,
