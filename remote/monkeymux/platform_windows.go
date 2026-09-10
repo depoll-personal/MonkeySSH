@@ -1040,3 +1040,6 @@ func isStaleUnixSocketError(err error) bool {
 	return errors.Is(err, windows.WSAECONNREFUSED) ||
 		errors.Is(err, windows.ERROR_CONNECTION_REFUSED)
 }
+
+// ConPTY has no Unix slave device path for detached hooks.
+func writeAgentIdentityMarker(marker string) {}
