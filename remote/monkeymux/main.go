@@ -62,7 +62,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.191"
+	monkeyMuxVersion                  = "0.1.192"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -1391,7 +1391,9 @@ func killSessionCommand(args []string) {
 	if _, err := queryRunningServerStatus(session); err != nil {
 		fatal(fmt.Errorf("session %q is not running", session))
 	}
-	requestServerShutdown(session)
+	if err := requestServerShutdown(session); err != nil {
+		fatal(err)
+	}
 	if !waitForServerExit(session, serverExitWaitTimeout) {
 		fatal(fmt.Errorf("session %q did not stop", session))
 	}
@@ -2023,7 +2025,9 @@ func prepareRunningServerReplacement(
 		}, nil
 	}
 	if status.supportsCapability("shutdown") {
-		requestServerShutdown(session)
+		if err := requestServerShutdown(session); err != nil {
+			return nil, fmt.Errorf("monkeymux: could not request shutdown for session %q: %w", session, err)
+		}
 		if !waitForServerProcessExit(session, oldPID, serverExitWaitTimeout) {
 			fmt.Fprintf(
 				os.Stderr,
@@ -16205,28 +16209,54 @@ func closeOutgoingTerminalWindows(
 	return nil
 }
 
-func requestServerShutdown(session string) {
+func requestServerShutdown(session string) error {
 	conn, err := dialSession(session)
 	if err != nil {
-		return
+		return err
 	}
 	defer conn.Close()
+	return sendServerShutdown(conn, session)
+}
+
+func sendServerShutdown(conn net.Conn, session string) error {
 	_ = conn.SetDeadline(time.Now().Add(socketTimeout))
 
 	enc := json.NewEncoder(conn)
 	dec := json.NewDecoder(conn)
 	if err := enc.Encode(controlMessage{Role: "control", Session: session}); err != nil {
-		return
+		return err
 	}
-	var ignored controlResponse
-	if err := dec.Decode(&ignored); err != nil {
-		return
+	if _, err := readControlHello(dec); err != nil {
+		return err
 	}
-	_ = enc.Encode(controlMessage{
-		ID:      strconv.FormatInt(time.Now().UnixNano(), 10),
+	requestID := strconv.FormatInt(time.Now().UnixNano(), 10)
+	if err := enc.Encode(controlMessage{
+		ID:      requestID,
 		Type:    "shutdown",
 		Session: session,
-	})
+	}); err != nil {
+		return err
+	}
+	// handleControl sends hello and then a window_list before reading requests.
+	// Closing now can fail that second write, closing the server-side connection
+	// before its scanner consumes shutdown. Drain greetings/events and wait for
+	// our acknowledgement so a buffered write cannot masquerade as a shutdown.
+	for {
+		var response controlResponse
+		if err := dec.Decode(&response); err != nil {
+			return err
+		}
+		if response.ID != requestID {
+			continue
+		}
+		if response.Status == "error" || response.Type == "error" {
+			return errors.New(firstNonEmptyString(response.Error, "server rejected shutdown"))
+		}
+		if response.Type != "shutdown" || response.Status != "ok" {
+			return errors.New("unexpected server shutdown response")
+		}
+		return nil
+	}
 }
 
 func waitForServerExit(session string, timeout time.Duration) bool {
