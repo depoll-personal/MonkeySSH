@@ -62,7 +62,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.190"
+	monkeyMuxVersion                  = "0.1.191"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -287,18 +287,10 @@ var simulateForegroundResize = func(window *muxWindow, width int, height int) {
 		return
 	}
 	generation := window.resizeGeneration.Add(1)
-	temporaryWidth, temporaryHeight, ok := foregroundRedrawTemporarySize(width, height)
-	if window.agentToolLocked() == "pi" {
-		// Pi caches rendered lines. A height-only resize (the ConPTY
-		// default) need not invalidate them, leaving a freshly cleared
-		// attach blank or showing only a differential composer update.
-		// A column change forces a full reflow, even at width one.
-		temporaryWidth = width - 1
-		if temporaryWidth < 1 {
-			temporaryWidth = width + 1
-		}
-		temporaryHeight = height
-	}
+	temporaryWidth, temporaryHeight, ok := foregroundRedrawTemporarySize(
+		width,
+		height,
+	)
 	if ok {
 		window.resizePtyIfCurrent(
 			generation,
@@ -9564,7 +9556,6 @@ func (s *muxServer) resizeWithRedraw(
 		// Genuine viewport changes rely on the real PTY resize and forward their
 		// reflow immediately. Restore/theme redraws always need the synthetic
 		// width-1 dance, while a same-size settle redraw only needs it on
-		// Pi, whose differential renderer can ignore same-size SIGWINCH, and
 		// platforms such as Windows that cannot explicitly signal a foreground
 		// resize after ResizePseudoConsole ignores an unchanged size.
 		//
@@ -9574,7 +9565,7 @@ func (s *muxServer) resizeWithRedraw(
 			forceRedraw,
 			syntheticRedraw,
 			dimensionsChanged,
-			supportsExplicitForegroundResizeSignal && window.agentToolLocked() != "pi",
+			supportsExplicitForegroundResizeSignal,
 		) {
 			s.pauseAttachForwardingForRedrawLocked(window, width, height)
 			simulateForegroundResize(window, width, height)
@@ -10172,7 +10163,15 @@ func (s *muxServer) foregroundHistoryFallbackHistoryLocked(
 		return nil
 	}
 	history, historyStart := window.historyTailWithParserLocked()
-	history = trimReplayHistoryForAttachWithParser(history, historyStart)
+	// This is a TUI frame recovery, not the short shell scrollback replay.
+	// Differential updates can leave the composer untouched for more than
+	// windowReplayLimitBytes of output. Cutting to that tail discards the
+	// cells (and cursor position) those updates depend on, so a switch paints
+	// the transcript over a blank/misaligned composer until a real resize.
+	// Keep the full, already bounded foreground history and only skip an
+	// incomplete leading control sequence left by history eviction.
+	start := advanceReplayStartToTerminalGround(history, 0, historyStart)
+	history = history[start:]
 	history = stripTerminalQueriesFromReplay(history)
 	if len(history) == 0 {
 		return nil
