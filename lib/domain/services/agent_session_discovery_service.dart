@@ -3520,8 +3520,9 @@ class AgentSessionDiscoveryService {
       return _execThroughControlChannel(controlChannelBackend, command);
     }
     return session.runQueuedExec(() async {
-      final execSession = await session.execute(
-        _markCommandDone('$_profileSourcingPrefix$command'),
+      final execSession = await openSshExec(
+        session.execute(_markCommandDone('$_profileSourcingPrefix$command')),
+        _execOutputTimeout,
       );
       try {
         execSession.stderr.drain<void>().ignore();
@@ -3561,7 +3562,10 @@ class AgentSessionDiscoveryService {
           .then((result) => result.output);
     }
     return session.runQueuedExec(() async {
-      final execSession = await session.execute(command);
+      final execSession = await openSshExec(
+        session.execute(command),
+        _execOutputTimeout,
+      );
       try {
         execSession.stderr.drain<void>().ignore();
         return await _readStdoutUntilDoneMarker(execSession);
@@ -3679,8 +3683,11 @@ class AgentSessionDiscoveryService {
     required List<String?> listWorkingDirectories,
     required int max,
   }) => session.runQueuedExec(() async {
-    final execSession = await session.execute(
-      '$_profileSourcingPrefix${_buildAcpSessionListCommand(provider, workingDirectory)}',
+    final execSession = await openSshExec(
+      session.execute(
+        '$_profileSourcingPrefix${_buildAcpSessionListCommand(provider, workingDirectory)}',
+      ),
+      _acpResponseTimeout,
     );
     var nextRequestId = 0;
     final connection = AcpJsonRpcConnection(

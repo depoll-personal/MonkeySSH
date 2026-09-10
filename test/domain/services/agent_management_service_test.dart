@@ -52,6 +52,45 @@ SshSession _remoteSession(_MockSshClient client, {int connectionId = 77}) =>
     );
 
 void main() {
+  testWidgets('stalled probe open fails and releases its queue slot', (
+    tester,
+  ) async {
+    final opening = Completer<SSHSession>();
+    final client = _MockSshClient();
+    when(
+      () => client.execute(any(), pty: any(named: 'pty')),
+    ).thenAnswer((_) => opening.future);
+    final session = _remoteSession(client);
+    final result = _unlockedManagementService(
+      _MockDiscovery(),
+    ).refreshAll(session);
+    var completed = false;
+    unawaited(
+      result.then((_) {
+        completed = true;
+      }),
+    );
+    await tester.pump();
+    expect(activeQueuedSshExecCountForTesting(session.connectionId), 1);
+    await tester.pump(const Duration(milliseconds: 7999));
+    expect(completed, isFalse);
+    await tester.pump(const Duration(milliseconds: 1));
+    expect(completed, isTrue);
+    final runtimes = await result;
+    expect(runtimes, isNotEmpty);
+    expect(
+      runtimes.every((runtime) => runtime.status == AgentRuntimeStatus.failed),
+      isTrue,
+    );
+    expect(runtimes.first.message, contains('TimeoutException'));
+    expect(activeQueuedSshExecCountForTesting(session.connectionId), 0);
+    expect(pendingQueuedSshExecCountForTesting(session.connectionId), 0);
+    final late = _execOutput('late');
+    opening.complete(late);
+    await tester.pump();
+    verify(late.close).called(1);
+  });
+
   tearDown(resetQueuedSshExecsForTesting);
   group('parseAgentVersion', () {
     test('parses common CLI version output', () {

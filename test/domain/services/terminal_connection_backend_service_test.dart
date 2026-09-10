@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -21,6 +22,52 @@ class _MockSshExecSession extends Mock implements SSHSession {}
 class _MockMonkeyMuxService extends Mock implements MonkeyMuxService {}
 
 void main() {
+  for (final useTmux in [false, true]) {
+    testWidgets('stalled client command open releases queue, tmux=$useTmux', (
+      tester,
+    ) async {
+      final opening = Completer<SSHSession>();
+      final client = _MockSshClient();
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) => opening.future);
+      final session = _buildSession(client);
+      if (useTmux) {
+        session
+          ..remoteMuxBackend = RemoteMuxBackend.tmux
+          ..remoteMuxSessionName = 'dev';
+      }
+      final backend = TerminalConnectionBackendService(
+        tmuxMultiplexer: _FakeRemoteMultiplexerService(),
+        monkeyMuxService: _MockMonkeyMuxService(),
+      ).resolve(session);
+      final result = backend.runClientCommand(
+        'probe',
+        priority: SshExecPriority.low,
+      );
+      final failed = expectLater(result, throwsA(isA<TimeoutException>()));
+      var nextRan = false;
+      final next = session.runQueuedExec(() async {
+        nextRan = true;
+      }, priority: SshExecPriority.low);
+      await tester.pump();
+      expect(activeQueuedSshExecCountForTesting(session.connectionId), 1);
+      expect(pendingQueuedSshExecCountForTesting(session.connectionId), 1);
+      await tester.pump(const Duration(milliseconds: 9999));
+      expect(nextRan, isFalse);
+      await tester.pump(const Duration(milliseconds: 1));
+      await failed;
+      await next;
+      expect(nextRan, isTrue);
+      expect(activeQueuedSshExecCountForTesting(session.connectionId), 0);
+      expect(pendingQueuedSshExecCountForTesting(session.connectionId), 0);
+      final late = _buildExecSession();
+      opening.complete(late);
+      await tester.pump();
+      verify(late.close).called(1);
+    });
+  }
+
   tearDown(resetQueuedSshExecsForTesting);
 
   group('TerminalConnectionBackendService', () {

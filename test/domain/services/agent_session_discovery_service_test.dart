@@ -156,6 +156,74 @@ String _markedDiscoveryOutput(String stdout) =>
     '$stdout\n__flutty_agent_discovery_exec_done__:0\n';
 
 void main() {
+  tearDown(resetQueuedSshExecsForTesting);
+
+  for (final kind in ['posix', 'windows', 'acp']) {
+    testWidgets('stalled $kind discovery open releases its queue slot', (
+      tester,
+    ) async {
+      final opening = Completer<SSHSession>();
+      final client = _MockSshClient();
+      if (kind == 'windows') {
+        when(
+          () => client.remoteVersion,
+        ).thenReturn('SSH-2.0-OpenSSH_for_Windows_9.5');
+      }
+      var calls = 0;
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        invocation,
+      ) {
+        calls++;
+        final command = invocation.positionalArguments.single as String;
+        if (kind != 'acp' || command.contains('copilot --acp')) {
+          return opening.future;
+        }
+        return Future.value(_buildExecSession());
+      });
+      final session = _buildDiscoverySession(client);
+      final toolName = kind == 'acp' ? 'Copilot CLI' : 'Claude Code';
+      final result = AgentSessionDiscoveryService()
+          .discoverSessionsStream(session, toolName: toolName)
+          .last;
+      var completed = false;
+      unawaited(
+        result.then((_) {
+          completed = true;
+        }),
+      );
+      await tester.pump();
+      expect(calls, 1);
+      expect(activeQueuedSshExecCountForTesting(session.connectionId), 1);
+      var nextRan = false;
+      final next = session.runQueuedExec(() async {
+        nextRan = true;
+      }, priority: SshExecPriority.low);
+      expect(pendingQueuedSshExecCountForTesting(session.connectionId), 1);
+      final deadline = Duration(seconds: kind == 'acp' ? 2 : 10);
+      await tester.pump(deadline - const Duration(milliseconds: 1));
+      expect(completed, isFalse);
+      expect(nextRan, isFalse);
+      await tester.pump(const Duration(milliseconds: 1));
+      expect(completed, isTrue);
+      final discovered = await result;
+      if (kind == 'acp') {
+        // ACP open failure must permit file-based discovery to run.
+        expect(calls, greaterThan(1));
+        expect(discovered.sessions, isEmpty);
+      } else {
+        expect(discovered.failedTools, contains(toolName));
+      }
+      await next;
+      expect(nextRan, isTrue);
+      expect(activeQueuedSshExecCountForTesting(session.connectionId), 0);
+      expect(pendingQueuedSshExecCountForTesting(session.connectionId), 0);
+      final late = _buildExecSession();
+      opening.complete(late);
+      await tester.pump();
+      verify(late.close).called(1);
+    });
+  }
+
   test(
     'newest files are sorted across find batches with BSD and GNU stat',
     () async {

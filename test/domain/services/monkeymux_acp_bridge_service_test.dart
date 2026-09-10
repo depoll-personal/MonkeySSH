@@ -168,9 +168,14 @@ final class _TestChannel {
     }
   }
 
-  Future<void> remoteClose() async {
-    await stdout.close();
-    await stderr.close();
+  /// Ends the remote streams without awaiting delivery: the done events are
+  /// flushed by the next pump, while awaiting `close()` on a controller whose
+  /// subscription was cancelled from stdout's onDone can strand a widget
+  /// test's next pump outside the fake-async microtask flush.
+  Future<void> remoteClose() {
+    unawaited(stdout.close());
+    unawaited(stderr.close());
+    return Future<void>.value();
   }
 }
 
@@ -240,6 +245,131 @@ Future<void> _waitUntil(
 }
 
 void main() {
+  tearDown(resetQueuedSshExecsForTesting);
+
+  testWidgets('stalled helper open fails and releases its queue slot', (
+    tester,
+  ) async {
+    final opening = Completer<SSHSession>();
+    final client = _MockSshClient();
+    when(
+      () => client.execute(any(), pty: any(named: 'pty')),
+    ).thenAnswer((_) => opening.future);
+    final session = _sshSession(client);
+    var completed = false;
+    final failed =
+        expectLater(
+          _bridgeService().list(session),
+          throwsA(
+            isA<MonkeyMuxAcpBridgeException>()
+                .having(
+                  (error) => error.kind,
+                  'kind',
+                  MonkeyMuxAcpBridgeErrorKind.helperUnavailable,
+                )
+                .having(
+                  (error) => error.message,
+                  'message',
+                  contains('TimeoutException'),
+                ),
+          ),
+        ).then((_) {
+          completed = true;
+        });
+    await tester.pump();
+    expect(activeQueuedSshExecCountForTesting(session.connectionId), 1);
+    await tester.pump(const Duration(milliseconds: 14999));
+    expect(completed, isFalse);
+    await tester.pump(const Duration(milliseconds: 1));
+    expect(completed, isTrue);
+    await failed;
+    expect(activeQueuedSshExecCountForTesting(session.connectionId), 0);
+    expect(pendingQueuedSshExecCountForTesting(session.connectionId), 0);
+    final late = _MockSshChannel();
+    opening.complete(late);
+    await tester.pump();
+    verify(late.close).called(1);
+  });
+
+  testWidgets('stalled reconnect open times out and retries after backoff', (
+    tester,
+  ) async {
+    final opening = Completer<SSHSession>();
+    final client = _MockSshClient();
+    late _TestChannel channel;
+    channel = _TestChannel(
+      onWrite: (value) {
+        if ((jsonDecode(value) as Map)['type'] != 'hello') return;
+        channel.addText(
+          _frame({
+            'version': 1,
+            'type': 'hello',
+            'bridgeId': _bridgeId,
+            'clientId': _otherBridgeId,
+            'canSend': true,
+            'bridge': _metadata(),
+          }),
+        );
+      },
+    );
+    var calls = 0;
+    when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((_) {
+      calls++;
+      return calls == 2 ? opening.future : Future.value(channel.session);
+    });
+    final transport = _bridgeService().connect(
+      sessionProvider: () async => _sshSession(client),
+      bridgeId: _bridgeId,
+      providerId: 'copilot',
+      reconnectBackoff: const [
+        Duration(milliseconds: 100),
+        Duration(milliseconds: 200),
+      ],
+      handshakeTimeout: const Duration(seconds: 1),
+    );
+    await tester.pump();
+    expect(transport.isConnected, isTrue);
+    await channel.remoteClose();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(calls, 2);
+    expect(transport.isConnected, isFalse);
+    await tester.pump(const Duration(milliseconds: 999));
+    expect(calls, 2);
+    await tester.pump(const Duration(milliseconds: 1));
+    channel = _TestChannel(
+      onWrite: (value) {
+        if ((jsonDecode(value) as Map)['type'] != 'hello') return;
+        channel.addText(
+          _frame({
+            'version': 1,
+            'type': 'hello',
+            'bridgeId': _bridgeId,
+            'clientId': _otherBridgeId,
+            'canSend': true,
+            'bridge': _metadata(),
+          }),
+        );
+      },
+    );
+    await tester.pump(const Duration(milliseconds: 199));
+    expect(calls, 2);
+    await tester.pump(const Duration(milliseconds: 1));
+    expect(calls, 3);
+    expect(transport.isConnected, isTrue);
+    final late = _MockSshChannel();
+    opening.complete(late);
+    await tester.pump();
+    verify(late.close).called(1);
+    expect(transport.isConnected, isTrue);
+    // Stream cancellation can complete outside the fake microtask flush. Keep
+    // cleanup in the real async zone so its follow-up futures can also settle.
+    await tester.runAsync(() async {
+      await transport.close();
+      await channel.remoteClose();
+    });
+  });
+
   setUpAll(() {
     registerFallbackValue(Uint8List(0));
     registerFallbackValue(SshExecPriority.normal);
