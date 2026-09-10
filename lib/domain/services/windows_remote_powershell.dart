@@ -18,6 +18,7 @@
 library;
 
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 /// Encodes [script] for `powershell.exe -EncodedCommand`.
@@ -43,6 +44,30 @@ String encodePowerShellCommand(String script) {
 String buildWindowsPowerShellCommand(String script) =>
     'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass '
     '-EncodedCommand ${encodePowerShellCommand(script)}';
+
+/// Compresses large management scripts to fit Windows OpenSSH command lines.
+///
+/// Unlike UTF-16 EncodedCommand (which expands scripts by roughly 8/3), the
+/// payload is gzip-compressed UTF-8. The fixed ASCII bootstrap contains only a
+/// base64 literal, so it is safe through both cmd.exe and PowerShell. Keep small
+/// scripts in the usual form to avoid unnecessary decompression.
+String buildCompactWindowsPowerShellCommand(String script) {
+  final command = buildWindowsPowerShellCommand(script);
+  if (command.length < 7500) return command;
+  final payload = base64.encode(
+    GZipCodec(level: 9).encode(utf8.encode(script)),
+  );
+  // No variable expansion or backticks in the bootstrap: it must survive an
+  // outer PowerShell shell as well as cmd.exe. ::new is available in PS 5.1.
+  // These streams own only memory and die with the short-lived probe process.
+  // Generated PowerShell intentionally joins adjacent tokens.
+  return 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass '
+      // ignore: missing_whitespace_between_adjacent_strings
+      '-Command "& ([scriptblock]::Create([IO.StreamReader]::new('
+      '[IO.Compression.GZipStream]::new([IO.MemoryStream]::new('
+      '[Convert]::FromBase64String(\'$payload\')),'
+      '[IO.Compression.CompressionMode]::Decompress)).ReadToEnd()))"';
+}
 
 /// Quotes [value] as a single-quoted PowerShell string literal.
 ///

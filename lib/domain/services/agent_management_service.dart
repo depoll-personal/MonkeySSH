@@ -450,7 +450,7 @@ String? buildAgentInstallCommand(
 }) {
   if (repair && definition.id == 'cli:opencode' && executablePath != null) {
     if (windows) {
-      return buildWindowsPowerShellCommand(
+      return buildCompactWindowsPowerShellCommand(
         '$powerShellProfilePathPreamble& node -e '
         '${powerShellSingleQuote(_openCodeRepairScript)} '
         '${powerShellSingleQuote(executablePath)}; exit \u0024LASTEXITCODE',
@@ -465,7 +465,7 @@ String? buildAgentInstallCommand(
       final arguments = definition.selfUpdateArguments
           .map(powerShellSingleQuote)
           .join(' ');
-      return buildWindowsPowerShellCommand(
+      return buildCompactWindowsPowerShellCommand(
         '$powerShellProfilePathPreamble& $executable $arguments; exit \u0024LASTEXITCODE',
       );
     }
@@ -514,7 +514,7 @@ String? buildAgentInstallCommand(
       ].join(),
       null => null,
     };
-    return script == null ? null : buildWindowsPowerShellCommand(script);
+    return script == null ? null : buildCompactWindowsPowerShellCommand(script);
   }
   return switch (definition.registry) {
     AgentPackageRegistry.npm =>
@@ -1089,7 +1089,7 @@ String buildAgentBatchProbeCommand(
           r'[void]$__flOut.Clear();',
         );
     }
-    return buildWindowsPowerShellCommand(
+    return buildCompactWindowsPowerShellCommand(
       powerShellUtf8OutputScript(body.toString()),
     );
   }
@@ -1206,7 +1206,7 @@ String buildAgentMetadataProbeCommand(
           r'[void]$__flOut.Clear();',
         );
     }
-    return buildWindowsPowerShellCommand(
+    return buildCompactWindowsPowerShellCommand(
       powerShellUtf8OutputScript(body.toString()),
     );
   }

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
@@ -34,6 +35,28 @@ void main() {
         expect(_decodeUtf16le(encoded), script);
       },
     );
+  });
+
+  group('buildCompactWindowsPowerShellCommand', () {
+    test('leaves small scripts unchanged', () {
+      const script = "Write-Output 'hello'";
+      expect(
+        buildCompactWindowsPowerShellCommand(script),
+        buildWindowsPowerShellCommand(script),
+      );
+    });
+
+    test('round-trips large Unicode scripts without shell interpolation', () {
+      final script = "Write-Output 'café 🐒';\n" * 2000;
+      final command = buildCompactWindowsPowerShellCommand(script);
+      expect(command.length, lessThan(7500));
+      expect(command, isNot(contains(r'$')));
+      expect(command, isNot(contains('`')));
+      final payload = RegExp(
+        r"FromBase64String\('([^']+)'\)",
+      ).firstMatch(command)![1]!;
+      expect(utf8.decode(gzip.decode(base64.decode(payload))), script);
+    });
   });
 
   group('powerShellSingleQuote', () {

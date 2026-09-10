@@ -13,6 +13,7 @@ import 'package:monkeyssh/domain/services/agent_management_service.dart';
 import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
 import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
+import 'package:monkeyssh/domain/services/windows_remote_powershell.dart';
 
 class _MockSshClient extends Mock implements SSHClient {}
 
@@ -49,6 +50,12 @@ SshSession _remoteSession(_MockSshClient client, {int connectionId = 77}) =>
     );
 
 String _decodePowerShellCommand(String command) {
+  final compressed = RegExp(
+    r"FromBase64String\('([^']+)'\)",
+  ).firstMatch(command);
+  if (compressed != null) {
+    return utf8.decode(gzip.decode(base64.decode(compressed[1]!)));
+  }
   const marker = '-EncodedCommand ';
   final encoded = command.substring(command.indexOf(marker) + marker.length);
   final bytes = base64.decode(encoded.trim());
@@ -1349,6 +1356,82 @@ esac
   });
 
   group('batch probes', () {
+    test(
+      'Windows management commands fit cmd.exe and CreateProcess limits',
+      () {
+        final commands = [
+          buildAgentBatchProbeCommand(agentRuntimeDefinitions, windows: true),
+          buildAgentMetadataProbeCommand(
+            agentRuntimeDefinitions,
+            windows: true,
+          ),
+          for (final definition in agentRuntimeDefinitions)
+            buildAgentBatchProbeCommand([definition], windows: true),
+        ];
+        for (final command in commands) {
+          expect(
+            command.length,
+            lessThan(7500),
+            reason: 'index ${commands.indexOf(command)}',
+          );
+          final script = _decodePowerShellCommand(command);
+          expect(script, contains('__monkeyssh_agent_runtime__='));
+        }
+      },
+    );
+    test(
+      'full Windows probe executes through cmd and PowerShell',
+      () async {
+        final root = await Directory.systemTemp.createTemp('agent-probe-');
+        addTearDown(() => root.delete(recursive: true));
+        final launcher = File('${root.path}/copilot.cmd');
+        await launcher.writeAsString('@echo off\r\necho 1.2.3\r\n');
+        final original = _decodePowerShellCommand(
+          buildAgentBatchProbeCommand(agentRuntimeDefinitions, windows: true),
+        );
+        // Isolate the fixture from installed agents and user profile side effects.
+        final script = original.replaceFirst(
+          powerShellProfilePathPreamble,
+          '\$env:Path=${powerShellSingleQuote(root.path)} + \';\' + '
+          r"$env:SystemRoot + '\System32;' + $env:SystemRoot + '\System32\WindowsPowerShell\v1.0';",
+        );
+        expect(
+          buildWindowsPowerShellCommand(script).length,
+          greaterThan(32767),
+        );
+        final command = buildCompactWindowsPowerShellCommand(script);
+        expect(command.length, lessThan(7500));
+        for (final shell in ['cmd.exe', 'powershell.exe']) {
+          final batch = File('${root.path}/probe.cmd');
+          await batch.writeAsString('@echo off\r\n$command\r\n');
+          final result = await Process.run(shell, [
+            if (shell == 'cmd.exe') ...[
+              '/d',
+              '/c',
+              batch.path,
+            ] else ...[
+              '-NoProfile',
+              '-NonInteractive',
+              '-Command',
+              command,
+            ],
+          ]).timeout(const Duration(seconds: 60));
+          expect(result.exitCode, 0, reason: '${result.stderr}');
+          final snapshots = parseAgentBatchProbeOutput(result.stdout as String);
+          expect(
+            snapshots.keys,
+            unorderedEquals(agentRuntimeDefinitions.map((d) => d.id)),
+            reason: '$shell: ${result.stdout} ${result.stderr}',
+          );
+          final copilot = snapshots['cli:copilot']!;
+          expect(copilot.executablePath, launcher.path.replaceAll('/', r'\'));
+          expect(parseAgentVersion(copilot.versionOutput ?? ''), '1.2.3');
+          expect(snapshots['cli:claude']!.executablePath, isNull);
+        }
+      },
+      skip: !Platform.isWindows,
+    );
+
     test('parses installed and missing runtimes independently', () {
       final snapshots = parseAgentBatchProbeOutput(
         'profile chatter\n'
