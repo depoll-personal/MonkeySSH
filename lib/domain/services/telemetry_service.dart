@@ -84,8 +84,9 @@ class TelemetryService {
        _analyticsClient = analyticsClient,
        _crashReporter = crashReporter;
 
-  static final RegExp _safeNamePattern = RegExp('[^a-z0-9_]+');
-  static const int _maxFirebaseNameLength = 40;
+  static final RegExp _safeNamePattern = RegExp('[^a-z0-9]+');
+  static final _camelCasePattern = RegExp('([a-z0-9])([A-Z])');
+  static final _edgeUnderscores = RegExp(r'^_|_$');
   static const int _maxFirebaseStringLength = 80;
   static const _allowedFeatureNames = <String>{
     'agents',
@@ -308,7 +309,7 @@ class TelemetryService {
   /// Records a high-level app startup event.
   Future<void> logAppStarted({required AppMetadata appMetadata}) =>
       _logEvent('app_started', <String, Object?>{
-        'platform': defaultTargetPlatform.name,
+        'platform': _normalizeToken(defaultTargetPlatform.name),
         'flutter_mode': _flutterMode(),
         'preview_build': appMetadata.isPreviewBuild,
         'diagnostics_enabled': isDiagnosticsLoggingEnabled,
@@ -762,8 +763,12 @@ class TelemetryService {
     }
     try {
       await analyticsClient.logEvent(
-        name: _sanitizeFirebaseName(name),
-        parameters: _sanitizeParameters(parameters),
+        name: name,
+        parameters: {
+          for (final entry in parameters.entries)
+            if (entry.value case final Object value)
+              entry.key: value is bool ? (value ? 1 : 0) : value,
+        },
       );
     } on Object catch (error) {
       _diagnosticsLogger.warning(
@@ -792,74 +797,22 @@ class TelemetryService {
 
   bool _canRecordCrash() => isAvailable && _collectionEnabled;
 
-  Map<String, Object> _sanitizeParameters(Map<String, Object?> parameters) {
-    final sanitized = <String, Object>{};
-    for (final entry in parameters.entries) {
-      final value = _sanitizeParameterValue(entry.value);
-      if (value == null) {
-        continue;
-      }
-      sanitized[_sanitizeFirebaseName(entry.key)] = value;
-    }
-    return sanitized;
-  }
-
-  Object? _sanitizeParameterValue(Object? value) {
-    if (value == null) {
-      return null;
-    }
-    if (value is bool) {
-      return value ? 1 : 0;
-    }
-    if (value is num) {
-      return value;
-    }
-    if (value is Enum) {
-      return _sanitizeFirebaseString(value.name);
-    }
-    return _sanitizeFirebaseString(value.toString());
-  }
-
-  String _sanitizeFirebaseName(String value) {
-    final normalized = value.replaceAllMapped(
-      RegExp('([a-z0-9])([A-Z])'),
-      (match) => '${match.group(1)}_${match.group(2)}',
-    );
-    final sanitized = normalized
+  static String _normalizeToken(String value) {
+    final sanitized = value
+        .replaceAllMapped(
+          _camelCasePattern,
+          (match) => '${match.group(1)}_${match.group(2)}',
+        )
         .toLowerCase()
         .replaceAll(_safeNamePattern, '_')
-        .replaceAll(RegExp('_+'), '_')
-        .replaceAll(RegExp(r'^_|_$'), '');
-    if (sanitized.isEmpty) {
-      return 'unknown';
-    }
-    if (sanitized.length <= _maxFirebaseNameLength) {
-      return sanitized;
-    }
-    return sanitized.substring(0, _maxFirebaseNameLength);
-  }
-
-  String _sanitizeFirebaseString(String value) {
-    final normalized = value.replaceAllMapped(
-      RegExp('([a-z0-9])([A-Z])'),
-      (match) => '${match.group(1)}_${match.group(2)}',
-    );
-    final sanitized = normalized
-        .toLowerCase()
-        .replaceAll(_safeNamePattern, '_')
-        .replaceAll(RegExp('_+'), '_')
-        .replaceAll(RegExp(r'^_|_$'), '');
-    if (sanitized.isEmpty) {
-      return 'unknown';
-    }
-    if (sanitized.length <= _maxFirebaseStringLength) {
-      return sanitized;
-    }
-    return sanitized.substring(0, _maxFirebaseStringLength);
+        .replaceAll(_edgeUnderscores, '');
+    return sanitized.length <= _maxFirebaseStringLength
+        ? sanitized
+        : sanitized.substring(0, _maxFirebaseStringLength);
   }
 
   String _allowlistedValue(String value, Set<String> allowedValues) {
-    final sanitized = _sanitizeFirebaseString(value);
+    final sanitized = _normalizeToken(value);
     return allowedValues.contains(sanitized) ? sanitized : 'unknown';
   }
 
@@ -961,17 +914,8 @@ class TelemetryService {
   }
 
   static Set<String> _telemetryAllowlistTokens(String value) {
-    final camelSplit = value.replaceAllMapped(
-      RegExp('([a-z0-9])([A-Z])'),
-      (match) => '${match.group(1)}_${match.group(2)}',
-    );
-    final snake = camelSplit
-        .toLowerCase()
-        .replaceAll(RegExp('[^a-z0-9]+'), '_')
-        .replaceAll(RegExp('_+'), '_')
-        .replaceAll(RegExp(r'^_|_$'), '');
-    final compact = snake.replaceAll('_', '');
-    return {if (snake.isNotEmpty) snake, if (compact.isNotEmpty) compact};
+    final snake = _normalizeToken(value);
+    return {snake, snake.replaceAll('_', '')};
   }
 }
 

@@ -23,7 +23,8 @@ class AgentLaunchPresetService {
   /// preset. Reading this state leaves the stored payload unchanged.
   Future<({AgentLaunchPreset? preset, bool isUnsupported})>
   getPresetStateForHost(int hostId) async {
-    final presets = await _readPresetMap();
+    final presets =
+        await _settings.getJson(SettingKeys.agentLaunchPresets) ?? {};
     final key = hostId.toString();
     final value = presets[key];
     final preset = value is Map<String, dynamic>
@@ -36,25 +37,18 @@ class AgentLaunchPresetService {
   }
 
   /// Saves [preset] for [hostId].
-  Future<void> setPresetForHost(int hostId, AgentLaunchPreset preset) async {
-    final presets = await _readPresetMap();
-    presets[hostId.toString()] = preset.toJson();
-    await _settings.setJson(SettingKeys.agentLaunchPresets, presets);
-  }
+  Future<void> setPresetForHost(int hostId, AgentLaunchPreset preset) =>
+      _settings.updateJson(
+        SettingKeys.agentLaunchPresets,
+        (current) => (current ?? {})..[hostId.toString()] = preset.toJson(),
+      );
 
   /// Removes any saved preset for [hostId].
-  Future<void> deletePresetForHost(int hostId) async {
-    final presets = await _readPresetMap();
-    presets.remove(hostId.toString());
-    if (presets.isEmpty) {
-      await _settings.delete(SettingKeys.agentLaunchPresets);
-      return;
-    }
-    await _settings.setJson(SettingKeys.agentLaunchPresets, presets);
-  }
-
-  Future<Map<String, dynamic>> _readPresetMap() async =>
-      await _settings.getJson(SettingKeys.agentLaunchPresets) ?? {};
+  Future<void> deletePresetForHost(int hostId) =>
+      _settings.updateJson(SettingKeys.agentLaunchPresets, (current) {
+        final presets = (current ?? {})..remove(hostId.toString());
+        return presets.isEmpty ? null : presets;
+      });
 }
 
 /// Provider for [AgentLaunchPresetService].

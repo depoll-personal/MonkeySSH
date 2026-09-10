@@ -43,6 +43,8 @@ MOBILE_PATHS = [
     '.github/workflows/firebase-distribution.yml',
     '.github/workflows/preview.yml',
     '.github/workflows/preview-ios.yml',
+    '.github/actions/apple-cache-restore/**',
+    '.github/actions/apple-cache-save/**',
 ]
 
 
@@ -64,6 +66,7 @@ def classify(paths):
         # Other workflow/tooling edits use the independent tooling job.
         global_build = (
             payload
+            or path.startswith('.github/actions/apple-cache-')
             or path.startswith(('assets/', 'third_party/'))
             or path in {
                 'pubspec.yaml', 'pubspec.lock',

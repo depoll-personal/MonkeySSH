@@ -654,42 +654,23 @@ class SecureTransferService {
     );
     final checksum = await _sha256.hash(payloadBytes);
 
-    // For large payloads, offload the JSON/base64 envelope assembly to a
-    // background isolate to avoid blocking the platform thread during
-    // serialization of potentially large ciphertext blobs.
-    if (payloadBytes.length >= _isolateAssemblyThresholdBytes) {
-      return compute(_assembleTransferEnvelope, {
-        'prefix': _payloadPrefix,
-        'v': _envelopeVersion,
-        'alg': 'AES-GCM-256',
-        'kdf': 'Argon2id',
-        'iter': _argon2idIterations,
-        'mem': _argon2idMemoryKiB,
-        'lanes': _argon2idLanes,
-        'salt': salt,
-        'nonce': nonce,
-        'ciphertext': encryptedBox.cipherText,
-        'mac': encryptedBox.mac.bytes,
-        'checksum': checksum.bytes,
-      });
-    }
-
-    final envelope = {
+    final request = <String, Object>{
+      'prefix': _payloadPrefix,
       'v': _envelopeVersion,
       'alg': 'AES-GCM-256',
       'kdf': 'Argon2id',
       'iter': _argon2idIterations,
       'mem': _argon2idMemoryKiB,
       'lanes': _argon2idLanes,
-      'salt': base64Url.encode(salt),
-      'nonce': base64Url.encode(nonce),
-      'ciphertext': base64Url.encode(encryptedBox.cipherText),
-      'mac': base64Url.encode(encryptedBox.mac.bytes),
-      'checksum': base64Url.encode(checksum.bytes),
+      'salt': salt,
+      'nonce': nonce,
+      'ciphertext': encryptedBox.cipherText,
+      'mac': encryptedBox.mac.bytes,
+      'checksum': checksum.bytes,
     };
-
-    final encodedEnvelope = base64Url.encode(utf8.encode(jsonEncode(envelope)));
-    return '$_payloadPrefix$encodedEnvelope';
+    return payloadBytes.length >= _isolateAssemblyThresholdBytes
+        ? compute(_assembleTransferEnvelope, request)
+        : _assembleTransferEnvelope(request);
   }
 
   Future<SecretKey> _deriveEnvelopeKey({
@@ -1376,16 +1357,19 @@ class SecureTransferService {
 
   List<Map<String, dynamic>> _sortedJsonRecords(
     Iterable<Map<String, dynamic>> records,
-  ) =>
-      records
-          .map((record) {
-            final canonicalRecord = _canonicalizeJsonValue(record)! as Map;
-            return Map<String, dynamic>.from(canonicalRecord);
-          })
-          .toList(growable: false)
-        ..sort(
-          (first, second) => jsonEncode(first).compareTo(jsonEncode(second)),
-        );
+  ) {
+    final sorted =
+        records
+            .map((record) {
+              final canonical = Map<String, dynamic>.from(
+                _canonicalizeJsonValue(record)! as Map,
+              );
+              return (record: canonical, sortKey: jsonEncode(canonical));
+            })
+            .toList(growable: false)
+          ..sort((first, second) => first.sortKey.compareTo(second.sortKey));
+    return sorted.map((item) => item.record).toList(growable: false);
+  }
 
   Object? _canonicalizeJsonValue(Object? value) {
     if (value is Map) {

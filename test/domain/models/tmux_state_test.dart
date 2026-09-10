@@ -733,6 +733,75 @@ void main() {
       },
     );
 
+    test('retains inactive objects and sorts an unsorted snapshot input', () {
+      const first = TmuxWindow(
+        index: 0,
+        id: '@1',
+        name: 'first',
+        isActive: false,
+      );
+      const second = TmuxWindow(
+        index: 1,
+        id: '@2',
+        name: 'second',
+        isActive: false,
+      );
+      final updated = applyTmuxWindowChangeEvent([
+        second,
+        first,
+      ], TmuxWindowSnapshotEvent(second.copyWith(isActive: true)));
+      expect(updated.map((window) => window.index), [0, 1]);
+      expect(updated.first, same(first));
+      expect(updated.clear, throwsUnsupportedError);
+    });
+
+    test('full lists retain first ID/index metadata without ID fallback', () {
+      const first = TmuxWindow(
+        index: 0,
+        id: '@1',
+        name: 'first',
+        isActive: false,
+        currentCommand: 'copilot',
+        agentSessionTitle: 'First title',
+      );
+      final windows = [
+        first,
+        first.copyWith(agentSessionTitle: 'Duplicate title'),
+      ];
+      final updated = applyTmuxWindowChangeEvent(
+        windows,
+        const TmuxWindowListEvent([
+          TmuxWindow(
+            index: 2,
+            id: '@1',
+            name: 'first',
+            isActive: false,
+            currentCommand: 'copilot',
+          ),
+          TmuxWindow(
+            index: 0,
+            name: 'index',
+            isActive: false,
+            currentCommand: 'copilot',
+          ),
+          TmuxWindow(
+            index: 0,
+            id: '@2',
+            name: 'new',
+            isActive: false,
+            currentCommand: 'copilot',
+          ),
+        ]),
+      );
+      expect(updated.map((window) => window.agentSessionTitle), [
+        'First title',
+        'First title',
+        null,
+      ]);
+      expect(updated.map((window) => window.index), [2, 0, 0]);
+      expect(updated.clear, throwsUnsupportedError);
+    });
+
     test('matches snapshots by stable window ID when indexes changed', () {
       const windows = <TmuxWindow>[
         TmuxWindow(index: 1, id: '@7', name: 'agent', isActive: false),

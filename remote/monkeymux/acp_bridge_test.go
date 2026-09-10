@@ -372,7 +372,18 @@ func TestAcpCachedInitializeResponseAvoidsDuplicateProviderRequest(t *testing.T)
 	providerInput := &testWriteCloser{}
 	bridge.stdin = providerInput
 	firstInitialize := json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
-	if _, ok := bridge.trackClientRequest(firstInitialize); !ok {
+	for _, response := range []string{
+		`{"id":1}`, `{"id":1,"result":null}`, `{"id":"1","result":{}}`,
+		`{"id":1,"result":{},"error":null}`, `{"id":1,"error":{"code":-1}}`,
+	} {
+		bridge := newOrderingTestBridge()
+		bridge.trackClientRequest(parseAcpEnvelope(firstInitialize))
+		bridge.publish("output", json.RawMessage(response), "", nil)
+		if got := bridge.cachedInitializeResponse(parseAcpEnvelope(firstInitialize)); got != nil {
+			t.Fatalf("cached unsuccessful or mismatched initialize %s: %s", response, got)
+		}
+	}
+	if _, ok := bridge.trackClientRequest(parseAcpEnvelope(firstInitialize)); !ok {
 		t.Fatal("first initialize request was not tracked")
 	}
 	bridge.publish(
@@ -791,9 +802,9 @@ func TestAcpBridgeCapturesSessionIdentityForDurableListing(t *testing.T) {
 	bridge := newOrderingTestBridge()
 	bridge.providerID = "builtin:pi-acp"
 	bridge.cwd = "/repo"
-	bridge.trackClientRequest(json.RawMessage(
+	bridge.trackClientRequest(parseAcpEnvelope(json.RawMessage(
 		`{"jsonrpc":"2.0","id":7,"method":"session/new","params":{"cwd":"/repo"}}`,
-	))
+	)))
 	bridge.publish("output", json.RawMessage(
 		`{"jsonrpc":"2.0","id":7,"result":{"sessionId":"session-7"}}`,
 	), "", nil)
@@ -1504,9 +1515,9 @@ func TestAcpReplayRetainsPendingProviderRequest(t *testing.T) {
 	if !found {
 		t.Fatal("pending provider request was evicted from replay")
 	}
-	bridge.observeClientMessage(json.RawMessage(
+	bridge.observeClientMessage(parseAcpEnvelope(json.RawMessage(
 		`{"jsonrpc":"2.0","id":"permission-1","result":{"outcome":"selected"}}`,
-	))
+	)))
 	bridge.mu.Lock()
 	defer bridge.mu.Unlock()
 	if len(bridge.pendingRequests) != 0 {

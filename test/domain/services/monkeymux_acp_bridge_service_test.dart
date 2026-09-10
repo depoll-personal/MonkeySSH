@@ -46,6 +46,18 @@ class _DecodeDiagnostics extends NoopDiagnosticsLogger {
   }
 }
 
+MonkeyMuxAcpBridgeService _bridgeService({DiagnosticsLogger? diagnostics}) =>
+    MonkeyMuxAcpBridgeService(
+      installer: _FakeInstaller(
+        const MonkeyMuxInstallation(
+          executablePath: '/helper',
+          platform: 'linux-amd64',
+          version: 'test',
+        ),
+      ),
+      diagnostics: diagnostics,
+    );
+
 Future<({MonkeyMuxAcpTransport transport, _TestChannel channel})>
 _openHistoryTransport(_DecodeDiagnostics diagnostics) async {
   late _TestChannel channel;
@@ -68,22 +80,12 @@ _openHistoryTransport(_DecodeDiagnostics diagnostics) async {
   when(
     () => client.execute(any(), pty: any(named: 'pty')),
   ).thenAnswer((_) async => channel.session);
-  final transport =
-      MonkeyMuxAcpBridgeService(
-        installer: _FakeInstaller(
-          const MonkeyMuxInstallation(
-            executablePath: '/helper',
-            platform: 'linux-amd64',
-            version: 'test',
-          ),
-        ),
-        diagnostics: diagnostics,
-      ).connect(
-        sessionProvider: () async => _sshSession(client),
-        bridgeId: _bridgeId,
-        providerId: 'pi',
-        reconnectBackoff: const [],
-      );
+  final transport = _bridgeService(diagnostics: diagnostics).connect(
+    sessionProvider: () async => _sshSession(client),
+    bridgeId: _bridgeId,
+    providerId: 'pi',
+    reconnectBackoff: const [],
+  );
   addTearDown(transport.close);
   await _waitUntil(() => transport.isConnected);
   return (transport: transport, channel: channel);
@@ -709,15 +711,7 @@ void main() {
     when(
       () => client.execute(any(), pty: any(named: 'pty')),
     ).thenAnswer((_) async => channel.session);
-    final service = MonkeyMuxAcpBridgeService(
-      installer: _FakeInstaller(
-        const MonkeyMuxInstallation(
-          executablePath: '/helper',
-          platform: 'linux-amd64',
-          version: 'test',
-        ),
-      ),
-    );
+    final service = _bridgeService();
     final transport = service.connect(
       sessionProvider: () async => _sshSession(client),
       bridgeId: _bridgeId,
@@ -763,21 +757,12 @@ void main() {
     when(
       () => client.execute(any(), pty: any(named: 'pty')),
     ).thenAnswer((_) async => channel.session);
-    final transport =
-        MonkeyMuxAcpBridgeService(
-          installer: _FakeInstaller(
-            const MonkeyMuxInstallation(
-              executablePath: '/helper',
-              platform: 'linux-amd64',
-              version: 'test',
-            ),
-          ),
-        ).connect(
-          sessionProvider: () async => _sshSession(client),
-          bridgeId: _bridgeId,
-          providerId: 'copilot',
-          lastAcknowledgedSequence: 23,
-        );
+    final transport = _bridgeService().connect(
+      sessionProvider: () async => _sshSession(client),
+      bridgeId: _bridgeId,
+      providerId: 'copilot',
+      lastAcknowledgedSequence: 23,
+    );
     addTearDown(transport.close);
 
     await _waitUntil(() => transport.isConnected);
@@ -802,21 +787,12 @@ void main() {
       when(
         () => client.execute(any(), pty: any(named: 'pty')),
       ).thenAnswer((_) async => channel.session);
-      final transport =
-          MonkeyMuxAcpBridgeService(
-            installer: _FakeInstaller(
-              const MonkeyMuxInstallation(
-                executablePath: '/helper',
-                platform: 'linux-amd64',
-                version: 'test',
-              ),
-            ),
-          ).connect(
-            sessionProvider: () async => _sshSession(client),
-            bridgeId: _bridgeId,
-            providerId: 'copilot',
-            lastAcknowledgedSequence: 23,
-          );
+      final transport = _bridgeService().connect(
+        sessionProvider: () async => _sshSession(client),
+        bridgeId: _bridgeId,
+        providerId: 'copilot',
+        lastAcknowledgedSequence: 23,
+      );
       addTearDown(transport.close);
 
       await helloSent.future;
@@ -883,20 +859,11 @@ void main() {
     when(
       () => client.execute(any(), pty: any(named: 'pty')),
     ).thenAnswer((_) async => channel.session);
-    final transport =
-        MonkeyMuxAcpBridgeService(
-          installer: _FakeInstaller(
-            const MonkeyMuxInstallation(
-              executablePath: '/helper',
-              platform: 'linux-amd64',
-              version: 'test',
-            ),
-          ),
-        ).connect(
-          sessionProvider: () async => _sshSession(client),
-          bridgeId: _bridgeId,
-          providerId: 'copilot',
-        );
+    final transport = _bridgeService().connect(
+      sessionProvider: () async => _sshSession(client),
+      bridgeId: _bridgeId,
+      providerId: 'copilot',
+    );
     addTearDown(transport.close);
     final incoming = StreamIterator<List<int>>(transport.incoming);
     addTearDown(incoming.cancel);
@@ -1027,21 +994,12 @@ void main() {
           channels.add(channel);
           return channel.session;
         });
-        final transport =
-            MonkeyMuxAcpBridgeService(
-              installer: _FakeInstaller(
-                const MonkeyMuxInstallation(
-                  executablePath: '/helper',
-                  platform: 'linux-amd64',
-                  version: 'test',
-                ),
-              ),
-            ).connect(
-              sessionProvider: () async => _sshSession(client),
-              bridgeId: _bridgeId,
-              providerId: 'copilot',
-              reconnectBackoff: const [Duration(milliseconds: 100)],
-            );
+        final transport = _bridgeService().connect(
+          sessionProvider: () async => _sshSession(client),
+          bridgeId: _bridgeId,
+          providerId: 'copilot',
+          reconnectBackoff: const [Duration(milliseconds: 100)],
+        );
         addTearDown(transport.close);
         final errors = <MonkeyMuxAcpBridgeException>[];
         final errorsSub = transport.errors.listen(errors.add);
@@ -1139,21 +1097,12 @@ void main() {
       channels.add(channel);
       return channel.session;
     });
-    final transport =
-        MonkeyMuxAcpBridgeService(
-          installer: _FakeInstaller(
-            const MonkeyMuxInstallation(
-              executablePath: '/helper',
-              platform: 'linux-amd64',
-              version: 'test',
-            ),
-          ),
-        ).connect(
-          sessionProvider: () async => _sshSession(client),
-          bridgeId: _bridgeId,
-          providerId: 'copilot',
-          reconnectBackoff: const [Duration(milliseconds: 1)],
-        );
+    final transport = _bridgeService().connect(
+      sessionProvider: () async => _sshSession(client),
+      bridgeId: _bridgeId,
+      providerId: 'copilot',
+      reconnectBackoff: const [Duration(milliseconds: 1)],
+    );
     addTearDown(transport.close);
 
     final incoming =
@@ -1223,20 +1172,11 @@ void main() {
       when(
         () => client.execute(any(), pty: any(named: 'pty')),
       ).thenAnswer((_) async => channel.session);
-      final transport =
-          MonkeyMuxAcpBridgeService(
-            installer: _FakeInstaller(
-              const MonkeyMuxInstallation(
-                executablePath: '/helper',
-                platform: 'linux-amd64',
-                version: 'test',
-              ),
-            ),
-          ).connect(
-            sessionProvider: () async => _sshSession(client),
-            bridgeId: _bridgeId,
-            providerId: 'copilot',
-          );
+      final transport = _bridgeService().connect(
+        sessionProvider: () async => _sshSession(client),
+        bridgeId: _bridgeId,
+        providerId: 'copilot',
+      );
       addTearDown(transport.close);
 
       final incoming = await transport.incoming
@@ -1332,21 +1272,12 @@ void main() {
         channels.add(channel);
         return channel.session;
       });
-      final transport =
-          MonkeyMuxAcpBridgeService(
-            installer: _FakeInstaller(
-              const MonkeyMuxInstallation(
-                executablePath: '/helper',
-                platform: 'linux-amd64',
-                version: 'test',
-              ),
-            ),
-          ).connect(
-            sessionProvider: () async => _sshSession(client),
-            bridgeId: _bridgeId,
-            providerId: 'copilot',
-            reconnectBackoff: const [Duration(milliseconds: 1)],
-          );
+      final transport = _bridgeService().connect(
+        sessionProvider: () async => _sshSession(client),
+        bridgeId: _bridgeId,
+        providerId: 'copilot',
+        reconnectBackoff: const [Duration(milliseconds: 1)],
+      );
       addTearDown(transport.close);
 
       final incoming = await transport.incoming
@@ -1374,78 +1305,96 @@ void main() {
     },
   );
 
-  test('reconnects and resumes replay from the last ACK', () async {
-    final channels = <_TestChannel>[];
-    var opens = 0;
-    final client = _MockSshClient();
-    when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
-      _,
-    ) async {
-      opens += 1;
-      late _TestChannel channel;
-      channel = _TestChannel(
-        onWrite: (value) {
-          final message = jsonDecode(value) as Map<String, dynamic>;
-          if (message['type'] != 'hello') return;
-          channel
-            ..addText(
-              _frame({
-                'version': 1,
-                'type': 'hello',
-                'bridgeId': _bridgeId,
-                'clientId': _otherBridgeId,
-                'canSend': true,
-                'bridge': _metadata(nextSequence: opens),
-              }),
-            )
-            ..addText(
-              _frame({
-                'version': 1,
-                'type': 'output',
-                'bridgeId': _bridgeId,
-                'sequence': opens,
-                'data': {'jsonrpc': '2.0', 'method': 'event/$opens'},
-              }),
-            );
-        },
-      );
-      channels.add(channel);
-      return channel.session;
-    });
-    final session = _sshSession(client);
-    final transport =
-        MonkeyMuxAcpBridgeService(
-          installer: _FakeInstaller(
-            const MonkeyMuxInstallation(
-              executablePath: '/helper',
-              platform: 'linux-amd64',
-              version: 'test',
-            ),
-          ),
-        ).connect(
+  for (final writeFails in [false, true]) {
+    test(
+      'reconnects and resumes replay from the last ACK, writeFails=$writeFails',
+      () async {
+        final channels = <_TestChannel>[];
+        var opens = 0;
+        final client = _MockSshClient();
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+          _,
+        ) async {
+          opens += 1;
+          late _TestChannel channel;
+          channel = _TestChannel(
+            onWrite: (value) {
+              final message = jsonDecode(value) as Map<String, dynamic>;
+              if (message['type'] == 'input' && opens == 1) {
+                throw StateError('channel closed');
+              }
+              if (message['type'] != 'hello') return;
+              channel
+                ..addText(
+                  _frame({
+                    'version': 1,
+                    'type': 'hello',
+                    'bridgeId': _bridgeId,
+                    'clientId': _otherBridgeId,
+                    'canSend': true,
+                    'bridge': _metadata(nextSequence: opens),
+                  }),
+                )
+                ..addText(
+                  _frame({
+                    'version': 1,
+                    'type': 'output',
+                    'bridgeId': _bridgeId,
+                    'sequence': opens,
+                    'data': {'jsonrpc': '2.0', 'method': 'event/$opens'},
+                  }),
+                );
+            },
+          );
+          channels.add(channel);
+          return channel.session;
+        });
+        final session = _sshSession(client);
+        final transport = _bridgeService().connect(
           sessionProvider: () async => session,
           bridgeId: _bridgeId,
           providerId: 'copilot',
           reconnectBackoff: const [Duration(milliseconds: 1)],
         );
-    addTearDown(transport.close);
-    final incoming = <Map<String, dynamic>>[];
-    final subscription = transport.incoming.listen((bytes) {
-      incoming.add(jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>);
-    });
-    addTearDown(subscription.cancel);
+        addTearDown(transport.close);
+        final incoming = <Map<String, dynamic>>[];
+        final subscription = transport.incoming.listen((bytes) {
+          incoming.add(jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>);
+        });
+        addTearDown(subscription.cancel);
 
-    await _waitUntil(() => incoming.length == 1);
-    await channels.first.remoteClose();
-    await _waitUntil(() => incoming.length == 2);
+        await _waitUntil(() => incoming.length == 1);
+        if (writeFails) {
+          await transport.write(
+            utf8.encode(
+              '{"jsonrpc":"2.0","id":1,"method":"first"}\n'
+              '{"jsonrpc":"2.0","id":2,"method":"second"}\n',
+            ),
+          );
+        } else {
+          await channels.first.remoteClose();
+        }
+        await _waitUntil(() => incoming.length == 2);
 
-    final secondHello = channels[1].writes.map(_decodeFrame).first;
-    expect(secondHello['lastAck'], 1);
-    expect(incoming.map((message) => message['method']), [
-      'event/1',
-      'event/2',
-    ]);
-  });
+        if (writeFails) {
+          final sent = channels[1].writes
+              .where((bytes) => _decodeFrame(bytes)['type'] == 'input')
+              .toList();
+          expect(sent.first, channels[0].writes.last);
+          expect(
+            sent.map((bytes) => (_decodeFrame(bytes)['data']! as Map)['id']),
+            [1, 2],
+          );
+        }
+        final secondHello = channels[1].writes.map(_decodeFrame).first;
+        expect(secondHello['lastAck'], 1);
+        expect(incoming.map((message) => message['method']), [
+          'event/1',
+          'event/2',
+        ]);
+      },
+    );
+  }
 
   test('reports overflow and accepts the first post-snapshot event', () async {
     late _TestChannel channel;
@@ -1496,20 +1445,11 @@ void main() {
     when(
       () => client.execute(any(), pty: any(named: 'pty')),
     ).thenAnswer((_) async => channel.session);
-    final transport =
-        MonkeyMuxAcpBridgeService(
-          installer: _FakeInstaller(
-            const MonkeyMuxInstallation(
-              executablePath: '/helper',
-              platform: 'linux-amd64',
-              version: 'test',
-            ),
-          ),
-        ).connect(
-          sessionProvider: () async => _sshSession(client),
-          bridgeId: _bridgeId,
-          providerId: 'copilot',
-        );
+    final transport = _bridgeService().connect(
+      sessionProvider: () async => _sshSession(client),
+      bridgeId: _bridgeId,
+      providerId: 'copilot',
+    );
     addTearDown(transport.close);
     final errorFuture = transport.errors.first;
 
@@ -1562,20 +1502,11 @@ void main() {
       when(
         () => client.execute(any(), pty: any(named: 'pty')),
       ).thenAnswer((_) async => channel.session);
-      final transport =
-          MonkeyMuxAcpBridgeService(
-            installer: _FakeInstaller(
-              const MonkeyMuxInstallation(
-                executablePath: '/helper',
-                platform: 'linux-amd64',
-                version: 'test',
-              ),
-            ),
-          ).connect(
-            sessionProvider: () async => _sshSession(client),
-            bridgeId: _bridgeId,
-            providerId: 'copilot',
-          );
+      final transport = _bridgeService().connect(
+        sessionProvider: () async => _sshSession(client),
+        bridgeId: _bridgeId,
+        providerId: 'copilot',
+      );
       addTearDown(transport.close);
 
       expect(
@@ -1874,20 +1805,11 @@ void main() {
     when(
       () => client.execute(any(), pty: any(named: 'pty')),
     ).thenAnswer((_) async => channel.session);
-    final transport =
-        MonkeyMuxAcpBridgeService(
-          installer: _FakeInstaller(
-            const MonkeyMuxInstallation(
-              executablePath: '/helper',
-              platform: 'linux-amd64',
-              version: 'test',
-            ),
-          ),
-        ).connect(
-          sessionProvider: () async => _sshSession(client),
-          bridgeId: _bridgeId,
-          providerId: 'copilot',
-        );
+    final transport = _bridgeService().connect(
+      sessionProvider: () async => _sshSession(client),
+      bridgeId: _bridgeId,
+      providerId: 'copilot',
+    );
     addTearDown(transport.close);
 
     final methods = <String>[];
@@ -1976,20 +1898,11 @@ void main() {
       when(
         () => client.execute(any(), pty: any(named: 'pty')),
       ).thenAnswer((_) async => channel.session);
-      final transport =
-          MonkeyMuxAcpBridgeService(
-            installer: _FakeInstaller(
-              const MonkeyMuxInstallation(
-                executablePath: '/helper',
-                platform: 'linux-amd64',
-                version: 'test',
-              ),
-            ),
-          ).connect(
-            sessionProvider: () async => _sshSession(client),
-            bridgeId: _bridgeId,
-            providerId: 'copilot',
-          );
+      final transport = _bridgeService().connect(
+        sessionProvider: () async => _sshSession(client),
+        bridgeId: _bridgeId,
+        providerId: 'copilot',
+      );
       addTearDown(transport.close);
       final errors = <MonkeyMuxAcpBridgeException>[];
       final errorSubscription = transport.errors.listen(errors.add);
@@ -2075,20 +1988,11 @@ void main() {
     when(
       () => client.execute(any(), pty: any(named: 'pty')),
     ).thenAnswer((_) async => channel.session);
-    final transport =
-        MonkeyMuxAcpBridgeService(
-          installer: _FakeInstaller(
-            const MonkeyMuxInstallation(
-              executablePath: '/helper',
-              platform: 'linux-amd64',
-              version: 'test',
-            ),
-          ),
-        ).connect(
-          sessionProvider: () async => _sshSession(client),
-          bridgeId: _bridgeId,
-          providerId: 'copilot',
-        );
+    final transport = _bridgeService().connect(
+      sessionProvider: () async => _sshSession(client),
+      bridgeId: _bridgeId,
+      providerId: 'copilot',
+    );
     addTearDown(transport.close);
 
     final errors = await transport.errors.take(2).toList();
@@ -2139,20 +2043,11 @@ void main() {
       when(
         () => client.execute(any(), pty: any(named: 'pty')),
       ).thenAnswer((_) async => channel.session);
-      final transport =
-          MonkeyMuxAcpBridgeService(
-            installer: _FakeInstaller(
-              const MonkeyMuxInstallation(
-                executablePath: '/helper',
-                platform: 'linux-amd64',
-                version: 'test',
-              ),
-            ),
-          ).connect(
-            sessionProvider: () async => _sshSession(client),
-            bridgeId: _bridgeId,
-            providerId: 'copilot',
-          );
+      final transport = _bridgeService().connect(
+        sessionProvider: () async => _sshSession(client),
+        bridgeId: _bridgeId,
+        providerId: 'copilot',
+      );
       final error = await transport.errors.first;
       await transport.close();
       return error;
@@ -2167,6 +2062,52 @@ void main() {
       MonkeyMuxAcpBridgeErrorKind.providerExited,
     );
   });
+
+  test(
+    'rejects an oversized input envelope without losing the channel',
+    () async {
+      final (:transport, :channel) = await _openHistoryTransport(
+        _DecodeDiagnostics(),
+      );
+      final errors = <MonkeyMuxAcpBridgeException>[];
+      final subscription = transport.errors.listen(errors.add);
+      addTearDown(subscription.cancel);
+      final payload = {
+        'jsonrpc': '2.0',
+        'id': 1,
+        'method': 'prompt',
+        'params': '',
+      };
+      final envelopeBytes = utf8
+          .encode(_frame({'version': 1, 'type': 'input', 'data': payload}))
+          .length;
+      payload['params'] =
+          'x' * (monkeyMuxAcpBridgeMaxFrameBytes - envelopeBytes);
+      await transport.write(utf8.encode(_frame(payload)));
+      expect(channel.writes.last.length, monkeyMuxAcpBridgeMaxFrameBytes);
+      payload['params'] = '${payload['params']}x';
+      final oversized = utf8.encode(_frame(payload));
+      expect(oversized.length, lessThan(monkeyMuxAcpBridgeMaxFrameBytes));
+      await expectLater(
+        transport.write(oversized),
+        throwsA(
+          isA<MonkeyMuxAcpBridgeException>().having(
+            (error) => error.kind,
+            'kind',
+            MonkeyMuxAcpBridgeErrorKind.frameTooLarge,
+          ),
+        ),
+      );
+      await transport.write(utf8.encode('{"jsonrpc":"2.0","method":"ping"}\n'));
+      expect(
+        (_decodeFrame(channel.writes.last)['data']! as Map)['method'],
+        'ping',
+      );
+      expect(channel.writes, hasLength(3));
+      expect(transport.isConnected, isTrue);
+      expect(errors, isEmpty);
+    },
+  );
 
   test('buffers split ACP input and wraps it as bridge input', () async {
     late _TestChannel channel;
@@ -2191,20 +2132,11 @@ void main() {
     when(
       () => client.execute(any(), pty: any(named: 'pty')),
     ).thenAnswer((_) async => channel.session);
-    final transport =
-        MonkeyMuxAcpBridgeService(
-          installer: _FakeInstaller(
-            const MonkeyMuxInstallation(
-              executablePath: '/helper',
-              platform: 'linux-amd64',
-              version: 'test',
-            ),
-          ),
-        ).connect(
-          sessionProvider: () async => _sshSession(client),
-          bridgeId: _bridgeId,
-          providerId: 'copilot',
-        );
+    final transport = _bridgeService().connect(
+      sessionProvider: () async => _sshSession(client),
+      bridgeId: _bridgeId,
+      providerId: 'copilot',
+    );
     addTearDown(transport.close);
     await _waitUntil(() => transport.isConnected);
     final input = utf8.encode(
@@ -2235,22 +2167,13 @@ void main() {
       commands.add(invocation.positionalArguments.single as String);
       return channel.session;
     });
-    final transport =
-        MonkeyMuxAcpBridgeService(
-          installer: _FakeInstaller(
-            const MonkeyMuxInstallation(
-              executablePath: '/helper',
-              platform: 'linux-amd64',
-              version: 'test',
-            ),
-          ),
-        ).connect(
-          sessionProvider: () async => _sshSession(client),
-          bridgeId: _bridgeId,
-          providerId: 'copilot',
-          reconnectBackoff: const [Duration(milliseconds: 20)],
-          handshakeTimeout: const Duration(milliseconds: 20),
-        );
+    final transport = _bridgeService().connect(
+      sessionProvider: () async => _sshSession(client),
+      bridgeId: _bridgeId,
+      providerId: 'copilot',
+      reconnectBackoff: const [Duration(milliseconds: 20)],
+      handshakeTimeout: const Duration(milliseconds: 20),
+    );
     await _waitUntil(() => commands.isNotEmpty);
 
     await transport.close();
@@ -2270,15 +2193,7 @@ void main() {
       scheduleMicrotask(channel.remoteClose);
       return channel.session;
     });
-    final service = MonkeyMuxAcpBridgeService(
-      installer: _FakeInstaller(
-        const MonkeyMuxInstallation(
-          executablePath: '/helper',
-          platform: 'linux-amd64',
-          version: 'test',
-        ),
-      ),
-    );
+    final service = _bridgeService();
 
     await expectLater(
       service.list(_sshSession(client)),

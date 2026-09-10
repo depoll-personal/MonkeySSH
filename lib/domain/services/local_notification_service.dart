@@ -670,55 +670,17 @@ class LocalNotificationService {
     required String title,
     required String body,
     required TmuxAlertNotificationPayload payload,
-  }) async {
-    final didInitialize = await initialize();
-    if (!didInitialize) return;
-    final hasPermission = await _requestNotificationPermission();
-    if (!hasPermission) return;
-
-    const androidDetails = AndroidNotificationDetails(
-      tmuxAlertNotificationChannelId,
-      'tmux alerts',
-      channelDescription: 'Window activity alerts for tmux sessions.',
-      importance: Importance.high,
-      priority: Priority.high,
-      icon: _androidNotificationIcon,
-      onlyAlertOnce: true,
-    );
-    const darwinDetails = DarwinNotificationDetails(
-      presentAlert: true,
-      presentBadge: false,
-      presentSound: false,
-    );
-
-    try {
-      await _plugin.show(
-        id: notificationId,
-        title: title,
-        body: body,
-        notificationDetails: const NotificationDetails(
-          android: androidDetails,
-          iOS: darwinDetails,
-          macOS: darwinDetails,
-        ),
-        payload: payload.encode(),
-      );
-    } on MissingPluginException {
-      // Widget and unit tests don't register platform notification plugins.
-    }
-  }
+  }) => _showNotification(
+    notificationId: notificationId,
+    title: title,
+    body: body,
+    payload: payload.encode(),
+    details: _alertDetails(_tmuxAlertNotificationChannel),
+  );
 
   /// Clears a previously shown tmux alert notification.
-  Future<void> clearTmuxAlert(int notificationId) async {
-    final didInitialize = await initialize();
-    if (!didInitialize) return;
-
-    try {
-      await _plugin.cancel(id: notificationId);
-    } on MissingPluginException {
-      // Widget and unit tests don't register platform notification plugins.
-    }
-  }
+  Future<void> clearTmuxAlert(int notificationId) =>
+      _clearNotification(notificationId);
 
   /// Shows a terminal desktop notification emitted by the remote shell.
   ///
@@ -731,38 +693,25 @@ class LocalNotificationService {
     TerminalNotificationUrgency urgency = TerminalNotificationUrgency.normal,
     TerminalNotificationSound sound = TerminalNotificationSound.silent,
     Duration? timeout,
-  }) async {
-    final didInitialize = await initialize();
-    if (!didInitialize) return false;
-    final hasPermission = await _requestNotificationPermission(
-      allowSound: sound == TerminalNotificationSound.system,
-    );
-    if (!hasPermission) return false;
-
-    try {
-      await _plugin.show(
-        id: notificationId,
-        title: title,
-        body: body,
-        notificationDetails: buildTerminalNotificationDetails(
-          urgency: urgency,
-          sound: sound,
-          timeout: timeout,
-        ),
-        payload: payload.encode(),
-      );
-      return true;
-    } on MissingPluginException {
-      // Widget and unit tests don't register platform notification plugins.
-      return false;
-    }
-  }
+  }) => _showNotification(
+    notificationId: notificationId,
+    title: title,
+    body: body,
+    payload: payload.encode(),
+    allowSound: sound == TerminalNotificationSound.system,
+    details: buildTerminalNotificationDetails(
+      urgency: urgency,
+      sound: sound,
+      timeout: timeout,
+    ),
+  );
 
   /// Clears a terminal desktop notification by its local identifier.
-  Future<void> clearTerminalNotification(int notificationId) async {
-    final didInitialize = await initialize();
-    if (!didInitialize) return;
+  Future<void> clearTerminalNotification(int notificationId) =>
+      _clearNotification(notificationId);
 
+  Future<void> _clearNotification(int notificationId) async {
+    if (!await initialize()) return;
     try {
       await _plugin.cancel(id: notificationId);
     } on MissingPluginException {
@@ -782,43 +731,59 @@ class LocalNotificationService {
     required String title,
     required String body,
     required AcpNotificationPayload payload,
-  }) async {
-    final didInitialize = await initialize();
-    if (!didInitialize) return;
-    final hasPermission = await _requestNotificationPermission();
-    if (!hasPermission) return;
+  }) => _showNotification(
+    notificationId: notificationId,
+    title: title,
+    body: body,
+    payload: payload.encode(),
+    details: _alertDetails(_acpNotificationChannel),
+  );
 
-    const androidDetails = AndroidNotificationDetails(
-      acpNotificationChannelId,
-      'Agent notifications',
-      channelDescription:
-          'Agent completion and permission alerts shown only while the app '
-          'is in the background.',
-      importance: Importance.high,
-      priority: Priority.high,
-      icon: _androidNotificationIcon,
-      onlyAlertOnce: true,
-    );
+  NotificationDetails _alertDetails(AndroidNotificationChannel channel) {
     const darwinDetails = DarwinNotificationDetails(
       presentAlert: true,
       presentBadge: false,
       presentSound: false,
     );
+    return NotificationDetails(
+      android: AndroidNotificationDetails(
+        channel.id,
+        channel.name,
+        channelDescription: channel.description,
+        importance: channel.importance,
+        priority: Priority.high,
+        icon: _androidNotificationIcon,
+        onlyAlertOnce: true,
+      ),
+      iOS: darwinDetails,
+      macOS: darwinDetails,
+    );
+  }
 
+  Future<bool> _showNotification({
+    required int notificationId,
+    required String title,
+    required String body,
+    required String payload,
+    required NotificationDetails details,
+    bool allowSound = false,
+  }) async {
+    if (!await initialize()) return false;
+    if (!await _requestNotificationPermission(allowSound: allowSound)) {
+      return false;
+    }
     try {
       await _plugin.show(
         id: notificationId,
         title: title,
         body: body,
-        notificationDetails: const NotificationDetails(
-          android: androidDetails,
-          iOS: darwinDetails,
-          macOS: darwinDetails,
-        ),
-        payload: payload.encode(),
+        notificationDetails: details,
+        payload: payload,
       );
+      return true;
     } on MissingPluginException {
       // Widget and unit tests don't register platform notification plugins.
+      return false;
     }
   }
 

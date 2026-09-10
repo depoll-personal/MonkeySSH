@@ -1,5 +1,7 @@
 // ignore_for_file: public_member_api_docs
 
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -8,93 +10,72 @@ import 'package:monkeyssh/presentation/screens/remote_text_editor_screen.dart';
 
 void main() {
   group('clampRemoteEditorFontSize', () {
-    test('returns minimum when size is below min', () {
-      expect(clampRemoteEditorFontSize(4), 8.0);
-    });
-
-    test('returns maximum when size is above max', () {
-      expect(clampRemoteEditorFontSize(64), 32.0);
-    });
-
-    test('returns value unchanged when within range', () {
-      expect(clampRemoteEditorFontSize(16), 16.0);
-    });
+    for (final (input, expected) in [(4.0, 8.0), (64.0, 32.0), (16.0, 16.0)]) {
+      test('clamps $input to $expected', () {
+        expect(clampRemoteEditorFontSize(input), expected);
+      });
+    }
   });
 
   group('applyRemoteEditorScaleDelta', () {
-    test('increases font size when scale grows', () {
-      final result = applyRemoteEditorScaleDelta(16, 1, 1.5);
-      expect(result, closeTo(24.0, 0.01));
-    });
-
-    test('decreases font size when scale shrinks', () {
-      final result = applyRemoteEditorScaleDelta(16, 2, 1);
-      expect(result, closeTo(8.0, 0.01));
-    });
-
-    test('treats zero previous scale as 1 to avoid division by zero', () {
-      final result = applyRemoteEditorScaleDelta(16, 0, 1);
-      expect(result, closeTo(16.0, 0.01));
-    });
-
-    test('clamps result to supported range', () {
-      expect(applyRemoteEditorScaleDelta(32, 1, 2), 32.0);
-      expect(applyRemoteEditorScaleDelta(8, 2, 1), 8.0);
-    });
+    for (final (fontSize, previousScale, scale, expected) in [
+      (16.0, 1.0, 1.5, closeTo(24.0, 0.01)),
+      (16.0, 2.0, 1.0, closeTo(8.0, 0.01)),
+      (16.0, 0.0, 1.0, closeTo(16.0, 0.01)),
+      (32.0, 1.0, 2.0, 32.0),
+      (8.0, 2.0, 1.0, 8.0),
+    ]) {
+      test('scales $fontSize from $previousScale to $scale', () {
+        expect(
+          applyRemoteEditorScaleDelta(fontSize, previousScale, scale),
+          expected,
+        );
+      });
+    }
   });
 
   group('resolveRemoteEditorVisualScale', () {
-    test('returns 1 when no pinch is active', () {
-      expect(resolveRemoteEditorVisualScale(fontSize: 16), 1.0);
-    });
-
-    test('returns 1 when fontSize is zero', () {
-      expect(
-        resolveRemoteEditorVisualScale(fontSize: 0, pinchFontSize: 20),
-        1.0,
-      );
-    });
-
-    test('returns ratio of pinch to base font size', () {
-      expect(
-        resolveRemoteEditorVisualScale(fontSize: 16, pinchFontSize: 20),
-        closeTo(1.25, 0.001),
-      );
-    });
+    for (final (fontSize, pinchFontSize, expected) in [
+      (16.0, null, 1.0),
+      (0.0, 20.0, 1.0),
+      (16.0, 20.0, closeTo(1.25, 0.001)),
+    ]) {
+      test('resolves visual scale for $fontSize and $pinchFontSize', () {
+        expect(
+          resolveRemoteEditorVisualScale(
+            fontSize: fontSize,
+            pinchFontSize: pinchFontSize,
+          ),
+          expected,
+        );
+      });
+    }
   });
 
   group('resolveRemoteEditorGutterDigitSlots', () {
-    test('returns 4 for small line counts', () {
-      expect(resolveRemoteEditorGutterDigitSlots(1), 4);
-      expect(resolveRemoteEditorGutterDigitSlots(9999), 4);
-    });
-
-    test('grows to fit 5-digit line counts', () {
-      expect(resolveRemoteEditorGutterDigitSlots(10000), 5);
-    });
-
-    test('grows to fit 6-digit line counts', () {
-      expect(resolveRemoteEditorGutterDigitSlots(100000), 6);
-    });
+    for (final (count, expected) in [
+      (1, 4),
+      (9999, 4),
+      (10000, 5),
+      (100000, 6),
+    ]) {
+      test('uses $expected digits for $count lines', () {
+        expect(resolveRemoteEditorGutterDigitSlots(count), expected);
+      });
+    }
   });
 
   group('computeRemoteEditorLineStartOffsets', () {
-    test('single-line text has one offset at 0', () {
-      expect(computeRemoteEditorLineStartOffsets('hello'), [0]);
-    });
-
-    test('empty text has one offset at 0', () {
-      expect(computeRemoteEditorLineStartOffsets(''), [0]);
-    });
-
-    test('multi-line text records start of each line', () {
-      // "abc\ndef\nghi" → lines start at 0, 4, 8
-      expect(computeRemoteEditorLineStartOffsets('abc\ndef\nghi'), [0, 4, 8]);
-    });
-
-    test('trailing newline adds an empty last line', () {
-      expect(computeRemoteEditorLineStartOffsets('a\n'), [0, 2]);
-    });
+    for (final (input, expected) in [
+      ('hello', [0]),
+      ('', [0]),
+      ('abc\ndef\nghi', [0, 4, 8]),
+      ('a\n', [0, 2]),
+    ]) {
+      test('finds line starts for text of length ${input.length}', () {
+        expect(computeRemoteEditorLineStartOffsets(input), expected);
+      });
+    }
   });
 
   group('resolveRemoteEditorCaretPositionFromLineStarts', () {
@@ -110,64 +91,101 @@ void main() {
       );
     });
 
-    final lineStarts = [0, 4, 8]; // "abc\ndef\nghi"
-    const text = 'abc\ndef\nghi';
-
-    test('offset 0 maps to line 1, column 1', () {
-      expect(
-        resolveRemoteEditorCaretPositionFromLineStarts(
-          text: text,
-          selection: const TextSelection.collapsed(offset: 0),
-          lineStartOffsets: lineStarts,
-        ),
-        (line: 1, column: 1),
-      );
-    });
-
-    test('end of first line maps to line 1, column 4', () {
-      expect(
-        resolveRemoteEditorCaretPositionFromLineStarts(
-          text: text,
-          selection: const TextSelection.collapsed(offset: 3),
-          lineStartOffsets: lineStarts,
-        ),
-        (line: 1, column: 4),
-      );
-    });
-
-    test('start of second line maps to line 2, column 1', () {
-      expect(
-        resolveRemoteEditorCaretPositionFromLineStarts(
-          text: text,
-          selection: const TextSelection.collapsed(offset: 4),
-          lineStartOffsets: lineStarts,
-        ),
-        (line: 2, column: 1),
-      );
-    });
-
-    test('invalid selection defaults to line 1, column 1', () {
-      expect(
-        resolveRemoteEditorCaretPositionFromLineStarts(
-          text: text,
-          selection: const TextSelection.collapsed(offset: -1),
-          lineStartOffsets: lineStarts,
-        ),
-        (line: 1, column: 1),
-      );
-    });
-
-    test('offset beyond text length is clamped to end', () {
-      expect(
-        resolveRemoteEditorCaretPositionFromLineStarts(
-          text: text,
-          selection: const TextSelection.collapsed(offset: 999),
-          lineStartOffsets: lineStarts,
-        ),
-        (line: 3, column: 4), // "ghi" = 3 chars; col 4 = after last char
-      );
-    });
+    for (final (offset, expected) in [
+      (0, (line: 1, column: 1)),
+      (3, (line: 1, column: 4)),
+      (4, (line: 2, column: 1)),
+      (-1, (line: 1, column: 1)),
+      (999, (line: 3, column: 4)),
+    ]) {
+      test('resolves and clamps offset $offset', () {
+        expect(
+          resolveRemoteEditorCaretPositionFromLineStarts(
+            text: 'abc\ndef\nghi',
+            selection: TextSelection.collapsed(offset: offset),
+            lineStartOffsets: [0, 4, 8],
+          ),
+          expected,
+        );
+      });
+    }
   });
+
+  testWidgets(
+    'failed save retains dirty text and allows retry without concurrent saves',
+    (tester) async {
+      final controller = TextEditingController(text: 'original');
+      addTearDown(controller.dispose);
+      var pending = Completer<void>();
+      final savedTexts = <String>[];
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => TextButton(
+              onPressed: () => Navigator.of(context).push<bool>(
+                MaterialPageRoute(
+                  builder: (_) => buildRemoteTextEditorScreenForTesting(
+                    fileName: 'notes.txt',
+                    controller: controller,
+                    onSave: (text) {
+                      savedTexts.add(text);
+                      return pending.future;
+                    },
+                  ),
+                ),
+              ),
+              child: const Text('Open'),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'edited');
+      await tester.tap(find.text('Save'));
+      await tester.pump();
+      expect(savedTexts, ['edited']);
+      expect(tester.widget<TextField>(find.byType(TextField)).readOnly, isTrue);
+      expect(
+        tester
+            .widget<TextButton>(find.widgetWithText(TextButton, 'Save'))
+            .onPressed,
+        isNull,
+      );
+      await tester.tap(find.text('Save'));
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.byType(RemoteTextEditorScreen), findsOneWidget);
+      expect(find.text('Discard changes?'), findsNothing);
+      expect(savedTexts, ['edited']);
+      pending.completeError(Exception('permission denied'));
+      await tester.pumpAndSettle();
+      expect(controller.text, 'edited');
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).readOnly,
+        isFalse,
+      );
+      expect(
+        find.text('Could not save changes. Check permissions and try again.'),
+        findsOneWidget,
+      );
+      await tester.tap(find.byTooltip('Close editor'));
+      await tester.pumpAndSettle();
+      expect(find.text('Discard changes?'), findsOneWidget);
+      await tester.tap(find.text('Keep editing'));
+      await tester.pumpAndSettle();
+      pending = Completer<void>();
+      await tester.enterText(find.byType(TextField), 'retried edit');
+      await tester.tap(find.text('Save'));
+      await tester.pump();
+      expect(savedTexts, ['edited', 'retried edit']);
+      expect(find.byType(RemoteTextEditorScreen), findsOneWidget);
+      pending.complete();
+      await tester.pumpAndSettle();
+      expect(find.byType(RemoteTextEditorScreen), findsNothing);
+      expect(controller.text, 'retried edit');
+    },
+  );
 
   group('RemoteTextEditorScreen caret-X cache', () {
     Widget buildEditor({
@@ -175,6 +193,7 @@ void main() {
       ScrollController? horizontalScrollController,
     }) => MaterialApp(
       home: buildRemoteTextEditorScreenForTesting(
+        onSave: (_) async {},
         fileName: 'test.txt',
         controller: controller,
         horizontalScrollController: horizontalScrollController,
@@ -293,6 +312,7 @@ void main() {
           home: StatefulBuilder(
             builder: (context, setState) =>
                 buildRemoteTextEditorScreenForTesting(
+                  onSave: (_) async {},
                   fileName: 'test.txt',
                   controller: controller1,
                 ),
@@ -305,6 +325,7 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: buildRemoteTextEditorScreenForTesting(
+            onSave: (_) async {},
             fileName: 'test.txt',
             controller: controller2,
           ),
@@ -371,6 +392,7 @@ void main() {
     Widget buildEditor({required TextEditingController controller}) =>
         MaterialApp(
           home: buildRemoteTextEditorScreenForTesting(
+            onSave: (_) async {},
             fileName: 'authorized_keys',
             controller: controller,
             initialFontSize: 12,

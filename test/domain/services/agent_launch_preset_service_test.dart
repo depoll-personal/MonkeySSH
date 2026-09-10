@@ -47,7 +47,41 @@ void main() {
     await service.deletePresetForHost(7);
 
     expect(await service.getPresetForHost(7), isNull);
+    expect(
+      await SettingsService(database).getJson(SettingKeys.agentLaunchPresets),
+      isNull,
+    );
   });
+
+  for (final delete in [false, true]) {
+    test(
+      'concurrent preset mutations preserve other hosts (delete=$delete)',
+      () async {
+        final settings = SettingsService(database);
+        final otherService = AgentLaunchPresetService(
+          SettingsService(database),
+        );
+        const legacy = {'tool': 'unknownFutureAgent'};
+        const preset = AgentLaunchPreset(tool: AgentLaunchTool.codex);
+        await settings.setJson(SettingKeys.agentLaunchPresets, {
+          '9': legacy,
+          if (delete) '7': preset.toJson(),
+        });
+        await Future.wait([
+          service.setPresetForHost(42, preset),
+          if (delete)
+            otherService.deletePresetForHost(7)
+          else
+            otherService.setPresetForHost(7, preset),
+        ]);
+        expect(await settings.getJson(SettingKeys.agentLaunchPresets), {
+          '9': legacy,
+          '42': preset.toJson(),
+          if (!delete) '7': preset.toJson(),
+        });
+      },
+    );
+  }
 
   test(
     'ignores a retired Gemini preset without rewriting saved settings',

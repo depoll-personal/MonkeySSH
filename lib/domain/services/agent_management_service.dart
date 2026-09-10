@@ -537,16 +537,24 @@ class AgentManagementService {
   AgentManagementService(
     this._discovery, {
     required Future<bool> Function() canManageAgents,
-  }) : _canManageAgents = canManageAgents;
+    DateTime Function()? now,
+  }) : _canManageAgents = canManageAgents,
+       _now = now ?? DateTime.now;
 
   final Future<bool> Function() _canManageAgents;
+  final DateTime Function() _now;
 
   static const _updateCheckTtl = Duration(minutes: 15);
+  static const _maxRuntimeCacheEntries = 32;
 
   final AgentSessionDiscoveryService _discovery;
   final Map<int, ({DateTime checkedAt, List<AgentRuntimeInfo> runtimes})>
   _runtimeCache = {};
   final Map<int, Future<List<AgentRuntimeInfo>>> _inFlightUpdateChecks = {};
+
+  /// Number of retained connection snapshots.
+  @visibleForTesting
+  int get cachedConnectionCount => _runtimeCache.length;
 
   /// Returns cached update information or probes the active host.
   /// Periodic checks bypass the cache with [forceRefresh], but share in-flight work.
@@ -555,10 +563,9 @@ class AgentManagementService {
     bool forceRefresh = false,
   }) async {
     if (!await _canManageAgents()) return const [];
+    _pruneRuntimeCache();
     final cached = _runtimeCache[session.connectionId];
-    if (!forceRefresh &&
-        cached != null &&
-        DateTime.now().difference(cached.checkedAt) < _updateCheckTtl) {
+    if (!forceRefresh && cached != null) {
       return Future.value(cached.runtimes);
     }
     final existing = _inFlightUpdateChecks[session.connectionId];
@@ -594,12 +601,8 @@ class AgentManagementService {
   Future<List<AgentRuntimeInfo>> _inspectAll(
     SshSession session, {
     SshExecPriority priority = SshExecPriority.normal,
-    bool includeAdapters = true,
   }) async {
-    final definitions = <AgentRuntimeDefinition>[
-      ...agentCliRuntimeDefinitions,
-      if (includeAdapters) ...agentStandaloneAcpRuntimeDefinitions,
-    ];
+    final definitions = agentRuntimeDefinitions;
     final AgentRuntimeActionResult batch;
     try {
       batch = await _run(
@@ -622,11 +625,7 @@ class AgentManagementService {
             message: error.toString(),
           ),
       ];
-      return _assembleRuntimeList(
-        session,
-        failed,
-        includeAdapters: includeAdapters,
-      );
+      return _cacheRuntimes(session, failed);
     }
     final snapshots = parseAgentBatchProbeOutput(batch.output);
     final installedDefinitions = definitions
@@ -650,7 +649,7 @@ class AgentManagementService {
         // Registry metadata is best-effort; installed tools remain visible.
       }
     }
-    final uniqueRuntimes = [
+    final runtimes = [
       for (final definition in definitions)
         _resolveRuntimeInfo(
           definition,
@@ -658,35 +657,27 @@ class AgentManagementService {
           metadata: metadata[definition.id],
         ),
     ];
-    return _assembleRuntimeList(
-      session,
-      uniqueRuntimes,
-      includeAdapters: includeAdapters,
+    return _cacheRuntimes(session, runtimes);
+  }
+
+  void _pruneRuntimeCache() {
+    final now = _now();
+    _runtimeCache.removeWhere(
+      (_, entry) => now.difference(entry.checkedAt) >= _updateCheckTtl,
     );
   }
 
-  List<AgentRuntimeInfo> _assembleRuntimeList(
+  List<AgentRuntimeInfo> _cacheRuntimes(
     SshSession session,
-    List<AgentRuntimeInfo> uniqueRuntimes, {
-    required bool includeAdapters,
-  }) {
-    final byId = {
-      for (final runtime in uniqueRuntimes) runtime.definition.id: runtime,
-    };
-    final runtimes = <AgentRuntimeInfo>[];
-    for (final definition in agentCliRuntimeDefinitions) {
-      final runtime = byId[definition.id];
-      if (runtime == null) continue;
-      runtimes.add(runtime);
-    }
-    if (includeAdapters) {
-      for (final definition in agentStandaloneAcpRuntimeDefinitions) {
-        final runtime = byId[definition.id];
-        if (runtime != null) runtimes.add(runtime);
-      }
+    List<AgentRuntimeInfo> runtimes,
+  ) {
+    _pruneRuntimeCache();
+    _runtimeCache.remove(session.connectionId);
+    if (_runtimeCache.length >= _maxRuntimeCacheEntries) {
+      _runtimeCache.remove(_runtimeCache.keys.first);
     }
     _runtimeCache[session.connectionId] = (
-      checkedAt: DateTime.now(),
+      checkedAt: _now(),
       runtimes: runtimes,
     );
     return runtimes;
@@ -708,18 +699,15 @@ class AgentManagementService {
     try {
       final probeOutput = await _run(
         session,
-        buildAgentProbeCommand(definition, windows: session.remoteIsWindows),
+        buildAgentBatchProbeCommand([
+          definition,
+        ], windows: session.remoteIsWindows),
         priority: priority,
         timeout: const Duration(seconds: 8),
       );
-      final snapshot = AgentProbeSnapshot(
-        executablePath: _markerValue(probeOutput.output, _pathMarker),
-        versionOutput: _markerValue(probeOutput.output, _versionMarker),
-        needsRepair: const LineSplitter()
-            .convert(probeOutput.output)
-            .map((line) => line.trim())
-            .contains(_repairMarker),
-      );
+      final snapshot =
+          parseAgentBatchProbeOutput(probeOutput.output)[definition.id] ??
+          const AgentProbeSnapshot();
       AgentMetadataSnapshot? metadata;
       if (snapshot.executablePath != null) {
         try {
@@ -1319,22 +1307,6 @@ String buildAgentMetadataProbeCommand(
   return command.toString();
 }
 
-/// Builds a non-disruptive executable and version probe for the remote OS.
-String buildAgentProbeCommand(
-  AgentRuntimeDefinition definition, {
-  required bool windows,
-}) {
-  if (windows) {
-    return buildWindowsPowerShellCommand(
-      powerShellUtf8OutputScript(
-        '$powerShellProfilePathPreamble$_windowsVersionRunner${_buildWindowsProbeBody(definition)}',
-      ),
-    );
-  }
-  return '${_profilePrefix}sh -c '
-      '${_shellQuote('$_posixVersionRunner${_buildPosixProbeBody(definition)}')}';
-}
-
 String _buildWindowsProbeBody(AgentRuntimeDefinition definition) {
   final quotedNames = definition.executableNames
       .map(powerShellSingleQuote)
@@ -1389,15 +1361,6 @@ String _buildPosixProbeBody(AgentRuntimeDefinition definition) {
       'printf ${_shellQuote('$_pathMarker%s\\n')} "\$resolved"; '
       '$versionProbe'
       'break; done';
-}
-
-String? _markerValue(String output, String marker) {
-  final index = output.indexOf(marker);
-  if (index < 0) return null;
-  final start = index + marker.length;
-  final end = output.indexOf('\n', start);
-  final value = output.substring(start, end < 0 ? output.length : end).trim();
-  return value.isEmpty ? null : value;
 }
 
 String _executableBasename(String path) =>

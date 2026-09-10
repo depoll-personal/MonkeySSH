@@ -24,13 +24,19 @@ class PlaintextCache {
   /// Removes a stored ciphertext, if present.
   void remove(String? ciphertext) => _entries.remove(ciphertext);
 
-  /// Decrypts a value, retaining it only while the operation is still current.
-  Future<String?> decrypt(String ciphertext, int generation) async {
+  /// Looks up plaintext and marks a cache hit as most recently used.
+  String? lookup(String ciphertext) {
     final hit = _entries.remove(ciphertext);
     if (hit != null) {
       _entries[ciphertext] = hit;
-      return hit;
     }
+    return hit;
+  }
+
+  /// Decrypts a value, retaining it only while the operation is still current.
+  Future<String?> decrypt(String ciphertext, int generation) async {
+    final hit = lookup(ciphertext);
+    if (hit != null) return hit;
     final plaintext = await _encryption.decryptNullable(ciphertext);
     remember(ciphertext, plaintext, generation);
     return plaintext;

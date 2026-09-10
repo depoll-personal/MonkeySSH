@@ -1081,6 +1081,9 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 2
 
+      - name: Preserve Apple cache actions from the workflow commit
+        run: git archive HEAD .github/actions/apple-cache-restore .github/actions/apple-cache-save > "$RUNNER_TEMP/apple-cache-actions.tar"
+
       - name: Preserve deployment tooling from the workflow commit
         if: inputs.deploy-ios-to != 'none'
         run: |
@@ -1126,6 +1129,9 @@ jobs:
           ref: ${{ steps.source-sha.outputs.value }}
           fetch-depth: 1
 
+      - name: Restore Apple cache actions from the workflow commit
+        run: tar -xf "$RUNNER_TEMP/apple-cache-actions.tar"
+
       - name: Restore deployment tooling from the workflow commit
         if: inputs.deploy-ios-to != 'none'
         run: tar -xf "$RUNNER_TEMP/deployment-tooling.tar"
@@ -1137,32 +1143,12 @@ jobs:
           name: ${{ inputs.monkeymux-assets-artifact-name }}
           path: assets/monkeymux/
 
-      # Restore only; CI's push-to-main run is the sole writer in this repository.
-      # GitHub scopes caches per ref, so writing here would store a ~440MB copy
-      # per PR ref against a shared 10GB budget and evict the ~2GB Flutter SDK
-      # caches. The restore-keys prefix means a deploy whose Package.resolved
-      # has moved still starts from main's copy and resolves the delta.
-      #
-      # The entry is shared with the macOS job: SwiftPM keys its cache on package
-      # identity, not platform, and the binary artifact bundles carry every
-      # platform slice. Hashing both Package.resolved files means either one
-      # moving invalidates it.
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
-        if: inputs.ios-reuse-ipa-artifact-name == ''
+      - name: Restore SwiftPM cache
+        id: spm-cache
+        uses: ./.github/actions/apple-cache-restore
         with:
-          path: ~/Library/Caches/org.swift.swiftpm
-          key: spm-${{ runner.os }}-${{ hashFiles('ios/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'macos/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
-          restore-keys: spm-${{ runner.os }}-
-
-      - name: Drop cached SwiftPM manifest evaluations
-        # permission_handler_apple's Package.swift derives its PERMISSION_*
-        # macros from the app's Info.plist, which SwiftPM does not track as a
-        # manifest input, so a restored manifest cache can keep stale
-        # permissions compiled in after a usage-description change. Delete it
-        # after restore rather than excluding it from the cache: actions/cache
-        # exclusion patterns silently did not match here, and re-evaluating a
-        # handful of manifests costs seconds.
-        run: rm -rf ~/Library/Caches/org.swift.swiftpm/manifests
+          phase: swiftpm
+          restore-swiftpm: ${{ inputs.ios-reuse-ipa-artifact-name == '' }}
 
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         if: inputs.ios-reuse-ipa-artifact-name == ''
@@ -1227,40 +1213,16 @@ jobs:
             bundle exec fastlane setup_signing app_identifier:xyz.depollsoft.monkeyssh
           fi
 
-      - name: Identify iOS compilation cache
-        id: ios-compilation-cache-key
+      - name: Restore Apple build caches
+        id: apple-cache
         if: inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
-        run: |
-          xcodebuild -version
-          xcode_key=$(xcodebuild -version | shasum -a 256 | cut -d ' ' -f1)
-          echo "xcode=$xcode_key" >> "$GITHUB_OUTPUT"
-          mkdir -p "$HOME/Library/Caches/monkeyssh-xcode"
-
-      # This key is shared with CI's iOS job. Leave Flutter's generated local
-      # package copies out, and let normal package resolution validate state.
-      - name: Restore resolved Swift packages
-        id: spm-workspace-cache
-        if: steps.ios-compilation-cache-key.outcome == 'success'
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        uses: ./.github/actions/apple-cache-restore
         with:
-          path: |
-            build/ios/SourcePackages/checkouts
-            build/ios/SourcePackages/repositories
-            build/ios/SourcePackages/artifacts
-            build/ios/SourcePackages/workspace-state.json
-          key: spm-workspace-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.ios-compilation-cache-key.outputs.xcode }}-${{ env.FLUTTER_VERSION }}-ios-${{ hashFiles('pubspec.lock', 'ios/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
-
-      # Store only compiler content-addressed results, not DerivedData or app
-      # bundles. Xcode validates compilation inputs, including changed source
-      # and flags. Once main has populated a key, PRs restore it without saving
-      # another copy. A dependency/toolchain change can prime its own PR entry.
-      - name: Restore iOS compilation cache
-        id: ios-compilation-cache
-        if: steps.ios-compilation-cache-key.outcome == 'success'
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
-        with:
-          path: ~/Library/Caches/monkeyssh-xcode
-          key: ios-compile-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.ios-compilation-cache-key.outputs.xcode }}-${{ env.FLUTTER_VERSION }}-${{ inputs.flavor }}-${{ hashFiles('pubspec.lock', 'ios/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          phase: build
+          platform: ios
+          configuration: ${{ inputs.flavor }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          dependency-fingerprint: ${{ hashFiles('pubspec.lock', 'ios/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
 
       - name: Build or configure iOS
         id: ios-build
@@ -1295,45 +1257,21 @@ jobs:
             --dart-define=FLUTTY_FIREBASE_ENABLED="$FLUTTY_FIREBASE_ENABLED" \
             2>&1 | tee "$RUNNER_TEMP/ios-build.log"
 
-      - name: Measure iOS compilation cache
-        id: ios-compilation-cache-size
-        if: steps.ios-compilation-cache-key.outcome == 'success'
-        run: |
-          cache_kib=$(du -sk "$HOME/Library/Caches/monkeyssh-xcode" | cut -f1)
-          echo "Xcode compilation cache: ${cache_kib} KiB" >> "$GITHUB_STEP_SUMMARY"
-          # Avoid evicting the shared Flutter SDK caches with oversized entries.
-          if [ "$cache_kib" -gt 0 ] && [ "$cache_kib" -le 1048576 ]; then
-            echo "save=true" >> "$GITHUB_OUTPUT"
-          fi
-          workspace_kib=0
-          if [ -d build/ios/SourcePackages ]; then
-            workspace_kib=$(du -sk build/ios/SourcePackages | cut -f1)
-          fi
-          echo "Resolved Swift packages: ${workspace_kib} KiB" >> "$GITHUB_STEP_SUMMARY"
-          if [ "$workspace_kib" -gt 0 ] && [ "$workspace_kib" -le 2097152 ]; then
-            echo "workspace=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Save iOS compilation cache
-        if: steps.ios-compilation-cache-size.outputs.save == 'true' && steps.ios-compilation-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+      - name: Save Apple build caches
+        if: steps.apple-cache.outcome == 'success'
+        uses: ./.github/actions/apple-cache-save
         with:
-          path: ~/Library/Caches/monkeyssh-xcode
-          key: ${{ steps.ios-compilation-cache.outputs.cache-primary-key }}
-
-      - name: Save resolved Swift packages
-        if: steps.ios-compilation-cache-size.outputs.workspace == 'true' && steps.spm-workspace-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
-        with:
-          path: |
-            build/ios/SourcePackages/checkouts
-            build/ios/SourcePackages/repositories
-            build/ios/SourcePackages/artifacts
-            build/ios/SourcePackages/workspace-state.json
-          key: ${{ steps.spm-workspace-cache.outputs.cache-primary-key }}
+          phase: build
+          platform: ios
+          compilation-limit-kib: 1048576
+          workspace-limit-kib: 2097152
+          compilation-key: ${{ steps.apple-cache.outputs.compilation-key }}
+          compilation-hit: ${{ steps.apple-cache.outputs.compilation-hit }}
+          workspace-key: ${{ steps.apple-cache.outputs.workspace-key }}
+          workspace-hit: ${{ steps.apple-cache.outputs.workspace-hit }}
 
       - name: Upload iOS build diagnostics
-        if: always() && steps.ios-compilation-cache-key.outcome == 'success' && steps.ios-build.outcome != 'skipped'
+        if: always() && steps.apple-cache.outcome == 'success' && steps.ios-build.outcome != 'skipped'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ios-build-log-${{ inputs.flavor }}-${{ inputs.monkeymux-assets-artifact-name }}
@@ -1805,7 +1743,8 @@ jobs:
               issue_number: issueNumber,
               per_page: 100,
             });
-            const existing = comments.find((comment) => comment.body?.includes(statusMarker));
+            const existing = comments.find((comment) => comment.user?.login === 'github-actions[bot]' &&
+              comment.user?.type === 'Bot' && comment.body?.includes(statusMarker));
             if (!existing || !existing.body) {
               core.info(`No preview deploy status comment found for PR #${issueNumber}.`);
               return;
@@ -1868,7 +1807,8 @@ jobs:
               issue_number: issueNumber,
               per_page: 100,
             });
-            const existing = comments.find((comment) => comment.body?.includes(statusMarker));
+            const existing = comments.find((comment) => comment.user?.login === 'github-actions[bot]' &&
+              comment.user?.type === 'Bot' && comment.body?.includes(statusMarker));
             if (!existing || !existing.body) {
               core.info(`No preview deploy status comment found for PR #${issueNumber}.`);
               return;

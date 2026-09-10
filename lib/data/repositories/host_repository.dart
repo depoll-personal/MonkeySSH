@@ -305,6 +305,11 @@ class HostRepository {
     String storedPassword,
   ) async {
     final generation = _decryptCache.generation;
+    final cached = _decryptCache.lookup(storedPassword);
+    if (cached != null) {
+      _undecryptablePasswordHostIds.remove(hostId);
+      return cached;
+    }
     if (_secretEncryptionService.isValidEncryptedEnvelope(storedPassword)) {
       try {
         final decryptedPassword = await _decryptCache.decrypt(

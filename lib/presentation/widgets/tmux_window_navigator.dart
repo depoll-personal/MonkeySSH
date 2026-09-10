@@ -45,6 +45,144 @@ const _tmuxNavigatorMaxHeightCap = 440.0;
 const _tmuxToolPickerMaxHeightFactor = 0.36;
 const _tmuxToolPickerMaxHeightCap = 320.0;
 
+/// Serializes window queries and owns snapshot invalidation and retry lifetime.
+class TmuxWindowLoader {
+  /// Creates a loader whose callbacks read the view's current session and state.
+  TmuxWindowLoader({
+    required Future<List<TmuxWindow>> Function() fetch,
+    required List<TmuxWindow>? Function() currentWindows,
+    required void Function(
+      List<TmuxWindow>? windows,
+      AsyncError? error, {
+      required bool shouldRecover,
+    })
+    onChanged,
+    required int Function() connectionId,
+    bool Function()? acceptEmpty,
+  }) : _fetch = fetch,
+       _currentWindows = currentWindows,
+       _onChanged = onChanged,
+       _connectionId = connectionId,
+       _acceptEmpty = acceptEmpty;
+
+  final Future<List<TmuxWindow>> Function() _fetch;
+  final List<TmuxWindow>? Function() _currentWindows;
+  final void Function(
+    List<TmuxWindow>?,
+    AsyncError?, {
+    required bool shouldRecover,
+  })
+  _onChanged;
+  final int Function() _connectionId;
+  final bool Function()? _acceptEmpty;
+  bool _disposed = false;
+  bool _loading = false;
+  bool _pending = false;
+  int _generation = 0;
+  int _retryAttempts = 0;
+  int _emptyReloads = 0;
+  Timer? _retryTimer;
+
+  void _resetRecovery() {
+    _retryTimer?.cancel();
+    _retryTimer = null;
+    _retryAttempts = 0;
+    _emptyReloads = 0;
+  }
+
+  /// Invalidates in-flight results when a snapshot or session changes.
+  void invalidate() {
+    _generation++;
+    _resetRecovery();
+  }
+
+  /// Cancels retries and prevents queued or future queries from starting.
+  void dispose() {
+    _disposed = true;
+    _pending = false;
+    invalidate();
+  }
+
+  /// Reloads windows, coalescing concurrent requests into one follow-up query.
+  Future<void> load() async {
+    if (_disposed) return;
+    if (_loading) {
+      _pending = true;
+      return;
+    }
+    _loading = true;
+    final generation = ++_generation;
+    try {
+      List<TmuxWindow>? windows;
+      AsyncError? error;
+      try {
+        windows = await _fetch();
+      } on Object catch (caught, stackTrace) {
+        error = AsyncError(caught, stackTrace);
+      }
+      if (_disposed || generation != _generation) return;
+      final isEmpty = windows?.isEmpty ?? false;
+      if (error == null) {
+        if (isEmpty) {
+          _emptyReloads++;
+        } else {
+          _resetRecovery();
+        }
+      }
+      DiagnosticsLogService.instance.info(
+        'tmux.windows',
+        error == null ? 'reload_result' : 'reload_failed',
+        fields: {
+          'connectionId': _connectionId(),
+          'generation': generation,
+          'windowCount': windows?.length ?? 0,
+          'consecutiveEmptyReloads': _emptyReloads,
+          if (error != null) 'errorType': error.error.runtimeType,
+        },
+      );
+      final acceptEmpty = isEmpty && (_acceptEmpty?.call() ?? false);
+      if (isEmpty && !acceptEmpty) {
+        final currentWindows = _currentWindows();
+        windows = resolveTmuxReloadedWindows(
+          shouldPreserveTmuxWindowSnapshotOnEmptyReload(
+                currentWindows,
+                consecutiveEmptyReloads: _emptyReloads,
+              )
+              ? currentWindows
+              : null,
+          windows!,
+        );
+      }
+      final shouldRecover =
+          !(_currentWindows()?.isNotEmpty ?? false) && _retryAttempts >= 1;
+      _onChanged(windows, error, shouldRecover: shouldRecover);
+      if (_disposed || generation != _generation || acceptEmpty) return;
+      if ((isEmpty || error != null) && !(_retryTimer?.isActive ?? false)) {
+        final delay = resolveTmuxWindowReloadRetryDelay(_retryAttempts++);
+        DiagnosticsLogService.instance.warning(
+          'tmux.windows',
+          'retry_scheduled',
+          fields: {
+            'connectionId': _connectionId(),
+            'attempt': _retryAttempts,
+            'delayMs': delay.inMilliseconds,
+          },
+        );
+        _retryTimer = Timer(delay, () {
+          _retryTimer = null;
+          unawaited(load());
+        });
+      }
+    } finally {
+      _loading = false;
+      if (_pending && !_disposed) {
+        _pending = false;
+        unawaited(load());
+      }
+    }
+  }
+}
+
 /// Confirms closing a tmux/MonkeyMux terminal window when enabled.
 ///
 /// A confirmed "Don't ask me again" choice disables future prompts; cancelling
@@ -767,15 +905,20 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
   StreamSubscription<TmuxWindowChangeEvent>? _windowChangeSubscription;
   bool _isLoadingWindows = true;
   String? _error;
-  bool _loadingWindows = false;
-  bool _pendingWindowReload = false;
   bool _showSessions = false;
   bool _hasInitializedSessionProviders = false;
-  int _windowReloadGeneration = 0;
   int _windowEventGeneration = 0;
-  Timer? _windowRetryTimer;
-  int _windowRetryAttempts = 0;
-  int _consecutiveEmptyWindowReloads = 0;
+
+  late final _windowLoader = TmuxWindowLoader(
+    fetch: () => _mux.listWindows(
+      widget.session,
+      widget.tmuxSessionName,
+      extraFlags: widget.tmuxExtraFlags,
+    ),
+    currentWindows: () => _windows,
+    connectionId: () => widget.session.connectionId,
+    onChanged: _applyWindowReload,
+  );
 
   RemoteMultiplexerService get _mux => widget.remoteMultiplexerService;
 
@@ -894,14 +1037,14 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
     super.initState();
     unawaited(_loadPreferredLaunchTool());
     _subscribeToWindowChanges();
-    _loadWindows();
+    _windowLoader.load();
   }
 
   @override
   void didUpdateWidget(covariant _TmuxNavigatorSheet oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.session.hostId != widget.session.hostId) {
-      _resetWindowReloadRecovery();
+      _windowLoader.invalidate();
       _showSessions = false;
       _hasInitializedSessionProviders = false;
       unawaited(_loadPreferredLaunchTool());
@@ -910,7 +1053,7 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
 
   @override
   void dispose() {
-    _resetWindowReloadRecovery();
+    _windowLoader.dispose();
     unawaited(_windowChangeSubscription?.cancel());
     super.dispose();
   }
@@ -946,121 +1089,32 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
     setState(() => _preferredLaunchTool = preferredLaunchTool);
   }
 
-  Future<void> _loadWindows() async {
-    if (_loadingWindows) {
-      _pendingWindowReload = true;
-      DiagnosticsLogService.instance.debug(
-        'tmux.navigator',
-        'reload_queued',
-        fields: {'connectionId': widget.session.connectionId},
-      );
-      return;
+  void _applyWindowReload(
+    List<TmuxWindow>? windows,
+    AsyncError? error, {
+    required bool shouldRecover,
+  }) {
+    if (error != null &&
+        error.error is! Exception &&
+        !isExpectedSshOperationError(error.error)) {
+      Error.throwWithStackTrace(error.error, error.stackTrace);
     }
-    _loadingWindows = true;
-    final reloadGeneration = ++_windowReloadGeneration;
-    DiagnosticsLogService.instance.debug(
-      'tmux.navigator',
-      'reload_start',
-      fields: {
-        'connectionId': widget.session.connectionId,
-        'generation': reloadGeneration,
-      },
-    );
-    try {
-      final reloadedWindows = await _mux.listWindows(
-        widget.session,
-        widget.tmuxSessionName,
-        extraFlags: widget.tmuxExtraFlags,
-      );
-      if (!mounted) return;
-      if (reloadGeneration < _windowReloadGeneration) return;
-      final isEmptyReload = reloadedWindows.isEmpty;
-      if (isEmptyReload) {
-        _consecutiveEmptyWindowReloads += 1;
-      } else {
-        _resetWindowReloadRecovery();
-      }
-      DiagnosticsLogService.instance.info(
-        'tmux.navigator',
-        'reload_result',
-        fields: {
-          'connectionId': widget.session.connectionId,
-          'generation': reloadGeneration,
-          'windowCount': reloadedWindows.length,
-          'consecutiveEmptyReloads': _consecutiveEmptyWindowReloads,
-        },
-      );
-      final windows = resolveTmuxReloadedWindows(
-        shouldPreserveTmuxWindowSnapshotOnEmptyReload(
-              _windows,
-              consecutiveEmptyReloads: _consecutiveEmptyWindowReloads,
-            )
-            ? _windows
-            : null,
-        reloadedWindows,
-      );
-      if (windows == null) {
-        DiagnosticsLogService.instance.warning(
-          'tmux.navigator',
-          'reload_preserved_previous',
-          fields: {
-            'connectionId': widget.session.connectionId,
-            'generation': reloadGeneration,
-          },
-        );
-        final shouldShowRecoveryMessage =
-            _shouldStopShowingInitialWindowSpinner;
-        _scheduleWindowRetry();
-        setState(() {
-          _windows = null;
-          _error = shouldShowRecoveryMessage
-              ? '$_muxLabel did not return any windows yet. Retrying...'
-              : null;
-          _isLoadingWindows = !shouldShowRecoveryMessage;
-        });
-        return;
-      }
-      if (isEmptyReload) {
-        _scheduleWindowRetry();
-      } else {
-        _resetWindowReloadRecovery();
-      }
-      setState(() {
-        _windows = windows;
-        _error = null;
-        _isLoadingWindows = false;
-      });
-    } on Object catch (error) {
-      if (error is! Exception && !isExpectedSshOperationError(error)) {
-        rethrow;
-      }
-      DiagnosticsLogService.instance.warning(
-        'tmux.navigator',
-        'reload_failed',
-        fields: {
-          'connectionId': widget.session.connectionId,
-          'generation': reloadGeneration,
-          'errorType': error.runtimeType,
-        },
-      );
-      if (!mounted) return;
-      final shouldShowRecoveryMessage = _shouldStopShowingInitialWindowSpinner;
-      _scheduleWindowRetry();
-      setState(() {
+    setState(() {
+      if (error != null) {
         _error = _windows?.isEmpty ?? true
-            ? shouldShowRecoveryMessage
+            ? shouldRecover
                   ? 'Could not refresh $_muxLabel windows yet. Retrying...'
-                  : error.toString()
+                  : error.error.toString()
             : null;
         _isLoadingWindows = false;
-      });
-    } finally {
-      _loadingWindows = false;
-      if (_pendingWindowReload) {
-        _pendingWindowReload = false;
-        unawaited(_loadWindows());
+      } else {
+        _windows = windows;
+        _error = windows == null && shouldRecover
+            ? '$_muxLabel did not return any windows yet. Retrying...'
+            : null;
+        _isLoadingWindows = windows == null && !shouldRecover;
       }
-    }
+    });
   }
 
   void _handleWindowChangeEvent(TmuxWindowChangeEvent event, int generation) {
@@ -1075,12 +1129,11 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
           'generation': generation,
         },
       );
-      _loadWindows();
+      _windowLoader.load();
       return;
     }
     if (event is TmuxWindowListEvent) {
-      _windowReloadGeneration += 1;
-      _resetWindowReloadRecovery();
+      _windowLoader.invalidate();
       final currentWindows = _windows;
       setState(() {
         _windows = currentWindows == null
@@ -1098,11 +1151,10 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
         'snapshot_without_state',
         fields: {'connectionId': widget.session.connectionId},
       );
-      _loadWindows();
+      _windowLoader.load();
       return;
     }
-    _windowReloadGeneration += 1;
-    _resetWindowReloadRecovery();
+    _windowLoader.invalidate();
     setState(() {
       _windows = applyTmuxWindowChangeEvent(currentWindows, event);
       _error = null;
@@ -1117,43 +1169,6 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
       },
     );
   }
-
-  void _cancelWindowRetry() {
-    _windowRetryTimer?.cancel();
-    _windowRetryTimer = null;
-  }
-
-  void _resetWindowReloadRecovery() {
-    _cancelWindowRetry();
-    _windowRetryAttempts = 0;
-    _consecutiveEmptyWindowReloads = 0;
-  }
-
-  void _scheduleWindowRetry() {
-    if (!mounted || (_windowRetryTimer?.isActive ?? false)) {
-      return;
-    }
-    final delay = resolveTmuxWindowReloadRetryDelay(_windowRetryAttempts);
-    _windowRetryAttempts += 1;
-    DiagnosticsLogService.instance.warning(
-      'tmux.navigator',
-      'retry_scheduled',
-      fields: {
-        'connectionId': widget.session.connectionId,
-        'attempt': _windowRetryAttempts,
-        'delayMs': delay.inMilliseconds,
-      },
-    );
-    _windowRetryTimer = Timer(delay, () {
-      _windowRetryTimer = null;
-      if (mounted) {
-        unawaited(_loadWindows());
-      }
-    });
-  }
-
-  bool get _shouldStopShowingInitialWindowSpinner =>
-      !(_windows?.isNotEmpty ?? false) && _windowRetryAttempts >= 1;
 
   void _switchToWindow(TmuxWindow window) {
     unawaited(HapticFeedback.selectionClick());
@@ -1417,7 +1432,7 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
                           ),
                           const SizedBox(height: FluttyTheme.spacingSm),
                           OutlinedButton.icon(
-                            onPressed: () => unawaited(_loadWindows()),
+                            onPressed: () => unawaited(_windowLoader.load()),
                             icon: const Icon(Icons.refresh, size: 18),
                             label: const Text('Retry'),
                           ),

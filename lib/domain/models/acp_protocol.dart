@@ -1136,9 +1136,6 @@ extension type const AcpStopReason(String value) {
   /// The agent reached its token limit.
   static const maxTokens = AcpStopReason('max_tokens');
 
-  /// The agent reached its request limit.
-  static const maxTurnRequests = AcpStopReason('max_turn_requests');
-
   /// The agent refused the prompt.
   static const refusal = AcpStopReason('refusal');
 

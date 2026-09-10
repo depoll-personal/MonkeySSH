@@ -473,7 +473,7 @@ String _markdownFromContent(List<d.AcpContentBlock> content) {
 
 AcpToolCallEntry _mapToolCall(d.AcpToolCallEntry entry) {
   final diffs = <AcpDiff>[];
-  final images = _imagesFromRawToolOutput(entry.rawOutput);
+  final (images, outputText) = _extractRawToolOutput(entry.rawOutput);
   final outputBlocks = <String>[];
   for (final content in entry.content) {
     switch (content) {
@@ -509,29 +509,32 @@ AcpToolCallEntry _mapToolCall(d.AcpToolCallEntry entry) {
   final rawInput = formatAcpToolPayload(
     entry.rawInput,
     simplifyProgress: false,
-  );
-  final contentOutputIsStructured = outputBlocks.any(_toolPayloadIsStructured);
-  final visibleOutputBlocks = outputBlocks
-      .where(
-        (text) => images.isEmpty || !_looksLikeSerializedImagePayload(text),
-      )
-      .map((text) => formatAcpToolPayload(text) ?? text)
-      .toList(growable: true);
+  ).text;
+  var contentOutputIsStructured = false;
+  final visibleOutputBlocks = <String>[];
+  for (final text in outputBlocks) {
+    final formatted = formatAcpToolPayload(text);
+    contentOutputIsStructured |= formatted.isStructured;
+    if (images.isEmpty || !_looksLikeSerializedImagePayload(text)) {
+      visibleOutputBlocks.add(formatted.text ?? text);
+    }
+  }
   if (images.isNotEmpty) {
-    for (final text in _textFromRawToolOutput(entry.rawOutput)) {
-      if (!visibleOutputBlocks.contains(text)) {
-        visibleOutputBlocks.add(text);
-      }
+    for (final text in outputText) {
+      if (!visibleOutputBlocks.contains(text)) visibleOutputBlocks.add(text);
     }
   }
   // ACP content blocks are the adapter's user-facing result stream. Prefer
   // them over rawOutput, which may be a very large provider/Fabric tracing
   // envelope containing duplicated args, call ids, phases, and results.
+  final formattedOutput = visibleOutputBlocks.isEmpty && images.isEmpty
+      ? formatAcpToolPayload(entry.rawOutput)
+      : null;
   final selectedRawOutput = visibleOutputBlocks.isEmpty
-      ? (images.isEmpty ? formatAcpToolPayload(entry.rawOutput) : null)
+      ? formattedOutput?.text
       : _bound(visibleOutputBlocks.join('\n\n'), kAcpMapperMaxToolTextChars);
   final rawOutputIsStructured = visibleOutputBlocks.isEmpty
-      ? _toolPayloadIsStructured(entry.rawOutput)
+      ? formattedOutput?.isStructured ?? false
       : contentOutputIsStructured;
   final textualDiff = diffs.isEmpty && selectedRawOutput != null
       ? _diffFromToolOutput(selectedRawOutput)
@@ -563,24 +566,19 @@ AcpToolCallEntry _mapToolCall(d.AcpToolCallEntry entry) {
   );
 }
 
-List<AcpImageContent> _imagesFromRawToolOutput(Object? rawOutput) {
+(List<AcpImageContent>, List<String>) _extractRawToolOutput(Object? rawOutput) {
   const maxImages = 8;
   const maxNodes = 256;
   final images = <AcpImageContent>[];
+  final output = <String>[];
   var visitedNodes = 0;
 
   void visit(Object? value, int depth) {
-    if (value == null ||
-        depth > 6 ||
-        images.length >= maxImages ||
-        visitedNodes++ >= maxNodes) {
-      return;
-    }
+    if (visitedNodes++ >= maxNodes || value == null || depth > 6) return;
     if (value is Map) {
-      final map = <String, Object?>{
-        for (final entry in value.entries) entry.key.toString(): entry.value,
-      };
+      final map = value;
       if (map['type']?.toString().toLowerCase() == 'image') {
+        if (images.length >= maxImages) return;
         var data = map['data'] is String ? map['data']! as String : '';
         var mimeType = map['mimeType'] is String
             ? map['mimeType']! as String
@@ -604,40 +602,10 @@ List<AcpImageContent> _imagesFromRawToolOutput(Object? rawOutput) {
         }
         return;
       }
-      for (final child in map.values) {
-        visit(child, depth + 1);
-      }
-      return;
-    }
-    if (value is Iterable) {
-      for (final child in value) {
-        visit(child, depth + 1);
-      }
-    }
-  }
-
-  visit(rawOutput, 0);
-  return images;
-}
-
-List<String> _textFromRawToolOutput(Object? rawOutput) {
-  const maxNodes = 256;
-  final output = <String>[];
-  var visitedNodes = 0;
-
-  void visit(Object? value, int depth) {
-    if (value == null || depth > 6 || visitedNodes++ >= maxNodes) {
-      return;
-    }
-    if (value is Map) {
-      final map = <String, Object?>{
-        for (final entry in value.entries) entry.key.toString(): entry.value,
-      };
-      if (map['type']?.toString().toLowerCase() == 'image') {
-        return;
-      }
-      for (final entry in map.entries) {
-        final key = entry.key.toLowerCase();
+      final entries = map.entries.iterator;
+      while (visitedNodes < maxNodes && entries.moveNext()) {
+        final entry = entries.current;
+        final key = entry.key.toString().toLowerCase();
         final child = entry.value;
         if (child is String &&
             const {
@@ -648,25 +616,23 @@ List<String> _textFromRawToolOutput(Object? rawOutput) {
               'stderr',
             }.contains(key) &&
             child.trim().isNotEmpty) {
+          visitedNodes++;
           final bounded = _bound(child, kAcpMapperMaxToolTextChars);
-          if (!output.contains(bounded)) {
-            output.add(bounded);
-          }
+          if (!output.contains(bounded)) output.add(bounded);
         } else {
           visit(child, depth + 1);
         }
       }
-      return;
-    }
-    if (value is Iterable) {
-      for (final child in value) {
-        visit(child, depth + 1);
+    } else if (value is Iterable) {
+      final children = value.iterator;
+      while (visitedNodes < maxNodes && children.moveNext()) {
+        visit(children.current, depth + 1);
       }
     }
   }
 
   visit(rawOutput, 0);
-  return output;
+  return (images, output);
 }
 
 bool _looksLikeSerializedImagePayload(String text) {
@@ -701,51 +667,35 @@ AcpToolStatus _mapToolStatus(d.AcpToolStatus? status) =>
       _ => AcpToolStatus.pending,
     };
 
-bool _toolPayloadIsStructured(Object? payload) {
-  if (payload is Map || payload is Iterable && payload is! String) return true;
-  if (payload is! String || payload.length > 256 * 1024) return false;
-  final trimmed = payload.trim();
-  if (!((trimmed.startsWith('{') && trimmed.endsWith('}')) ||
-      (trimmed.startsWith('[') && trimmed.endsWith(']')))) {
-    return false;
-  }
-  try {
-    final decoded = jsonDecode(trimmed);
-    return decoded is Map || decoded is List;
-  } on FormatException {
-    return false;
-  }
-}
-
-/// Formats opaque ACP tool input/output as a bounded, YAML-like stream.
-///
-/// Providers may send structured maps/lists or JSON encoded inside a string.
-/// The result favors line-by-line scanability while preserving scalar types,
-/// multiline text, insertion order, and strict memory/display bounds.
-String? formatAcpToolPayload(Object? payload, {bool simplifyProgress = true}) {
-  if (payload == null) return null;
-
-  Object? value = payload;
-  if (payload case final String text) {
-    if (text.isEmpty) return null;
-    final trimmed = text.trim();
+/// Formats opaque ACP tool input/output as bounded, YAML-like text and reports
+/// whether the payload is structured, including JSON encoded inside a string.
+({String? text, bool isStructured}) formatAcpToolPayload(
+  Object? payload, {
+  bool simplifyProgress = true,
+}) {
+  var value = payload;
+  if (payload is String) {
+    final trimmed = payload.trim();
     if (trimmed.length <= 256 * 1024 &&
         ((trimmed.startsWith('{') && trimmed.endsWith('}')) ||
             (trimmed.startsWith('[') && trimmed.endsWith(']')))) {
       try {
-        final decoded = jsonDecode(trimmed);
-        if (decoded is Map || decoded is List) value = decoded;
+        value = jsonDecode(trimmed);
       } on FormatException {
         // Plain command output can resemble JSON; preserve it verbatim.
       }
     }
-    if (identical(value, payload)) {
-      return _bound(text, kAcpMapperMaxToolTextChars);
-    }
   }
-
-  if (simplifyProgress) value = _simplifyToolProgressPayload(value);
-  return _YamlLikeToolPayloadWriter(kAcpMapperMaxToolTextChars).format(value);
+  return (
+    text: switch (value) {
+      null || '' => null,
+      String() => _bound(value, kAcpMapperMaxToolTextChars),
+      _ => _YamlLikeToolPayloadWriter(
+        kAcpMapperMaxToolTextChars,
+      ).format(simplifyProgress ? _simplifyToolProgressPayload(value) : value),
+    },
+    isStructured: value is Map || value is Iterable,
+  );
 }
 
 Object? _simplifyToolProgressPayload(Object? payload) {

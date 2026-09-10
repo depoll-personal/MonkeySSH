@@ -441,6 +441,38 @@ void main() {
     }
 
     test(
+      'migration records use canonical JSON lexicographic ordering',
+      () async {
+        for (final id in [2, 10, 1]) {
+          await db
+              .into(db.groups)
+              .insert(
+                GroupsCompanion.insert(
+                  id: Value(id),
+                  name: 'Group $id',
+                  createdAt: Value(DateTime.utc(2026)),
+                ),
+              );
+        }
+        final data = await transferService.createMigrationData();
+        final groups = (data['groups'] as List).cast<Map<String, dynamic>>();
+        expect(groups.map((group) => group['id']), [1, 10, 2]);
+        for (final group in groups) {
+          expect(group.keys, [
+            'color',
+            'createdAt',
+            'icon',
+            'id',
+            'name',
+            'parentId',
+            'sortOrder',
+          ]);
+        }
+        expect(await transferService.createMigrationData(), data);
+      },
+    );
+
+    test(
       'createMigrationData includes skip-jump SSIDs in host exports',
       () async {
         await hostRepository.insert(

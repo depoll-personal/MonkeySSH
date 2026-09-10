@@ -112,6 +112,9 @@ jobs:
       - name: Test store screenshot contracts
         run: .venv/bin/python -m unittest discover -s test/scripts -p 'store_screenshots_test.py'
 
+      - name: Test store demo video validation
+        run: .venv/bin/python -m unittest discover -s test/scripts -p 'validate_store_demo_videos_test.py'
+
       - name: Validate store screenshots
         if: steps.inputs.outputs.platform == 'both' || steps.inputs.outputs.platform == 'ios' || steps.inputs.outputs.platform == 'android'
         run: |

@@ -417,6 +417,7 @@ void main() {
     required AppDatabase db,
     required List overrides,
     Size size = const Size(400, 800),
+    HomeScreenTab initialTab = HomeScreenTab.hosts,
     MediaQueryData mediaQueryData = const MediaQueryData(),
   }) => ProviderScope(
     overrides: [
@@ -434,7 +435,7 @@ void main() {
     ],
     child: MediaQuery(
       data: mediaQueryData.copyWith(size: size),
-      child: const MaterialApp(home: HomeScreen()),
+      child: MaterialApp(home: HomeScreen(initialTab: initialTab)),
     ),
   );
 
@@ -2399,6 +2400,76 @@ void main() {
       expect(data.connectionCount, 3);
     });
   });
+
+  for (final tab in [HomeScreenTab.hosts, HomeScreenTab.connections]) {
+    testWidgets('${tab.name} isolates live preview updates by connection', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final connectionA = _buildActiveConnection(
+        connectionId: 1,
+        hostId: 1,
+        preview: 'A unchanged',
+      );
+      ActiveConnection connectionB(String preview) =>
+          _buildActiveConnection(connectionId: 2, hostId: 2, preview: preview);
+      final sessions = _MutableActiveSessionsNotifier(
+        initialConnections: [connectionA, connectionB('B before')],
+      );
+      await tester.pumpWidget(
+        buildMobileHomeScreen(
+          db: db,
+          initialTab: tab,
+          overrides: [
+            activeSessionsProvider.overrideWith(() => sessions),
+            allHostsProvider.overrideWith(
+              (ref) => Stream.value([
+                _buildHost(id: 1, label: 'Alpha', sortOrder: 0),
+                _buildHost(id: 2, label: 'Beta', sortOrder: 1),
+              ]),
+            ),
+          ],
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      final previewA = find.ancestor(
+        of: find.text('A unchanged'),
+        matching: find.byType(ConnectionPreviewStack),
+      );
+      final beforeA = tester.widget<ConnectionPreviewStack>(previewA);
+      final list = find.ancestor(of: previewA, matching: find.byType(ListView));
+      final beforeList = tab == HomeScreenTab.connections
+          ? tester.widget(list)
+          : null;
+      expect(find.text('B before'), findsOneWidget);
+
+      sessions.setActiveConnections([connectionA, connectionB('B after')]);
+      await tester.pump();
+      expect(tester.widget<ConnectionPreviewStack>(previewA), same(beforeA));
+      expect(find.text('B before'), findsNothing);
+      expect(find.text('B after'), findsOneWidget);
+      if (tab == HomeScreenTab.connections) {
+        expect(tester.widget(list), same(beforeList));
+        sessions.setActiveConnections([connectionB('B after'), connectionA]);
+        await tester.pump();
+        expect(
+          tester.getTopLeft(find.text('B after')).dy,
+          lessThan(tester.getTopLeft(find.text('A unchanged')).dy),
+        );
+        sessions.setActiveConnections([connectionA]);
+        await tester.pump();
+        expect(find.text('A unchanged'), findsOneWidget);
+        expect(find.text('B after'), findsNothing);
+      }
+
+      // Connected rows without SSH sessions leave tmux discovery retries pending.
+      // Unmount before completing their delay so they cannot schedule more work.
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump(const Duration(seconds: 2));
+    });
+  }
 
   group('hostRowDataProvider per-host isolation', () {
     testWidgets(

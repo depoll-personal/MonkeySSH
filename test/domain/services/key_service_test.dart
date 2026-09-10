@@ -1,5 +1,7 @@
 // ignore_for_file: public_member_api_docs
 
+import 'dart:convert';
+
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
@@ -10,6 +12,17 @@ import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/services/key_service.dart';
 import 'package:monkeyssh/domain/services/openssh_key_generator.dart';
+
+class _GenerationOnlyKeyService extends KeyService {
+  _GenerationOnlyKeyService(super.keyRepository);
+
+  @override
+  Future<SshKey?> importKey({
+    required String name,
+    required String privateKeyPem,
+    String? passphrase,
+  }) => throw StateError('Generation must not decrypt PEM through importKey');
+}
 
 void main() {
   late AppDatabase db;
@@ -50,11 +63,11 @@ void main() {
       test(
         'returns null for an encrypted key with the wrong passphrase',
         () async {
-          final encryptedPem = await generateOpenSshPrivateKeyPem(
+          final encryptedPem = (await generateOpenSshKey(
             keyType: SshKeyType.ed25519,
             comment: 'unit@test',
             passphrase: 'correct-passphrase',
-          );
+          )).privateKeyPem;
 
           final result = await keyService.importKey(
             name: 'Encrypted',
@@ -66,11 +79,11 @@ void main() {
       );
 
       test('returns null for an encrypted key with no passphrase', () async {
-        final encryptedPem = await generateOpenSshPrivateKeyPem(
+        final encryptedPem = (await generateOpenSshKey(
           keyType: SshKeyType.ed25519,
           comment: 'unit@test',
           passphrase: 'correct-passphrase',
-        );
+        )).privateKeyPem;
 
         final result = await keyService.importKey(
           name: 'Encrypted',
@@ -111,23 +124,36 @@ void main() {
         },
       );
 
-      test('encrypts the stored key when a passphrase is provided', () async {
-        const passphrase = 'unit-test-passphrase';
-        final key = await keyService.generateKey(
-          name: 'Protected',
-          keyType: SshKeyType.ed25519,
-          passphrase: passphrase,
-        );
+      test(
+        'stores encrypted keys without importing the generated PEM',
+        () async {
+          keyService = _GenerationOnlyKeyService(keyRepository);
+          const passphrase = 'unit-test-passphrase';
+          final key = await keyService.generateKey(
+            name: 'Protected',
+            keyType: SshKeyType.ed25519,
+            passphrase: passphrase,
+          );
 
-        expect(key, isNotNull);
-        // The stored private key really is encrypted with the passphrase.
-        expect(
-          () => SSHKeyPair.fromPem(key!.privateKey),
-          throwsA(isA<SSHError>()),
-        );
-        expect(SSHKeyPair.fromPem(key!.privateKey, passphrase), isNotEmpty);
-        expect(key.passphrase, passphrase);
-      });
+          expect(key, isNotNull);
+          // The stored private key really is encrypted with the passphrase.
+          expect(
+            () => SSHKeyPair.fromPem(key!.privateKey),
+            throwsA(isA<SSHError>()),
+          );
+          expect(SSHKeyPair.fromPem(key!.privateKey, passphrase), isNotEmpty);
+          expect(key.passphrase, passphrase);
+          final publicBlob = SSHKeyPair.fromPem(
+            key.privateKey,
+            passphrase,
+          ).single.toPublicKey().encode();
+          expect(key.publicKey, 'ssh-ed25519 ${base64Encode(publicBlob)}');
+          expect(
+            key.fingerprint,
+            computeOpenSshPublicKeyFingerprint(key.publicKey),
+          );
+        },
+      );
 
       test('treats an empty passphrase as unencrypted', () async {
         final key = await keyService.generateKey(
@@ -138,6 +164,7 @@ void main() {
 
         expect(key, isNotNull);
         expect(SSHKeyPair.fromPem(key!.privateKey), isNotEmpty);
+        expect(key.passphrase, isNull);
       });
     });
 

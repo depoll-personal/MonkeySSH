@@ -653,47 +653,53 @@ List<TmuxWindow> applyTmuxWindowChangeEvent(
     case TmuxWindowReloadEvent():
       return windows;
     case TmuxWindowListEvent(windows: final nextWindows):
+      final byId = <String, TmuxWindow>{};
+      final byIndex = <int, TmuxWindow>{};
+      for (final window in windows) {
+        if (window.id != null) byId.putIfAbsent(window.id!, () => window);
+        byIndex.putIfAbsent(window.index, () => window);
+      }
       return List<TmuxWindow>.unmodifiable(
         nextWindows.map((nextWindow) {
-          final existingWindow = windows
-              .where((window) => _isSameTmuxWindow(window, nextWindow))
-              .firstOrNull;
+          final existingWindow = nextWindow.id == null
+              ? byIndex[nextWindow.index]
+              : byId[nextWindow.id];
           return existingWindow == null
               ? nextWindow
               : _preserveActiveAgentSessionMetadata(existingWindow, nextWindow);
         }),
       );
     case TmuxWindowSnapshotEvent(window: final window):
-      final updated = windows
-          .map(
-            (existing) =>
-                window.isActive && !_isSameTmuxWindow(existing, window)
-                ? existing.copyWith(isActive: false)
-                : existing,
-          )
-          .toList(growable: true);
-      final existingIndex = updated.indexWhere(
-        (existing) => _isSameTmuxWindow(existing, window),
-      );
+      final updated = <TmuxWindow>[];
+      var existingIndex = -1;
+      var needsSort = false;
+      for (final existing in windows) {
+        final matches = window.id == null
+            ? existing.index == window.index
+            : existing.id == window.id;
+        if (matches && existingIndex == -1) existingIndex = updated.length;
+        if (updated.isNotEmpty && updated.last.index > existing.index) {
+          needsSort = true;
+        }
+        updated.add(
+          window.isActive && existing.isActive && !matches
+              ? existing.copyWith(isActive: false)
+              : existing,
+        );
+      }
       if (existingIndex == -1) {
         updated.add(window);
+        needsSort = true;
       } else {
+        needsSort |= updated[existingIndex].index != window.index;
         updated[existingIndex] = _preserveActiveAgentSessionMetadata(
           updated[existingIndex],
           window,
         );
       }
-      updated.sort((a, b) => a.index.compareTo(b.index));
-      return updated;
+      if (needsSort) updated.sort((a, b) => a.index.compareTo(b.index));
+      return List<TmuxWindow>.unmodifiable(updated);
   }
-}
-
-bool _isSameTmuxWindow(TmuxWindow existing, TmuxWindow updated) {
-  final updatedId = updated.id;
-  if (updatedId != null) {
-    return existing.id == updatedId;
-  }
-  return existing.index == updated.index;
 }
 
 TmuxWindow _preserveActiveAgentSessionMetadata(

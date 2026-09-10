@@ -6,9 +6,61 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
 import 'package:xterm/xterm.dart';
 
+import '../helpers/terminal_input_harness.dart';
+
 const _marker = '\u200B\u200B';
 
 void main() {
+  testWidgets('platform close invalidates pending editing without notifying', (
+    tester,
+  ) async {
+    final decision = Completer<bool>();
+    var reviews = 0;
+    final harness = await pumpTerminalInputHarness(
+      tester,
+      onReviewInsertedText: (_) {
+        reviews++;
+        return decision.future;
+      },
+    );
+    addTearDown(() async {
+      await disposeTerminalInputHarness(tester, harness);
+      harness.controller.dispose();
+    });
+    final client =
+        tester.state(find.byType(TerminalTextInputHandler)) as TextInputClient;
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: '${_marker}echo \$(id)',
+        selection: TextSelection.collapsed(offset: 12),
+      ),
+    );
+    await tester.pump();
+    expect(reviews, 1);
+    expect(harness.controller.isKeyboardVisible, isTrue);
+    var notifications = 0;
+    harness.controller.addListener(() => notifications++);
+    tester.testTextInput.log.clear();
+
+    client.connectionClosed();
+    decision.complete(true);
+    await tester.pump();
+    await tester.pump();
+
+    expect(harness.terminalOutput, isEmpty);
+    expect(
+      client.currentTextEditingValue,
+      const TextEditingValue(
+        text: _marker,
+        selection: TextSelection.collapsed(offset: 2),
+      ),
+    );
+    expect(harness.controller.isKeyboardVisible, isFalse);
+    expect(harness.focusNode.hasFocus, isTrue);
+    expect(notifications, 0);
+    expect(tester.testTextInput.log, isEmpty);
+  });
+
   testWidgets('terminal replacement invalidates a pending command approval', (
     tester,
   ) async {

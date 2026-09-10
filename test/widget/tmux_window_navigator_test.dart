@@ -823,6 +823,95 @@ void main() {
       );
     });
 
+    for (final (dispose, fail) in [
+      (true, false),
+      (true, true),
+      (false, true),
+    ]) {
+      testWidgets(
+        dispose
+            ? 'does not run queued reload after disposal, failure=$fail'
+            : 'ignores late failure after a newer window snapshot',
+        (tester) async {
+          final tmuxService = _MockTmuxService();
+          final presetService = _MockAgentLaunchPresetService();
+          final discoveryService = _MockAgentSessionDiscoveryService();
+          final session = SshSession(
+            connectionId: 1,
+            hostId: 1,
+            client: _MockSshClient(),
+            config: const SshConnectionConfig(
+              hostname: 'example.com',
+              port: 22,
+              username: 'demo',
+            ),
+          );
+          final events = StreamController<TmuxWindowChangeEvent>();
+          addTearDown(events.close);
+          final pending = Completer<List<TmuxWindow>>();
+          when(
+            () => presetService.getPresetForHost(session.hostId),
+          ).thenAnswer((_) async => null);
+          when(
+            () => tmuxService.detectInstalledAgentTools(session),
+          ).thenAnswer((_) async => const <AgentLaunchTool>{});
+          when(
+            () => tmuxService.watchWindowChanges(session, 'main'),
+          ).thenAnswer((_) => events.stream);
+          when(
+            () => tmuxService.listWindows(session, 'main'),
+          ).thenAnswer((_) => pending.future);
+          when(
+            () => discoveryService.discoverSessionsStream(
+              session,
+              workingDirectory: any(named: 'workingDirectory'),
+              maxPerTool: any(named: 'maxPerTool'),
+              toolName: any(named: 'toolName'),
+            ),
+          ).thenAnswer(
+            (_) => Stream.value(
+              DiscoveredSessionsResult(sessions: const <ToolSessionInfo>[]),
+            ),
+          );
+          await _pumpNavigatorHost(
+            tester,
+            tmuxService: tmuxService,
+            presetService: presetService,
+            discoveryService: discoveryService,
+            session: session,
+            tmuxSessionName: 'main',
+          );
+          await tester.tap(find.text('Open'));
+          await tester.pump();
+          events.add(
+            dispose
+                ? const TmuxWindowReloadEvent()
+                : TmuxWindowListEvent(windows),
+          );
+          await tester.pump();
+          if (dispose) {
+            await tester.pumpWidget(const SizedBox.shrink());
+          } else {
+            expect(find.text('✨ Editing main.dart'), findsOneWidget);
+          }
+          if (fail) {
+            pending.completeError(Exception('late window failure'));
+          } else {
+            pending.complete(windows);
+          }
+          await tester.pump();
+          await tester.pump(const Duration(seconds: 2));
+          expect(tester.takeException(), isNull);
+          verify(() => tmuxService.listWindows(session, 'main')).called(1);
+          if (!dispose) {
+            expect(find.text('✨ Editing main.dart'), findsOneWidget);
+            expect(find.byType(CircularProgressIndicator), findsNothing);
+            await tester.pumpWidget(const SizedBox.shrink());
+          }
+        },
+      );
+    }
+
     testWidgets('recovers from a transient empty window reload', (
       tester,
     ) async {

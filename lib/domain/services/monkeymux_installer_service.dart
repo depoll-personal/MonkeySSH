@@ -296,14 +296,6 @@ class MonkeyMuxInstallerService {
         'MonkeyMux is not bundled for $platform.',
       );
     }
-    final assetBytes = await _loadAssetBytes(entry);
-    final localDigest = sha256.convert(assetBytes).toString();
-    if (localDigest != entry.sha256) {
-      throw const MonkeyMuxInstallException(
-        'Bundled MonkeyMux checksum does not match the manifest.',
-      );
-    }
-
     final sftp = await session.openStandaloneSftp();
     try {
       final homeDirectory = await _remoteFileService.resolveInitialDirectory(
@@ -324,168 +316,169 @@ class MonkeyMuxInstallerService {
       final executablePath = isWindows
           ? sftpPathToWindowsShellPath(executableSftpPath)
           : executableSftpPath;
-      if (await _remoteShaMatches(
+      final reused = await _remoteShaMatches(
         session,
         executablePath,
         entry.sha256,
         isWindows: isWindows,
         priority: priority,
-      )) {
+      );
+      if (reused) {
         DiagnosticsLogService.instance.info(
           'monkeymux.install',
           'reuse_existing',
           fields: {'connectionId': session.connectionId, 'platform': platform},
         );
-        await _ensureDirectCommandLauncherBestEffort(
-          session,
-          homeDirectory: homeDirectory,
-          executablePath: executablePath,
-          version: manifest.version,
-          platform: platform,
-          isWindows: isWindows,
-          priority: priority,
-        );
-        return MonkeyMuxInstallation(
-          executablePath: executablePath,
-          platform: platform,
-          version: manifest.version,
-        );
-      }
+      } else {
+        final assetBytes = await _loadAssetBytes(entry);
+        final localDigest = sha256.convert(assetBytes).toString();
+        if (localDigest != entry.sha256) {
+          throw const MonkeyMuxInstallException(
+            'Bundled MonkeyMux checksum does not match the manifest.',
+          );
+        }
 
-      final installRequest = MonkeyMuxInstallRequest(
-        platform: platform,
-        version: manifest.version,
-        size: entry.size,
-      );
-      if (confirmInstall == null) {
-        DiagnosticsLogService.instance.warning(
-          'monkeymux.install',
-          'confirmation_required',
-          fields: {'connectionId': session.connectionId, 'platform': platform},
+        final installRequest = MonkeyMuxInstallRequest(
+          platform: platform,
+          version: manifest.version,
+          size: entry.size,
         );
-        throw const MonkeyMuxInstallConfirmationRequiredException();
-      }
-      DiagnosticsLogService.instance.info(
-        'monkeymux.install',
-        'confirmation_requested',
-        fields: {
-          'connectionId': session.connectionId,
-          'platform': platform,
-          'size': entry.size,
-        },
-      );
-      final confirmed = await confirmInstall(installRequest);
-      if (!confirmed) {
+        if (confirmInstall == null) {
+          DiagnosticsLogService.instance.warning(
+            'monkeymux.install',
+            'confirmation_required',
+            fields: {
+              'connectionId': session.connectionId,
+              'platform': platform,
+            },
+          );
+          throw const MonkeyMuxInstallConfirmationRequiredException();
+        }
         DiagnosticsLogService.instance.info(
           'monkeymux.install',
-          'confirmation_declined',
+          'confirmation_requested',
+          fields: {
+            'connectionId': session.connectionId,
+            'platform': platform,
+            'size': entry.size,
+          },
+        );
+        final confirmed = await confirmInstall(installRequest);
+        if (!confirmed) {
+          DiagnosticsLogService.instance.info(
+            'monkeymux.install',
+            'confirmation_declined',
+            fields: {
+              'connectionId': session.connectionId,
+              'platform': platform,
+            },
+          );
+          throw const MonkeyMuxInstallDeclinedException();
+        }
+        DiagnosticsLogService.instance.info(
+          'monkeymux.install',
+          'confirmation_accepted',
           fields: {'connectionId': session.connectionId, 'platform': platform},
         );
-        throw const MonkeyMuxInstallDeclinedException();
-      }
-      DiagnosticsLogService.instance.info(
-        'monkeymux.install',
-        'confirmation_accepted',
-        fields: {'connectionId': session.connectionId, 'platform': platform},
-      );
 
-      DiagnosticsLogService.instance.info(
-        'monkeymux.install',
-        'upload_start',
-        fields: {
-          'connectionId': session.connectionId,
-          'platform': platform,
-          'size': entry.size,
-        },
-      );
-      await _remoteFileService.ensureDirectoryExists(sftp, installDirectory);
-      final temporaryExecutablePath = joinRemotePath(
-        installDirectory,
-        '.monkeymux.${session.connectionId}.'
-        '${DateTime.now().microsecondsSinceEpoch}.tmp',
-      );
-      final temporaryCommandPath = isWindows
-          ? sftpPathToWindowsShellPath(temporaryExecutablePath)
-          : temporaryExecutablePath;
-      var movedTemporaryExecutable = false;
-      try {
-        await _remoteFileService.uploadBytes(
-          sftp: sftp,
-          remotePath: temporaryExecutablePath,
-          bytes: assetBytes,
+        DiagnosticsLogService.instance.info(
+          'monkeymux.install',
+          'upload_start',
+          fields: {
+            'connectionId': session.connectionId,
+            'platform': platform,
+            'size': entry.size,
+          },
         );
-        if (!isWindows) {
-          // Windows has no execute bit; a `.exe` runs by extension.
-          await _runRemoteCommand(
-            session,
-            'chmod 700 ${_shellQuote(temporaryExecutablePath)}',
-            priority: priority,
+        await _remoteFileService.ensureDirectoryExists(sftp, installDirectory);
+        final temporaryExecutablePath = joinRemotePath(
+          installDirectory,
+          '.monkeymux.${session.connectionId}.'
+          '${DateTime.now().microsecondsSinceEpoch}.tmp',
+        );
+        final temporaryCommandPath = isWindows
+            ? sftpPathToWindowsShellPath(temporaryExecutablePath)
+            : temporaryExecutablePath;
+        var movedTemporaryExecutable = false;
+        try {
+          await _remoteFileService.uploadBytes(
+            sftp: sftp,
+            remotePath: temporaryExecutablePath,
+            bytes: assetBytes,
           );
+          if (!isWindows) {
+            // Windows has no execute bit; a `.exe` runs by extension.
+            await _runRemoteCommand(
+              session,
+              'chmod 700 ${_shellQuote(temporaryExecutablePath)}',
+              priority: priority,
+            );
+          }
+          if (!await _remoteShaMatches(
+            session,
+            temporaryCommandPath,
+            entry.sha256,
+            isWindows: isWindows,
+            priority: priority,
+          )) {
+            throw const MonkeyMuxInstallException(
+              'Uploaded MonkeyMux checksum verification failed.',
+            );
+          }
+          if (isWindows) {
+            // SFTP rename cannot overwrite an existing file and there is no
+            // atomic force-move over cmd/PowerShell, so clear any stale target
+            // first, then rename the verified upload into place. Only ignore a
+            // missing target (the common fresh-install case); surface real errors
+            // (for example a permission error or a locked, running helper) so we
+            // abort with the existing binary intact instead of renaming onto a
+            // half-removed target.
+            try {
+              await sftp.remove(executableSftpPath);
+            } on SftpStatusError catch (error) {
+              if (error.code != SftpStatusCode.noSuchFile) {
+                rethrow;
+              }
+            }
+            await sftp.rename(temporaryExecutablePath, executableSftpPath);
+          } else {
+            await _runRemoteCommand(
+              session,
+              'mv -f ${_shellQuote(temporaryExecutablePath)} '
+              '${_shellQuote(executableSftpPath)}',
+              priority: priority,
+            );
+          }
+          movedTemporaryExecutable = true;
+        } on Object catch (error, stackTrace) {
+          if (!movedTemporaryExecutable) {
+            await _removeRemoteTemporaryFile(
+              session,
+              temporaryExecutablePath,
+              sftp: sftp,
+              isWindows: isWindows,
+              priority: priority,
+            );
+          }
+          Error.throwWithStackTrace(error, stackTrace);
         }
         if (!await _remoteShaMatches(
           session,
-          temporaryCommandPath,
+          executablePath,
           entry.sha256,
           isWindows: isWindows,
           priority: priority,
         )) {
           throw const MonkeyMuxInstallException(
-            'Uploaded MonkeyMux checksum verification failed.',
+            'Installed MonkeyMux checksum verification failed.',
           );
         }
-        if (isWindows) {
-          // SFTP rename cannot overwrite an existing file and there is no
-          // atomic force-move over cmd/PowerShell, so clear any stale target
-          // first, then rename the verified upload into place. Only ignore a
-          // missing target (the common fresh-install case); surface real errors
-          // (for example a permission error or a locked, running helper) so we
-          // abort with the existing binary intact instead of renaming onto a
-          // half-removed target.
-          try {
-            await sftp.remove(executableSftpPath);
-          } on SftpStatusError catch (error) {
-            if (error.code != SftpStatusCode.noSuchFile) {
-              rethrow;
-            }
-          }
-          await sftp.rename(temporaryExecutablePath, executableSftpPath);
-        } else {
-          await _runRemoteCommand(
-            session,
-            'mv -f ${_shellQuote(temporaryExecutablePath)} '
-            '${_shellQuote(executableSftpPath)}',
-            priority: priority,
-          );
-        }
-        movedTemporaryExecutable = true;
-      } on Object catch (error, stackTrace) {
-        if (!movedTemporaryExecutable) {
-          await _removeRemoteTemporaryFile(
-            session,
-            temporaryExecutablePath,
-            sftp: sftp,
-            isWindows: isWindows,
-            priority: priority,
-          );
-        }
-        Error.throwWithStackTrace(error, stackTrace);
-      }
-      if (!await _remoteShaMatches(
-        session,
-        executablePath,
-        entry.sha256,
-        isWindows: isWindows,
-        priority: priority,
-      )) {
-        throw const MonkeyMuxInstallException(
-          'Installed MonkeyMux checksum verification failed.',
+        DiagnosticsLogService.instance.info(
+          'monkeymux.install',
+          'upload_complete',
+          fields: {'connectionId': session.connectionId, 'platform': platform},
         );
       }
-      DiagnosticsLogService.instance.info(
-        'monkeymux.install',
-        'upload_complete',
-        fields: {'connectionId': session.connectionId, 'platform': platform},
-      );
       await _ensureDirectCommandLauncherBestEffort(
         session,
         homeDirectory: homeDirectory,
@@ -499,7 +492,7 @@ class MonkeyMuxInstallerService {
         executablePath: executablePath,
         platform: platform,
         version: manifest.version,
-        installedDuringCall: true,
+        installedDuringCall: !reused,
       );
     } finally {
       await sftp.close();

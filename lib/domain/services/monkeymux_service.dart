@@ -267,7 +267,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
   static final _agentMetadataPeriodicTimers = <_MonkeyMuxWatchKey, Timer>{};
   static final _agentMetadataPeriodicSessions =
       <_MonkeyMuxWatchKey, ({SshSession session, String sessionName})>{};
-  static final _runtimeGenerations = <_MonkeyMuxWatchKey, int>{};
+  static final _runtimeTokens = <_MonkeyMuxWatchKey, Object>{};
   static final _appReviewDemoMuxStates =
       <_MonkeyMuxWatchKey, _AppReviewDemoMonkeyMuxState>{};
   static const _agentSessionMetadataFreshTtl = Duration(seconds: 5);
@@ -314,7 +314,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       'server_runtime_reset',
       fields: {'connectionId': connectionId},
     );
-    _runtimeGenerations[key] = (_runtimeGenerations[key] ?? 0) + 1;
+    _runtimeTokens.remove(key);
 
     void clearKeyState() {
       _windowSnapshotCache.remove(key);
@@ -350,12 +350,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     for (final key in demoKeys) {
       _appReviewDemoMuxStates.remove(key)?.dispose();
     }
-    for (final key
-        in _runtimeGenerations.keys
-            .where((key) => key.connectionId == connectionId)
-            .toList(growable: false)) {
-      _runtimeGenerations[key] = (_runtimeGenerations[key] ?? 0) + 1;
-    }
+    _runtimeTokens.removeWhere((key, _) => key.connectionId == connectionId);
     _windowSnapshotCache.removeWhere(
       (key, _) => key.connectionId == connectionId,
     );
@@ -481,11 +476,11 @@ class MonkeyMuxService implements RemoteMultiplexerService {
     String sessionName,
     _MonkeyMuxWatchKey key,
   ) async {
-    final runtimeGeneration = _runtimeGenerations.putIfAbsent(key, () => 0);
+    final runtimeToken = _runtimeTokens.putIfAbsent(key, Object.new);
     final response = await _runControlCommand(session, sessionName, {
       'type': 'list_windows',
     });
-    if ((_runtimeGenerations[key] ?? 0) != runtimeGeneration) {
+    if (!identical(_runtimeTokens[key], runtimeToken)) {
       return response.windows;
     }
     _cacheWindows(key, response.windows);
@@ -1377,27 +1372,16 @@ class MonkeyMuxService implements RemoteMultiplexerService {
       return;
     }
     final currentWindows = _windowSnapshotCache[key];
-    _windowSnapshotCache[key] = List<TmuxWindow>.unmodifiable(
-      currentWindows == null
-          ? windows
-          : applyTmuxWindowChangeEvent(
-              currentWindows,
-              TmuxWindowListEvent(windows),
-            ),
+    _windowSnapshotCache[key] = applyTmuxWindowChangeEvent(
+      currentWindows ?? const [],
+      TmuxWindowListEvent(windows),
     );
   }
 
   static void _cacheWindowSnapshot(_MonkeyMuxWatchKey key, TmuxWindow window) {
-    final currentWindows = _windowSnapshotCache[key];
-    if (currentWindows == null || currentWindows.isEmpty) {
-      _windowSnapshotCache[key] = List<TmuxWindow>.unmodifiable([window]);
-      return;
-    }
-    _windowSnapshotCache[key] = List<TmuxWindow>.unmodifiable(
-      applyTmuxWindowChangeEvent(
-        currentWindows,
-        TmuxWindowSnapshotEvent(window),
-      ),
+    _windowSnapshotCache[key] = applyTmuxWindowChangeEvent(
+      _windowSnapshotCache[key] ?? const [],
+      TmuxWindowSnapshotEvent(window),
     );
   }
 

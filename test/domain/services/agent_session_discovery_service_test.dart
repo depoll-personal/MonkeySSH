@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
@@ -167,6 +168,94 @@ String _markedDiscoveryOutput(String stdout) =>
     '$stdout\n__flutty_agent_discovery_exec_done__:0\n';
 
 void main() {
+  test(
+    'newest files are sorted across find batches with BSD and GNU stat',
+    () async {
+      final root = await Directory.systemTemp.createTemp('discovery-order-');
+      addTearDown(() => root.delete(recursive: true));
+      final older = File('${root.path}/older.jsonl')..writeAsStringSync('old');
+      final middle = File('${root.path}/middle\tname.jsonl')
+        ..writeAsStringSync('middle');
+      final newest = File("${root.path}/newest 'quoted'.jsonl")
+        ..writeAsStringSync('new');
+      for (final (index, file) in [older, middle, newest].indexed) {
+        file.setLastModifiedSync(DateTime.utc(2026, 1, index + 1));
+      }
+      final bin = Directory('${root.path}/bin')..createSync();
+      final batchLog = File('${root.path}/batches');
+      final find = File('${bin.path}/find')
+        ..writeAsStringSync(
+          '''#!/bin/sh\n'''
+          r'''
+
+while [ "$1" != '-exec' ]; do shift; done
+shift
+runner=$1
+script=$3
+for file in "$OLDER" "$MIDDLE" "$NEWEST"; do
+  printf 'batch\n' >> "$BATCH_LOG"
+  "$runner" -c "$script" sh "$file"
+done
+''',
+        );
+      final stat = File('${bin.path}/stat')
+        ..writeAsStringSync(
+          '''#!/bin/sh\n'''
+          r'''
+
+if [ "$STAT_STYLE" = native ]; then exec /usr/bin/stat "$@"; fi
+if [ "$STAT_STYLE" = bsd ]; then [ "$1" = -f ] || exit 1
+else [ "$1" = -c ] || exit 1; fi
+format=$2
+shift 2
+for file do
+  timestamp=$(/usr/bin/stat -c %Y "$file" 2>/dev/null || /usr/bin/stat -f %m "$file")
+  if [ "$format" = %Y ]; then printf '%s\n' "$timestamp"
+  else printf '%s\t%s\n' "$timestamp" "$file"; fi
+done
+''',
+        );
+      final chmod = await Process.run('chmod', ['+x', find.path, stat.path]);
+      expect(chmod.exitCode, 0, reason: '${chmod.stderr}');
+      for (final style in ['gnu', 'bsd', 'native']) {
+        batchLog.writeAsStringSync('');
+        final result = await Process.run(
+          'sh',
+          ['-c', posixListNewestFilesCommand('find unused -type f', 2)],
+          environment: {
+            'PATH': '${bin.path}:/usr/bin:/bin',
+            'STAT_STYLE': style,
+            'OLDER': older.path,
+            'MIDDLE': middle.path,
+            'NEWEST': newest.path,
+            'BATCH_LOG': batchLog.path,
+          },
+        );
+        expect(result.exitCode, 0, reason: '${result.stderr}');
+        expect(batchLog.readAsLinesSync(), ['batch', 'batch', 'batch']);
+        expect(
+          result.stdout,
+          '${newest.path}\n${middle.path}\n',
+          reason: style,
+        );
+      }
+      final filtered = await Process.run(
+        'sh',
+        [
+          '-c',
+          posixListNewestFilesCommand(
+            "find '${root.path}' -maxdepth 1 -name '*.jsonl' -type f "
+            r'-exec grep -q -x -F new {} \;',
+            2,
+          ),
+        ],
+        environment: {'PATH': '/usr/bin:/bin'},
+      );
+      expect(filtered.exitCode, 0, reason: '${filtered.stderr}');
+      expect(filtered.stdout, '${newest.path}\n');
+    },
+  );
+
   setUpAll(() {
     registerFallbackValue(Uint8List(0));
     registerFallbackValue(SshExecPriority.low);
@@ -1365,7 +1454,7 @@ cwd: /tmp/demo
 
       final discovery = AgentSessionDiscoveryService();
       final session = _buildDiscoverySession(client);
-      final result = await discovery.discoverSessions(session);
+      final result = await discovery.discoverSessionsStream(session).last;
 
       // Every issued command is a PowerShell EncodedCommand, never POSIX.
       final commands = verify(
@@ -1425,11 +1514,13 @@ cwd: /tmp/demo
 
         final discovery = AgentSessionDiscoveryService();
         final session = _buildDiscoverySession(client);
-        final result = await discovery.discoverSessions(
-          session,
-          workingDirectory: r'C:\Users\demo\repo',
-          toolName: 'OpenCode',
-        );
+        final result = await discovery
+            .discoverSessionsStream(
+              session,
+              workingDirectory: r'C:\Users\demo\repo',
+              toolName: 'OpenCode',
+            )
+            .last;
 
         expect(result.sessions, hasLength(1));
         expect(result.sessions.single.toolName, 'OpenCode');
@@ -1474,11 +1565,13 @@ cwd: /tmp/demo
 
       final discovery = AgentSessionDiscoveryService();
       final session = _buildDiscoverySession(client);
-      final result = await discovery.discoverSessions(
-        session,
-        workingDirectory: r'C:\Users\demo\repo',
-        toolName: 'Antigravity',
-      );
+      final result = await discovery
+          .discoverSessionsStream(
+            session,
+            workingDirectory: r'C:\Users\demo\repo',
+            toolName: 'Antigravity',
+          )
+          .last;
 
       expect(result.sessions, hasLength(1));
       expect(result.sessions.single.toolName, 'Antigravity');
@@ -1526,11 +1619,13 @@ branch refs/heads/feature
 
       final discovery = AgentSessionDiscoveryService();
       final session = _buildDiscoverySession(client);
-      final result = await discovery.discoverSessions(
-        session,
-        workingDirectory: '/Users/depoll/Code/flutty',
-        toolName: 'Copilot CLI',
-      );
+      final result = await discovery
+          .discoverSessionsStream(
+            session,
+            workingDirectory: '/Users/depoll/Code/flutty',
+            toolName: 'Copilot CLI',
+          )
+          .last;
 
       expect(result.sessions, hasLength(1));
       expect(result.sessions.single.toolName, 'Copilot CLI');
@@ -1591,11 +1686,13 @@ branch refs/heads/main
         });
 
         final discovery = AgentSessionDiscoveryService();
-        final result = await discovery.discoverSessions(
-          _buildDiscoverySession(client),
-          workingDirectory: '/Users/depoll/Code/flutty',
-          toolName: 'Copilot CLI',
-        );
+        final result = await discovery
+            .discoverSessionsStream(
+              _buildDiscoverySession(client),
+              workingDirectory: '/Users/depoll/Code/flutty',
+              toolName: 'Copilot CLI',
+            )
+            .last;
 
         expect(result.sessions, hasLength(1));
         expect(
@@ -1647,11 +1744,13 @@ branch refs/heads/main
         });
 
         final discovery = AgentSessionDiscoveryService();
-        final result = await discovery.discoverSessions(
-          _buildDiscoverySession(client),
-          workingDirectory: '/Users/depoll/Code/flutty',
-          toolName: 'Copilot CLI',
-        );
+        final result = await discovery
+            .discoverSessionsStream(
+              _buildDiscoverySession(client),
+              workingDirectory: '/Users/depoll/Code/flutty',
+              toolName: 'Copilot CLI',
+            )
+            .last;
 
         expect(result.sessions, hasLength(1));
         expect(result.failedTools, isEmpty);
@@ -1713,11 +1812,13 @@ branch refs/heads/main
 
       final discovery = AgentSessionDiscoveryService();
       final session = _buildDiscoverySession(client);
-      final result = await discovery.discoverSessions(
-        session,
-        workingDirectory: '/Users/depoll/Code/flutty',
-        toolName: 'OpenCode',
-      );
+      final result = await discovery
+          .discoverSessionsStream(
+            session,
+            workingDirectory: '/Users/depoll/Code/flutty',
+            toolName: 'OpenCode',
+          )
+          .last;
 
       expect(result.sessions, hasLength(1));
       expect(result.sessions.single.toolName, 'OpenCode');
@@ -1770,11 +1871,13 @@ branch refs/heads/main
 
       final discovery = AgentSessionDiscoveryService();
       final session = _buildDiscoverySession(client);
-      final result = await discovery.discoverSessions(
-        session,
-        workingDirectory: '/Users/depoll/Code/flutty',
-        toolName: 'Antigravity',
-      );
+      final result = await discovery
+          .discoverSessionsStream(
+            session,
+            workingDirectory: '/Users/depoll/Code/flutty',
+            toolName: 'Antigravity',
+          )
+          .last;
 
       expect(result.sessions, hasLength(1));
       expect(result.sessions.single.toolName, 'Antigravity');
@@ -1834,10 +1937,12 @@ branch refs/heads/main
 
         final discovery = AgentSessionDiscoveryService();
         final session = _buildDiscoverySession(client);
-        final result = await discovery.discoverSessions(
-          session,
-          workingDirectory: '/Users/depoll/Code/flutty',
-        );
+        final result = await discovery
+            .discoverSessionsStream(
+              session,
+              workingDirectory: '/Users/depoll/Code/flutty',
+            )
+            .last;
 
         expect(
           result.sessions.map((session) => session.toolName),
@@ -1891,11 +1996,13 @@ branch refs/heads/main
         final discovery = AgentSessionDiscoveryService(
           terminalBackendService: backendService,
         );
-        final result = await discovery.discoverSessions(
-          session,
-          workingDirectory: '/Users/depoll/Code/flutty',
-          toolName: 'OpenCode',
-        );
+        final result = await discovery
+            .discoverSessionsStream(
+              session,
+              workingDirectory: '/Users/depoll/Code/flutty',
+              toolName: 'OpenCode',
+            )
+            .last;
 
         expect(result.sessions.map((session) => session.sessionId), [
           'session-1',
@@ -1971,12 +2078,14 @@ branch refs/heads/main
 
       final result =
           await AgentSessionDiscoveryService(
-            terminalBackendService: backendService,
-          ).discoverSessions(
-            session,
-            workingDirectory: '~/Code/MonkeySSH',
-            toolName: 'Pi',
-          );
+                terminalBackendService: backendService,
+              )
+              .discoverSessionsStream(
+                session,
+                workingDirectory: '~/Code/MonkeySSH',
+                toolName: 'Pi',
+              )
+              .last;
 
       expect(result.sessions.map((info) => info.sessionId), ['REAL']);
       expect(result.sessions.single.summary, 'Fix recent Pi session discovery');
@@ -2075,10 +2184,9 @@ branch refs/heads/main
       final discovery = AgentSessionDiscoveryService();
       final session = _buildDiscoverySession(client);
 
-      final result = await discovery.discoverSessions(
-        session,
-        toolName: 'Cursor Agent',
-      );
+      final result = await discovery
+          .discoverSessionsStream(session, toolName: 'Cursor Agent')
+          .last;
 
       expect(result.sessions.map((session) => session.sessionId), [
         '0d8d2b7c-6f1e-4d0f-9c1a-2b3c4d5e6f70',
@@ -2117,7 +2225,8 @@ branch refs/heads/main
       final session = _buildDiscoverySession(client);
 
       final result = await discovery
-          .discoverSessions(session, toolName: 'Cursor Agent')
+          .discoverSessionsStream(session, toolName: 'Cursor Agent')
+          .last
           .timeout(const Duration(seconds: 2));
 
       expect(result.sessions.map((session) => session.sessionId), [
@@ -2158,7 +2267,8 @@ branch refs/heads/main
       final session = _buildDiscoverySession(client);
 
       final result = await discovery
-          .discoverSessions(session, toolName: 'Cursor Agent')
+          .discoverSessionsStream(session, toolName: 'Cursor Agent')
+          .last
           .timeout(const Duration(seconds: 2));
 
       expect(result.sessions.single.summary, 'Open stream Cursor session');
@@ -2179,7 +2289,7 @@ branch refs/heads/main
       final discovery = AgentSessionDiscoveryService();
       final session = _buildDiscoverySession(client);
 
-      final result = await discovery.discoverSessions(session);
+      final result = await discovery.discoverSessionsStream(session).last;
 
       expect(commands, isNotEmpty);
       expect(commands, isNot(anyElement(contains('.gemini/tmp'))));
@@ -2218,10 +2328,12 @@ branch refs/heads/main
       final discovery = AgentSessionDiscoveryService();
       final session = _buildDiscoverySession(client);
 
-      final result = await discovery.discoverSessions(
-        session,
-        workingDirectory: '/Users/depoll/Code/flutty',
-      );
+      final result = await discovery
+          .discoverSessionsStream(
+            session,
+            workingDirectory: '/Users/depoll/Code/flutty',
+          )
+          .last;
 
       expect(commands, isNotEmpty);
       expect(commands, isNot(anyElement(contains('.gemini/tmp'))));
@@ -2246,10 +2358,12 @@ branch refs/heads/main
         return _buildExecSession();
       });
 
-      final result = await AgentSessionDiscoveryService().discoverSessions(
-        _buildDiscoverySession(client),
-        toolName: 'Gemini CLI',
-      );
+      final result = await AgentSessionDiscoveryService()
+          .discoverSessionsStream(
+            _buildDiscoverySession(client),
+            toolName: 'Gemini CLI',
+          )
+          .last;
 
       expect(result.sessions, isEmpty);
       expect(result.failedTools, isEmpty);
@@ -2290,10 +2404,9 @@ branch refs/heads/main
 
         final discovery = AgentSessionDiscoveryService();
         final session = _buildDiscoverySession(client);
-        final result = await discovery.discoverSessions(
-          session,
-          toolName: 'Codex',
-        );
+        final result = await discovery
+            .discoverSessionsStream(session, toolName: 'Codex')
+            .last;
 
         expect(result.sessions, hasLength(1));
         expect(result.sessions.single.sessionId, sessionId);
@@ -2327,10 +2440,9 @@ branch refs/heads/main
 
       final discovery = AgentSessionDiscoveryService();
       final session = _buildDiscoverySession(client);
-      final result = await discovery.discoverSessions(
-        session,
-        toolName: 'Cursor Agent',
-      );
+      final result = await discovery
+          .discoverSessionsStream(session, toolName: 'Cursor Agent')
+          .last;
 
       expect(result.sessions, hasLength(1));
       final info = result.sessions.single;
@@ -2370,11 +2482,13 @@ branch refs/heads/main
           return _buildExecSession();
         });
 
-        final result = await AgentSessionDiscoveryService().discoverSessions(
-          _buildDiscoverySession(client),
-          workingDirectory: '/Users/depoll/Code/MonkeySSH',
-          toolName: 'Cursor Agent',
-        );
+        final result = await AgentSessionDiscoveryService()
+            .discoverSessionsStream(
+              _buildDiscoverySession(client),
+              workingDirectory: '/Users/depoll/Code/MonkeySSH',
+              toolName: 'Cursor Agent',
+            )
+            .last;
 
         expect(result.sessions, hasLength(1));
         expect(
@@ -2431,11 +2545,13 @@ HEAD b
 
       final discovery = AgentSessionDiscoveryService();
       final session = _buildDiscoverySession(client);
-      final result = await discovery.discoverSessions(
-        session,
-        workingDirectory: '/Users/depoll/Code/flutty',
-        toolName: 'Grok Build',
-      );
+      final result = await discovery
+          .discoverSessionsStream(
+            session,
+            workingDirectory: '/Users/depoll/Code/flutty',
+            toolName: 'Grok Build',
+          )
+          .last;
 
       expect(result.sessions, hasLength(1));
       final info = result.sessions.single;
@@ -2495,10 +2611,9 @@ HEAD b
 
         final discovery = AgentSessionDiscoveryService();
         final session = _buildDiscoverySession(client);
-        final result = await discovery.discoverSessions(
-          session,
-          toolName: 'Grok Build',
-        );
+        final result = await discovery
+            .discoverSessionsStream(session, toolName: 'Grok Build')
+            .last;
 
         expect(
           result.sessions,
@@ -2551,11 +2666,13 @@ HEAD b
 
       final discovery = AgentSessionDiscoveryService();
       final session = _buildDiscoverySession(client);
-      final result = await discovery.discoverSessions(
-        session,
-        workingDirectory: '/Users/depoll/Code/flutty',
-        toolName: 'Pi',
-      );
+      final result = await discovery
+          .discoverSessionsStream(
+            session,
+            workingDirectory: '/Users/depoll/Code/flutty',
+            toolName: 'Pi',
+          )
+          .last;
 
       expect(result.sessions, hasLength(1));
       final info = result.sessions.single;
@@ -2583,10 +2700,12 @@ HEAD b
 
     test('Pi discovery does not guess without a pane cwd', () async {
       final client = _MockSshClient();
-      final result = await AgentSessionDiscoveryService().discoverSessions(
-        _buildDiscoverySession(client),
-        toolName: 'Pi',
-      );
+      final result = await AgentSessionDiscoveryService()
+          .discoverSessionsStream(
+            _buildDiscoverySession(client),
+            toolName: 'Pi',
+          )
+          .last;
 
       expect(result.sessions, isEmpty);
       verifyNever(() => client.execute(any()));
@@ -2615,11 +2734,13 @@ HEAD b
       });
 
       final discovery = AgentSessionDiscoveryService();
-      final result = await discovery.discoverSessions(
-        _buildDiscoverySession(client),
-        workingDirectory: '/Users/depoll/Code/flutty',
-        toolName: 'Pi',
-      );
+      final result = await discovery
+          .discoverSessionsStream(
+            _buildDiscoverySession(client),
+            workingDirectory: '/Users/depoll/Code/flutty',
+            toolName: 'Pi',
+          )
+          .last;
 
       expect(result.sessions, hasLength(1));
       expect(result.sessions.single.sessionId, '01JYX7HEADER');
@@ -2707,11 +2828,13 @@ HEAD b
         return _buildExecSession();
       });
 
-      final result = await AgentSessionDiscoveryService().discoverSessions(
-        _buildDiscoverySession(client),
-        workingDirectory: '/Users/depoll/Code/MonkeySSH',
-        toolName: 'Pi',
-      );
+      final result = await AgentSessionDiscoveryService()
+          .discoverSessionsStream(
+            _buildDiscoverySession(client),
+            workingDirectory: '/Users/depoll/Code/MonkeySSH',
+            toolName: 'Pi',
+          )
+          .last;
 
       expect(
         result.sessions.map((session) => session.sessionId),
@@ -2746,10 +2869,9 @@ HEAD b
 
       final discovery = AgentSessionDiscoveryService();
       final session = _buildDiscoverySession(client);
-      final result = await discovery.discoverSessions(
-        session,
-        toolName: 'Hermes',
-      );
+      final result = await discovery
+          .discoverSessionsStream(session, toolName: 'Hermes')
+          .last;
 
       expect(result.sessions, hasLength(1));
       final info = result.sessions.single;
@@ -2793,10 +2915,9 @@ HEAD b
 
       final discovery = AgentSessionDiscoveryService();
       final session = _buildDiscoverySession(client);
-      final result = await discovery.discoverSessions(
-        session,
-        toolName: 'OpenCode',
-      );
+      final result = await discovery
+          .discoverSessionsStream(session, toolName: 'OpenCode')
+          .last;
 
       expect(result.sessions.map((session) => session.toolName), ['OpenCode']);
       expect(result.sessions.map((session) => session.sessionId), [
@@ -2947,11 +3068,13 @@ HEAD b
         final discovery = AgentSessionDiscoveryService();
         final loads = [
           for (final session in sessions)
-            discovery.discoverSessions(
-              session,
-              workingDirectory: '/project',
-              toolName: 'OpenCode',
-            ),
+            discovery
+                .discoverSessionsStream(
+                  session,
+                  workingDirectory: '/project',
+                  toolName: 'OpenCode',
+                )
+                .last,
         ];
         await Future.wait(probeStarted.map((started) => started.future));
         discovery.invalidateSession(sessions[0]);
@@ -2959,19 +3082,23 @@ HEAD b
         await Future.wait(loads);
 
         final cachedCommandCount = commandCounts[1];
-        await discovery.discoverSessions(
-          sessions[1],
-          workingDirectory: '/project',
-          toolName: 'OpenCode',
-        );
+        await discovery
+            .discoverSessionsStream(
+              sessions[1],
+              workingDirectory: '/project',
+              toolName: 'OpenCode',
+            )
+            .last;
         expect(commandCounts[1], cachedCommandCount);
         for (final session in sessions) {
-          await discovery.discoverSessions(
-            session,
-            workingDirectory: '/project',
-            toolName: 'OpenCode',
-            maxPerTool: 24,
-          );
+          await discovery
+              .discoverSessionsStream(
+                session,
+                workingDirectory: '/project',
+                toolName: 'OpenCode',
+                maxPerTool: 24,
+              )
+              .last;
         }
         expect(worktreeCounts, [2, 1]);
       },
@@ -3005,7 +3132,9 @@ HEAD b
       });
       final discovery = AgentSessionDiscoveryService();
       final session = _buildDiscoverySession(client);
-      final oldLoad = discovery.discoverSessions(session, toolName: 'OpenCode');
+      final oldLoad = discovery
+          .discoverSessionsStream(session, toolName: 'OpenCode')
+          .last;
       await oldProbeStarted.future;
       discovery.invalidateSession(session);
       finishOldProbe.complete();

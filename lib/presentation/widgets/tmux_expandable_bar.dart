@@ -227,18 +227,24 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   List<AcpSessionState> _nativeAcpSessions = const <AcpSessionState>[];
   late AnimationController _bounceController;
   late Animation<double> _bounceAnimation;
-  bool _loadingWindows = false;
-  bool _pendingWindowReload = false;
-  int _windowReloadGeneration = 0;
   int _windowEventGeneration = 0;
   int? _pendingSelectedWindowIndex;
   Timer? _pendingSelectionTimer;
-  Timer? _windowRetryTimer;
-  int _windowRetryAttempts = 0;
-  int _consecutiveEmptyWindowReloads = 0;
   bool _windowReloadRecoveryRequested = false;
   bool _sessionEndedNotified = false;
   late LocalNotificationService _localNotifications;
+
+  late final _windowLoader = TmuxWindowLoader(
+    fetch: () => _mux.listWindows(
+      widget.session,
+      widget.tmuxSessionName,
+      extraFlags: widget.tmuxExtraFlags,
+    ),
+    currentWindows: () => _windows,
+    connectionId: () => widget.session.connectionId,
+    acceptEmpty: () => _emptyWindowListEndsSession,
+    onChanged: _applyWindowReload,
+  );
 
   RemoteMultiplexerService get _mux => widget.remoteMultiplexerService;
 
@@ -303,7 +309,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           .read(tmuxServiceProvider)
           .prefetchInstalledAgentTools(widget.session),
     );
-    _loadWindows();
+    _windowLoader.load();
     _subscribeToWindowChanges();
     _subscribeToNativeAcpSessions();
   }
@@ -323,7 +329,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     if (!sessionChanged && !backendChanged && !recoveryChanged) {
       return;
     }
-    _windowReloadGeneration++;
     final wasExpanded = _expanded;
     _clearPendingSelectedWindow(notify: false);
     _closingWindowKeys.clear();
@@ -367,13 +372,13 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       _subscribeToNativeAcpSessions();
     }
     unawaited(_loadPreferredLaunchTool());
-    _loadWindows();
+    _windowLoader.load();
   }
 
   @override
   void dispose() {
     _clearPendingSelectedWindow(notify: false);
-    _resetWindowReloadRecovery();
+    _windowLoader.dispose();
     unawaited(_windowChangeSubscription?.cancel());
     unawaited(_acpSessionSubscription?.cancel());
     _clearSeenAlertNotifications(widget.session, widget.tmuxSessionName);
@@ -553,12 +558,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           'generation': generation,
         },
       );
-      _loadWindows();
+      _windowLoader.load();
       _notifyWindowStateChanged(activeWindowChanged: false);
       return;
     }
     if (event is TmuxWindowListEvent) {
-      _windowReloadGeneration += 1;
       _resetWindowReloadRecovery();
       if (event.windows.isEmpty && _emptyWindowListEndsSession) {
         _applyWindows(const <TmuxWindow>[]);
@@ -588,10 +592,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         'bar_snapshot_without_state',
         fields: {'connectionId': widget.session.connectionId},
       );
-      _loadWindows();
+      _windowLoader.load();
       return;
     }
-    _windowReloadGeneration += 1;
     _resetWindowReloadRecovery();
     final windows = applyTmuxWindowChangeEvent(currentWindows, event);
     final shouldNotifyWindowStateChanged =
@@ -741,43 +744,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     setState(() => _pendingSelectedWindowIndex = null);
   }
 
-  void _cancelWindowRetry() {
-    _windowRetryTimer?.cancel();
-    _windowRetryTimer = null;
-  }
-
   void _resetWindowReloadRecovery() {
-    _cancelWindowRetry();
-    _windowRetryAttempts = 0;
-    _consecutiveEmptyWindowReloads = 0;
+    _windowLoader.invalidate();
     _windowReloadRecoveryRequested = false;
   }
-
-  void _scheduleWindowRetry() {
-    if (!mounted || (_windowRetryTimer?.isActive ?? false)) {
-      return;
-    }
-    final delay = resolveTmuxWindowReloadRetryDelay(_windowRetryAttempts);
-    _windowRetryAttempts += 1;
-    DiagnosticsLogService.instance.warning(
-      'tmux.ui',
-      'bar_retry_scheduled',
-      fields: {
-        'connectionId': widget.session.connectionId,
-        'attempt': _windowRetryAttempts,
-        'delayMs': delay.inMilliseconds,
-      },
-    );
-    _windowRetryTimer = Timer(delay, () {
-      _windowRetryTimer = null;
-      if (mounted) {
-        unawaited(_loadWindows());
-      }
-    });
-  }
-
-  bool get _shouldRequestWindowReloadRecovery =>
-      !(_windows?.isNotEmpty ?? false) && _windowRetryAttempts >= 1;
 
   void _requestWindowReloadRecovery() {
     if (_windowReloadRecoveryRequested) {
@@ -839,135 +809,34 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         );
   }
 
-  Future<void> _loadWindows() async {
-    if (_loadingWindows) {
-      _pendingWindowReload = true;
-      DiagnosticsLogService.instance.debug(
-        'tmux.ui',
-        'bar_reload_queued',
-        fields: {'connectionId': widget.session.connectionId},
-      );
-      return;
-    }
-    _loadingWindows = true;
-    final reloadGeneration = ++_windowReloadGeneration;
-    DiagnosticsLogService.instance.debug(
-      'tmux.ui',
-      'bar_reload_start',
-      fields: {
-        'connectionId': widget.session.connectionId,
-        'generation': reloadGeneration,
-      },
-    );
-    try {
-      final reloadedWindows = await _mux.listWindows(
-        widget.session,
-        widget.tmuxSessionName,
-        extraFlags: widget.tmuxExtraFlags,
-      );
-      if (!mounted) return;
-      if (reloadGeneration < _windowReloadGeneration) return;
-      final isEmptyReload = reloadedWindows.isEmpty;
-      if (isEmptyReload) {
-        _consecutiveEmptyWindowReloads += 1;
-      } else {
-        _resetWindowReloadRecovery();
-      }
-      DiagnosticsLogService.instance.info(
-        'tmux.ui',
-        'bar_reload_result',
-        fields: {
-          'connectionId': widget.session.connectionId,
-          'generation': reloadGeneration,
-          'windowCount': reloadedWindows.length,
-          'consecutiveEmptyReloads': _consecutiveEmptyWindowReloads,
-        },
-      );
-      if (isEmptyReload && _emptyWindowListEndsSession) {
-        _applyWindows(const <TmuxWindow>[]);
-        _notifySessionEnded();
-        return;
-      }
-      final windows = resolveTmuxReloadedWindows(
-        shouldPreserveTmuxWindowSnapshotOnEmptyReload(
-              _windows,
-              consecutiveEmptyReloads: _consecutiveEmptyWindowReloads,
-            )
-            ? _windows
-            : null,
-        reloadedWindows,
-      );
-      if (windows == null) {
-        DiagnosticsLogService.instance.warning(
-          'tmux.ui',
-          'bar_reload_preserved_previous',
-          fields: {
-            'connectionId': widget.session.connectionId,
-            'generation': reloadGeneration,
-          },
-        );
-        final shouldRecover = _shouldRequestWindowReloadRecovery;
-        _scheduleWindowRetry();
-        if (shouldRecover) {
-          final wasExpanded = _expanded;
-          setState(() {
-            _expanded = false;
-            _isLoading = false;
-          });
-          if (wasExpanded) {
-            widget.onExpandedChanged(false);
-          }
-          _requestWindowReloadRecovery();
-        } else if (_windows != null || !_isLoading) {
-          setState(() {
-            _windows = null;
-            _isLoading = true;
-          });
-        }
-        return;
-      }
-      if (isEmptyReload) {
-        _scheduleWindowRetry();
-      } else {
-        _resetWindowReloadRecovery();
+  void _applyWindowReload(
+    List<TmuxWindow>? windows,
+    AsyncError? error, {
+    required bool shouldRecover,
+  }) {
+    if (windows != null) {
+      if (windows.isNotEmpty) {
+        _windowReloadRecoveryRequested = false;
       }
       _applyWindows(windows);
-    } on Object catch (error) {
-      if (!mounted || reloadGeneration < _windowReloadGeneration) return;
-      DiagnosticsLogService.instance.warning(
-        'tmux.ui',
-        'bar_reload_failed',
-        fields: {
-          'connectionId': widget.session.connectionId,
-          'generation': reloadGeneration,
-          'errorType': error.runtimeType,
-        },
-      );
-      final shouldRecover = _shouldRequestWindowReloadRecovery;
-      _scheduleWindowRetry();
-      if (_windows?.isNotEmpty ?? false) {
-        if (_isLoading) {
-          setState(() => _isLoading = false);
-        }
-      } else if (shouldRecover) {
-        final wasExpanded = _expanded;
-        setState(() {
-          _expanded = false;
-          _isLoading = false;
-        });
-        if (wasExpanded) {
-          widget.onExpandedChanged(false);
-        }
-        _requestWindowReloadRecovery();
-      } else {
-        setState(() => _isLoading = true);
+      if (windows.isEmpty && _emptyWindowListEndsSession) {
+        _notifySessionEnded();
       }
-    } finally {
-      _loadingWindows = false;
-      if (_pendingWindowReload) {
-        _pendingWindowReload = false;
-        unawaited(_loadWindows());
-      }
+    } else if (error != null && (_windows?.isNotEmpty ?? false)) {
+      if (_isLoading) setState(() => _isLoading = false);
+    } else if (shouldRecover) {
+      final wasExpanded = _expanded;
+      setState(() {
+        _expanded = false;
+        _isLoading = false;
+      });
+      if (wasExpanded) widget.onExpandedChanged(false);
+      _requestWindowReloadRecovery();
+    } else {
+      setState(() {
+        if (error == null) _windows = null;
+        _isLoading = true;
+      });
     }
   }
 
@@ -1276,7 +1145,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     } else if (shouldCollapse) {
       widget.onExpandedChanged(false);
     }
-    if (shouldExpand) _loadWindows();
+    if (shouldExpand) _windowLoader.load();
   }
 
   void _applySidebarDragDelta(double deltaX) {
@@ -1310,7 +1179,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     widget.onSidebarDragOffsetChanged(0);
     if (shouldExpand) {
       widget.onExpandedChanged(true);
-      _loadWindows();
+      _windowLoader.load();
     } else if (shouldCollapse) {
       widget.onExpandedChanged(false);
     }
@@ -1501,7 +1370,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     widget.onExpandedChanged(!wasExpanded);
     // Refresh window list when expanding to get current active state.
     if (!wasExpanded) {
-      _loadWindows();
+      _windowLoader.load();
     }
   }
 

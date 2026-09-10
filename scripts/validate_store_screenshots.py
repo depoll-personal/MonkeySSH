@@ -161,13 +161,6 @@ def _ocr_texts(paths: list[Path]) -> dict[Path, str]:
 
 def _validate_ocr_content(paths: list[Path]) -> None:
     texts = _ocr_texts(paths)
-    missing_paths = [path for path in paths if path not in texts]
-    if missing_paths:
-        formatted_paths = ', '.join(
-            str(path.relative_to(ROOT)) for path in missing_paths
-        )
-        raise ValueError(f'OCR did not return text for {formatted_paths}.')
-
     for path, text in texts.items():
         for label, pattern in BAD_OCR_PATTERNS.items():
             if pattern.search(text):

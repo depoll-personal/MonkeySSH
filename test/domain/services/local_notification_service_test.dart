@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -5,6 +7,87 @@ import 'package:monkeyssh/domain/services/local_notification_service.dart';
 import 'package:monkeyssh/domain/services/terminal_notification.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  // Unit tests do not run the native plugin registrant.
+  AndroidFlutterLocalNotificationsPlugin.registerWith();
+
+  test(
+    'terminal dispatch preserves sound, permission, and missing-plugin results',
+    () async {
+      const channel = MethodChannel(
+        'dexterous.com/flutter/local_notifications',
+      );
+      const payload = TerminalNotificationPayload(hostId: 7, connectionId: 21);
+      final previousPlatform = FlutterLocalNotificationsPlatform.instance;
+      FlutterLocalNotificationsPlatform.instance =
+          IOSFlutterLocalNotificationsPlugin();
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      final service = LocalNotificationService();
+      final calls = <MethodCall>[];
+      var permitted = true;
+      var missingPlugin = false;
+      var sound = TerminalNotificationSound.silent;
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            ..setMockMethodCallHandler(channel, (call) async {
+              calls.add(call);
+              if (call.method == 'getNotificationAppLaunchDetails') return null;
+              if (call.method == 'requestPermissions') {
+                expect(
+                  (call.arguments as Map)['sound'],
+                  sound == TerminalNotificationSound.system,
+                );
+              }
+              if (call.method == 'show') {
+                if (missingPlugin) throw MissingPluginException();
+                expect(
+                  call.arguments,
+                  containsPair('payload', payload.encode()),
+                );
+                expect(call.arguments, containsPair('id', 42));
+              }
+              return permitted;
+            });
+      addTearDown(() {
+        service.dispose();
+        messenger.setMockMethodCallHandler(channel, null);
+        FlutterLocalNotificationsPlatform.instance = previousPlatform;
+        debugDefaultTargetPlatformOverride = null;
+      });
+      for (sound in TerminalNotificationSound.values) {
+        for (final scenario in [(true, false), (false, false), (true, true)]) {
+          (permitted, missingPlugin) = scenario;
+          calls.clear();
+          expect(
+            await service.showTerminalNotification(
+              notificationId: 42,
+              title: 'Ready',
+              body: 'Done',
+              payload: payload,
+              sound: sound,
+            ),
+            permitted && !missingPlugin,
+          );
+          expect(
+            calls.where((call) => call.method == 'requestPermissions'),
+            hasLength(1),
+          );
+          expect(
+            calls.where((call) => call.method == 'show'),
+            hasLength(permitted ? 1 : 0),
+          );
+        }
+      }
+      calls.clear();
+      await service.clearTmuxAlert(42);
+      await service.clearTerminalNotification(43);
+      expect(calls.map((call) => (call.method, call.arguments)), [
+        ('cancel', 42),
+        ('cancel', 43),
+      ]);
+    },
+  );
+
   group('TmuxAlertNotificationPayload', () {
     test('round-trips tmux alert routing fields', () {
       const payload = TmuxAlertNotificationPayload(

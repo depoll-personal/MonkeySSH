@@ -497,39 +497,65 @@ func startConPtyWithBackend(
 		}
 	}
 
+	commandLinePtr, cmdErr := windows.UTF16PtrFromString(commandLine)
+	if cmdErr != nil {
+		err = fmt.Errorf("encode command line: %w", cmdErr)
+		return
+	}
+
+	var dirPtr *uint16
+	if strings.TrimSpace(workdir) != "" {
+		dirPtr, err = windows.UTF16PtrFromString(workdir)
+		if err != nil {
+			err = fmt.Errorf("encode working directory: %w", err)
+			return
+		}
+	}
+
+	creationFlags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT)
+	var envBlock *uint16
+	if len(env) > 0 {
+		creationFlags |= uint32(windows.CREATE_UNICODE_ENVIRONMENT)
+		envBlock, err = buildEnvBlock(env)
+		if err != nil {
+			err = fmt.Errorf("encode environment: %w", err)
+			return
+		}
+	}
+
 	// input pipe:  ptyIn (read)  -> ConPTY,   cmdIn (write)  -> parent
 	// output pipe: cmdOut (read) -> parent,   ptyOut (write) -> ConPTY
 	var ptyIn, ptyOut, cmdIn, cmdOut windows.Handle
+	defer func() {
+		if err != nil {
+			if hpcon != 0 {
+				backend.close(hpcon)
+				hpcon = 0
+			}
+			for _, handle := range []windows.Handle{ptyIn, ptyOut, cmdIn, cmdOut} {
+				if handle != 0 {
+					windows.CloseHandle(handle)
+				}
+			}
+		}
+	}()
 	if err = windows.CreatePipe(&ptyIn, &cmdIn, nil, 0); err != nil {
 		err = fmt.Errorf("create input pipe: %w", err)
 		return
 	}
 	if err = windows.CreatePipe(&cmdOut, &ptyOut, nil, 0); err != nil {
-		windows.CloseHandle(ptyIn)
-		windows.CloseHandle(cmdIn)
 		err = fmt.Errorf("create output pipe: %w", err)
 		return
 	}
 
-	closeAll := func() {
-		windows.CloseHandle(ptyIn)
-		windows.CloseHandle(ptyOut)
-		windows.CloseHandle(cmdIn)
-		windows.CloseHandle(cmdOut)
-	}
-
 	size := conPtyCoord(cols, rows)
 	if err = backend.create(size, ptyIn, ptyOut, 0, &hpcon); err != nil {
-		closeAll()
 		err = fmt.Errorf("create %s pseudo console: %w", backend.name, err)
 		return
 	}
 
 	attrs, attrErr := windows.NewProcThreadAttributeList(1)
 	if attrErr != nil {
-		backend.close(hpcon)
-		hpcon = 0
-		closeAll()
 		err = fmt.Errorf("allocate attribute list: %w", attrErr)
 		return
 	}
@@ -545,9 +571,6 @@ func startConPtyWithBackend(
 		pseudoConsoleValue,
 		unsafe.Sizeof(hpcon),
 	); err != nil {
-		backend.close(hpcon)
-		hpcon = 0
-		closeAll()
 		err = fmt.Errorf("set pseudo console attribute: %w", err)
 		return
 	}
@@ -562,41 +585,6 @@ func startConPtyWithBackend(
 	// immediately. With the flag set and the std handles left zero, the pseudo
 	// console attribute connects the child's stdio to the ConPTY instead.
 	startupInfo.Flags |= windows.STARTF_USESTDHANDLES
-
-	commandLinePtr, cmdErr := windows.UTF16PtrFromString(commandLine)
-	if cmdErr != nil {
-		backend.close(hpcon)
-		hpcon = 0
-		closeAll()
-		err = fmt.Errorf("encode command line: %w", cmdErr)
-		return
-	}
-
-	var dirPtr *uint16
-	if strings.TrimSpace(workdir) != "" {
-		dirPtr, err = windows.UTF16PtrFromString(workdir)
-		if err != nil {
-			backend.close(hpcon)
-			hpcon = 0
-			closeAll()
-			err = fmt.Errorf("encode working directory: %w", err)
-			return
-		}
-	}
-
-	creationFlags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT)
-	var envBlock *uint16
-	if len(env) > 0 {
-		creationFlags |= uint32(windows.CREATE_UNICODE_ENVIRONMENT)
-		envBlock, err = buildEnvBlock(env)
-		if err != nil {
-			backend.close(hpcon)
-			hpcon = 0
-			closeAll()
-			err = fmt.Errorf("encode environment: %w", err)
-			return
-		}
-	}
 
 	var procInfo windows.ProcessInformation
 	// Inheritable security attributes match the reference ConPTY launchers
@@ -615,9 +603,6 @@ func startConPtyWithBackend(
 		&startupInfo.StartupInfo,
 		&procInfo,
 	); err != nil {
-		backend.close(hpcon)
-		hpcon = 0
-		closeAll()
 		err = fmt.Errorf("create process: %w", err)
 		return
 	}

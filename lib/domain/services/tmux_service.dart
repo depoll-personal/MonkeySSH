@@ -20,13 +20,6 @@ const _backslashCodeUnit = 0x5C;
 
 enum _ShellQuoteMode { none, single, double }
 
-class _ShellToken {
-  const _ShellToken({required this.value, required this.raw});
-
-  final String value;
-  final String raw;
-}
-
 /// Error thrown when a tmux command channel ends before confirming completion.
 class TmuxCommandException implements Exception {
   /// Creates a [TmuxCommandException].
@@ -109,7 +102,6 @@ class TmuxService {
 
   static final _installedAgentToolRequests =
       <int, Future<Set<AgentLaunchTool>>>{};
-  static final _installedAgentToolCacheGenerations = <int, int>{};
 
   static final _windowObservers =
       <_TmuxWindowWatchKey, _TmuxWindowChangeObserver>{};
@@ -199,8 +191,6 @@ class TmuxService {
   /// Any in-flight result from before this call is prevented from repopulating
   /// the cache. The next detection or prefetch starts a fresh remote probe.
   void invalidateInstalledAgentTools(int connectionId) {
-    _installedAgentToolCacheGenerations[connectionId] =
-        (_installedAgentToolCacheGenerations[connectionId] ?? 0) + 1;
     _installedAgentToolsCache.remove(connectionId);
     _installedAgentToolRequests.remove(connectionId)?.ignore();
     DiagnosticsLogService.instance.info(
@@ -517,14 +507,13 @@ class TmuxService {
       return existingRequest;
     }
 
-    final cacheGeneration =
-        _installedAgentToolCacheGenerations[session.connectionId] ?? 0;
     DiagnosticsLogService.instance.info(
       'tmux.agent',
       'tool_detection_start',
       fields: {'connectionId': session.connectionId},
     );
-    final request = () async {
+    late final Future<Set<AgentLaunchTool>> request;
+    request = () async {
       final output = session.remoteIsWindows
           ? await _execWindowsPowerShell(
               session,
@@ -537,8 +526,10 @@ class TmuxService {
               priority: priority,
             );
       final installed = parseInstalledAgentTools(output);
-      if ((_installedAgentToolCacheGenerations[session.connectionId] ?? 0) ==
-          cacheGeneration) {
+      if (identical(
+        _installedAgentToolRequests[session.connectionId],
+        request,
+      )) {
         _installedAgentToolsCache[session.connectionId] =
             _CachedInstalledAgentTools(
               tools: Set<AgentLaunchTool>.unmodifiable(installed),
@@ -801,12 +792,12 @@ class TmuxService {
         ),
       );
       if (windows.isNotEmpty) {
-        _cacheWindowSnapshot(
-          session,
-          sessionName,
-          windows,
-          extraFlags: extraFlags,
-        );
+        _windowSnapshotCache[_TmuxWindowWatchKey(
+              connectionId: session.connectionId,
+              sessionName: sessionName,
+              extraFlags: resolveTmuxClientFlagsFromExtraFlags(extraFlags),
+            )] =
+            windows;
         _scheduleAgentSessionMetadataRefresh(session, windows);
       }
 
@@ -1619,21 +1610,24 @@ class TmuxService {
       sessionName: sessionName,
       extraFlags: resolveTmuxClientFlagsFromExtraFlags(extraFlags),
     );
-    final observer = _windowObservers.putIfAbsent(
-      key,
-      () => _TmuxWindowChangeObserver(
+    var observer = _windowObservers[key];
+    if (observer == null || observer._disposed) {
+      late final _TmuxWindowChangeObserver replacement;
+      replacement = _TmuxWindowChangeObserver(
         service: this,
         session: session,
         sessionName: sessionName,
         extraFlags: extraFlags,
         onDispose: () {
+          if (!identical(_windowObservers[key], replacement)) return;
           _windowObservers.remove(key);
           if (!_hasWindowObserverForConnection(session.connectionId)) {
             _cancelAgentSessionMetadataPeriodicRefresh(session.connectionId);
           }
         },
-      ),
-    );
+      );
+      _windowObservers[key] = observer = replacement;
+    }
     final cachedWindows = _windowSnapshotCache[key];
     if (cachedWindows != null) {
       _scheduleAgentSessionMetadataRefresh(session, cachedWindows);
@@ -1877,22 +1871,6 @@ class TmuxService {
         fields: {'connectionId': connectionId},
       );
     }
-  }
-
-  void _cacheWindowSnapshot(
-    SshSession session,
-    String sessionName,
-    List<TmuxWindow> windows, {
-    String? extraFlags,
-  }) {
-    if (windows.isEmpty) return;
-    _windowSnapshotCache[_TmuxWindowWatchKey(
-      connectionId: session.connectionId,
-      sessionName: sessionName,
-      extraFlags: resolveTmuxClientFlagsFromExtraFlags(extraFlags),
-    )] = List<TmuxWindow>.unmodifiable(
-      windows,
-    );
   }
 
   void _applyCachedWindowSnapshot(
@@ -3018,22 +2996,22 @@ String? resolveTmuxClientFlagsFromExtraFlags(String? extraFlags) {
   final clientFlags = <String>[];
   for (var index = 0; index < tokens.length; index++) {
     final token = tokens[index];
-    if (_isTmuxCommandSeparatorToken(token.value)) {
+    if (_isTmuxCommandSeparatorToken(token)) {
       break;
     }
-    if (!_isReusableTmuxClientFlag(token.value)) {
+    if (!_isReusableTmuxClientFlag(token)) {
       continue;
     }
-    if (token.value.length > 2) {
-      clientFlags.add(_buildReusableTmuxClientFlag(token.value));
+    if (token.length > 2) {
+      clientFlags.add(_buildReusableTmuxClientFlag(token));
       continue;
     }
     if (index + 1 >= tokens.length ||
-        _isTmuxCommandSeparatorToken(tokens[index + 1].value)) {
+        _isTmuxCommandSeparatorToken(tokens[index + 1])) {
       continue;
     }
     clientFlags.add(
-      '${token.value} ${_shellQuoteReusableTmuxClientFlagValue(tokens[index + 1].value)}',
+      '$token ${_shellQuoteReusableTmuxClientFlagValue(tokens[index + 1])}',
     );
     index++;
   }
@@ -3057,7 +3035,7 @@ String _shellQuoteReusableTmuxClientFlagValue(String value) {
   return shellEscapePosix(value);
 }
 
-List<_ShellToken>? _tokenizeShellFragment(String? value) {
+List<String>? _tokenizeShellFragment(String? value) {
   final normalized = value?.trim();
   if (normalized == null || normalized.isEmpty) {
     return const [];
@@ -3066,30 +3044,14 @@ List<_ShellToken>? _tokenizeShellFragment(String? value) {
     return null;
   }
 
-  final tokens = <_ShellToken>[];
+  final tokens = <String>[];
   var currentToken = StringBuffer();
   var tokenStarted = false;
-  var tokenStart = 0;
   var quoteMode = _ShellQuoteMode.none;
 
-  void startToken(int index) {
-    if (tokenStarted) {
-      return;
-    }
-    tokenStarted = true;
-    tokenStart = index;
-  }
-
-  void commitToken(int end) {
-    if (!tokenStarted) {
-      return;
-    }
-    tokens.add(
-      _ShellToken(
-        value: currentToken.toString(),
-        raw: normalized.substring(tokenStart, end),
-      ),
-    );
+  void commitToken() {
+    if (!tokenStarted) return;
+    tokens.add(currentToken.toString());
     currentToken = StringBuffer();
     tokenStarted = false;
   }
@@ -3101,7 +3063,6 @@ List<_ShellToken>? _tokenizeShellFragment(String? value) {
       if (character == "'") {
         quoteMode = _ShellQuoteMode.none;
       } else {
-        startToken(index);
         currentToken.write(character);
       }
       continue;
@@ -3121,28 +3082,26 @@ List<_ShellToken>? _tokenizeShellFragment(String? value) {
             nextCharacter.codeUnitAt(0) == _backslashCodeUnit ||
             nextCharacter == r'$' ||
             nextCharacter == '`') {
-          startToken(index);
           currentToken.write(nextCharacter);
           index++;
           continue;
         }
       }
-      startToken(index);
       currentToken.write(character);
       continue;
     }
 
     if (character == ' ' || character == '\t') {
-      commitToken(index);
+      commitToken();
       continue;
     }
     if (character == "'") {
-      startToken(index);
+      tokenStarted = true;
       quoteMode = _ShellQuoteMode.single;
       continue;
     }
     if (character == '"') {
-      startToken(index);
+      tokenStarted = true;
       quoteMode = _ShellQuoteMode.double;
       continue;
     }
@@ -3150,12 +3109,12 @@ List<_ShellToken>? _tokenizeShellFragment(String? value) {
       if (index + 1 >= normalized.length) {
         return null;
       }
-      startToken(index);
+      tokenStarted = true;
       currentToken.write(normalized[index + 1]);
       index++;
       continue;
     }
-    startToken(index);
+    tokenStarted = true;
     currentToken.write(character);
   }
 
@@ -3163,7 +3122,7 @@ List<_ShellToken>? _tokenizeShellFragment(String? value) {
     return null;
   }
 
-  commitToken(normalized.length);
+  commitToken();
   return tokens;
 }
 
@@ -3219,18 +3178,23 @@ String buildTmuxControlModeAttachCommand(
 String buildTmuxWindowSubscriptionCommand(String subscriptionName) =>
     "refresh-client -B '$subscriptionName:@*:$_tmuxWindowSubscriptionFormat'";
 
+final _tmuxControlDcsStart = RegExp(r'^\u001bP\d+p');
+final _tmuxControlDcsEnd = RegExp(r'\u001b\\$');
+
 String _normalizeTmuxControlLine(String line) {
   var normalized = line.trim();
-  normalized = normalized.replaceFirst(RegExp(r'^\u001bP\d+p'), '');
-  normalized = normalized.replaceFirst(RegExp(r'\u001b\\$'), '');
+  normalized = normalized.replaceFirst(_tmuxControlDcsStart, '');
+  normalized = normalized.replaceFirst(_tmuxControlDcsEnd, '');
   return normalized.trim();
 }
 
 /// Returns a safe category for a tmux control-mode line without exposing the
 /// raw line contents.
 @visibleForTesting
-String diagnosticTmuxControlLineKind(String line) {
-  final trimmed = _normalizeTmuxControlLine(line);
+String diagnosticTmuxControlLineKind(String line) =>
+    _diagnosticTmuxControlLineKind(_normalizeTmuxControlLine(line));
+
+String _diagnosticTmuxControlLineKind(String trimmed) {
   if (trimmed.isEmpty) return 'empty';
   final separator = trimmed.indexOf(' ');
   final marker = separator == -1 ? trimmed : trimmed.substring(0, separator);
@@ -3252,26 +3216,12 @@ String diagnosticTmuxControlLineKind(String line) {
 bool shouldScheduleTmuxWindowReloadFallback(
   String line, {
   required String subscriptionName,
-}) {
-  final trimmed = _normalizeTmuxControlLine(line);
-  if (trimmed.isEmpty) return false;
-  if (trimmed.startsWith('%subscription-changed $subscriptionName ')) {
-    return true;
-  }
-
-  const notificationPrefixes = <String>[
-    '%pane-mode-changed ',
-    '%session-window-changed ',
-    '%sessions-changed',
-    '%unlinked-window-add ',
-    '%unlinked-window-close ',
-    '%unlinked-window-renamed ',
-    '%window-add ',
-    '%window-close ',
-    '%window-renamed ',
-  ];
-  return notificationPrefixes.any(trimmed.startsWith);
-}
+}) =>
+    _classifyTmuxControlLine(
+      _normalizeTmuxControlLine(line),
+      subscriptionName,
+    ) !=
+    _TmuxControlNotification.other;
 
 /// Returns whether a scheduled tmux reload should be preserved even if a later
 /// snapshot arrives before the debounce fires.
@@ -3280,16 +3230,41 @@ bool shouldScheduleTmuxWindowReloadFallback(
 /// local list can drop removed windows and pick up newly created ones. A later
 /// per-window snapshot is not enough to reconcile those structural changes.
 @visibleForTesting
-bool shouldPreserveTmuxWindowReloadThroughSnapshots(String line) {
-  final trimmed = _normalizeTmuxControlLine(line);
-  const notificationPrefixes = <String>[
-    '%sessions-changed',
-    '%unlinked-window-add ',
-    '%unlinked-window-close ',
-    '%window-add ',
-    '%window-close ',
-  ];
-  return notificationPrefixes.any(trimmed.startsWith);
+bool shouldPreserveTmuxWindowReloadThroughSnapshots(String line) =>
+    _classifyTmuxControlLine(_normalizeTmuxControlLine(line), null) ==
+    _TmuxControlNotification.structural;
+
+enum _TmuxControlNotification {
+  other,
+  subscription,
+  fallback,
+  reload,
+  structural,
+}
+
+_TmuxControlNotification _classifyTmuxControlLine(
+  String line,
+  String? subscriptionName,
+) {
+  if (subscriptionName != null &&
+      line.startsWith('%subscription-changed $subscriptionName ')) {
+    return _TmuxControlNotification.subscription;
+  }
+  const notifications = {
+    '%pane-mode-changed ': _TmuxControlNotification.reload,
+    '%session-window-changed ': _TmuxControlNotification.fallback,
+    '%sessions-changed': _TmuxControlNotification.structural,
+    '%unlinked-window-add ': _TmuxControlNotification.structural,
+    '%unlinked-window-close ': _TmuxControlNotification.structural,
+    '%unlinked-window-renamed ': _TmuxControlNotification.reload,
+    '%window-add ': _TmuxControlNotification.structural,
+    '%window-close ': _TmuxControlNotification.structural,
+    '%window-renamed ': _TmuxControlNotification.fallback,
+  };
+  for (final entry in notifications.entries) {
+    if (line.startsWith(entry.key)) return entry.value;
+  }
+  return _TmuxControlNotification.other;
 }
 
 /// Returns whether a live tmux window snapshot should bypass the normal active
@@ -3334,8 +3309,17 @@ TmuxWindowChangeEvent? parseTmuxWindowChangeEventFromControlLine(
   required String subscriptionName,
 }) {
   final trimmed = _normalizeTmuxControlLine(line);
-  if (trimmed.isEmpty) return null;
-  if (trimmed.startsWith('%subscription-changed $subscriptionName ')) {
+  return _parseTmuxWindowChangeEvent(
+    trimmed,
+    _classifyTmuxControlLine(trimmed, subscriptionName),
+  );
+}
+
+TmuxWindowChangeEvent? _parseTmuxWindowChangeEvent(
+  String trimmed,
+  _TmuxControlNotification notification,
+) {
+  if (notification == _TmuxControlNotification.subscription) {
     final valueSeparator = trimmed.indexOf(' : ');
     if (valueSeparator == -1 || valueSeparator + 3 >= trimmed.length) {
       return const TmuxWindowReloadEvent();
@@ -3348,16 +3332,8 @@ TmuxWindowChangeEvent? parseTmuxWindowChangeEventFromControlLine(
     }
   }
 
-  const notificationPrefixes = <String>[
-    '%pane-mode-changed ',
-    '%sessions-changed',
-    '%unlinked-window-add ',
-    '%unlinked-window-close ',
-    '%unlinked-window-renamed ',
-    '%window-add ',
-    '%window-close ',
-  ];
-  if (notificationPrefixes.any(trimmed.startsWith)) {
+  if (notification == _TmuxControlNotification.reload ||
+      notification == _TmuxControlNotification.structural) {
     return const TmuxWindowReloadEvent();
   }
   return null;
@@ -3711,30 +3687,8 @@ class _TmuxWindowChangeObserver {
       _handleControlClosed(shutdownInput: _tmuxControlModeExitAcknowledgeInput);
       return;
     }
-    final event = parseTmuxWindowChangeEventFromControlLine(
-      trimmed,
-      subscriptionName: _subscriptionName,
-    );
-    if (event == null) {
-      if (shouldScheduleTmuxWindowReloadFallback(
-        trimmed,
-        subscriptionName: _subscriptionName,
-      )) {
-        DiagnosticsLogService.instance.debug(
-          'tmux.watch',
-          'fallback_reload_signal',
-          fields: {
-            'connectionId': session.connectionId,
-            'lineKind': diagnosticTmuxControlLineKind(trimmed),
-          },
-        );
-        _scheduleReloadEvent(
-          preserveThroughSnapshots:
-              shouldPreserveTmuxWindowReloadThroughSnapshots(trimmed),
-        );
-      }
-      return;
-    }
+    final notification = _classifyTmuxControlLine(trimmed, _subscriptionName);
+    final event = _parseTmuxWindowChangeEvent(trimmed, notification);
     if (event is TmuxWindowSnapshotEvent) {
       if (!_preserveScheduledReloadThroughSnapshots) {
         _cancelScheduledReload();
@@ -3753,18 +3707,20 @@ class _TmuxWindowChangeObserver {
       _emitEvent(event);
       return;
     }
+    if (event == null && notification != _TmuxControlNotification.fallback) {
+      return;
+    }
     DiagnosticsLogService.instance.debug(
       'tmux.watch',
-      'reload_event',
+      event == null ? 'fallback_reload_signal' : 'reload_event',
       fields: {
         'connectionId': session.connectionId,
-        'lineKind': diagnosticTmuxControlLineKind(trimmed),
+        'lineKind': _diagnosticTmuxControlLineKind(trimmed),
       },
     );
     _scheduleReloadEvent(
-      preserveThroughSnapshots: shouldPreserveTmuxWindowReloadThroughSnapshots(
-        trimmed,
-      ),
+      preserveThroughSnapshots:
+          notification == _TmuxControlNotification.structural,
     );
   }
 

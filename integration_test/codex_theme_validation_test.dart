@@ -23,9 +23,11 @@ import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
+import 'package:xterm/src/ui/palette_builder.dart';
 import 'package:xterm/xterm.dart' hide TerminalThemes;
 
 import '../test/helpers/live_ssh_terminal_helpers.dart';
+import '../test/helpers/terminal_theme_assertion_helpers.dart';
 
 const _sshPort = int.fromEnvironment('CODEX_THEME_SSH_PORT');
 const _sshUser = String.fromEnvironment('CODEX_THEME_SSH_USER');
@@ -201,7 +203,7 @@ void main() {
       monkey_themes.TerminalThemes.defaultDarkTheme,
       darkToken,
     );
-    final darkSurface = _composerSurfaceForToken(
+    final darkSurface = composerSurfaceForToken(
       terminal,
       monkey_themes.TerminalThemes.defaultDarkTheme,
       darkToken,
@@ -227,7 +229,7 @@ void main() {
       monkey_themes.TerminalThemes.defaultLightTheme,
       lightToken,
     );
-    final lightSurface = _composerSurfaceForToken(
+    final lightSurface = composerSurfaceForToken(
       terminal,
       monkey_themes.TerminalThemes.defaultLightTheme,
       lightToken,
@@ -254,7 +256,7 @@ double _minimumTokenContrast(
   String token,
 ) {
   final xtermTheme = theme.toXtermTheme();
-  final palette = _buildTerminalPalette(xtermTheme);
+  final palette = PaletteBuilder(xtermTheme).build();
   final cell = CellData.empty();
 
   for (var row = 0; row < terminal.buffer.lines.length; row += 1) {
@@ -268,130 +270,14 @@ double _minimumTokenContrast(
     var minimum = double.infinity;
     for (var offset = 0; offset < token.length; offset += 1) {
       line.getCellData(startColumn + offset, cell);
-      final colors = _effectiveCellColors(cell, xtermTheme, palette);
+      final colors = effectiveCellColors(cell, xtermTheme, palette);
       minimum = math.min(
         minimum,
-        _contrastRatio(colors.foreground, colors.background),
+        contrastRatio(colors.foreground, colors.background),
       );
     }
     return minimum;
   }
 
   fail('Could not find token "$token" in terminal buffer.');
-}
-
-({Color background, int sampledCells}) _composerSurfaceForToken(
-  Terminal terminal,
-  TerminalThemeData theme,
-  String token,
-) {
-  final xtermTheme = theme.toXtermTheme();
-  final palette = _buildTerminalPalette(xtermTheme);
-  final cell = CellData.empty();
-
-  for (var row = 0; row < terminal.buffer.lines.length; row += 1) {
-    final line = terminal.buffer.lines[row];
-    final text = line.getText(0, terminal.buffer.viewWidth);
-    final startColumn = text.indexOf(token);
-    if (startColumn == -1) {
-      continue;
-    }
-
-    line.getCellData(startColumn, cell);
-    final tokenSurfaceColor = _effectiveBackgroundCellColor(cell);
-    final background = _effectiveCellColors(
-      cell,
-      xtermTheme,
-      palette,
-    ).background;
-    var sampledCells = 0;
-
-    for (var column = 0; column < terminal.buffer.viewWidth; column += 1) {
-      line.getCellData(column, cell);
-      if (_effectiveBackgroundCellColor(cell) == tokenSurfaceColor) {
-        sampledCells += 1;
-      }
-    }
-
-    return (background: background, sampledCells: sampledCells);
-  }
-
-  fail('Could not find token "$token" in terminal buffer.');
-}
-
-int _effectiveBackgroundCellColor(CellData cell) =>
-    (cell.flags & CellFlags.inverse) == 0 ? cell.background : cell.foreground;
-
-({Color foreground, Color background}) _effectiveCellColors(
-  CellData cell,
-  TerminalTheme xtermTheme,
-  List<Color> palette,
-) {
-  var foreground = (cell.flags & CellFlags.inverse) == 0
-      ? _resolveForegroundColor(cell.foreground, xtermTheme, palette)
-      : _resolveBackgroundColor(cell.background, xtermTheme, palette);
-  final background = (cell.flags & CellFlags.inverse) == 0
-      ? _resolveBackgroundColor(cell.background, xtermTheme, palette)
-      : _resolveForegroundColor(cell.foreground, xtermTheme, palette);
-
-  if ((cell.flags & CellFlags.faint) != 0) {
-    foreground = resolveMonkeyTerminalFaintForegroundColor(
-      foreground: foreground,
-      background: background,
-    );
-  }
-  return (foreground: foreground, background: background);
-}
-
-Color _resolveForegroundColor(
-  int cellColor,
-  TerminalTheme xtermTheme,
-  List<Color> palette,
-) {
-  final colorType = cellColor & CellColor.typeMask;
-  final colorValue = cellColor & CellColor.valueMask;
-  return switch (colorType) {
-    CellColor.normal => xtermTheme.foreground,
-    CellColor.named || CellColor.palette => palette[colorValue],
-    _ => Color.fromARGB(
-      0xFF,
-      (colorValue >> 16) & 0xFF,
-      (colorValue >> 8) & 0xFF,
-      colorValue & 0xFF,
-    ),
-  };
-}
-
-Color _resolveBackgroundColor(
-  int cellColor,
-  TerminalTheme xtermTheme,
-  List<Color> palette,
-) {
-  final colorType = cellColor & CellColor.typeMask;
-  final colorValue = cellColor & CellColor.valueMask;
-  return switch (colorType) {
-    CellColor.normal => xtermTheme.background,
-    CellColor.named || CellColor.palette => palette[colorValue],
-    _ => Color.fromARGB(
-      0xFF,
-      (colorValue >> 16) & 0xFF,
-      (colorValue >> 8) & 0xFF,
-      colorValue & 0xFF,
-    ),
-  };
-}
-
-List<Color> _buildTerminalPalette(TerminalTheme xtermTheme) =>
-    List<Color>.generate(
-      256,
-      (index) => resolveMonkeyTerminalPaletteColor(xtermTheme, index),
-      growable: false,
-    );
-
-double _contrastRatio(Color a, Color b) {
-  final luminanceA = a.computeLuminance();
-  final luminanceB = b.computeLuminance();
-  final brightest = math.max(luminanceA, luminanceB);
-  final darkest = math.min(luminanceA, luminanceB);
-  return (brightest + 0.05) / (darkest + 0.05);
 }

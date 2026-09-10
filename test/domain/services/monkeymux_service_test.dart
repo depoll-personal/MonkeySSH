@@ -725,6 +725,84 @@ void main() {
       verify(() => installer.clearCache(898)).called(1);
     });
 
+    for (final clearConnection in [false, true]) {
+      test(
+        'late window list cannot refill cache after clear=$clearConnection',
+        () async {
+          final client = _MockSshClient();
+          final installer = _MockMonkeyMuxInstaller();
+          final session = _buildSession(client, connectionId: 896);
+          final pending = Completer<SSHSession>();
+          final oldOutput = StreamController<Uint8List>();
+          final newOutput = StreamController<Uint8List>();
+          final finalOutput = StreamController<Uint8List>();
+          final oldControl = _buildRespondingControlSession(
+            oldOutput,
+            window: {
+              ..._fakeWindowJson,
+              'name': 'Old helper',
+              'agentSessionId': 'old-session',
+            },
+          );
+          final newControl = _buildRespondingControlSession(
+            newOutput,
+            window: {
+              ..._fakeWindowJson,
+              'name': 'Replacement helper',
+              'agentSessionId': 'new-session',
+            },
+          );
+          final finalControl = _buildRespondingControlSession(
+            finalOutput,
+            window: {..._fakeWindowJson, 'name': 'Replacement helper'},
+          );
+          when(
+            () => installer.ensureInstalled(
+              session,
+              priority: SshExecPriority.normal,
+            ),
+          ).thenAnswer((_) async => _fakeInstallation);
+          var opens = 0;
+          when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer(
+            (_) => switch (opens++) {
+              0 => pending.future,
+              1 => Future.value(newControl),
+              _ => Future.value(finalControl),
+            },
+          );
+          final service = MonkeyMuxService(
+            installer: installer,
+            agentSessionMetadataPeriodicRefreshInterval: Duration.zero,
+          );
+          addTearDown(() async {
+            await service.clearCache(896);
+            await oldOutput.close();
+            await newOutput.close();
+            await finalOutput.close();
+          });
+          final old = service.listWindows(session, 'work');
+          await untilCalled(
+            () => client.execute(any(), pty: any(named: 'pty')),
+          );
+          if (clearConnection) {
+            await service.clearCache(896);
+          } else {
+            await service.resetServerRuntime(896, 'work');
+          }
+          expect(
+            (await service.listWindows(session, 'work')).single.name,
+            'Replacement helper',
+          );
+          pending.complete(oldControl);
+          expect((await old).single.name, 'Old helper');
+          final after = (await service.listWindows(session, 'work')).single;
+          expect(after.name, 'Replacement helper');
+          expect(after.activeAgentSessionId, 'new-session');
+          expect(opens, 3);
+        },
+      );
+    }
+
     test('recycles a watcher without closing existing consumers', () async {
       final client = _MockSshClient();
       final installer = _MockMonkeyMuxInstaller();
@@ -1436,14 +1514,7 @@ SSHSession _buildRespondingControlSession(
   StreamController<Uint8List> stdoutController, {
   required Map<String, Object?> window,
 }) {
-  final session = _MockExecSession();
-  final stdinSink = _MockByteSink();
-  when(stdinSink.close).thenAnswer((_) async {});
-  when(() => session.stdout).thenAnswer((_) => stdoutController.stream);
-  when(() => session.stderr).thenAnswer((_) => const Stream<Uint8List>.empty());
-  when(() => session.done).thenAnswer((_) => Completer<void>().future);
-  when(() => session.stdin).thenAnswer((_) => stdinSink);
-  when(session.close).thenAnswer((_) {});
+  final session = _buildSilentControlSession(stdoutController);
   when(() => session.write(any())).thenAnswer((invocation) {
     final data = invocation.positionalArguments.single as List<int>;
     final request = jsonDecode(utf8.decode(data)) as Map<String, Object?>;

@@ -1,12 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:cross_file/cross_file.dart';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
@@ -51,6 +51,8 @@ class _MockXFile extends Mock implements XFile {}
 class _SftpFilePicker extends FilePickerPlatform {
   List<PlatformFile> files = [];
   Uri? saveDestination;
+  Uint8List? savedBytes;
+  bool failSave = false;
 
   @override
   Future<List<PlatformFile>> pickFiles({
@@ -77,7 +79,16 @@ class _SftpFilePicker extends FilePickerPlatform {
     WindowsOptions windowsOptions = const WindowsOptions(),
     LinuxOptions linuxOptions = const LinuxOptions(),
     WebOptions webOptions = const WebOptions(),
-  }) async => saveDestination;
+  }) async {
+    savedBytes = bytes;
+    if (failSave) {
+      throw const FileSystemException('provider rejected save');
+    }
+    if (saveDestination?.scheme == 'file') {
+      await File.fromUri(saveDestination!).writeAsBytes(bytes);
+    }
+    return saveDestination;
+  }
 }
 
 class _MockSftpFile extends Mock implements SftpFile {}
@@ -1554,28 +1565,68 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     });
 
-    testWidgets(
-      'video preview deletes its cache after saving a separate copy',
-      (tester) async {
-        final cacheDirectory = Directory('build/sftp-video-preview-test')
-          ..createSync(recursive: true);
-        addTearDown(() {
-          if (cacheDirectory.existsSync()) {
-            cacheDirectory.deleteSync(recursive: true);
-          }
-        });
-
+    for (final destination in [
+      'file',
+      'content',
+      'android-path',
+      'cancel',
+      'failure',
+      'large-desktop',
+      'large-mobile',
+      'share-cancel',
+    ]) {
+      testWidgets('video export preserves bytes and cleans up: $destination', (
+        tester,
+      ) async {
+        final cacheDirectory = Directory.systemTemp.createTempSync(
+          'sftp-export-test-',
+        );
+        addTearDown(() => cacheDirectory.deleteSync(recursive: true));
         final cachedFile = File('${cacheDirectory.path}/cached-preview.mp4')
           ..writeAsBytesSync([1, 2, 3]);
-
+        final large =
+            destination.startsWith('large-') || destination == 'share-cancel';
+        final mobileShare =
+            destination == 'large-mobile' || destination == 'share-cancel';
+        if (large) {
+          cachedFile.openSync(mode: FileMode.append)
+            ..truncateSync(10 * 1024 * 1024 + 1)
+            ..closeSync();
+        }
         final exportedFile = File('${cacheDirectory.path}/export.mp4');
+        final picker = _SftpFilePicker()
+          ..failSave = destination == 'failure'
+          ..saveDestination = switch (destination) {
+            'content' => Uri.parse('content://documents/primary/export.mp4'),
+            'android-path' => Uri.parse('/document/primary:export.mp4'),
+            'cancel' => null,
+            _ => exportedFile.absolute.uri,
+          };
         final previous = FilePickerPlatform.instance;
-        FilePickerPlatform.instance = _SftpFilePicker()
-          ..saveDestination = exportedFile.absolute.uri;
+        FilePickerPlatform.instance = picker;
         addTearDown(() => FilePickerPlatform.instance = previous);
-
+        final shareCalls = <MethodCall>[];
+        const shareChannel = MethodChannel('dev.fluttercommunity.plus/share');
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          shareChannel,
+          (call) async {
+            shareCalls.add(call);
+            return destination == 'share-cancel' ? '' : 'saved';
+          },
+        );
+        addTearDown(
+          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            shareChannel,
+            null,
+          ),
+        );
         await tester.pumpWidget(
           MaterialApp(
+            theme: ThemeData(
+              platform: destination == 'large-desktop'
+                  ? TargetPlatform.linux
+                  : TargetPlatform.android,
+            ),
             home: buildRemoteVideoPreviewErrorForTesting(
               fileName: 'cached-preview.mp4',
               remotePath: '/home/depoll/cached-preview.mp4',
@@ -1586,20 +1637,47 @@ void main() {
             ),
           ),
         );
-
         expect(cachedFile.existsSync(), isTrue);
         final saveButton = tester.widget<OutlinedButton>(
           find.widgetWithText(OutlinedButton, 'Save copy'),
         );
         await tester.runAsync(saveButton.onPressed! as Future<void> Function());
         await tester.pumpAndSettle();
-        expect(exportedFile.readAsBytesSync(), [1, 2, 3]);
-
+        if (mobileShare) {
+          expect(picker.savedBytes, isNull);
+          expect(shareCalls, hasLength(1));
+          expect((shareCalls.single.arguments as Map)['paths'], [
+            cachedFile.path,
+          ]);
+        } else {
+          expect(picker.savedBytes, large ? isEmpty : [1, 2, 3]);
+          expect(shareCalls, isEmpty);
+        }
+        if (destination == 'file') {
+          expect(exportedFile.readAsBytesSync(), [1, 2, 3]);
+        } else if (destination == 'large-desktop') {
+          expect(exportedFile.lengthSync(), 10 * 1024 * 1024 + 1);
+          expect(exportedFile.readAsBytesSync().take(3), [1, 2, 3]);
+        }
+        if ([
+          'file',
+          'content',
+          'android-path',
+          'large-desktop',
+        ].contains(destination)) {
+          expect(find.text('Saved "cached-preview.mp4"'), findsOneWidget);
+        } else if (destination == 'failure') {
+          expect(
+            find.text('Could not export the file. Try again.'),
+            findsOneWidget,
+          );
+        }
         await tester.pumpWidget(const SizedBox.shrink());
-
-        expect(cachedFile.existsSync(), isFalse);
-        expect(exportedFile.readAsBytesSync(), [1, 2, 3]);
-      },
-    );
+        expect(cachedFile.existsSync(), destination == 'large-mobile');
+        if (destination == 'file') {
+          expect(exportedFile.readAsBytesSync(), [1, 2, 3]);
+        }
+      });
+    }
   });
 }

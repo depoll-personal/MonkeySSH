@@ -2335,6 +2335,85 @@ void main() {
     });
   });
 
+  group('terminalSensitivePromptTextBeforeCursor', () {
+    test('rejects the entire overlong wrapped prefix, not just its suffix', () {
+      final terminal = Terminal(maxLines: 10000)
+        ..resize(80, 24)
+        ..write('${'x' * 100000} Password:');
+      expect(terminalSensitivePromptTextBeforeCursor(terminal), isNull);
+    });
+
+    test('keeps the 220 UTF-16 boundary and ignores trailing whitespace', () {
+      final terminal = Terminal()
+        ..resize(20, 24)
+        ..write('${'x' * 210} Password:${' ' * 400}');
+      expect(
+        terminalSensitivePromptTextBeforeCursor(terminal),
+        '${'x' * 210} Password:',
+      );
+      expect(
+        terminalTextLooksLikeSensitiveInputPrompt(
+          terminalSensitivePromptTextBeforeCursor(terminal),
+        ),
+        isTrue,
+      );
+      terminal.write('x');
+      expect(terminalSensitivePromptTextBeforeCursor(terminal), isNull);
+    });
+
+    test('counts supplementary characters as two UTF-16 code units', () {
+      // Move past the final column so the colon is before the reported cursor.
+      final terminal = Terminal()
+        ..resize(20, 24)
+        ..write('${'😀' * 105} Password: ');
+      expect(
+        terminalSensitivePromptTextBeforeCursor(terminal),
+        '${'😀' * 105} Password:',
+      );
+      terminal.write('x');
+      expect(terminalSensitivePromptTextBeforeCursor(terminal), isNull);
+    });
+
+    test('stops at the cursor and the start of its wrapped group', () {
+      final terminal = Terminal()
+        ..resize(10, 24)
+        ..write('${'x' * 300}\r\nPassword: ignored')
+        ..write('\x1b[1A\x1b[10G');
+      expect(terminalSensitivePromptTextBeforeCursor(terminal), 'Password:');
+    });
+
+    test(
+      'preserves wrapped padding after a wide character at the row edge',
+      () {
+        // The trailing space wraps the cursor onto a third row, past the colon.
+        final terminal = Terminal()
+          ..resize(10, 24)
+          ..write('123456789界Password: ');
+        expect(
+          terminalSensitivePromptTextBeforeCursor(terminal),
+          '123456789界 Password:',
+        );
+        terminal.write('\x1b[2A\x1b[10G');
+        expect(terminalSensitivePromptTextBeforeCursor(terminal), '123456789');
+      },
+    );
+
+    test('excludes a wide character when the cursor is inside its cell', () {
+      final terminal = Terminal()
+        ..resize(10, 24)
+        ..write('12界Password:')
+        ..write('\x1b[1A\x1b[4G');
+      expect(terminalSensitivePromptTextBeforeCursor(terminal), '12');
+    });
+
+    test('returns an empty prefix for a blank line', () {
+      final terminal = Terminal()
+        ..resize(10, 24)
+        ..write('   ');
+      expect(terminalSensitivePromptTextBeforeCursor(terminal), isEmpty);
+    });
+  });
+
   group('resolveTerminalLineSnapshotTextLength', () {
     test('preserves trailing spaces through the cursor offset', () {
       expect(

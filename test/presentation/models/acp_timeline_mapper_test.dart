@@ -474,13 +474,13 @@ void main() {
       'phases': <Object?>[],
     });
 
-    expect(formatted, contains('tool: grep'));
-    expect(formatted, contains('status: completed'));
-    expect(formatted, contains('pattern: needle'));
-    expect(formatted, contains('result: 3 matches'));
-    expect(formatted, isNot(contains('internal-call-id')));
-    expect(formatted, isNot(contains('text:')));
-    expect(formatted, isNot(contains('phases')));
+    expect(formatted.text, contains('tool: grep'));
+    expect(formatted.text, contains('status: completed'));
+    expect(formatted.text, contains('pattern: needle'));
+    expect(formatted.text, contains('result: 3 matches'));
+    expect(formatted.text, isNot(contains('internal-call-id')));
+    expect(formatted.text, isNot(contains('text:')));
+    expect(formatted.text, isNot(contains('phases')));
   });
 
   test('formats structured tool payloads as YAML-like progress text', () {
@@ -492,7 +492,7 @@ void main() {
     });
 
     expect(
-      formatted,
+      formatted.text,
       '''
 path: lib/main.dart
 options:
@@ -511,7 +511,9 @@ nested:
 
   test('decodes JSON-string tool payloads before formatting', () {
     expect(
-      formatAcpToolPayload('{"query":"status: open","limit":5,"hidden":false}'),
+      formatAcpToolPayload(
+        '{"query":"status: open","limit":5,"hidden":false}',
+      ).text,
       '''
 query: "status: open"
 limit: 5
@@ -519,6 +521,58 @@ hidden: false
 '''
           .trim(),
     );
+  });
+
+  test('reports structure consistently with formatted JSON and plain text', () {
+    for (final (input, text, structured) in [
+      ('{"answer":42}', 'answer: 42', true),
+      ('[1,true]', '- 1\n- true', true),
+      ('{invalid}', '{invalid}', false),
+      ('plain output', 'plain output', false),
+      ('', null, false),
+    ]) {
+      expect(formatAcpToolPayload(input), (
+        text: text,
+        isStructured: structured,
+      ));
+    }
+  });
+
+  test('bounds raw traversal and keeps text after the image limit', () {
+    var visited = 0;
+    Iterable<Object?> output() sync* {
+      for (var index = 0; index < 9; index++) {
+        yield {'type': 'image', 'uri': 'file:///$index.png', 'text': 'hidden'};
+      }
+      yield {'text': 'after images'};
+      yield {'stdout': 'after images'};
+      for (var index = 0; index < 1000; index++) {
+        visited++;
+        yield null;
+      }
+      throw StateError('traversal exceeded node budget');
+    }
+
+    final tool =
+        mapAcpSessionTimeline(
+              _state(
+                timeline: AcpTimeline(
+                  entries: [
+                    AcpToolCallEntry(
+                      toolCallId: 'bounded',
+                      order: 0,
+                      rawOutput: output(),
+                    ),
+                  ],
+                ),
+              ),
+            ).single
+            as p.AcpToolCallEntry;
+    expect(tool.toolCall.images.map((image) => image.uri), [
+      for (var index = 0; index < 8; index++) 'file:///$index.png',
+    ]);
+    expect(tool.toolCall.rawOutput, 'after images');
+    expect(visited, 242);
   });
 
   test('bounds oversized tool input text', () {

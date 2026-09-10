@@ -144,6 +144,65 @@ class WorkflowContractsTest(unittest.TestCase):
             text=True,
         ))
 
+    def test_apple_cache_keys_limits_and_save_conditions(self):
+        actions = json.loads(subprocess.check_output(['ruby', '-ryaml', '-rjson', '-e',
+            'puts JSON.generate(ARGV.map { |f| YAML.load_file(f) })',
+            *[str(ROOT / '.github/actions' / name / 'action.yml')
+              for name in ['apple-cache-restore', 'apple-cache-save']]], text=True))
+        restore, save = [action['runs']['steps'] for action in actions]
+        keyed = {step['id']: step for step in restore if 'id' in step}
+        suffix = "${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.xcode }}-${{ inputs.flutter-version }}"
+        self.assertEqual(keyed['compilation']['with']['key'], '${{ inputs.platform }}-compile-v1-' + suffix +
+                         '-${{ inputs.configuration }}-${{ inputs.dependency-fingerprint }}')
+        self.assertEqual(keyed['workspace']['with']['key'], 'spm-workspace-v1-' + suffix +
+                         '-${{ inputs.platform }}-${{ inputs.dependency-fingerprint }}')
+        spm_key = "spm-${{ runner.os }}-${{ hashFiles('ios/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'macos/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}"
+        self.assertEqual(keyed['swiftpm']['with']['key'], spm_key)
+        self.assertEqual(keyed['swiftpm']['with']['restore-keys'], 'spm-${{ runner.os }}-')
+        self.assertEqual(save[-1]['with']['key'], spm_key)
+        self.assertEqual(restore[1]['run'], 'rm -rf ~/Library/Caches/org.swift.swiftpm/manifests')
+        for kind in ['compilation', 'workspace']:
+            step = next(step for step in save if step.get('with', {}).get('key') == '${{ inputs.' + kind + '-key }}')
+            self.assertEqual(step['if'], "steps.sizes.outputs." + kind + " == 'true' && inputs." + kind + "-hit != 'true'")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / 'build/ios/SourcePackages').mkdir(parents=True)
+            du = root / 'du'
+            du.write_text('#!/bin/sh\nprintf "%s\\tcache\\n" "$TEST_CACHE_KIB"\n')
+            du.chmod(0o755)
+            for limit in [1048576, 2097152]:
+                for size in [0, 1, limit, limit + 1]:
+                    output = root / 'output'
+                    output.write_text('')
+                    subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', save[0]['run']],
+                                   cwd=root, check=True, env={**os.environ,
+                                       'PATH': str(root) + os.pathsep + os.environ['PATH'],
+                                       'PLATFORM': 'ios', 'TEST_CACHE_KIB': str(size),
+                                       'COMPILATION_LIMIT_KIB': str(limit), 'WORKSPACE_LIMIT_KIB': '2097152',
+                                       'GITHUB_OUTPUT': str(output), 'GITHUB_STEP_SUMMARY': str(root / 'summary')})
+                    expected = ('compilation=true\n' if 0 < size <= limit else '') + (
+                        'workspace=true\n' if 0 < size <= 2097152 else '')
+                    self.assertEqual(output.read_text(), expected)
+        for workflow, platform, configuration, limit in [('ci.yml', 'ios', 'production', 1048576),
+                ('ci.yml', 'macos', 'release', 2097152), ('build-deploy.yml', 'ios', '${{ inputs.flavor }}', 1048576)]:
+            steps = self.workflows[workflow]['jobs']['build-' + platform]['steps']
+            caches = [step for step in steps if step.get('with', {}).get('phase') == 'build']
+            self.assertEqual(caches[0]['with']['configuration'], configuration)
+            self.assertEqual(caches[0]['with']['dependency-fingerprint'],
+                             "${{ hashFiles('pubspec.lock', '" + platform + "/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}")
+            self.assertEqual(caches[1]['with']['compilation-limit-kib'], limit)
+            self.assertEqual(caches[1]['with']['workspace-limit-kib'], 2097152)
+            for kind in ['compilation', 'workspace']:
+                for field in ['key', 'hit']:
+                    self.assertEqual(caches[1]['with'][kind + '-' + field], '${{ steps.apple-cache.outputs.' + kind + '-' + field + ' }}')
+            if workflow == 'ci.yml':
+                self.assertEqual(steps[-1]['if'], "steps.spm-cache.outputs.swiftpm-hit != 'true'")
+            else:
+                self.assertEqual(caches[0]['if'], "inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'")
+                self.assertEqual(caches[1]['if'], "steps.apple-cache.outcome == 'success'")
+                self.assertFalse(any(step.get('with', {}).get('phase') == 'swiftpm' and
+                                     step.get('uses') == './.github/actions/apple-cache-save' for step in steps))
+
     def test_mobile_triggers_share_all_compile_and_packaging_inputs(self):
         for file, event in [('preview.yml', 'pull_request'), ('deploy-private.yml', 'push'),
                             ('preview-ios.yml', 'pull_request')]:

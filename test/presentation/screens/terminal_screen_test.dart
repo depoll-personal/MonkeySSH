@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:mocktail/mocktail.dart';
@@ -1407,6 +1408,58 @@ void main() {
       tmuxService: tmuxService,
       monkeyMuxService: monkeyMuxService,
     );
+
+    Widget buildScreen({
+      Widget? child,
+      ActiveSessionsNotifier? activeSessions,
+      List<Override> overrides = const [],
+    }) => ProviderScope(
+      overrides: [
+        databaseProvider.overrideWithValue(db),
+        hostRepositoryProvider.overrideWithValue(hostRepository),
+        monetizationServiceProvider.overrideWithValue(monetizationService),
+        monetizationStateProvider.overrideWith(
+          (ref) => Stream.value(_proMonetizationState),
+        ),
+        sharedClipboardProvider.overrideWith((ref) async => false),
+        activeSessionsProvider.overrideWith(
+          () => activeSessions ?? _TestActiveSessionsNotifier(session),
+        ),
+        ...overrides,
+      ],
+      child:
+          child ??
+          MaterialApp(
+            home: TerminalScreen(
+              hostId: host.id,
+              connectionId: session.connectionId,
+            ),
+          ),
+    );
+
+    void stubTmuxWindows(
+      TmuxService tmuxService,
+      String sessionName,
+      List<TmuxWindow> windows,
+    ) {
+      when(
+        () => tmuxService.listWindows(session, sessionName),
+      ).thenAnswer((_) async => windows);
+      when(
+        () => tmuxService.watchWindowChanges(session, sessionName),
+      ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+      when(
+        () => tmuxService.prefetchInstalledAgentTools(session),
+      ).thenAnswer((_) async {});
+      when(
+        () => tmuxService.refreshTerminalTheme(
+          session,
+          sessionName,
+          any(),
+          extraFlags: any(named: 'extraFlags'),
+        ),
+      ).thenAnswer((_) async {});
+    }
 
     Future<void> pumpScreen(
       WidgetTester tester, {
@@ -2881,23 +2934,7 @@ void main() {
         addTearDown(router.dispose);
 
         await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
-            ],
-            child: MaterialApp.router(routerConfig: router),
-          ),
+          buildScreen(child: MaterialApp.router(routerConfig: router)),
         );
         await tester.pump();
         await tester.pump();
@@ -3099,21 +3136,7 @@ void main() {
       addTearDown(router.dispose);
 
       await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            databaseProvider.overrideWithValue(db),
-            hostRepositoryProvider.overrideWithValue(hostRepository),
-            monetizationServiceProvider.overrideWithValue(monetizationService),
-            monetizationStateProvider.overrideWith(
-              (ref) => Stream.value(_proMonetizationState),
-            ),
-            sharedClipboardProvider.overrideWith((ref) async => false),
-            activeSessionsProvider.overrideWith(
-              () => _TestActiveSessionsNotifier(session),
-            ),
-          ],
-          child: MaterialApp.router(routerConfig: router),
-        ),
+        buildScreen(child: MaterialApp.router(routerConfig: router)),
       );
       await tester.pump();
       await tester.pump();
@@ -3959,28 +3982,8 @@ void main() {
         });
 
         await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
-              tmuxServiceProvider.overrideWithValue(tmuxService),
-            ],
-            child: MaterialApp(
-              home: TerminalScreen(
-                hostId: host.id,
-                connectionId: session.connectionId,
-              ),
-            ),
+          buildScreen(
+            overrides: [tmuxServiceProvider.overrideWithValue(tmuxService)],
           ),
         );
 
@@ -4181,30 +4184,15 @@ void main() {
 
         final activeSessions = _TestActiveSessionsNotifier(session);
         await tester.pumpWidget(
-          ProviderScope(
+          buildScreen(
+            activeSessions: activeSessions,
             overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(() => activeSessions),
               tmuxServiceProvider.overrideWithValue(tmuxService),
               monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
               monkeyMuxInstallerServiceProvider.overrideWithValue(
                 monkeyMuxInstallerService,
               ),
             ],
-            child: MaterialApp(
-              home: TerminalScreen(
-                hostId: host.id,
-                connectionId: session.connectionId,
-              ),
-            ),
           ),
         );
         expect(session.terminal, isNotNull);
@@ -4370,32 +4358,14 @@ void main() {
         ).thenAnswer((_) async {});
 
         await tester.pumpWidget(
-          ProviderScope(
+          buildScreen(
             overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
               tmuxServiceProvider.overrideWithValue(tmuxService),
               monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
               monkeyMuxInstallerServiceProvider.overrideWithValue(
                 monkeyMuxInstallerService,
               ),
             ],
-            child: MaterialApp(
-              home: TerminalScreen(
-                hostId: host.id,
-                connectionId: session.connectionId,
-              ),
-            ),
           ),
         );
         await tester.pump();
@@ -6021,18 +5991,9 @@ void main() {
         ).thenAnswer((_) async {});
 
         await tester.pumpWidget(
-          ProviderScope(
+          buildScreen(
+            activeSessions: activeSessions,
             overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(() => activeSessions),
               tmuxServiceProvider.overrideWithValue(tmuxService),
               monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
             ],
@@ -6138,18 +6099,9 @@ void main() {
         );
 
         await tester.pumpWidget(
-          ProviderScope(
+          buildScreen(
+            activeSessions: activeSessions,
             overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(() => activeSessions),
               tmuxServiceProvider.overrideWithValue(tmuxService),
               monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
             ],
@@ -6285,22 +6237,8 @@ void main() {
         });
 
         await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
-              tmuxServiceProvider.overrideWithValue(tmuxService),
-            ],
+          buildScreen(
+            overrides: [tmuxServiceProvider.overrideWithValue(tmuxService)],
             child: MaterialApp(
               home: TerminalScreen(
                 hostId: host.id,
@@ -6417,22 +6355,8 @@ void main() {
         });
 
         await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
-              tmuxServiceProvider.overrideWithValue(tmuxService),
-            ],
+          buildScreen(
+            overrides: [tmuxServiceProvider.overrideWithValue(tmuxService)],
             child: MaterialApp(
               home: TerminalScreen(
                 hostId: host.id,
@@ -6914,20 +6838,8 @@ void main() {
         ).thenAnswer((_) async {});
 
         await tester.pumpWidget(
-          ProviderScope(
+          buildScreen(
             overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
               tmuxServiceProvider.overrideWithValue(tmuxService),
               localNotificationServiceProvider.overrideWithValue(
                 notificationService,
@@ -7086,22 +6998,8 @@ void main() {
         ).thenAnswer((_) async => null);
 
         await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
-              tmuxServiceProvider.overrideWithValue(tmuxService),
-            ],
+          buildScreen(
+            overrides: [tmuxServiceProvider.overrideWithValue(tmuxService)],
             child: MaterialApp(
               home: TerminalScreen(
                 hostId: host.id,
@@ -7300,22 +7198,8 @@ void main() {
         });
 
         await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
-              tmuxServiceProvider.overrideWithValue(tmuxService),
-            ],
+          buildScreen(
+            overrides: [tmuxServiceProvider.overrideWithValue(tmuxService)],
             child: MaterialApp(
               home: TerminalScreen(
                 hostId: host.id,
@@ -7384,47 +7268,11 @@ void main() {
           }
           return tmuxSessionName;
         });
-        when(
-          () => tmuxService.listWindows(session, tmuxSessionName),
-        ).thenAnswer((_) async => windows);
-        when(
-          () => tmuxService.watchWindowChanges(session, tmuxSessionName),
-        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
-        when(
-          () => tmuxService.prefetchInstalledAgentTools(session),
-        ).thenAnswer((_) async {});
-        when(
-          () => tmuxService.refreshTerminalTheme(
-            session,
-            tmuxSessionName,
-            any(),
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async {});
+        stubTmuxWindows(tmuxService, tmuxSessionName, windows);
 
         await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
-              tmuxServiceProvider.overrideWithValue(tmuxService),
-            ],
-            child: MaterialApp(
-              home: TerminalScreen(
-                hostId: host.id,
-                connectionId: session.connectionId,
-              ),
-            ),
+          buildScreen(
+            overrides: [tmuxServiceProvider.overrideWithValue(tmuxService)],
           ),
         );
 
@@ -7476,47 +7324,11 @@ void main() {
           }
           return null;
         });
-        when(
-          () => tmuxService.listWindows(session, tmuxSessionName),
-        ).thenAnswer((_) async => windows);
-        when(
-          () => tmuxService.watchWindowChanges(session, tmuxSessionName),
-        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
-        when(
-          () => tmuxService.prefetchInstalledAgentTools(session),
-        ).thenAnswer((_) async {});
-        when(
-          () => tmuxService.refreshTerminalTheme(
-            session,
-            tmuxSessionName,
-            any(),
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async {});
+        stubTmuxWindows(tmuxService, tmuxSessionName, windows);
 
         await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
-              tmuxServiceProvider.overrideWithValue(tmuxService),
-            ],
-            child: MaterialApp(
-              home: TerminalScreen(
-                hostId: host.id,
-                connectionId: session.connectionId,
-              ),
-            ),
+          buildScreen(
+            overrides: [tmuxServiceProvider.overrideWithValue(tmuxService)],
           ),
         );
 
@@ -7549,47 +7361,11 @@ void main() {
           foregroundSessionCalls += 1;
           return foregroundSessionCalls == 1 ? tmuxSessionName : null;
         });
-        when(
-          () => tmuxService.listWindows(session, tmuxSessionName),
-        ).thenAnswer((_) async => windows);
-        when(
-          () => tmuxService.watchWindowChanges(session, tmuxSessionName),
-        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
-        when(
-          () => tmuxService.prefetchInstalledAgentTools(session),
-        ).thenAnswer((_) async {});
-        when(
-          () => tmuxService.refreshTerminalTheme(
-            session,
-            tmuxSessionName,
-            any(),
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async {});
+        stubTmuxWindows(tmuxService, tmuxSessionName, windows);
 
         await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
-              tmuxServiceProvider.overrideWithValue(tmuxService),
-            ],
-            child: MaterialApp(
-              home: TerminalScreen(
-                hostId: host.id,
-                connectionId: session.connectionId,
-              ),
-            ),
+          buildScreen(
+            overrides: [tmuxServiceProvider.overrideWithValue(tmuxService)],
           ),
         );
 
@@ -7662,22 +7438,8 @@ void main() {
         ).thenAnswer((_) async {});
 
         await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
-              tmuxServiceProvider.overrideWithValue(tmuxService),
-            ],
+          buildScreen(
+            overrides: [tmuxServiceProvider.overrideWithValue(tmuxService)],
             child: MaterialApp(
               home: TerminalScreen(
                 hostId: host.id,
@@ -7759,22 +7521,8 @@ void main() {
         ).thenAnswer((_) async {});
 
         await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
-              tmuxServiceProvider.overrideWithValue(tmuxService),
-            ],
+          buildScreen(
+            overrides: [tmuxServiceProvider.overrideWithValue(tmuxService)],
             child: MaterialApp(
               home: TerminalScreen(
                 hostId: host.id,
@@ -7900,22 +7648,8 @@ void main() {
         expect(session.shellStatus, TerminalShellStatus.runningCommand);
 
         await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
-              tmuxServiceProvider.overrideWithValue(tmuxService),
-            ],
+          buildScreen(
+            overrides: [tmuxServiceProvider.overrideWithValue(tmuxService)],
             child: MaterialApp(
               home: TerminalScreen(
                 hostId: host.id,
@@ -9809,6 +9543,59 @@ void main() {
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
     );
 
+    for (final disposeWhileSaving in [false, true]) {
+      testWidgets(
+        'trust persistence completes before running, disposed: $disposeWhileSaving',
+        (tester) async {
+          const command = 'copilot --resume saved-session';
+          final saved = Completer<bool>();
+          host = _buildHost(
+            id: host.id,
+            autoConnectCommand: command,
+            autoConnectRequiresConfirmation: true,
+          );
+          session = SshSession(
+            connectionId: 7,
+            hostId: host.id,
+            client: sshClient,
+            config: session.config,
+          );
+          when(
+            () => hostRepository.updateFields(any(), any()),
+          ).thenAnswer((_) => saved.future);
+
+          await pumpScreen(tester);
+          await tester.pump(const Duration(milliseconds: 300));
+          await tester.tap(find.text('Always run'));
+          await tester.pump();
+
+          final changes =
+              verify(
+                    () => hostRepository.updateFields(host.id, captureAny()),
+                  ).captured.single
+                  as HostsCompanion;
+          expect(changes.autoConnectRequiresConfirmation.present, isTrue);
+          expect(changes.autoConnectRequiresConfirmation.value, isFalse);
+          expect(shellWrites, isEmpty);
+          if (disposeWhileSaving) {
+            await tester.pumpWidget(const SizedBox.shrink());
+          }
+          saved.complete(true);
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 300));
+
+          if (disposeWhileSaving) {
+            expect(shellWrites, isEmpty);
+          } else {
+            expect(shellWrites.map(utf8.decode).join(), contains('$command\r'));
+          }
+          await tester.pumpWidget(const SizedBox.shrink());
+          await tester.pump();
+        },
+        variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+      );
+    }
+
     testWidgets(
       'prompts before installing MonkeyMux for foreground attach',
       (tester) async {
@@ -9863,32 +9650,14 @@ void main() {
         ).thenAnswer((_) async {});
 
         await tester.pumpWidget(
-          ProviderScope(
+          buildScreen(
             overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
               monkeyMuxInstallerServiceProvider.overrideWithValue(
                 monkeyMuxInstallerService,
               ),
               tmuxServiceProvider.overrideWithValue(tmuxService),
               monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
             ],
-            child: MaterialApp(
-              home: TerminalScreen(
-                hostId: host.id,
-                connectionId: session.connectionId,
-              ),
-            ),
           ),
         );
 
@@ -10110,32 +9879,14 @@ void main() {
         ).thenAnswer((_) async {});
 
         await tester.pumpWidget(
-          ProviderScope(
+          buildScreen(
             overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
               monkeyMuxInstallerServiceProvider.overrideWithValue(
                 monkeyMuxInstallerService,
               ),
               tmuxServiceProvider.overrideWithValue(tmuxService),
               monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
             ],
-            child: MaterialApp(
-              home: TerminalScreen(
-                hostId: host.id,
-                connectionId: session.connectionId,
-              ),
-            ),
           ),
         );
 
@@ -10275,32 +10026,14 @@ void main() {
         ).thenAnswer((_) async {});
 
         await tester.pumpWidget(
-          ProviderScope(
+          buildScreen(
             overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
               monkeyMuxInstallerServiceProvider.overrideWithValue(
                 monkeyMuxInstallerService,
               ),
               tmuxServiceProvider.overrideWithValue(tmuxService),
               monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
             ],
-            child: MaterialApp(
-              home: TerminalScreen(
-                hostId: host.id,
-                connectionId: session.connectionId,
-              ),
-            ),
           ),
         );
 
@@ -10380,32 +10113,14 @@ void main() {
         ).thenAnswer((_) async {});
 
         await tester.pumpWidget(
-          ProviderScope(
+          buildScreen(
             overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
               monkeyMuxInstallerServiceProvider.overrideWithValue(
                 monkeyMuxInstallerService,
               ),
               tmuxServiceProvider.overrideWithValue(tmuxService),
               monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
             ],
-            child: MaterialApp(
-              home: TerminalScreen(
-                hostId: host.id,
-                connectionId: session.connectionId,
-              ),
-            ),
           ),
         );
         await tester.pump();
@@ -10467,32 +10182,14 @@ void main() {
         ).thenAnswer((_) async {});
 
         await tester.pumpWidget(
-          ProviderScope(
+          buildScreen(
             overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
               monkeyMuxInstallerServiceProvider.overrideWithValue(
                 monkeyMuxInstallerService,
               ),
               tmuxServiceProvider.overrideWithValue(tmuxService),
               monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
             ],
-            child: MaterialApp(
-              home: TerminalScreen(
-                hostId: host.id,
-                connectionId: session.connectionId,
-              ),
-            ),
           ),
         );
 
@@ -10569,32 +10266,14 @@ void main() {
         ).thenAnswer((_) async {});
 
         await tester.pumpWidget(
-          ProviderScope(
+          buildScreen(
             overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
               monkeyMuxInstallerServiceProvider.overrideWithValue(
                 monkeyMuxInstallerService,
               ),
               tmuxServiceProvider.overrideWithValue(tmuxService),
               monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
             ],
-            child: MaterialApp(
-              home: TerminalScreen(
-                hostId: host.id,
-                connectionId: session.connectionId,
-              ),
-            ),
           ),
         );
 
@@ -11007,23 +10686,7 @@ void main() {
         addTearDown(router.dispose);
 
         await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
-            ],
-            child: MaterialApp.router(routerConfig: router),
-          ),
+          buildScreen(child: MaterialApp.router(routerConfig: router)),
         );
         await tester.pump();
         await tester.pump();
@@ -11180,20 +10843,8 @@ void main() {
         addTearDown(router.dispose);
 
         await tester.pumpWidget(
-          ProviderScope(
+          buildScreen(
             overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
               tmuxServiceProvider.overrideWithValue(tmuxService),
               monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
             ],
@@ -11390,12 +11041,16 @@ void main() {
         expect(startColumn, isNonNegative);
         final cellOffset = CellOffset(startColumn + (url.length ~/ 2), 0);
 
-        await tester.tapAt(
-          renderTerminal.localToGlobal(
-            renderTerminal.getOffset(cellOffset) +
-                renderTerminal.cellSize.center(Offset.zero),
-          ),
+        final tapPosition = renderTerminal.localToGlobal(
+          renderTerminal.getOffset(cellOffset) +
+              renderTerminal.cellSize.center(Offset.zero),
         );
+        final cancelledTap = await tester.startGesture(tapPosition);
+        await cancelledTap.cancel();
+        await tester.pumpAndSettle();
+        expect(launchedUrls, isEmpty);
+
+        await tester.tapAt(tapPosition);
         await tester.pumpAndSettle();
 
         expect(launchedUrls, [url]);
@@ -12482,23 +12137,7 @@ void main() {
         addTearDown(router.dispose);
 
         await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
-            ],
-            child: MaterialApp.router(routerConfig: router),
-          ),
+          buildScreen(child: MaterialApp.router(routerConfig: router)),
         );
         await tester.pump();
         await tester.pump();
@@ -12522,6 +12161,11 @@ void main() {
               ) +
               terminalState.renderTerminal.cellSize.center(Offset.zero),
         );
+
+        final cancelledTap = await tester.startGesture(tapPosition);
+        await cancelledTap.cancel();
+        await tester.pumpAndSettle();
+        expect(openedPaths, isEmpty);
 
         await tester.tapAt(tapPosition);
         await tester.pumpAndSettle();

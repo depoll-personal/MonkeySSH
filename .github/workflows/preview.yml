@@ -33,6 +33,8 @@ on:
       - '.github/workflows/firebase-distribution.yml'
       - '.github/workflows/preview.yml'
       - '.github/workflows/preview-ios.yml'
+      - '.github/actions/apple-cache-restore/**'
+      - '.github/actions/apple-cache-save/**'
 
 concurrency:
   group: preview-${{ github.event.pull_request.number }}
