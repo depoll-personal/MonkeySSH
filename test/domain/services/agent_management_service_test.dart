@@ -741,8 +741,11 @@ esac
     });
 
     test('does not guess an installer for unsupported packages', () {
-      final definition = agentCliRuntimeDefinitions.firstWhere(
-        (runtime) => runtime.label == 'Cursor Agent',
+      const definition = AgentRuntimeDefinition(
+        id: 'cli:unknown',
+        label: 'Unknown',
+        kind: AgentRuntimeKind.cli,
+        executableNames: ['unknown'],
       );
       expect(
         buildAgentInstallCommand(definition, windows: false, update: false),

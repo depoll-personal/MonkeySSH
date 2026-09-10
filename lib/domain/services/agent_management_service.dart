@@ -131,10 +131,10 @@ fi;
 ''';
 
 const _profilePrefix =
-    r'export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$HOME/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$HOME/homebrew/bin:$HOME/homebrew/sbin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; '
+    r'export PATH="$HOME/.opencode/bin:$HOME/.grok/bin:$HOME/.local/bin:$HOME/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$HOME/homebrew/bin:$HOME/homebrew/sbin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; '
     r'__fl_profile_path=$( set +e; . ~/.profile >/dev/null 2>&1 || true; . ~/.bash_profile >/dev/null 2>&1 || true; . ~/.zprofile >/dev/null 2>&1 || true; if [ "${SHELL##*/}" = zsh ]; then . ~/.zshrc >/dev/null 2>&1 || true; elif [ "${SHELL##*/}" = bash ]; then . ~/.bashrc >/dev/null 2>&1 || true; fi; printf "%s" "$PATH" ) || true; '
     r'[ -n "$__fl_profile_path" ] && export PATH="$__fl_profile_path:$PATH"; unset __fl_profile_path; '
-    r'export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$HOME/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$HOME/homebrew/bin:$HOME/homebrew/sbin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; ';
+    r'export PATH="$HOME/.opencode/bin:$HOME/.grok/bin:$HOME/.local/bin:$HOME/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$HOME/homebrew/bin:$HOME/homebrew/sbin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; ';
 const _pathMarker = '__monkeyssh_agent_path__=';
 const _versionMarker = '__monkeyssh_agent_version__=';
 const _repairMarker = '__monkeyssh_agent_repair__';
@@ -193,6 +193,8 @@ const agentCliRuntimeDefinitions = <AgentRuntimeDefinition>[
     kind: AgentRuntimeKind.cli,
     tool: AgentLaunchTool.antigravity,
     executableNames: ['agy', 'antigravity', 'antigravity-cli'],
+    posixInstallerUrl: 'https://antigravity.google/cli',
+    windowsInstallerUrl: 'https://antigravity.google/cli/install.ps1',
     selfUpdateArguments: ['update'],
   ),
   AgentRuntimeDefinition(
@@ -201,6 +203,8 @@ const agentCliRuntimeDefinitions = <AgentRuntimeDefinition>[
     kind: AgentRuntimeKind.cli,
     tool: AgentLaunchTool.cursorAgent,
     executableNames: ['cursor-agent'],
+    posixInstallerUrl: 'https://cursor.com/install',
+    windowsInstallerUrl: 'https://cursor.com/install?win32=true',
     selfUpdateArguments: ['update'],
   ),
   AgentRuntimeDefinition(
@@ -239,6 +243,8 @@ const agentCliRuntimeDefinitions = <AgentRuntimeDefinition>[
     kind: AgentRuntimeKind.cli,
     tool: AgentLaunchTool.grokBuild,
     executableNames: ['grok'],
+    posixInstallerUrl: 'https://x.ai/cli/install.sh',
+    windowsInstallerUrl: 'https://x.ai/cli/install.ps1',
     selfUpdateArguments: ['update'],
   ),
 ];
@@ -290,6 +296,8 @@ const agentAcpRuntimeDefinitions = <AgentRuntimeDefinition>[
     kind: AgentRuntimeKind.acpAdapter,
     tool: AgentLaunchTool.cursorAgent,
     executableNames: ['cursor-agent'],
+    posixInstallerUrl: 'https://cursor.com/install',
+    windowsInstallerUrl: 'https://cursor.com/install?win32=true',
     sharesCliInstallation: true,
   ),
   AgentRuntimeDefinition(
@@ -336,6 +344,8 @@ const agentAcpRuntimeDefinitions = <AgentRuntimeDefinition>[
     kind: AgentRuntimeKind.acpAdapter,
     tool: AgentLaunchTool.grokBuild,
     executableNames: ['grok'],
+    posixInstallerUrl: 'https://x.ai/cli/install.sh',
+    windowsInstallerUrl: 'https://x.ai/cli/install.ps1',
     sharesCliInstallation: true,
   ),
 ];
@@ -480,6 +490,12 @@ String? buildAgentInstallCommand(
     return windows
         ? null
         : '$_profilePrefix brew upgrade ${_shellQuote(formula)}';
+  }
+  final installerUrl = windows
+      ? definition.windowsInstallerUrl
+      : definition.posixInstallerUrl;
+  if (installerUrl != null) {
+    return _buildOfficialAgentInstallerCommand(installerUrl, windows: windows);
   }
   final package = definition.packageName;
   if (package == null) return null;
@@ -1377,6 +1393,36 @@ String _detectionSourceFromPath(String path) {
 }
 
 String _shellQuote(String value) => "'${value.replaceAll("'", r"'\''")}'";
+
+// Download completely before execution: a failed download must never run a
+// partial installer or look successful because the receiving shell exited zero.
+String _buildOfficialAgentInstallerCommand(
+  String url, {
+  required bool windows,
+}) {
+  if (windows) {
+    return buildCompactWindowsPowerShellCommand(
+      '$powerShellProfilePathPreamble'
+      r"$ErrorActionPreference='Stop';"
+      r"$__flFile=Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString()+'.ps1');"
+      r'$__flCode=1;try {'
+      'Invoke-WebRequest -UseBasicParsing -TimeoutSec 60 -Uri ${powerShellSingleQuote(url)} -OutFile \$__flFile;'
+      // Isolate installer exit/strict-mode changes and provide a real script path.
+      r'& powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -OutputFormat Text -File $__flFile;'
+      r'$__flCode=$LASTEXITCODE;'
+      r'} catch {[Console]::Error.WriteLine($_.Exception.Message)} '
+      r'finally {Remove-Item -LiteralPath $__flFile -Force -ErrorAction SilentlyContinue};'
+      r'exit $__flCode',
+      plainTextOutput: true,
+    );
+  }
+  final script =
+      r'__fl_file=$(mktemp "${TMPDIR:-/tmp}/monkeyssh-install.XXXXXX") || exit 1; '
+      'if curl -fLsS --connect-timeout 15 --max-time 60 ${_shellQuote(url)} -o "\$__fl_file"; then '
+      r'bash "$__fl_file"; __fl_code=$?; else __fl_code=$?; fi; '
+      r'rm -f "$__fl_file"; exit "$__fl_code"';
+  return '${_profilePrefix}sh -c ${_shellQuote(script)}';
+}
 
 /// Provider for [AgentManagementService].
 final agentManagementServiceProvider = Provider<AgentManagementService>(

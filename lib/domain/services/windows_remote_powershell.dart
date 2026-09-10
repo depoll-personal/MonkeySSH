@@ -141,6 +141,12 @@ const String powerShellProfilePathPreamble =
     // Module auto-loading while evaluating profiles can emit CLIXML progress
     // before the preferences at the end of this preamble take effect.
     r"$ProgressPreference = 'SilentlyContinue'; "
+    // SSH servers can retain an old environment after an installer adds to
+    // User PATH. Re-read it so verification works on the existing connection.
+    r"foreach ($__flEntry in ([Environment]::GetEnvironmentVariable('Path','User') -split ';')) { "
+    r'if (![string]::IsNullOrWhiteSpace($__flEntry)) { '
+    r'$__flEntry=[Environment]::ExpandEnvironmentVariables($__flEntry); '
+    r"if (($env:Path -split ';') -notcontains $__flEntry) {$env:Path+=';'+$__flEntry} } }; "
     r'$__flProfilePaths = @($PROFILE.AllUsersAllHosts, '
     r'$PROFILE.AllUsersCurrentHost, $PROFILE.CurrentUserAllHosts, '
     r'$PROFILE.CurrentUserCurrentHost) | Where-Object { $_ } | '
