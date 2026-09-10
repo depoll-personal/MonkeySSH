@@ -55,6 +55,8 @@ class AgentRuntimeDefinition {
     this.registry,
     this.packageName,
     this.homebrewFormula,
+    this.posixInstallerUrl,
+    this.windowsInstallerUrl,
     this.selfUpdateArguments = const [],
     this.sharesCliInstallation = false,
   });
@@ -86,6 +88,12 @@ class AgentRuntimeDefinition {
   /// Homebrew formula used when an existing installation resolves to Homebrew.
   final String? homebrewFormula;
 
+  /// Official bootstrap script for macOS and Linux hosts (run with Bash).
+  final String? posixInstallerUrl;
+
+  /// Official PowerShell bootstrap script for native Windows hosts.
+  final String? windowsInstallerUrl;
+
   /// Arguments for the CLI's own non-interactive updater.
   final List<String> selfUpdateArguments;
 
@@ -96,7 +104,10 @@ class AgentRuntimeDefinition {
   final bool sharesCliInstallation;
 
   /// Whether MonkeySSH can install or update this runtime automatically.
-  bool get supportsManagedInstall => registry != null && packageName != null;
+  bool get supportsManagedInstall =>
+      (registry != null && packageName != null) ||
+      posixInstallerUrl != null ||
+      windowsInstallerUrl != null;
 }
 
 /// Probe result for one runtime on the active remote host.

@@ -152,6 +152,58 @@ void main() {
     runtimes[index] = runtime;
   }
 
+  for (final id in ['cli:antigravity', 'cli:cursor', 'cli:grok']) {
+    testWidgets('$id offers Install and runs the managed action', (
+      tester,
+    ) async {
+      final definition = agentCliRuntimeDefinitions.singleWhere(
+        (d) => d.id == id,
+      );
+      final missing = AgentRuntimeInfo(
+        definition: definition,
+        status: AgentRuntimeStatus.notInstalled,
+      );
+      runtimes = [missing];
+      when(
+        () => service.installOrUpdate(
+          session,
+          definition,
+          update: false,
+          current: missing,
+          onOutput: any(named: 'onOutput'),
+        ),
+      ).thenAnswer((_) async {
+        runtimes = [
+          AgentRuntimeInfo(
+            definition: definition,
+            status: AgentRuntimeStatus.installed,
+            installedVersion: '1.2.3',
+          ),
+        ];
+        return const AgentRuntimeActionResult(
+          succeeded: true,
+          output: 'installed',
+        );
+      });
+      await pumpScreen(tester);
+      expect(find.text('Install'), findsOneWidget);
+      final action = find.byKey(ValueKey('agent-action-$id'));
+      expect(tester.widget<OutlinedButton>(action).onPressed, isNotNull);
+      await tester.tap(action);
+      await tester.pumpAndSettle();
+      expect(find.text('Installed v1.2.3'), findsOneWidget);
+      verify(
+        () => service.installOrUpdate(
+          session,
+          definition,
+          update: false,
+          current: missing,
+          onOutput: any(named: 'onOutput'),
+        ),
+      ).called(1);
+    });
+  }
+
   testWidgets('free users cannot probe a directly opened manager', (
     tester,
   ) async {
@@ -952,9 +1004,12 @@ void main() {
       executablePath: '/opt/copilot/bin/copilot',
       detectionSource: 'manual install',
     );
-    final unsupported = AgentRuntimeInfo(
-      definition: agentCliRuntimeDefinitions.firstWhere(
-        (definition) => !definition.supportsManagedInstall,
+    const unsupported = AgentRuntimeInfo(
+      definition: AgentRuntimeDefinition(
+        id: 'cli:unknown',
+        label: 'Unknown',
+        kind: AgentRuntimeKind.cli,
+        executableNames: ['unknown'],
       ),
       status: AgentRuntimeStatus.updateAvailable,
       installedVersion: '0.9.0',

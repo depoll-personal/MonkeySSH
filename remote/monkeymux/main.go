@@ -10116,7 +10116,15 @@ func (s *muxServer) foregroundHistoryFallbackHistoryLocked(
 		return nil
 	}
 	history, historyStart := window.historyTailWithParserLocked()
-	history = trimReplayHistoryForAttachWithParser(history, historyStart)
+	// This is a TUI frame recovery, not the short shell scrollback replay.
+	// Differential updates can leave the composer untouched for more than
+	// windowReplayLimitBytes of output. Cutting to that tail discards the
+	// cells (and cursor position) those updates depend on, so a switch paints
+	// the transcript over a blank/misaligned composer until a real resize.
+	// Keep the full, already bounded foreground history and only skip an
+	// incomplete leading control sequence left by history eviction.
+	start := advanceReplayStartToTerminalGround(history, 0, historyStart)
+	history = history[start:]
 	history = stripTerminalQueriesFromReplay(history)
 	if len(history) == 0 {
 		return nil

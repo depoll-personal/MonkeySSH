@@ -1,8 +1,17 @@
 import 'dart:convert';
+import 'dart:io';
 
 /// Decodes an encoded PowerShell command independently of production encoding.
-/// Commands without an encoded script are returned unchanged.
+/// Handles both the plain `-EncodedCommand` form and the gzip-compressed
+/// `FromBase64String('...')` form. Commands without an encoded script are
+/// returned unchanged.
 String decodeEncodedPowerShell(String command) {
+  final compressed = RegExp(
+    r"FromBase64String\('([^']+)'\)",
+  ).firstMatch(command);
+  if (compressed != null) {
+    return utf8.decode(gzip.decode(base64.decode(compressed[1]!)));
+  }
   const marker = '-EncodedCommand ';
   final index = command.indexOf(marker);
   if (index < 0) return command;
