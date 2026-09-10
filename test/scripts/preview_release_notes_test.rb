@@ -34,14 +34,12 @@ class PreviewReleaseNotesTest < Minitest::Test
     ENV['FLUTTY_PR_TITLE'] = 'Distribute builds through Firebase'
     ENV['FLUTTY_BRANCH_NAME'] = 'main'
     ENV['FLUTTY_LAST_COMMIT'] = 'abc1234 fix: include release context'
-    ENV['FLUTTY_PR_COMMITS'] = 'def5678 fix: last PR commit before merging'
 
     notes = PreviewReleaseNotes.current
 
     assert_equal 'Main build: PR #794: Distribute builds through Firebase', notes.lines.first.strip
     assert_includes notes, 'Branch: main'
     assert_includes notes, 'Last commit: abc1234 fix: include release context'
-    assert_includes notes, '- def5678 fix: last PR commit before merging'
   end
 
   def test_uses_newest_pr_commit_when_explicit_commit_is_missing

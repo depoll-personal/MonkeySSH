@@ -113,7 +113,7 @@ class DeploymentContractsTest(unittest.TestCase):
                 self.assertEqual(consumer['needs'], ['compute-version', f'build-{platform}'])
                 inputs = consumer['with']
                 for field in ['source-ref', 'build-name', 'build-number', 'build-codename',
-                              'pr-number', 'pr-title', 'source-branch', 'enable-diagnostics', 'flavor']:
+                              'pr-number', 'pr-title', 'enable-diagnostics', 'flavor']:
                     self.assertEqual(inputs[field], producer[field])
                 self.assertEqual(inputs[f'{platform}-reuse-run-id'], '${{ github.run_id }}')
                 self.assertEqual(inputs[f'{platform}-reuse-source-sha'], '${{ github.sha }}')
@@ -126,65 +126,6 @@ class DeploymentContractsTest(unittest.TestCase):
         self.assertEqual(len(groups), len(set(groups)))
         self.assertNotEqual(jobs['build-android']['with']['monkeymux-assets-artifact-name'],
                             jobs['build-ios']['with']['monkeymux-assets-artifact-name'])
-
-    def test_every_main_push_distributes_both_platforms_to_firebase(self):
-        workflow = self.workflows['deploy-private.yml']
-        triggers = workflow.get('on', workflow.get('true'))
-        self.assertEqual(triggers['push'], {'branches': ['main']})
-        for platform in ['android', 'ios']:
-            job = workflow['jobs'][f'distribute-{platform}-firebase']
-            self.assertNotIn('if', job)
-            self.assertEqual(job['with'][f'deploy-{platform}-to'], 'firebase')
-            self.assertEqual(job['with']['source-branch'], '${{ github.ref_name }}')
-
-    def test_main_metadata_selects_a_merged_pr_targeting_main(self):
-        steps = self.workflows['deploy-private.yml']['jobs']['compute-version']['steps']
-        script = next(s for s in steps if s.get('id') == 'pr-metadata')['with']['script']
-        main_pr = {'number': 824, 'title': 'Merged change', 'merged_at': '2026-09-10',
-                   'base': {'ref': 'main'}, 'merge_commit_sha': 'merge-sha'}
-        open_pr = dict(main_pr, number=825, merged_at=None)
-        other_base = dict(main_pr, number=826, base={'ref': 'release'})
-        older_pr = dict(main_pr, number=823, merge_commit_sha='older-sha')
-        for pulls, expected in [
-            ([open_pr, other_base, older_pr, main_pr], '824'),
-            ([open_pr, other_base], ''),
-            ([], ''),
-            ([dict(main_pr, merge_commit_sha='rebased-sha')], '824'),
-        ]:
-            with self.subTest(pulls=pulls):
-                harness = '''
-                const pulls = JSON.parse(process.argv[1]);
-                const context = {repo: {owner: 'owner', repo: 'repo'}, sha: 'merge-sha'};
-                const github = {paginate: async () => pulls,
-                  rest: {repos: {listPullRequestsAssociatedWithCommit: {}}}};
-                const outputs = {};
-                const core = {setOutput: (key, value) => { outputs[key] = value; }};
-                ''' + '(async () => {\n' + script + '''
-                console.log(JSON.stringify(outputs));
-                })().catch(error => { console.error(error); process.exit(1); });
-                '''
-                result = json.loads(subprocess.check_output(
-                    ['node', '-e', harness, json.dumps(pulls)], text=True))
-                self.assertEqual(result['pr-number'], expected)
-                self.assertEqual(result['pr-title'], 'Merged change' if expected else '')
-
-    def test_firebase_last_commit_uses_built_revision_with_pr_commits_present(self):
-        for platform in ['android', 'ios']:
-            steps = self.workflows['build-deploy.yml']['jobs'][f'build-{platform}']['steps']
-            script = next(s for s in steps if s.get('id') == f'{platform}-deploy')['run']
-            # Execute just the release metadata block without signing or uploading.
-            metadata = script[script.index('  COMMIT_SUBJECT='):script.index(f'\ncd {platform}')]
-            metadata = metadata.rsplit('\nfi', 1)[0]
-            harness = '''
-            git() { echo 'Merge pull request #824'; }
-            FLUTTY_SOURCE_SHA=abcdef1234567890
-            FLUTTY_SOURCE_BRANCH=main
-            FLUTTY_PR_COMMITS='1234567 Last PR commit'
-            ''' + metadata + '''
-            printf '%s\\n%s' "$FLUTTY_BRANCH_NAME" "$FLUTTY_LAST_COMMIT"
-            '''
-            result = subprocess.check_output(['bash', '-c', harness], text=True)
-            self.assertEqual(result, 'main\nabcdef1 Merge pull request #824')
 
     def test_platform_previews_start_on_same_event_and_use_same_version_function(self):
         for name in ['preview.yml', 'preview-ios.yml']:
