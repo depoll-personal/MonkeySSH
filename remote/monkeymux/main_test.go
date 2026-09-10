@@ -419,6 +419,8 @@ func TestNormalizeServerUpdatePolicy(t *testing.T) {
 		{"prompt", serverUpdatePolicyPrompt},
 		{" never ", serverUpdatePolicyNever},
 		{"ALWAYS", serverUpdatePolicyAlways},
+		{"force", serverUpdatePolicyForce},
+		{" FORCE ", serverUpdatePolicyForce},
 	} {
 		got, err := normalizeServerUpdatePolicy(test.input)
 		if err != nil {
@@ -504,6 +506,25 @@ func TestShouldUpdateRunningServerPromptUsesTerminalPrompt(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "Update now?") {
 		t.Fatalf("prompt policy output = %q, want update prompt", output.String())
+	}
+}
+
+func TestShouldUpdateRunningServerForceSkipsPrompt(t *testing.T) {
+	for _, version := range []string{"0.1.0", monkeyMuxVersion} {
+		t.Run(version, func(t *testing.T) {
+			var output bytes.Buffer
+			input := strings.NewReader("n\n")
+			if !shouldUpdateRunningServer(input, &output, "work", runningServerStatus{version: version}, serverUpdatePolicyForce) {
+				t.Fatal("force policy did not request reload")
+			}
+			if input.Len() != 2 {
+				t.Fatal("force policy read stdin")
+			}
+			want := fmt.Sprintf("monkeymux: forcing reload of session %q on helper %s\r\n", "work", version)
+			if output.String() != want {
+				t.Fatalf("force output = %q, want %q", output.String(), want)
+			}
+		})
 	}
 }
 
@@ -11036,13 +11057,24 @@ func TestCursorAgentToolMapping(t *testing.T) {
 
 func TestLiveCursorWindowPublishesSessionFromFalseConversationMetadata(t *testing.T) {
 	originalProcessStart := processStartedAtForMetadata
-	t.Cleanup(func() { processStartedAtForMetadata = originalProcessStart })
+	originalProcessTable := processTableForMetadata
+	t.Cleanup(func() {
+		processStartedAtForMetadata = originalProcessStart
+		processTableForMetadata = originalProcessTable
+	})
 	now := time.Now()
 	processStartedAtForMetadata = func(pid int) time.Time {
 		if pid == 201 {
 			return now.Add(-time.Second)
 		}
 		return time.Time{}
+	}
+	// The live-agent rule only lets a running cursor-agent own a chat.
+	processTableForMetadata = func() map[int]processInfo {
+		return map[int]processInfo{
+			200: {pid: 200, ppid: 1, comm: "zsh", args: "zsh"},
+			201: {pid: 201, ppid: 200, comm: "cursor-agent", args: "cursor-agent"},
+		}
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
