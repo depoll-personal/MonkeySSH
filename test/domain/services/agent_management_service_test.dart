@@ -1389,12 +1389,8 @@ esac
           for (final definition in agentRuntimeDefinitions)
             buildAgentBatchProbeCommand([definition], windows: true),
         ];
-        for (final command in commands) {
-          expect(
-            command.length,
-            lessThan(7500),
-            reason: 'index ${commands.indexOf(command)}',
-          );
+        for (final (index, command) in commands.indexed) {
+          expect(command.length, lessThan(7500), reason: 'index $index');
           final script = _decodePowerShellCommand(command);
           expect(script, contains('__monkeyssh_agent_runtime__='));
         }
@@ -1411,11 +1407,14 @@ esac
           buildAgentBatchProbeCommand(agentRuntimeDefinitions, windows: true),
         );
         // Isolate the fixture from installed agents and user profile side effects.
-        final script = original.replaceFirst(
+        final isolated = original.replaceFirst(
           powerShellProfilePathPreamble,
           '\$env:Path=${powerShellSingleQuote(root.path)} + \';\' + '
           r"$env:SystemRoot + '\System32;' + $env:SystemRoot + '\System32\WindowsPowerShell\v1.0';",
         );
+        // Force the oversized-command regression independently of future
+        // reductions in the catalog or generated probe script.
+        final script = '$isolated\n${'# oversized fixture\n' * 1800}';
         expect(
           buildWindowsPowerShellCommand(script).length,
           greaterThan(32767),

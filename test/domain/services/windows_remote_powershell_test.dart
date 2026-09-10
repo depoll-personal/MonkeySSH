@@ -46,6 +46,24 @@ void main() {
       );
     });
 
+    test(
+      'transport boundary matches encoded size including UTF-16 surrogates',
+      () {
+        for (final value in ['x', 'é', '🐒']) {
+          for (var count = 1380; count <= 2820; count++) {
+            final script = value * count;
+            final encoded = buildWindowsPowerShellCommand(script);
+            final compact = buildCompactWindowsPowerShellCommand(script);
+            if (encoded.length < 7500) {
+              expect(compact, encoded);
+            } else {
+              expect(compact, contains('GZipStream'));
+            }
+          }
+        }
+      },
+    );
+
     test('round-trips large Unicode scripts without shell interpolation', () {
       final script = "Write-Output 'café 🐒';\n" * 2000;
       final command = buildCompactWindowsPowerShellCommand(script);

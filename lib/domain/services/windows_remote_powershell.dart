@@ -36,14 +36,17 @@ String encodePowerShellCommand(String script) {
   return base64.encode(bytes);
 }
 
+const _windowsEncodedCommandPrefix =
+    'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass '
+    '-EncodedCommand ';
+
 /// Wraps a PowerShell [script] into a remote command that runs it via
 /// `powershell -EncodedCommand`.
 ///
 /// The result is safe to hand to a plain SSH exec channel or the MonkeyMux
 /// control channel on a Windows host without any further quoting.
 String buildWindowsPowerShellCommand(String script) =>
-    'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass '
-    '-EncodedCommand ${encodePowerShellCommand(script)}';
+    '$_windowsEncodedCommandPrefix${encodePowerShellCommand(script)}';
 
 /// Compresses large management scripts to fit Windows OpenSSH command lines.
 ///
@@ -59,8 +62,14 @@ String buildCompactWindowsPowerShellCommand(
   String script, {
   bool plainTextOutput = false,
 }) {
-  final command = buildWindowsPowerShellCommand(script);
-  if (!plainTextOutput && command.length < 7500) return command;
+  // Dart string length counts UTF-16 code units: two bytes each, with base64
+  // rounded up to groups of three bytes. Avoid encoding an oversized command
+  // just to discard it (and skip the calculation for text-only installers).
+  if (!plainTextOutput &&
+      _windowsEncodedCommandPrefix.length + ((script.length * 2 + 2) ~/ 3) * 4 <
+          7500) {
+    return buildWindowsPowerShellCommand(script);
+  }
   final payload = base64.encode(
     GZipCodec(level: 9).encode(utf8.encode(script)),
   );
