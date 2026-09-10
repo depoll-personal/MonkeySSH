@@ -1,9 +1,12 @@
 // ignore_for_file: public_member_api_docs
 
+import 'dart:async';
+
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/domain/services/acp_bridge_connector.dart';
+import 'package:monkeyssh/domain/services/acp_client_capability_service.dart';
 import 'package:monkeyssh/domain/services/monkeymux_acp_bridge_service.dart';
 import 'package:monkeyssh/domain/services/monkeymux_installer_service.dart';
 import 'package:monkeyssh/domain/services/remote_file_service.dart';
@@ -25,6 +28,42 @@ MonkeyMuxAcpBridgeService _unusedBridgeService() => MonkeyMuxAcpBridgeService(
 );
 
 void main() {
+  testWidgets('capability binding applies the configured terminal open limit', (
+    tester,
+  ) async {
+    final session = _MockSshSession();
+    final opening = Completer<SSHSession>();
+    when(() => session.remoteIsWindows).thenReturn(false);
+    when(() => session.execute('task')).thenAnswer((_) => opening.future);
+    final connector = MonkeyMuxAcpBridgeConnector(
+      bridgeService: _unusedBridgeService(),
+      sessionResolver: (_) async => session,
+      capabilityLimits: const AcpClientCapabilityLimits(
+        terminalOpenTimeout: Duration(seconds: 3),
+      ),
+    );
+    final binding = (await connector.resolveCapabilityBinding(42))!;
+    var completed = false;
+    final checked = expectLater(
+      binding.terminalExecutor
+          .start('task')
+          .whenComplete(() => completed = true),
+      throwsA(
+        isA<AcpClientCapabilityException>().having(
+          (error) => error.message,
+          'message',
+          'Terminal channel opening timed out',
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 2));
+    expect(completed, isFalse);
+    await tester.pump(const Duration(seconds: 1));
+    expect(completed, isTrue);
+    await checked;
+  });
+
   test(
     'capability operations resolve the replacement same-host SSH session',
     () async {

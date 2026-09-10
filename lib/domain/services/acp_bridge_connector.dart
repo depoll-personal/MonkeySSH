@@ -143,6 +143,7 @@ final class MonkeyMuxAcpBridgeConnector implements AcpBridgeConnector {
     required MonkeyMuxAcpBridgeService bridgeService,
     required Future<SshSession> Function(int hostId) sessionResolver,
     this.defaultRequestTimeout = const Duration(seconds: 60),
+    this.capabilityLimits = const AcpClientCapabilityLimits(),
   }) : _bridgeService = bridgeService,
        _sessionResolver = sessionResolver;
 
@@ -151,6 +152,9 @@ final class MonkeyMuxAcpBridgeConnector implements AcpBridgeConnector {
 
   /// Default per-request timeout applied to the ACP JSON-RPC connection.
   final Duration defaultRequestTimeout;
+
+  /// Limits used when constructing same-host capability implementations.
+  final AcpClientCapabilityLimits capabilityLimits;
 
   @override
   Future<MonkeyMuxAcpBridgeStartResult> startBridge({
@@ -276,6 +280,7 @@ final class MonkeyMuxAcpBridgeConnector implements AcpBridgeConnector {
       terminalExecutor: AcpSshTerminalExecutor(
         () => _sessionResolver(hostId),
         remoteIsWindows: session.remoteIsWindows,
+        openTimeout: capabilityLimits.terminalOpenTimeout,
       ),
     );
   }

@@ -15,6 +15,7 @@ import 'acp_client.dart';
 import 'acp_json_rpc_connection.dart';
 import 'diagnostics_log_service.dart';
 import 'remote_file_service.dart';
+import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
 import 'windows_remote_powershell.dart';
 
@@ -29,6 +30,7 @@ final class AcpClientCapabilityLimits {
     this.maxCommandCharacters = 8192,
     this.maxEnvironmentVariables = 64,
     this.maxTerminalOutputBytes = 1024 * 1024,
+    this.terminalOpenTimeout = const Duration(seconds: 10),
     this.maxTerminalLifetime = const Duration(minutes: 10),
   });
 
@@ -52,6 +54,9 @@ final class AcpClientCapabilityLimits {
 
   /// Largest output ring buffer retained for one terminal.
   final int maxTerminalOutputBytes;
+
+  /// Timeout for opening an SSH terminal command channel.
+  final Duration terminalOpenTimeout;
 
   /// Maximum lifetime for an unreleased terminal.
   final Duration maxTerminalLifetime;
@@ -224,16 +229,32 @@ abstract interface class AcpTerminalExecutor {
 /// SSH implementation of [AcpTerminalExecutor].
 final class AcpSshTerminalExecutor implements AcpTerminalExecutor {
   /// Creates a terminal executor that resolves the active same-host session.
-  const AcpSshTerminalExecutor(this._session, {required this.remoteIsWindows});
+  const AcpSshTerminalExecutor(
+    this._session, {
+    required this.remoteIsWindows,
+    required this.openTimeout,
+  });
 
   final Future<SshSession> Function() _session;
 
   /// Whether the remote host requires Windows command syntax.
   final bool remoteIsWindows;
 
+  /// Deadline for opening a terminal command channel.
+  final Duration openTimeout;
+
   @override
-  Future<AcpTerminalProcess> start(String command) async =>
-      _SshAcpTerminalProcess(await (await _session()).execute(command));
+  Future<AcpTerminalProcess> start(String command) async {
+    try {
+      return _SshAcpTerminalProcess(
+        await openSshExec((await _session()).execute(command), openTimeout),
+      );
+    } on TimeoutException {
+      throw const AcpClientCapabilityException(
+        'Terminal channel opening timed out',
+      );
+    }
+  }
 }
 
 /// Terminal exit status returned by ACP terminal methods.

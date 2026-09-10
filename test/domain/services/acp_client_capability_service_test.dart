@@ -5,11 +5,13 @@ import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/domain/services/acp_client.dart';
 import 'package:monkeyssh/domain/services/acp_client_capability_service.dart';
 import 'package:monkeyssh/domain/services/acp_json_rpc_connection.dart';
 import 'package:monkeyssh/domain/services/acp_transport.dart';
 import 'package:monkeyssh/domain/services/diagnostics_log_service.dart';
+import 'package:monkeyssh/domain/services/ssh_service.dart';
 
 void main() {
   group('AcpClientCapabilityService', () {
@@ -43,6 +45,119 @@ void main() {
     tearDown(() async {
       await service.close();
       await client.close();
+    });
+
+    group('SSH terminal opening', () {
+      const limits = AcpClientCapabilityLimits(
+        maxTerminals: 1,
+        maxTerminalLifetime: Duration(seconds: 30),
+      );
+      late _MockSshSession session;
+      late Completer<SSHSession> opening;
+      late _MockTerminalSession channel;
+
+      Future<void> configureSshTerminal() async {
+        // Closing inside the fake-async test body would wait on timers that
+        // never elapse; let the tearDown (real time) close the setUp instances.
+        final setUpService = service;
+        final setUpClient = client;
+        addTearDown(() async {
+          await setUpService.close();
+          await setUpClient.close();
+        });
+        transport = _ServerTransport();
+        client = AcpClient(AcpJsonRpcConnection(transport: transport));
+        session = _MockSshSession();
+        opening = Completer<SSHSession>();
+        channel = _MockTerminalSession();
+        final exit = Completer<int?>();
+        when(() => session.execute(any())).thenAnswer((_) => opening.future);
+        when(() => channel.stdout).thenAnswer((_) => const Stream.empty());
+        when(() => channel.stderr).thenAnswer((_) => const Stream.empty());
+        when(channel.waitForExit).thenAnswer((_) => exit.future);
+        when(channel.close).thenAnswer((_) {
+          if (!exit.isCompleted) exit.complete(-1);
+        });
+        service = AcpClientCapabilityService(
+          fileSystem: files,
+          terminalExecutor: AcpSshTerminalExecutor(
+            () async => session,
+            remoteIsWindows: false,
+            openTimeout: limits.terminalOpenTimeout,
+          ),
+          allowedRoots: const ['/workspace'],
+          registry: registry,
+          limits: limits,
+        )..attach(client);
+      }
+
+      void createTerminal(String id) => transport.sendRequest(
+        id,
+        'terminal/create',
+        {'sessionId': 'session-1', 'command': 'long-task'},
+      );
+
+      for (final arrivesLate in [false, true]) {
+        testWidgets(
+          'releases the reservation at the open deadline when the channel '
+          '${arrivesLate ? 'arrives late and closes it' : 'never opens'}',
+          (tester) async {
+            await configureSshTerminal();
+            createTerminal('stalled');
+            await tester.pump();
+            await tester.pump(const Duration(seconds: 9));
+            expect(transport.responseForOrNull('stalled'), isNull);
+
+            createTerminal('at-capacity');
+            await tester.pump();
+            expect(transport.responseFor('at-capacity')['error'], {
+              'code': -32000,
+              'message': 'Too many active terminals',
+            });
+
+            await tester.pump(const Duration(seconds: 1));
+            expect(transport.responseFor('stalled')['error'], {
+              'code': -32000,
+              'message': 'Terminal channel opening timed out',
+            });
+
+            when(() => session.execute(any())).thenAnswer((_) async => channel);
+            createTerminal('retry');
+            await tester.pump();
+            expect(transport.responseFor('retry')['result'], isNotNull);
+            verify(() => session.execute(any())).called(2);
+
+            if (arrivesLate) {
+              final lateChannel = _MockTerminalSession();
+              opening.complete(lateChannel);
+              await tester.pump();
+              verify(lateChannel.close).called(1);
+            }
+            verifyNever(channel.close);
+            await tester.pump(limits.maxTerminalLifetime);
+            verify(channel.close).called(1);
+          },
+        );
+      }
+
+      testWidgets('installs the lifetime timer after a normal open', (
+        tester,
+      ) async {
+        await configureSshTerminal();
+        createTerminal('normal');
+        await tester.pump();
+        await tester.pump(const Duration(seconds: 5));
+        opening.complete(channel);
+        await tester.pump();
+        expect(transport.responseFor('normal')['result'], isNotNull);
+
+        await tester.pump(
+          limits.maxTerminalLifetime - const Duration(seconds: 1),
+        );
+        verifyNever(channel.close);
+        await tester.pump(const Duration(seconds: 1));
+        verify(channel.close).called(1);
+      });
     });
 
     test('advertises only configured capabilities', () {
@@ -1510,8 +1625,13 @@ final class _ServerTransport implements AcpTransport {
   @override
   Stream<List<int>> get incoming => _incoming.stream;
 
+  /// Closing a single-subscription controller nobody listened to never
+  /// completes, so only await delivery when a listener exists.
   @override
-  Future<void> close() => _incoming.close();
+  Future<void> close() {
+    final done = _incoming.close();
+    return _incoming.hasListener ? done : Future<void>.value();
+  }
 
   void sendRequest(Object id, String method, Object? params) {
     _incoming.add(
@@ -1591,6 +1711,10 @@ final class _FakeFileSystem implements AcpRemoteFileSystem {
     files[path] = bytes;
   }
 }
+
+class _MockSshSession extends Mock implements SshSession {}
+
+class _MockTerminalSession extends Mock implements SSHSession {}
 
 final class _FakeTerminalExecutor implements AcpTerminalExecutor {
   final processes = <_FakeTerminalProcess>[];
