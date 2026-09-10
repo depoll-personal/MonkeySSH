@@ -1659,72 +1659,207 @@ func readTestAcpFrame(
 	return message
 }
 
+func TestAcpWaitRejectsInvalidStatusFrame(t *testing.T) {
+	for _, response := range []string{
+		"invalid\n", "\n", `{"type":1}` + "\n",
+		`{"version":1,"type":"status"}` + "\n",
+		`{"version":1,"type":"error","bridge":{}}` + "\n",
+		`{"version":2,"type":"status","bridge":{}}` + "\n",
+	} {
+		t.Run(response, func(t *testing.T) {
+			polls := 0
+			status := func(string) (acpBridgeInfo, error) {
+				polls++
+				if polls > acpWaitMaxFailures {
+					t.Fatal("waiter kept polling invalid status frames")
+				}
+				client, server := net.Pipe()
+				defer client.Close()
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					defer server.Close()
+					_ = server.SetDeadline(time.Now().Add(time.Second))
+					request, err := readAcpWireFrame(bufio.NewReader(server))
+					if err != nil || request.Command != "status" {
+						t.Errorf("request = %+v, error = %v, want status only", request, err)
+						return
+					}
+					_, _ = io.WriteString(server, response)
+				}()
+				info, err := acpBridgeStatusFromConn(client)
+				<-done
+				return info, err
+			}
+			// A ready clock avoids real polling delays while bounding a regression.
+			ticks := make(chan time.Time)
+			close(ticks)
+			var output bytes.Buffer
+			err := waitForAcpBridge("test", status, ticks, &output)
+			var protocolErr *protocolFrameError
+			if !errors.As(err, &protocolErr) {
+				t.Fatalf("wait error = %v, want protocol error", err)
+			}
+			if polls != 1 {
+				t.Fatalf("status polls = %d, want immediate exit after 1", polls)
+			}
+			if output.Len() != 0 {
+				t.Fatalf("introduction printed without successful status: %q", output.String())
+			}
+		})
+	}
+}
+
+func TestAcpWaitBoundsNonTransientFailures(t *testing.T) {
+	for _, failure := range []error{errors.New("status unavailable"), io.EOF, os.ErrPermission} {
+		t.Run(failure.Error(), func(t *testing.T) {
+			polls := 0
+			var lastErr error
+			status := func(string) (acpBridgeInfo, error) {
+				polls++
+				if polls > acpWaitMaxFailures {
+					t.Fatal("waiter exceeded failure limit")
+				}
+				lastErr = fmt.Errorf("poll %d: %w", polls, failure)
+				return acpBridgeInfo{}, lastErr
+			}
+			ticks := make(chan time.Time)
+			close(ticks)
+			if err := waitForAcpBridge("test", status, ticks, io.Discard); err == nil || err != lastErr {
+				t.Fatalf("wait error = %v, want last error %v", err, lastErr)
+			}
+			if polls != acpWaitMaxFailures {
+				t.Fatalf("status polls = %d, want %d", polls, acpWaitMaxFailures)
+			}
+		})
+	}
+}
+
+func TestAcpWaitResetsFailuresAfterTransientTimeoutsAndSuccess(t *testing.T) {
+	for _, terminalState := range []string{"exited", "stopped", "protocol_error"} {
+		t.Run(terminalState, func(t *testing.T) {
+			var failures []error
+			// Timeouts must not consume the bounded failure budget. A successful
+			// status between two near-limit runs must reset that budget.
+			for range 2 {
+				for range acpWaitMaxFailures - 1 {
+					failures = append(failures, io.EOF)
+				}
+				for range acpWaitMaxFailures + 1 {
+					failures = append(failures, fmt.Errorf("status read: %w", os.ErrDeadlineExceeded))
+				}
+				failures = append(failures, nil)
+			}
+			var output bytes.Buffer
+			polls := 0
+			status := func(string) (acpBridgeInfo, error) {
+				if polls >= len(failures) {
+					t.Fatal("waiter polled after terminal status")
+				}
+				failure := failures[polls]
+				polls++
+				if polls <= len(failures)/2 && output.Len() != 0 {
+					t.Fatal("introduction printed before first successful status")
+				}
+				state := "running"
+				if polls == len(failures) {
+					state = terminalState
+				}
+				return acpBridgeInfo{State: state, Provider: "Test agent"}, failure
+			}
+			ticks := make(chan time.Time)
+			close(ticks)
+			if err := waitForAcpBridge("test", status, ticks, &output); err != nil {
+				t.Fatalf("wait error = %v, want recovery and normal exit", err)
+			}
+			if polls != len(failures) {
+				t.Fatalf("status polls = %d, want %d", polls, len(failures))
+			}
+			if strings.Count(output.String(), "Native agent window: Test agent\r\n") != 1 {
+				t.Fatalf("want exactly one introduction, got %q", output.String())
+			}
+		})
+	}
+}
+
+type acpWaitTemporaryError struct{}
+
+func (acpWaitTemporaryError) Error() string   { return "temporary network failure" }
+func (acpWaitTemporaryError) Timeout() bool   { return false }
+func (acpWaitTemporaryError) Temporary() bool { return true }
+
+func TestAcpWaitClassifiesTransientStatusErrors(t *testing.T) {
+	for _, err := range []error{
+		context.DeadlineExceeded, os.ErrDeadlineExceeded, syscall.ECONNRESET,
+		syscall.EAGAIN, syscall.EWOULDBLOCK, syscall.EINTR, acpWaitTemporaryError{},
+	} {
+		t.Run(err.Error(), func(t *testing.T) {
+			if !isTransientAcpStatusError(fmt.Errorf("status: %w", err)) {
+				t.Fatalf("%v was not classified as transient", err)
+			}
+		})
+	}
+	for _, err := range []error{io.EOF, os.ErrPermission, errors.New("unknown failure")} {
+		if isTransientAcpStatusError(err) {
+			t.Errorf("%v was classified as transient", err)
+		}
+	}
+}
+
 func TestAcpWaitSurvivesTransientStatusTimeout(t *testing.T) {
 	for _, timeoutRequest := range []int{0, 1} {
 		t.Run(fmt.Sprintf("timeout request %d", timeoutRequest), func(t *testing.T) {
-			t.Setenv("XDG_RUNTIME_DIR", shortUnixSocketDir(t))
-			const id = "0123456789abcdef0123456789abcdef"
-			socket, err := acpSocketPath(id)
-			if err != nil {
-				t.Fatal(err)
-			}
-			listener, err := net.Listen("unix", socket)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer listener.Close()
-			requests := make(chan string, 8)
-			serverDone := make(chan struct{})
-			go func() {
-				defer close(serverDone)
-				for index := 0; ; index++ {
-					conn, err := listener.Accept()
-					if err != nil {
+			polls := 0
+			status := func(string) (acpBridgeInfo, error) {
+				index := polls
+				polls++
+				if polls > timeoutRequest+3 {
+					t.Fatal("waiter polled after terminal status")
+				}
+				client, server := net.Pipe()
+				defer client.Close()
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					defer server.Close()
+					_ = server.SetDeadline(time.Now().Add(2 * time.Second))
+					request, err := readAcpWireFrame(bufio.NewReader(server))
+					if err != nil || request.Command != "status" {
+						t.Errorf("request = %+v, error = %v, want status only", request, err)
 						return
 					}
-					_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
-					request, err := readAcpWireFrame(bufio.NewReader(conn))
-					if err != nil {
-						_ = conn.Close()
-						return
-					}
-					requests <- request.Command
 					if index == timeoutRequest {
-						time.Sleep(acpRequestTimeout + 100*time.Millisecond)
+						// Wait for the client's actual status deadline, then its close.
+						_, _ = io.Copy(io.Discard, server)
+						return
 					}
 					state := "running"
 					if index == timeoutRequest+2 {
 						state = "exited"
 					}
-					_ = writeAcpWireFrame(conn, acpWireMessage{
+					_ = writeAcpWireFrame(server, acpWireMessage{
 						Version: acpBridgeProtocolVersion, Type: "status",
 						Bridge: &acpBridgeInfo{State: state, Provider: "Test agent"},
 					})
-					_ = conn.Close()
+				}()
+				info, err := acpBridgeStatusFromConn(client)
+				_ = client.Close()
+				<-done
+				if index == timeoutRequest {
+					var netErr net.Error
+					if !errors.As(err, &netErr) || !netErr.Timeout() {
+						t.Fatalf("status error = %v, want timeout", err)
+					}
 				}
-			}()
-			waitDone := make(chan struct{})
-			go func() {
-				acpWaitCommand([]string{id})
-				close(waitDone)
-			}()
-			select {
-			case <-waitDone:
-			case <-time.After(4 * time.Second):
-				t.Fatal("waiter did not exit after terminal status")
+				return info, err
 			}
-			_ = listener.Close()
-			<-serverDone
-			close(requests)
-			count := 0
-			for command := range requests {
-				count++
-				if command != "status" {
-					t.Fatalf("waiter sent %q, want status only", command)
-				}
+			ticker := time.NewTicker(500 * time.Millisecond)
+			defer ticker.Stop()
+			if err := waitForAcpBridge("test", status, ticker.C, io.Discard); err != nil {
+				t.Fatalf("wait error = %v, want recovery and normal exit", err)
 			}
-			if count != timeoutRequest+3 {
-				t.Fatalf("status requests = %d, waiter exited before recovery", count)
+			if polls != timeoutRequest+3 {
+				t.Fatalf("status requests = %d, waiter exited before recovery", polls)
 			}
 		})
 	}

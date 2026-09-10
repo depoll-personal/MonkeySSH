@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -41,6 +42,7 @@ const (
 	acpIdleTimeout            = 24 * time.Hour
 	acpProviderDrainTimeout   = 2 * time.Second
 	acpRequestTimeout         = 500 * time.Millisecond
+	acpWaitMaxFailures        = 5
 	// Keep the steady-state live queue modest; attach sizes it dynamically for
 	// the actual replay being primed so a high event-count retention bound does
 	// not preallocate a huge channel for every connected client.
@@ -346,32 +348,76 @@ func acpWaitCommand(args []string) {
 	id := args[0]
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
+	if err := waitForAcpBridge(id, acpBridgeStatus, ticker.C, os.Stdout); err != nil {
+		fatal(err)
+	}
+}
+
+func waitForAcpBridge(id string, status func(string) (acpBridgeInfo, error), ticks <-chan time.Time, output io.Writer) error {
 	introduced := false
+	consecutiveFailures := 0
 	for {
-		info, err := acpBridgeStatus(id)
+		info, err := status(id)
 		if err == nil {
+			consecutiveFailures = 0
 			if !introduced {
-				fmt.Printf("Native agent window: %s\r\n", info.Provider)
-				fmt.Print("Open this MonkeyMux window in MonkeySSH for the native interface.\r\n")
-				fmt.Print("The agent keeps running when this terminal disconnects.\r\n")
+				fmt.Fprintf(output, "Native agent window: %s\r\n", info.Provider)
+				fmt.Fprint(output, "Open this MonkeyMux window in MonkeySSH for the native interface.\r\n")
+				fmt.Fprint(output, "The agent keeps running when this terminal disconnects.\r\n")
 				introduced = true
 			}
 			switch info.State {
 			case "exited", "stopped", "protocol_error":
-				return
+				return nil
 			}
 		} else if isStaleUnixSocketError(err) {
-			return
+			return nil
 		} else if errors.Is(err, os.ErrNotExist) {
 			if socket, resolveErr := acpSocketPath(id); resolveErr == nil {
 				if _, statErr := os.Stat(socket); errors.Is(statErr, os.ErrNotExist) {
-					return
+					return nil
 				}
 			}
 		}
-		<-ticker.C
+		if err != nil {
+			var protocolErr *protocolFrameError
+			if errors.As(err, &protocolErr) {
+				return err
+			}
+			if !isTransientAcpStatusError(err) {
+				consecutiveFailures++
+				if consecutiveFailures >= acpWaitMaxFailures {
+					return err
+				}
+			}
+		}
+		<-ticks
 	}
 }
+
+func isTransientAcpStatusError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EAGAIN) ||
+		errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EINTR) {
+		return true
+	}
+	// Winsock uses different errno values from Go's portable syscall constants.
+	if runtime.GOOS == "windows" && (errors.Is(err, syscall.Errno(10054)) || // WSAECONNRESET
+		errors.Is(err, syscall.Errno(10035)) || // WSAEWOULDBLOCK
+		errors.Is(err, syscall.Errno(10004))) { // WSAEINTR
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary())
+}
+
+// protocolFrameError distinguishes malformed frames from transport failures.
+type protocolFrameError struct {
+	err error
+}
+
+func (e *protocolFrameError) Error() string { return e.err.Error() }
+func (e *protocolFrameError) Unwrap() error { return e.err }
 
 func requestAcpBridgeStop(id string) error {
 	conn, err := dialAcpBridge(id)
@@ -730,7 +776,7 @@ func readBoundedProtocolLine(reader *bufio.Reader, limit int) ([]byte, error) {
 		if len(line)+len(fragment) > limit {
 			// Every caller terminates this stream on an oversized frame. Draining
 			// to a newline could block forever on a peer that stops sending.
-			return nil, errors.New("protocol frame exceeds limit")
+			return nil, &protocolFrameError{errors.New("protocol frame exceeds limit")}
 		}
 		line = append(line, fragment...)
 		if !errors.Is(err, bufio.ErrBufferFull) {
@@ -1641,6 +1687,10 @@ func acpBridgeStatus(id string) (acpBridgeInfo, error) {
 		return acpBridgeInfo{}, err
 	}
 	defer conn.Close()
+	return acpBridgeStatusFromConn(conn)
+}
+
+func acpBridgeStatusFromConn(conn net.Conn) (acpBridgeInfo, error) {
 	if err := conn.SetDeadline(time.Now().Add(acpRequestTimeout)); err != nil {
 		return acpBridgeInfo{}, err
 	}
@@ -1656,7 +1706,7 @@ func acpBridgeStatus(id string) (acpBridgeInfo, error) {
 		return acpBridgeInfo{}, fmt.Errorf("invalid status response: %w", err)
 	}
 	if message.Type != "status" || message.Version != acpBridgeProtocolVersion || message.Bridge == nil {
-		return acpBridgeInfo{}, errors.New("invalid status response")
+		return acpBridgeInfo{}, &protocolFrameError{errors.New("invalid status response")}
 	}
 	return *message.Bridge, nil
 }
@@ -1706,11 +1756,11 @@ func readAcpWireFrame(reader *bufio.Reader) (acpWireMessage, error) {
 		return acpWireMessage{}, err
 	}
 	if len(line) == 0 {
-		return acpWireMessage{}, errors.New("empty ACP bridge frame")
+		return acpWireMessage{}, &protocolFrameError{errors.New("empty ACP bridge frame")}
 	}
 	var message acpWireMessage
 	if err := json.Unmarshal(line, &message); err != nil {
-		return acpWireMessage{}, err
+		return acpWireMessage{}, &protocolFrameError{err}
 	}
 	return message, nil
 }
