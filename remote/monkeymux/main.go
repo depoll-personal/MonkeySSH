@@ -287,10 +287,18 @@ var simulateForegroundResize = func(window *muxWindow, width int, height int) {
 		return
 	}
 	generation := window.resizeGeneration.Add(1)
-	temporaryWidth, temporaryHeight, ok := foregroundRedrawTemporarySize(
-		width,
-		height,
-	)
+	temporaryWidth, temporaryHeight, ok := foregroundRedrawTemporarySize(width, height)
+	if window.agentToolLocked() == "pi" {
+		// Pi caches rendered lines. A height-only resize (the ConPTY
+		// default) need not invalidate them, leaving a freshly cleared
+		// attach blank or showing only a differential composer update.
+		// A column change forces a full reflow, even at width one.
+		temporaryWidth = width - 1
+		if temporaryWidth < 1 {
+			temporaryWidth = width + 1
+		}
+		temporaryHeight = height
+	}
 	if ok {
 		window.resizePtyIfCurrent(
 			generation,
@@ -9556,6 +9564,7 @@ func (s *muxServer) resizeWithRedraw(
 		// Genuine viewport changes rely on the real PTY resize and forward their
 		// reflow immediately. Restore/theme redraws always need the synthetic
 		// width-1 dance, while a same-size settle redraw only needs it on
+		// Pi, whose differential renderer can ignore same-size SIGWINCH, and
 		// platforms such as Windows that cannot explicitly signal a foreground
 		// resize after ResizePseudoConsole ignores an unchanged size.
 		//
@@ -9565,7 +9574,7 @@ func (s *muxServer) resizeWithRedraw(
 			forceRedraw,
 			syntheticRedraw,
 			dimensionsChanged,
-			supportsExplicitForegroundResizeSignal,
+			supportsExplicitForegroundResizeSignal && window.agentToolLocked() != "pi",
 		) {
 			s.pauseAttachForwardingForRedrawLocked(window, width, height)
 			simulateForegroundResize(window, width, height)
