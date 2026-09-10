@@ -6,6 +6,8 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as path;
 
+import 'diagnostics_log_service.dart';
+
 final _sftpWindowsDriveRootPattern = RegExp(r'^/?[A-Za-z]:(?:/|$)');
 final _terminalControlCharacterPattern = RegExp(r'[\x00-\x1f\x7f-\x9f]');
 
@@ -540,7 +542,18 @@ class RemoteFileService {
     final remoteFile = await sftp.open(remotePath);
     Future<void>? closing;
     Future<void> closeRemote() => closing ??= Future.sync(remoteFile.close);
-    void cancel() => closeRemote().ignore();
+    void cancel() => unawaited(
+      closeRemote().then<void>(
+        (_) {},
+        onError: (Object error, StackTrace _) {
+          DiagnosticsLogService.instance.warning(
+            'sftp.transfer',
+            'cancel_close_failed',
+            fields: {'errorType': error.runtimeType},
+          );
+        },
+      ),
+    );
     cancelToken?._callbacks.add(cancel);
     try {
       cancelToken?.throwIfCancelled();
@@ -584,10 +597,27 @@ class RemoteFileService {
           SftpFileOpenMode.truncate,
     );
     try {
-      await remoteFile.write(_normalizeByteStream(stream)).done;
-    } finally {
-      await remoteFile.close();
+      // dartssh2's stream writer does not forward source-stream or async
+      // chunk-write failures to .done. Own both futures here instead.
+      var offset = 0;
+      await for (final chunk in _normalizeByteStream(stream)) {
+        await remoteFile.writeBytes(chunk, offset: offset);
+        offset += chunk.length;
+      }
+    } on Object catch (error, stackTrace) {
+      try {
+        await remoteFile.close();
+      } on Object catch (closeError) {
+        // Preserve the transfer failure for the caller if cleanup also fails.
+        DiagnosticsLogService.instance.warning(
+          'sftp.upload',
+          'close_failed',
+          fields: {'errorType': closeError.runtimeType},
+        );
+      }
+      Error.throwWithStackTrace(error, stackTrace);
     }
+    await remoteFile.close();
     if (applyPrivateMode) {
       await sftp.setStat(remotePath, SftpFileAttrs(mode: remoteUploadFileMode));
     }

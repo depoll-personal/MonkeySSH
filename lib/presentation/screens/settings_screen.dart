@@ -1458,6 +1458,13 @@ class _ImportExportSection extends ConsumerWidget {
         defaultFileName: 'monkeyssh-migration',
         sharePositionOrigin: shareOriginFromContext(context),
       );
+    } on FormatException catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.message)));
     } on Exception catch (error) {
       FlutterError.reportError(
         FlutterErrorDetails(

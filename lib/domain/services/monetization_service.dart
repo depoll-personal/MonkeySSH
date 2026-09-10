@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:in_app_purchase_android/billing_client_wrappers.dart';
@@ -328,21 +329,24 @@ class MonetizationService {
       _MonetizationPurchaseOption(productDetails: final productDetails) =>
         PurchaseParam(productDetails: productDetails),
     };
-    bool started;
+    var started = false;
     try {
       started = await _inAppPurchase.buyNonConsumable(
         purchaseParam: purchaseParam,
       );
-    } on Object {
-      started = false;
+    } on PlatformException {
+      _diagnostics.warning('billing', 'purchase_launch_failed');
+    } finally {
+      // Release the pending attempt even if a programming error propagates.
+      if (!started) {
+        const result = MonetizationActionResult.failure(
+          'Could not start the purchase flow.',
+        );
+        _emit(_state.copyWith(isLoading: false, lastError: result.message));
+        _resolvePendingPurchase(result);
+      }
     }
     if (!started) {
-      _emit(_state.copyWith(isLoading: false));
-      _resolvePendingPurchase(
-        const MonetizationActionResult.failure(
-          'Could not start the purchase flow.',
-        ),
-      );
       return completer.future;
     }
     _pendingPurchaseFlowStarted = true;

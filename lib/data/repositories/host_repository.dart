@@ -12,10 +12,15 @@ import 'plaintext_cache.dart';
 /// Repository for managing host entities.
 class HostRepository {
   /// Creates a new [HostRepository].
-  HostRepository(this._db, this._secretEncryptionService);
+  HostRepository(
+    this._db,
+    this._secretEncryptionService, {
+    DiagnosticsLogService? diagnosticsLog,
+  }) : _diagnosticsLog = diagnosticsLog ?? DiagnosticsLogService.instance;
 
   final AppDatabase _db;
   final SecretEncryptionService _secretEncryptionService;
+  final DiagnosticsLogService _diagnosticsLog;
   late final _decryptCache = PlaintextCache(_secretEncryptionService);
 
   final _undecryptablePasswordHostIds = <int>{};
@@ -23,8 +28,11 @@ class HostRepository {
   /// Clears cached decrypted secret plaintexts.
   void clearDecryptionCache() {
     _decryptCache.clear();
-    _undecryptablePasswordHostIds.clear();
   }
+
+  /// Whether the saved password needs to be re-entered after a failed read.
+  bool hasUnreadablePassword(int hostId) =>
+      _undecryptablePasswordHostIds.contains(hostId);
 
   /// Number of cached decrypted secret plaintexts.
   @visibleForTesting
@@ -290,6 +298,7 @@ class HostRepository {
   Future<Host> _decryptHost(Host host) async {
     final storedPassword = host.password;
     if (storedPassword == null || storedPassword.isEmpty) {
+      _undecryptablePasswordHostIds.remove(host.id);
       return host;
     }
 
@@ -310,7 +319,8 @@ class HostRepository {
       _undecryptablePasswordHostIds.remove(hostId);
       return cached;
     }
-    if (_secretEncryptionService.isValidEncryptedEnvelope(storedPassword)) {
+    // A damaged encrypted envelope is not a legacy plaintext password.
+    if (_secretEncryptionService.isEncryptedValue(storedPassword)) {
       try {
         final decryptedPassword = await _decryptCache.decrypt(
           storedPassword,
@@ -321,12 +331,16 @@ class HostRepository {
       } on FormatException catch (error) {
         // Keep the host usable without allowing metadata writes to erase the
         // ciphertext if secure storage loses its encryption key.
-        _undecryptablePasswordHostIds.add(hostId);
-        DiagnosticsLogService.instance.warning(
-          'host.secrets',
-          'password_decryption_failed',
-          fields: {'hostId': hostId, 'errorType': error.runtimeType},
-        );
+        if (_undecryptablePasswordHostIds.add(hostId)) {
+          _diagnosticsLog.warning(
+            'host.secrets',
+            'password_decryption_failed',
+            fields: {
+              'hostId': hostId,
+              'errorType': error.runtimeType.toString(),
+            },
+          );
+        }
         return null;
       }
     }

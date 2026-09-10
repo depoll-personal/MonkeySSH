@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/services/auth_service.dart';
+import '../../domain/services/diagnostics_log_service.dart';
 import '../database/database.dart';
 import '../security/secret_encryption_service.dart';
 import 'plaintext_cache.dart';
@@ -18,10 +19,10 @@ class SshKeyLoadResult {
     this.firstUnreadableErrorType,
   });
 
-  /// Keys whose encrypted secrets were readable.
+  /// Stored keys, with unreadable secret fields returned as empty or null.
   final List<SshKey> keys;
 
-  /// Number of stored keys skipped because their secrets were unreadable.
+  /// Number of stored keys with unreadable secrets.
   final int unreadableCount;
 
   /// Runtime type for the first unreadable-key error, if any.
@@ -31,16 +32,32 @@ class SshKeyLoadResult {
 /// Repository for managing SSH keys.
 class KeyRepository {
   /// Creates a new [KeyRepository].
-  KeyRepository(this._db, this._secretEncryptionService);
+  KeyRepository(
+    this._db,
+    this._secretEncryptionService, {
+    DiagnosticsLogService? diagnosticsLog,
+  }) : _diagnosticsLog = diagnosticsLog ?? DiagnosticsLogService.instance;
 
   final AppDatabase _db;
   final SecretEncryptionService _secretEncryptionService;
+  final DiagnosticsLogService _diagnosticsLog;
   late final _decryptCache = PlaintextCache(_secretEncryptionService);
+  final _undecryptablePrivateKeyIds = <int>{};
+  final _undecryptablePassphraseKeyIds = <int>{};
+  final _loggedUndecryptableKeyIds = <int>{};
 
   /// Clears cached decrypted secret plaintexts.
   void clearDecryptionCache() {
     _decryptCache.clear();
   }
+
+  /// Whether the saved private key needs to be re-entered after a failed read.
+  bool hasUnreadablePrivateKey(int keyId) =>
+      _undecryptablePrivateKeyIds.contains(keyId);
+
+  /// Whether the saved passphrase needs to be re-entered after a failed read.
+  bool hasUnreadablePassphrase(int keyId) =>
+      _undecryptablePassphraseKeyIds.contains(keyId);
 
   /// Number of cached decrypted secret plaintexts.
   @visibleForTesting
@@ -52,7 +69,7 @@ class KeyRepository {
     return Future.wait(keys.map(_decryptKey));
   }
 
-  /// Get all keys that can be decrypted, skipping unreadable stored keys.
+  /// Get all keys, reporting rows with unreadable secret fields.
   Future<SshKeyLoadResult> getAllDecryptable() async {
     final keys = await _db.select(_db.sshKeys).get();
     return _loadDecryptable(keys);
@@ -81,6 +98,60 @@ class KeyRepository {
     return _db.into(_db.sshKeys).insert(encryptedKey);
   }
 
+  /// Updates a key, preserving unreadable secrets until they are replaced.
+  Future<bool> update(SshKey key) async {
+    final generation = _decryptCache.generation;
+    final previousStoredSecrets = await _storedSecretsForKey(key.id);
+    final preservesUnreadablePrivateKey =
+        hasUnreadablePrivateKey(key.id) &&
+        key.privateKey.isEmpty &&
+        previousStoredSecrets != null;
+    final preservesUnreadablePassphrase =
+        hasUnreadablePassphrase(key.id) &&
+        (key.passphrase == null || key.passphrase!.isEmpty) &&
+        previousStoredSecrets?.passphrase != null;
+    final encryptedPrivateKey = preservesUnreadablePrivateKey
+        ? previousStoredSecrets.privateKey
+        : await _secretEncryptionService.encryptRequired(key.privateKey);
+    final encryptedPassphrase = preservesUnreadablePassphrase
+        ? previousStoredSecrets!.passphrase
+        : await _secretEncryptionService.encryptNullable(key.passphrase);
+    final updated = await _db
+        .update(_db.sshKeys)
+        .replace(
+          key.copyWith(
+            privateKey: encryptedPrivateKey,
+            passphrase: Value(encryptedPassphrase),
+          ),
+        );
+    if (updated) {
+      if (!preservesUnreadablePrivateKey) {
+        _undecryptablePrivateKeyIds.remove(key.id);
+        _decryptCache
+          ..remove(previousStoredSecrets?.privateKey)
+          ..remember(
+            encryptedPrivateKey,
+            key.privateKey,
+            generation,
+            isWrite: true,
+          );
+      }
+      if (!preservesUnreadablePassphrase) {
+        _undecryptablePassphraseKeyIds.remove(key.id);
+        _decryptCache
+          ..remove(previousStoredSecrets?.passphrase)
+          ..remember(
+            encryptedPassphrase,
+            key.passphrase,
+            generation,
+            isWrite: true,
+          );
+      }
+      _clearRecoveredKeyDiagnostic(key.id);
+    }
+    return updated;
+  }
+
   /// Delete a key.
   Future<int> delete(int id) async {
     final previousStoredSecrets = await _storedSecretsForKey(id);
@@ -88,6 +159,9 @@ class KeyRepository {
       _db.sshKeys,
     )..where((k) => k.id.equals(id))).go();
     if (deleted > 0) {
+      _undecryptablePrivateKeyIds.remove(id);
+      _undecryptablePassphraseKeyIds.remove(id);
+      _loggedUndecryptableKeyIds.remove(id);
       _decryptCache
         ..remove(previousStoredSecrets?.privateKey)
         ..remove(previousStoredSecrets?.passphrase);
@@ -104,6 +178,11 @@ class KeyRepository {
     for (final key in keys) {
       try {
         decryptedKeys.add(await _decryptKey(key, generation: generation));
+        if (hasUnreadablePrivateKey(key.id) ||
+            hasUnreadablePassphrase(key.id)) {
+          unreadableCount++;
+          firstUnreadableErrorType ??= 'FormatException';
+        }
       } on Exception catch (error) {
         unreadableCount++;
         firstUnreadableErrorType ??= error.runtimeType.toString();
@@ -127,15 +206,13 @@ class KeyRepository {
           generation,
         ) ??
         '';
-    final passphrase = key.passphrase;
-    final decryptedPassphrase = passphrase != null && passphrase.isNotEmpty
-        ? await _decryptOrMigrateKeySecret(
-            key.id,
-            passphrase,
-            _KeySecretColumn.passphrase,
-            generation,
-          )
-        : await _secretEncryptionService.decryptNullable(passphrase);
+    final decryptedPassphrase = await _decryptOrMigrateKeySecret(
+      key.id,
+      key.passphrase,
+      _KeySecretColumn.passphrase,
+      generation,
+    );
+    _clearRecoveredKeyDiagnostic(key.id);
 
     return key.copyWith(
       privateKey: decryptedPrivateKey,
@@ -145,14 +222,43 @@ class KeyRepository {
 
   Future<String?> _decryptOrMigrateKeySecret(
     int keyId,
-    String storedSecret,
+    String? storedSecret,
     _KeySecretColumn column,
     int generation,
   ) async {
+    final undecryptableKeyIds = switch (column) {
+      _KeySecretColumn.privateKey => _undecryptablePrivateKeyIds,
+      _KeySecretColumn.passphrase => _undecryptablePassphraseKeyIds,
+    };
+    if (storedSecret == null || storedSecret.isEmpty) {
+      undecryptableKeyIds.remove(keyId);
+      return storedSecret;
+    }
     final cached = _decryptCache.lookup(storedSecret);
-    if (cached != null) return cached;
-    if (_secretEncryptionService.isValidEncryptedEnvelope(storedSecret)) {
-      return _decryptCache.decrypt(storedSecret, generation);
+    if (cached != null) {
+      undecryptableKeyIds.remove(keyId);
+      return cached;
+    }
+    // A damaged encrypted envelope is not a legacy plaintext secret.
+    if (_secretEncryptionService.isEncryptedValue(storedSecret)) {
+      try {
+        final decryptedSecret = await _decryptCache.decrypt(
+          storedSecret,
+          generation,
+        );
+        undecryptableKeyIds.remove(keyId);
+        return decryptedSecret;
+      } on FormatException catch (error) {
+        undecryptableKeyIds.add(keyId);
+        if (_loggedUndecryptableKeyIds.add(keyId)) {
+          _diagnosticsLog.warning(
+            'key.secrets',
+            'secret_decryption_failed',
+            fields: {'keyId': keyId, 'errorType': error.runtimeType.toString()},
+          );
+        }
+        return null;
+      }
     }
 
     final encryptedSecret = await _secretEncryptionService.encryptNullable(
@@ -181,7 +287,14 @@ class KeyRepository {
           });
       _decryptCache.remember(encryptedSecret, storedSecret, generation);
     }
+    undecryptableKeyIds.remove(keyId);
     return storedSecret;
+  }
+
+  void _clearRecoveredKeyDiagnostic(int keyId) {
+    if (!hasUnreadablePrivateKey(keyId) && !hasUnreadablePassphrase(keyId)) {
+      _loggedUndecryptableKeyIds.remove(keyId);
+    }
   }
 
   Future<({String? passphrase, String privateKey})?> _storedSecretsForKey(

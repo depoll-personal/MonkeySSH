@@ -81,6 +81,8 @@ class _SftpFilePicker extends FilePickerPlatform {
   Uri? saveDestination;
   Uint8List? savedBytes;
   bool failSave = false;
+  Exception? pickError;
+  Exception? saveError;
 
   @override
   Future<List<PlatformFile>> pickFiles({
@@ -94,7 +96,12 @@ class _SftpFilePicker extends FilePickerPlatform {
     WindowsOptions windowsOptions = const WindowsOptions(),
     LinuxOptions linuxOptions = const LinuxOptions(),
     WebOptions webOptions = const WebOptions(),
-  }) async => files;
+  }) async {
+    if (pickError != null) {
+      throw pickError!;
+    }
+    return files;
+  }
 
   @override
   Future<Uri?> saveFile({
@@ -109,6 +116,9 @@ class _SftpFilePicker extends FilePickerPlatform {
     WebOptions webOptions = const WebOptions(),
   }) async {
     savedBytes = bytes;
+    if (saveError != null) {
+      throw saveError!;
+    }
     if (failSave) {
       throw const FileSystemException('provider rejected save');
     }
@@ -160,6 +170,7 @@ Widget _buildSftpTestApp({
   required SshSession session,
   required Widget child,
   RemoteFileService? remoteFileService,
+  MonetizationService? monetizationService,
   NavigatorObserver? observer,
 }) => ProviderScope(
   overrides: [
@@ -168,7 +179,9 @@ Widget _buildSftpTestApp({
     activeSessionsProvider.overrideWith(
       () => _TestActiveSessionsNotifier(session),
     ),
-    monetizationServiceProvider.overrideWithValue(_MockMonetizationService()),
+    monetizationServiceProvider.overrideWithValue(
+      monetizationService ?? _MockMonetizationService(),
+    ),
     monetizationStateProvider.overrideWith(
       (ref) => Stream.value(_proMonetizationState),
     ),
@@ -301,7 +314,76 @@ class _PendingSelectionResult {
 
 const _pendingResult = _PendingSelectionResult();
 
+Future<_MockSftpClient> _pumpCrashlyticsBrowser(
+  WidgetTester tester, {
+  List<SftpName>? entries,
+  RemoteFileService? remoteFiles,
+}) async {
+  final ssh = _MockSshClient();
+  final sftp = _MockSftpClient();
+  final monetization = _MockMonetizationService();
+  final session = SshSession(
+    connectionId: 7,
+    hostId: 1,
+    client: ssh,
+    config: const SshConnectionConfig(
+      hostname: 'demo.example.com',
+      port: 22,
+      username: 'demo',
+    ),
+  );
+  addTearDown(session.close);
+  when(() => monetization.currentState).thenReturn(_proMonetizationState);
+  when(ssh.sftp).thenAnswer((_) async => sftp);
+  when(() => sftp.absolute('.')).thenAnswer((_) async => '/home/demo');
+  when(
+    () => sftp.listdir('/home/demo'),
+  ).thenAnswer((_) async => entries ?? [_fileEntry('notes.txt')]);
+  if (remoteFiles is _MockRemoteFileService) {
+    when(
+      () => remoteFiles.resolveInitialDirectory(sftp),
+    ).thenAnswer((_) async => '/home/demo');
+  }
+  await tester.pumpWidget(
+    _buildSftpTestApp(
+      session: session,
+      monetizationService: monetization,
+      remoteFileService: remoteFiles,
+      child: const SftpScreen(hostId: 1, connectionId: 7),
+    ),
+  );
+  await tester.pumpAndSettle();
+  return sftp;
+}
+
+// Stream cancellation and filesystem IO can complete outside the widget test's
+// fake clock. Drain both event loops until the operation reaches its observable
+// outcome; pumpAndSettle alone can return before either has finished.
+Future<void> _pumpUntilSftpState(
+  WidgetTester tester,
+  bool Function() isReady, {
+  required String reason,
+}) async {
+  for (var attempt = 0; attempt < 500; attempt++) {
+    await tester.pump(const Duration(milliseconds: 10));
+    if (isReady()) {
+      return;
+    }
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 10)),
+    );
+  }
+  await tester.pump();
+  expect(isReady(), isTrue, reason: reason);
+}
+
 void main() {
+  setUpAll(() {
+    registerFallbackValue(SftpFileOpenMode.read);
+    registerFallbackValue(Uint8List(0));
+    registerFallbackValue(SftpFileAttrs());
+  });
+
   group('SFTP path helpers', () {
     test('parentRemotePath resolves POSIX parents', () {
       expect(parentRemotePath('/tmp/monkeyssh'), '/tmp');
@@ -1370,6 +1452,316 @@ void main() {
       });
     }
 
+    for (final code in [
+      SftpStatusCode.failure,
+      SftpStatusCode.permissionDenied,
+      SftpStatusCode.noSuchFile,
+    ]) {
+      testWidgets('directory delete reports SFTP status $code', (tester) async {
+        final sftp = await _pumpCrashlyticsBrowser(
+          tester,
+          entries: [
+            SftpName(
+              filename: 'folder',
+              longname: 'folder',
+              attr: SftpFileAttrs(mode: const SftpFileMode.value(1 << 14)),
+            ),
+          ],
+        );
+        final deletion = Completer<void>();
+        when(
+          () => sftp.rmdir('/home/demo/folder'),
+        ).thenAnswer((_) => deletion.future);
+        await tester.longPress(find.text('folder'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Delete'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(TextButton, 'Delete'));
+        await tester.pumpAndSettle();
+        expect(find.text('Deleted "folder"'), findsNothing);
+        deletion.completeError(SftpStatusError(code, 'delete rejected'));
+        await tester.pumpAndSettle();
+        expect(
+          find.text(
+            code == SftpStatusCode.noSuchFile
+                ? 'Item no longer exists. Refresh the folder and try again.'
+                : 'Could not delete folder. Make sure it is empty and you have permission.',
+          ),
+          findsOneWidget,
+        );
+        expect(find.text('folder'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+        verify(() => sftp.rmdir('/home/demo/folder')).called(1);
+        await tester.pumpWidget(const SizedBox.shrink());
+      });
+    }
+
+    testWidgets('upload picker platform failure returns with feedback', (
+      tester,
+    ) async {
+      final picker = _SftpFilePicker()
+        ..pickError = PlatformException(code: 'provider_failed');
+      final previous = FilePickerPlatform.instance;
+      FilePickerPlatform.instance = picker;
+      addTearDown(() => FilePickerPlatform.instance = previous);
+      final sftp = await _pumpCrashlyticsBrowser(tester);
+      await tester.tap(find.byTooltip('Upload files'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Could not open the file picker. Try again.'),
+        findsOneWidget,
+      );
+      verifyNever(() => sftp.open(any(), mode: any(named: 'mode')));
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+
+    for (final failure in <Object>[
+      SftpStatusError(SftpStatusCode.permissionDenied, 'denied'),
+      SSHStateError('closed'),
+      Exception('upload failed'),
+      NoSuchMethodError.withInvocation(Object(), Invocation.method(#write, [])),
+    ]) {
+      for (final hasEarlierSuccess in [false, true]) {
+        testWidgets('upload handles ${failure.runtimeType} and stops the batch'
+            '${hasEarlierSuccess ? ' after an earlier success' : ''}', (
+          tester,
+        ) async {
+          final picker = _SftpFilePicker()
+            ..files = [
+              AppPlatformFile(
+                name: 'first.txt',
+                bytes: Uint8List.fromList([1]),
+              ),
+              AppPlatformFile(
+                name: 'second.txt',
+                bytes: Uint8List.fromList([2]),
+              ),
+              if (hasEarlierSuccess)
+                AppPlatformFile(
+                  name: 'third.txt',
+                  bytes: Uint8List.fromList([3]),
+                ),
+            ];
+          final previous = FilePickerPlatform.instance;
+          FilePickerPlatform.instance = picker;
+          addTearDown(() => FilePickerPlatform.instance = previous);
+          final sftp = await _pumpCrashlyticsBrowser(tester);
+          final failedFile = _MockSftpFile();
+          final failedName = hasEarlierSuccess ? 'second.txt' : 'first.txt';
+          final skippedName = hasEarlierSuccess ? 'third.txt' : 'second.txt';
+          final successfulFile = _MockSftpFile();
+          if (hasEarlierSuccess) {
+            when(
+              () => sftp.open('/home/demo/first.txt', mode: any(named: 'mode')),
+            ).thenAnswer((_) async => successfulFile);
+            when(
+              () => successfulFile.writeBytes(
+                any(),
+                offset: any(named: 'offset'),
+              ),
+            ).thenAnswer((_) async {});
+            when(successfulFile.close).thenAnswer((_) async {});
+            when(
+              () => sftp.setStat('/home/demo/first.txt', any()),
+            ).thenAnswer((_) async {});
+          }
+          when(
+            () => sftp.open('/home/demo/$failedName', mode: any(named: 'mode')),
+          ).thenAnswer((_) async => failedFile);
+          when(
+            () => failedFile.writeBytes(any(), offset: any(named: 'offset')),
+          ).thenAnswer((_) => Future<void>.error(failure));
+          when(failedFile.close).thenAnswer((_) async {});
+          final message = hasEarlierSuccess
+              ? 'Uploaded 1 of 3 files. Upload failed. Check the connection and try again.'
+              : 'Upload failed. Check the connection and try again.';
+          await tester.tap(find.byTooltip('Upload files'));
+          await _pumpUntilSftpState(
+            tester,
+            () => find.text(message).evaluate().isNotEmpty,
+            reason: 'The failed write must reach the upload failure SnackBar.',
+          );
+          await tester.pumpAndSettle();
+          expect(
+            find.descendant(
+              of: find.byType(SnackBar),
+              matching: find.text(message),
+            ),
+            findsOneWidget,
+          );
+          expect(
+            find.text('Uploaded ${picker.files.length} files'),
+            findsNothing,
+          );
+          verify(() => failedFile.writeBytes(any())).called(1);
+          verify(failedFile.close).called(1);
+          verifyNever(() => sftp.setStat('/home/demo/$failedName', any()));
+          verifyNever(
+            () =>
+                sftp.open('/home/demo/$skippedName', mode: any(named: 'mode')),
+          );
+          if (hasEarlierSuccess) {
+            verify(() => successfulFile.writeBytes(any())).called(1);
+            verify(successfulFile.close).called(1);
+            verify(() => sftp.setStat('/home/demo/first.txt', any())).called(1);
+          }
+          verify(
+            () => sftp.listdir('/home/demo'),
+          ).called(hasEarlierSuccess ? 2 : 1);
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox.shrink());
+        });
+      }
+    }
+
+    testWidgets('copy path platform failure is handled', (tester) async {
+      await _pumpCrashlyticsBrowser(tester);
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.setData') {
+            throw PlatformException(code: 'clipboard_unavailable');
+          }
+          return null;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        ),
+      );
+      await tester.longPress(find.text('notes.txt'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Copy as path'));
+      await tester.pumpAndSettle();
+      expect(find.text('Could not copy the path. Try again.'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+
+    for (final action in ['rename', 'mkdir', 'delete', 'open']) {
+      testWidgets('$action handles asynchronous SSH errors', (tester) async {
+        final sftp = await _pumpCrashlyticsBrowser(tester);
+        final failure = SSHStateError('transport closed');
+        when(
+          () => sftp.rename('/home/demo/notes.txt', '/home/demo/renamed.txt'),
+        ).thenAnswer((_) => Future<void>.error(failure));
+        when(
+          () => sftp.mkdir('/home/demo/new-folder'),
+        ).thenAnswer((_) => Future<void>.error(failure));
+        when(
+          () => sftp.remove('/home/demo/notes.txt'),
+        ).thenAnswer((_) => Future<void>.error(failure));
+        when(
+          () => sftp.open('/home/demo/notes.txt'),
+        ).thenAnswer((_) => Future<SftpFile>.error(failure));
+        if (action == 'mkdir') {
+          await tester.tap(find.byTooltip('New folder'));
+          await tester.pumpAndSettle();
+          await tester.enterText(find.byType(TextField), 'new-folder');
+          await tester.pumpAndSettle();
+          await tester.tap(find.widgetWithText(FilledButton, 'Create'));
+        } else if (action == 'open') {
+          await tester.tap(find.text('notes.txt'));
+        } else {
+          await tester.longPress(find.text('notes.txt'));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text(action == 'rename' ? 'Rename' : 'Delete'));
+          await tester.pumpAndSettle();
+          if (action == 'rename') {
+            await tester.enterText(find.byType(TextField), 'renamed.txt');
+            await tester.tap(find.widgetWithText(FilledButton, 'Rename'));
+          } else {
+            await tester.tap(find.widgetWithText(TextButton, 'Delete'));
+          }
+        }
+        await tester.pumpAndSettle();
+        expect(
+          find.text(switch (action) {
+            'rename' =>
+              'Could not rename item. Check permissions and try again.',
+            'mkdir' =>
+              'Could not create folder. Check permissions and try again.',
+            'delete' =>
+              'Could not delete item. Check permissions and try again.',
+            _ => 'Could not save changes. Check permissions and try again.',
+          }),
+          findsOneWidget,
+        );
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      });
+    }
+
+    testWidgets(
+      'video cancellation owns a failed remote close and removes cache',
+      (tester) async {
+        final directory = Directory.systemTemp.createTempSync(
+          'sftp-cancel-test-',
+        );
+        addTearDown(() => directory.deleteSync(recursive: true));
+        const channel = MethodChannel('plugins.flutter.io/path_provider');
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          channel,
+          (_) async => directory.path,
+        );
+        addTearDown(
+          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            channel,
+            null,
+          ),
+        );
+        final sftp = await _pumpCrashlyticsBrowser(
+          tester,
+          entries: [_fileEntry('movie.mp4', size: 10)],
+        );
+        final file = _MockSftpFile();
+        final reading = Completer<void>();
+        final stream = StreamController<Uint8List>();
+        when(
+          () => sftp.open('/home/demo/movie.mp4'),
+        ).thenAnswer((_) async => file);
+        when(file.read).thenAnswer((_) {
+          reading.complete();
+          return stream.stream;
+        });
+        when(file.close).thenAnswer((_) async {
+          stream.addError(SSHStateError('read closed'));
+          await stream.close();
+          // ignore: only_throw_errors, dartssh2 models SSH errors as interfaces.
+          throw SSHStateError('close failed');
+        });
+        await tester.tap(find.text('movie.mp4'));
+        await _pumpUntilSftpState(
+          tester,
+          () =>
+              reading.isCompleted &&
+              directory.listSync(recursive: true).whereType<File>().isNotEmpty,
+          reason:
+              'The preview must start reading and create a cache before cancellation.',
+        );
+        expect(find.text('Loading video preview'), findsOneWidget);
+        await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+        await _pumpUntilSftpState(
+          tester,
+          () => find.text('Video preview cancelled').evaluate().isNotEmpty,
+          reason:
+              'Cancellation must finish remote-close and local-cache cleanup.',
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Video preview cancelled'), findsOneWidget);
+        expect(find.text('Loading video preview'), findsNothing);
+        expect(find.text('movie.mp4'), findsOneWidget);
+        expect(directory.listSync(recursive: true).whereType<File>(), isEmpty);
+        verify(file.close).called(1);
+        expect(stream.hasListener, isFalse);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+
     for (final failRead in [false, true]) {
       testWidgets(
         'upload keeps its directory and handles stream failure: $failRead',
@@ -1397,6 +1789,11 @@ void main() {
               AppPlatformFile(
                 name: 'second.txt',
                 bytes: Uint8List.fromList([2]),
+              ),
+            if (failRead)
+              AppPlatformFile(
+                name: 'third.txt',
+                bytes: Uint8List.fromList([3]),
               ),
           ];
           when(sshClient.sftp).thenAnswer((_) async => sftp);
@@ -1447,6 +1844,9 @@ void main() {
             '/home/demo/first.txt',
             '/home/demo/second.txt',
           ]);
+          // Navigation lists /home once; batch completion refreshes it again,
+          // including when only the first file was uploaded successfully.
+          verify(() => sftp.listdir('/home')).called(2);
           expect(
             contents,
             failRead
@@ -1461,11 +1861,13 @@ void main() {
           expect(
             find.text(
               failRead
-                  ? 'Upload failed. Check the connection and try again.'
+                  ? 'Uploaded 1 of 3 files. '
+                        'Upload failed. Check the connection and try again.'
                   : 'Uploaded 2 files',
             ),
             findsOneWidget,
           );
+          expect(tester.takeException(), isNull);
           await tester.pumpWidget(const SizedBox.shrink());
         },
       );
@@ -1570,6 +1972,8 @@ void main() {
       'android-path',
       'cancel',
       'failure',
+      'picker-platform-failure',
+      'share-platform-failure',
       'large-desktop',
       'large-mobile',
       'share-cancel',
@@ -1584,9 +1988,13 @@ void main() {
         final cachedFile = File('${cacheDirectory.path}/cached-preview.mp4')
           ..writeAsBytesSync([1, 2, 3]);
         final large =
-            destination.startsWith('large-') || destination == 'share-cancel';
+            destination.startsWith('large-') ||
+            destination == 'share-cancel' ||
+            destination == 'share-platform-failure';
         final mobileShare =
-            destination == 'large-mobile' || destination == 'share-cancel';
+            destination == 'large-mobile' ||
+            destination == 'share-cancel' ||
+            destination == 'share-platform-failure';
         if (large) {
           cachedFile.openSync(mode: FileMode.append)
             ..truncateSync(10 * 1024 * 1024 + 1)
@@ -1595,6 +2003,9 @@ void main() {
         final exportedFile = File('${cacheDirectory.path}/export.mp4');
         final picker = _SftpFilePicker()
           ..failSave = destination == 'failure'
+          ..saveError = destination == 'picker-platform-failure'
+              ? PlatformException(code: 'save_failed')
+              : null
           ..saveDestination = switch (destination) {
             'content' => Uri.parse('content://documents/primary/export.mp4'),
             'android-path' => Uri.parse('/document/primary:export.mp4'),
@@ -1610,6 +2021,9 @@ void main() {
           shareChannel,
           (call) async {
             shareCalls.add(call);
+            if (destination == 'share-platform-failure') {
+              throw PlatformException(code: 'share_failed');
+            }
             return destination == 'share-cancel' ? '' : 'saved';
           },
         );
@@ -1665,7 +2079,11 @@ void main() {
           'large-desktop',
         ].contains(destination)) {
           expect(find.text('Saved "cached-preview.mp4"'), findsOneWidget);
-        } else if (destination == 'failure') {
+        } else if ([
+          'failure',
+          'picker-platform-failure',
+          'share-platform-failure',
+        ].contains(destination)) {
           expect(
             find.text('Could not export the file. Try again.'),
             findsOneWidget,

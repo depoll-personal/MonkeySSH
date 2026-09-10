@@ -39,14 +39,25 @@ Future<T> runQueuedSshExec<T>(
 
 /// Bounds channel creation and closes channels that arrive after the deadline.
 /// Late opening failures are consumed without changing the timeout result.
-Future<SSHSession> openSshExec(Future<SSHSession> opening, Duration timeout) =>
-    opening.timeout(
-      timeout,
-      onTimeout: () {
-        opening.then((channel) => channel.close()).ignore();
-        throw TimeoutException('Timed out opening SSH exec channel', timeout);
-      },
-    );
+Future<SSHSession> openSshExec(
+  Future<SSHSession> opening,
+  Duration timeout, {
+  void Function(Object error, StackTrace stackTrace)? onLateError,
+}) => opening.timeout(
+  timeout,
+  onTimeout: () {
+    opening
+        .then((channel) => channel.close())
+        .then<void>(
+          (_) {},
+          onError: (Object error, StackTrace stackTrace) {
+            onLateError?.call(error, stackTrace);
+          },
+        )
+        .ignore();
+    throw TimeoutException('Timed out opening SSH exec channel', timeout);
+  },
+);
 
 /// Clears queued exec state for tests.
 @visibleForTesting

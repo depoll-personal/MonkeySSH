@@ -264,55 +264,68 @@ Future<String?> showTransferPassphraseDialog({
   required BuildContext context,
   required String title,
 }) async {
-  final controller = TextEditingController();
-  var obscureText = true;
+  final value = await showDialog<String>(
+    context: context,
+    builder: (context) => _TransferPassphraseDialog(title: title),
+  );
 
-  try {
-    final value = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setState) => AlertDialog(
-          title: Text(title),
-          content: TextField(
-            controller: controller,
-            autofocus: true,
-            obscureText: obscureText,
-            decoration: InputDecoration(
-              labelText: 'Transfer passphrase',
-              helperText: 'Required to encrypt/decrypt transfer data',
-              suffixIcon: IconButton(
-                onPressed: () => setState(() => obscureText = !obscureText),
-                icon: Icon(
-                  obscureText ? Icons.visibility : Icons.visibility_off,
-                ),
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () =>
-                  Navigator.pop(dialogContext, controller.text.trim()),
-              child: const Text('Continue'),
-            ),
-          ],
-        ),
-      ),
-    );
+  final trimmed = value?.trim();
+  if (trimmed == null || trimmed.isEmpty) {
+    return null;
+  }
+  return trimmed;
+}
 
-    final trimmed = value?.trim();
-    if (trimmed == null || trimmed.isEmpty) {
-      return null;
-    }
-    return trimmed;
-  } finally {
-    controller
+class _TransferPassphraseDialog extends StatefulWidget {
+  const _TransferPassphraseDialog({required this.title});
+
+  final String title;
+
+  @override
+  State<_TransferPassphraseDialog> createState() =>
+      _TransferPassphraseDialogState();
+}
+
+class _TransferPassphraseDialogState extends State<_TransferPassphraseDialog> {
+  final _controller = TextEditingController();
+  var _obscureText = true;
+
+  @override
+  void dispose() {
+    // The TextField still needs its controller during the route's exit animation.
+    _controller
       ..clear()
       ..dispose();
+    super.dispose();
   }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: Text(widget.title),
+    content: TextField(
+      controller: _controller,
+      autofocus: true,
+      obscureText: _obscureText,
+      decoration: InputDecoration(
+        labelText: 'Transfer passphrase',
+        helperText: 'Required to encrypt/decrypt transfer data',
+        suffixIcon: IconButton(
+          onPressed: () => setState(() => _obscureText = !_obscureText),
+          icon: Icon(_obscureText ? Icons.visibility : Icons.visibility_off),
+        ),
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Cancel'),
+      ),
+      FilledButton(
+        onPressed: () => Navigator.pop(context, _controller.text.trim()),
+        child: const Text('Continue'),
+      ),
+    ],
+  );
 }
 
 /// Requests local authentication for sensitive transfer exports.

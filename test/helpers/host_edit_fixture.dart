@@ -108,6 +108,7 @@ class HostEditFixture {
     bool createHost = false,
     List<Snippet> snippets = const [],
     List<Override> overrides = const [],
+    HostRepository? hostRepository,
   }) async {
     final router = GoRouter(
       routes: [
@@ -127,7 +128,9 @@ class HostEditFixture {
       ProviderScope(
         overrides: [
           databaseProvider.overrideWithValue(database),
-          hostRepositoryProvider.overrideWithValue(hostRepository),
+          hostRepositoryProvider.overrideWithValue(
+            hostRepository ?? this.hostRepository,
+          ),
           keyRepositoryProvider.overrideWithValue(
             FakeKeyRepository(
               database: database,

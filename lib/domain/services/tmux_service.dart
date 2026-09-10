@@ -64,6 +64,7 @@ class TmuxService implements RemoteMultiplexerService {
   const TmuxService({
     Duration execOpenTimeout = const Duration(seconds: 10),
     Duration execOutputTimeout = const Duration(seconds: 10),
+    DateTime Function()? execChannelNow,
     Duration agentSessionMetadataRefreshDebounce = const Duration(
       milliseconds: 150,
     ),
@@ -72,6 +73,7 @@ class TmuxService implements RemoteMultiplexerService {
     ),
   }) : _execOpenTimeout = execOpenTimeout,
        _execOutputTimeout = execOutputTimeout,
+       _execChannelNow = execChannelNow,
        _agentSessionMetadataRefreshDebounce =
            agentSessionMetadataRefreshDebounce,
        _agentSessionMetadataPeriodicRefreshInterval =
@@ -79,6 +81,7 @@ class TmuxService implements RemoteMultiplexerService {
 
   final Duration _execOpenTimeout;
   final Duration _execOutputTimeout;
+  final DateTime Function()? _execChannelNow;
   final Duration _agentSessionMetadataRefreshDebounce;
   final Duration _agentSessionMetadataPeriodicRefreshInterval;
 
@@ -100,6 +103,10 @@ class TmuxService implements RemoteMultiplexerService {
   @visibleForTesting
   static bool hasConnectionStateForTesting(int connectionId) =>
       _connectionStates.containsKey(connectionId);
+
+  // A failed transport cannot recover in place. Key this by session identity so
+  // clearing caches cannot revive it or disable a replacement connection.
+  static final _deadExecSessions = Expando<bool>();
 
   static const _execDoneMarker = '__flutty_tmux_exec_done__';
   static const _installedAgentToolsFreshTtl = Duration(minutes: 30);
@@ -232,7 +239,8 @@ class TmuxService implements RemoteMultiplexerService {
   Future<bool> isTmuxActive(SshSession session, {String? extraFlags}) async {
     try {
       return await isTmuxActiveOrThrow(session, extraFlags: extraFlags);
-    } on Exception catch (error) {
+    } on Object catch (error) {
+      if (!_isExpectedTmuxOperationError(error)) rethrow;
       DiagnosticsLogService.instance.warning(
         'tmux.detect',
         'active_check_failed',
@@ -281,7 +289,8 @@ class TmuxService implements RemoteMultiplexerService {
         session,
         extraFlags: extraFlags,
       );
-    } on Exception catch (error) {
+    } on Object catch (error) {
+      if (!_isExpectedTmuxOperationError(error)) rethrow;
       DiagnosticsLogService.instance.warning(
         'tmux.query',
         'foreground_session_failed',
@@ -535,7 +544,8 @@ class TmuxService implements RemoteMultiplexerService {
         sessionName,
         extraFlags: extraFlags,
       );
-    } on Exception catch (error) {
+    } on Object catch (error) {
+      if (!_isExpectedTmuxOperationError(error)) rethrow;
       DiagnosticsLogService.instance.warning(
         'tmux.query',
         'has_session_failed',
@@ -813,12 +823,12 @@ class TmuxService implements RemoteMultiplexerService {
   }
 
   void _ensureAgentSessionMetadataPeriodicRefresh(SshSession session) {
-    final state = _stateFor(session.connectionId);
-    if (_agentSessionMetadataPeriodicRefreshInterval <= Duration.zero) {
+    if (_isExecSessionClosed(session) ||
+        _agentSessionMetadataPeriodicRefreshInterval <= Duration.zero) {
       return;
     }
     final connectionId = session.connectionId;
-    state.metadataPeriodicSession = session;
+    final state = _stateFor(connectionId)..metadataPeriodicSession = session;
     if (state.metadataPeriodicTimer != null) {
       return;
     }
@@ -889,6 +899,7 @@ class TmuxService implements RemoteMultiplexerService {
     required Duration delay,
     required _MetadataDelay kind,
   }) {
+    if (_isExecSessionClosed(session)) return;
     final connectionId = session.connectionId;
     final state = _stateFor(connectionId);
     state.metadataBatches[kind] = _mergeMetadataBatch(
@@ -926,6 +937,7 @@ class TmuxService implements RemoteMultiplexerService {
     Set<int> agentPanePids, {
     bool force = false,
   }) {
+    if (_isExecSessionClosed(session)) return;
     final connectionId = session.connectionId;
     final state = _stateFor(connectionId);
     if (state.metadataRequest != null) {
@@ -1076,6 +1088,7 @@ class TmuxService implements RemoteMultiplexerService {
     required bool force,
     required Duration cooldown,
   }) {
+    if (_isExecSessionClosed(session)) return;
     final connectionId = session.connectionId;
     DiagnosticsLogService.instance.debug(
       'tmux.agent',
@@ -1284,7 +1297,8 @@ class TmuxService implements RemoteMultiplexerService {
         },
       );
       return context;
-    } on Exception catch (error) {
+    } on Object catch (error) {
+      if (!_isExpectedTmuxOperationError(error)) rethrow;
       DiagnosticsLogService.instance.warning(
         'tmux.query',
         'current_pane_context_failed',
@@ -1339,7 +1353,8 @@ class TmuxService implements RemoteMultiplexerService {
         sessionName,
         extraFlags: extraFlags,
       );
-    } on Exception catch (error) {
+    } on Object catch (error) {
+      if (!_isExpectedTmuxOperationError(error)) rethrow;
       DiagnosticsLogService.instance.warning(
         'tmux.query',
         'foreground_client_failed',
@@ -1419,7 +1434,8 @@ class TmuxService implements RemoteMultiplexerService {
           'usedControl': usedControl,
         },
       );
-    } on Exception catch (error) {
+    } on Object catch (error) {
+      if (!_isExpectedTmuxOperationError(error)) rethrow;
       DiagnosticsLogService.instance.warning(
         'tmux.action',
         'refresh_clients_failed',
@@ -1502,7 +1518,8 @@ class TmuxService implements RemoteMultiplexerService {
           },
         },
       );
-    } on Exception catch (error) {
+    } on Object catch (error) {
+      if (!_isExpectedTmuxOperationError(error)) rethrow;
       DiagnosticsLogService.instance.warning(
         'tmux.action',
         'refresh_theme_failed',
@@ -1756,15 +1773,21 @@ class TmuxService implements RemoteMultiplexerService {
 
   // ── Helpers ────────────────────────────────────────────────────────────
 
+  bool _isExecSessionClosed(SshSession session) =>
+      (_deadExecSessions[session] ?? false) || session.client.isClosed;
+
   Duration? _execChannelCooldownRemaining(SshSession session) {
     final state = _connectionStates[session.connectionId];
     final backoff = state?.execChannelBackoff;
     if (backoff == null) return null;
-    final remaining = backoff.cooldownUntil.difference(DateTime.now());
+    final remaining = backoff.cooldownUntil.difference(
+      _execChannelNow?.call() ?? DateTime.now(),
+    );
     if (remaining > Duration.zero) {
       return remaining;
     }
-    state!.execChannelBackoff = null;
+    // Keep the failure count until an open succeeds. Expiry permits a probe;
+    // it does not mean the server has recovered.
     return null;
   }
 
@@ -1774,7 +1797,7 @@ class TmuxService implements RemoteMultiplexerService {
   /// Returns whether optional SSH exec-channel work should be deferred.
   @override
   bool isExecChannelCoolingDown(SshSession session) =>
-      _isExecChannelCoolingDown(session);
+      _isExecSessionClosed(session) || _isExecChannelCoolingDown(session);
 
   void _recordExecChannelFailure(int connectionId, Object error) {
     final state = _stateFor(connectionId);
@@ -1782,7 +1805,7 @@ class TmuxService implements RemoteMultiplexerService {
     final delay = resolveTmuxExecChannelBackoffDelay(failureCount);
     state.execChannelBackoff = _TmuxExecChannelBackoff(
       failureCount: failureCount,
-      cooldownUntil: DateTime.now().add(delay),
+      cooldownUntil: (_execChannelNow?.call() ?? DateTime.now()).add(delay),
     );
     DiagnosticsLogService.instance.warning(
       'tmux.exec',
@@ -1896,6 +1919,16 @@ class TmuxService implements RemoteMultiplexerService {
     SSHPtyConfig? pty,
     Future<void> Function(SSHSession)? closeStaleSession,
   }) async {
+    if (_isExecSessionClosed(session)) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.exec',
+        'open_skipped_closed',
+        fields: {'connectionId': session.connectionId},
+      );
+      // dartssh2 errors do not implement Exception or Error.
+      // ignore: only_throw_errors
+      throw SSHStateError('SSH session is closed');
+    }
     final state = _stateFor(session.connectionId);
     final execCooldown = _execChannelCooldownRemaining(session);
     if (execCooldown != null) {
@@ -1924,6 +1957,7 @@ class TmuxService implements RemoteMultiplexerService {
       final exec = await openSshExec(
         session.execute(command, pty: pty),
         _execOpenTimeout,
+        onLateError: (error, _) => _recordLateExecOpenFailure(session, error),
       );
       if (!_ownsState(session.connectionId, state)) {
         if (closeStaleSession != null) {
@@ -1936,6 +1970,9 @@ class TmuxService implements RemoteMultiplexerService {
       _clearExecChannelBackoff(session.connectionId);
       return exec;
     } on Object catch (error) {
+      if (error is SSHStateError) {
+        _deadExecSessions[session] = true;
+      }
       if (error is TimeoutException) {
         DiagnosticsLogService.instance.warning(
           'tmux.exec',
@@ -1954,6 +1991,20 @@ class TmuxService implements RemoteMultiplexerService {
       }
       rethrow;
     }
+  }
+
+  void _recordLateExecOpenFailure(SshSession session, Object error) {
+    if (error is SSHStateError) {
+      _deadExecSessions[session] = true;
+    }
+    DiagnosticsLogService.instance.debug(
+      'tmux.exec',
+      'late_open_failed',
+      fields: {
+        'connectionId': session.connectionId,
+        'errorType': error.runtimeType,
+      },
+    );
   }
 
   /// Runs a command via SSH exec channel and returns stdout as a string.
@@ -2531,6 +2582,13 @@ List<String> parseForegroundClientNamesForRefresh(String output) {
   }
   return clientNames;
 }
+
+// SSH errors are plain objects in dartssh2. Keep programming errors outside
+// these operational fallbacks, including SSHInternalError.
+bool _isExpectedTmuxOperationError(Object error) =>
+    error is Exception ||
+    error is SSHChannelOpenError ||
+    error is SSHStateError;
 
 bool _shouldTreatTmuxExecChannelAsUnavailable(Object error) =>
     shouldBackOffTmuxExecChannelAfterFailure(error) ||
@@ -3564,7 +3622,11 @@ class _TmuxWindowChangeObserver {
   }
 
   Future<void> _ensureStarted() {
-    if (_disposed || _controlSession != null) return Future<void>.value();
+    if (_disposed ||
+        service._isExecSessionClosed(session) ||
+        _controlSession != null) {
+      return Future<void>.value();
+    }
     final existingStart = _startFuture;
     if (existingStart != null) {
       return existingStart;
@@ -3902,9 +3964,13 @@ class _TmuxWindowChangeObserver {
   }
 
   void _scheduleRestart({bool channelOpenFailure = false}) {
-    if (_disposed || !_controller.hasListener) return;
     _stopHeartbeat();
     _restartTimer?.cancel();
+    if (_disposed ||
+        service._isExecSessionClosed(session) ||
+        !_controller.hasListener) {
+      return;
+    }
     final delay = resolveTmuxControlRestartDelay(
       _restartAttempts,
       channelOpenFailure: channelOpenFailure,
@@ -3941,7 +4007,10 @@ class _TmuxWindowChangeObserver {
   /// its initial subscription snapshot, and frequent restarts consume SSH
   /// session channels on servers with low `MaxSessions` limits.
   void _onHeartbeat() {
-    if (_disposed) return;
+    if (_disposed || service._isExecSessionClosed(session)) {
+      _stopHeartbeat();
+      return;
+    }
     final lastActivity = _lastControlActivity;
     if (lastActivity == null) return;
     final action = decideTmuxHeartbeatAction(

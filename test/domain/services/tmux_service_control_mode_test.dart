@@ -2661,7 +2661,10 @@ String _tmuxWindowLine({
 bool _isCopilotMetadataCommand(String command) =>
     command.contains('ps -eo pid=,ppid=,comm=,args=');
 
-class _MockSshClient extends Mock implements SSHClient {}
+class _MockSshClient extends Mock implements SSHClient {
+  @override
+  bool get isClosed => false;
+}
 
 class _MockExecSession extends Mock implements SSHSession {}
 

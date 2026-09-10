@@ -34,6 +34,7 @@ import 'local_notification_service.dart';
 import 'openssh_key_generator.dart';
 import 'port_forward_browser_service.dart';
 import 'settings_service.dart';
+import 'ssh_error_policy.dart';
 import 'ssh_exec_queue.dart';
 import 'telemetry_service.dart';
 import 'terminal_command_mark_tracker.dart';
@@ -1326,10 +1327,23 @@ Future<void> _closeSshClients(
   SSHClient? client,
   List<SSHClient> dependentClients,
 ) async {
+  Future<void> closeClient(SSHClient client) async {
+    try {
+      await client.close();
+    } on SSHStateError catch (error, stackTrace) {
+      if (!isExpectedSshChannelTeardownError(error, stackTrace)) rethrow;
+      DiagnosticsLogService.instance.debug(
+        'ssh.session',
+        'client_already_disconnected',
+        fields: {'errorType': error.runtimeType},
+      );
+    }
+  }
+
   try {
-    await client?.close();
+    if (client != null) await closeClient(client);
   } finally {
-    await Future.wait(dependentClients.map((client) async => client.close()));
+    await Future.wait(dependentClients.map(closeClient));
   }
 }
 
@@ -1390,7 +1404,8 @@ class SshConnectionCancellationToken {
       }
       try {
         onAbandonedValue(value);
-      } on Exception catch (error) {
+      } on Object catch (error) {
+        if (error is! Exception && error is! SSHError) rethrow;
         DiagnosticsLogService.instance.debug(
           'ssh.connect',
           'cancel_cleanup_failed',
@@ -1700,7 +1715,13 @@ class SshService {
             },
           );
         }
-        final keys = keyLoadResult.keys;
+        final keys = keyLoadResult.keys
+            .where(
+              (key) =>
+                  !keyRepository!.hasUnreadablePrivateKey(key.id) &&
+                  !keyRepository!.hasUnreadablePassphrase(key.id),
+            )
+            .toList();
         if (keys.isEmpty) {
           return null;
         }
@@ -1717,6 +1738,10 @@ class SshService {
       if (host.keyId != null && keyRepository != null) {
         preflightPhase = 'load_host_key';
         key = await keyRepository!.getById(host.keyId!);
+        if (keyRepository!.hasUnreadablePrivateKey(host.keyId!) ||
+            keyRepository!.hasUnreadablePassphrase(host.keyId!)) {
+          throw const FormatException('Unreadable SSH key secret');
+        }
         if (key == null && host.password == null) {
           identityKeys = await loadAutoKeys();
         }
@@ -1775,6 +1800,10 @@ class SshService {
             if (jumpHost.keyId != null && keyRepository != null) {
               preflightPhase = 'load_jump_host_key';
               jumpKey = await keyRepository!.getById(jumpHost.keyId!);
+              if (keyRepository!.hasUnreadablePrivateKey(jumpHost.keyId!) ||
+                  keyRepository!.hasUnreadablePassphrase(jumpHost.keyId!)) {
+                throw const FormatException('Unreadable SSH key secret');
+              }
               if (jumpKey == null && jumpHost.password == null) {
                 jumpIdentityKeys = await loadAutoKeys();
               }
@@ -2225,6 +2254,9 @@ class SshService {
         SSHHostkeyError(:final message) =>
           'Host key verification failed: $message',
         SSHAuthFailError(:final message) => 'Authentication failed: $message',
+        SSHChannelOpenError() =>
+          'The SSH server refused the tunnel to the destination. Check forwarding permissions and the destination address.',
+        SSHError() => 'The SSH connection failed. Reconnect to try again.',
         SocketException(:final message) => 'Connection failed: $message',
         TimeoutException(:final message) => message ?? 'Connection timed out',
         Exception() =>
@@ -2834,15 +2866,146 @@ class _PreparedHostKeySocket {
   final HostKeySource hostKeySource;
 }
 
-Future<void> _relayForward(Socket socket, SSHForwardChannel channel) =>
-    Future.wait<void>([
-      channel.stream.cast<List<int>>().pipe(socket),
-      (() async {
-        await channel.sink.addStream(socket.cast<List<int>>());
+Future<void> _relayForward(
+  Socket socket,
+  FutureOr<SSHForwardChannel?> Function() openChannel, {
+  Future<void>? stopped,
+  Duration? openTimeout,
+  void Function(SSHForwardChannel)? destroyChannel,
+}) async {
+  SSHForwardChannel? forward;
+  StreamIterator<Uint8List>? incoming;
+  StreamIterator<Uint8List>? outgoing;
+  Future<void>? socketFlush;
+  var finished = false;
+  var forwardSinkClosed = false;
+  var closingForwardSink = false;
+  var socketClosed = false;
+  var closingSocket = false;
+  final unexpectedClose = Completer<void>();
+  void closed() {
+    if (!unexpectedClose.isCompleted) unexpectedClose.complete();
+  }
+
+  void failed(Object error, StackTrace stackTrace) {
+    if (!unexpectedClose.isCompleted) {
+      unexpectedClose.completeError(error, stackTrace);
+    }
+  }
+
+  void destroy(SSHForwardChannel channel) {
+    if (destroyChannel != null) {
+      destroyChannel(channel);
+    } else {
+      channel.destroy();
+    }
+  }
+
+  // Observe write-side errors before awaiting channel creation.
+  unawaited(
+    socket.done.then<void>((_) {
+      socketClosed = true;
+      if (!closingSocket) closed();
+    }, onError: failed),
+  );
+  try {
+    final opening = Future<SSHForwardChannel?>.sync(openChannel).then((
+      channel,
+    ) {
+      if (channel == null) return null;
+      if (finished) {
+        destroy(channel);
+        return null;
+      }
+      unawaited(
+        channel.sink.done.then<void>(
+          (_) {
+            forwardSinkClosed = true;
+            if (!closingForwardSink) closed();
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            forwardSinkClosed = true;
+            failed(error, stackTrace);
+          },
+        ),
+      );
+      return forward = channel;
+    });
+    outgoing = StreamIterator(socket);
+    final source = outgoing;
+    final socketToForward = () async {
+      while (await source.moveNext()) {
+        final channel = await opening;
+        // A delivered channel may already have a completed sink.done future.
+        // Let its observer run before writing queued socket bytes.
+        await Future<void>.value();
+        if (channel == null || finished || forwardSinkClosed) return;
+        channel.sink.add(source.current);
         await channel.flush();
+      }
+      final channel = forward;
+      if (channel != null && !finished && !forwardSinkClosed) {
+        // EOF closes only this direction. The peer can still send a response.
+        closingForwardSink = true;
         await channel.sink.close();
-      })(),
-    ], eagerError: true);
+      }
+    }();
+    final pending = Future.any<SSHForwardChannel?>([
+      opening,
+      socketToForward.then((_) => null),
+      unexpectedClose.future.then((_) => null),
+      if (stopped != null) stopped.then((_) => null),
+    ]);
+    final channel = await (openTimeout == null
+        ? pending
+        : pending.timeout(openTimeout));
+    if (channel == null) return;
+    incoming = StreamIterator(channel.stream);
+    final response = incoming;
+    final forwardToSocket = () async {
+      while (await response.moveNext()) {
+        if (finished || socketClosed) return;
+        socket.add(response.current);
+        await (socketFlush = socket.flush());
+      }
+      closingSocket = true;
+      await socket.close();
+    }();
+    // Normal EOF preserves the opposite direction; errors, external sink
+    // closure, and tunnel cancellation terminate both pumps.
+    await Future.any<void>([
+      Future.wait([forwardToSocket, socketToForward], eagerError: true),
+      unexpectedClose.future,
+      ?stopped,
+    ]);
+  } finally {
+    finished = true;
+    try {
+      try {
+        if (socketFlush != null) await socketFlush;
+        if (!closingSocket) {
+          closingSocket = true;
+          await socket.close();
+        }
+      } finally {
+        await Future.wait([
+          if (incoming != null) incoming.cancel(),
+          if (outgoing != null) outgoing.cancel(),
+        ]);
+      }
+    } on SocketException {
+      socket.destroy();
+      rethrow;
+    } finally {
+      if (forward != null) destroy(forward!);
+    }
+  }
+}
+
+bool _isClosedForwardSinkError(Object error) =>
+    error is StateError &&
+    (error.message == 'Cannot add event after closing' ||
+        error.message == 'StreamSink is closed');
 
 Map<String, Object?> _diagnosticSshExecErrorFields(Object error) => {
   'errorType': error.runtimeType,
@@ -5810,6 +5973,7 @@ while($true){
 
       tunnel.subscription = _listenToLocalForwardConnections(
         primaryServerSocket,
+        tunnel: tunnel,
         remoteHost: remoteHost,
         remotePort: remotePort,
       );
@@ -5817,6 +5981,7 @@ while($true){
         tunnel.browserSubscriptions.add(
           _listenToLocalForwardConnections(
             browserServerSocket,
+            tunnel: tunnel,
             remoteHost: remoteHost,
             remotePort: remotePort,
           ),
@@ -5955,49 +6120,75 @@ while($true){
 
   StreamSubscription<Socket> _listenToLocalForwardConnections(
     ServerSocket serverSocket, {
+    required _ActiveTunnel tunnel,
     required String remoteHost,
     required int remotePort,
-  }) => serverSocket.listen((socket) async {
-    SSHForwardChannel? forward;
+  }) => serverSocket.listen(
+    (socket) {
+      final connection = _handleLocalForwardConnection(
+        socket,
+        tunnel: tunnel,
+        remoteHost: remoteHost,
+        remotePort: remotePort,
+      );
+      tunnel.localConnections.add(connection);
+      unawaited(
+        connection.whenComplete(() {
+          tunnel.localConnections.remove(connection);
+        }),
+      );
+    },
+    onError: (Object error, StackTrace stackTrace) {
+      _logLocalForwardFailure(error);
+    },
+  );
+
+  void _logLocalForwardFailure(Object error) {
+    DiagnosticsLogService.instance.warning(
+      'ssh.forward',
+      'local_connection_failed',
+      fields: {
+        'connectionId': connectionId,
+        'hostId': hostId,
+        ..._diagnosticSshExecErrorFields(error),
+      },
+    );
+    _reportConnectionHealthFailureIfClosed(error, operation: 'forward_local');
+  }
+
+  void _destroyLocalForwardChannel(SSHForwardChannel channel) {
     try {
-      forward = await client.forwardLocal(remoteHost, remotePort);
-      await _relayForward(socket, forward);
-    } on SSHError catch (e) {
-      DiagnosticsLogService.instance.warning(
-        'ssh.forward',
-        'local_connection_failed',
-        fields: {
-          'connectionId': connectionId,
-          'hostId': hostId,
-          ..._diagnosticSshExecErrorFields(e),
-        },
-      );
-      _reportConnectionHealthFailureIfClosed(e, operation: 'forward_local');
-      if (kDebugMode) {
-        debugPrint('Port forward connection error: $e');
-      }
-    } on Exception catch (e) {
-      DiagnosticsLogService.instance.warning(
-        'ssh.forward',
-        'local_connection_failed',
-        fields: {'errorType': e.runtimeType},
-      );
-      if (kDebugMode) {
-        debugPrint('Port forward connection error: $e');
-      }
-    } finally {
-      try {
-        forward?.destroy();
-      } on SSHError catch (_) {
-        // The transport may already be closed during channel teardown.
-      }
-      try {
-        socket.destroy();
-      } on Exception catch (_) {
-        // Ignore errors during cleanup.
-      }
+      channel.destroy();
+    } on SSHError catch (error) {
+      _logLocalForwardFailure(error);
     }
-  });
+  }
+
+  Future<void> _handleLocalForwardConnection(
+    Socket socket, {
+    required _ActiveTunnel tunnel,
+    required String remoteHost,
+    required int remotePort,
+  }) async {
+    try {
+      await _relayForward(
+        socket,
+        () => _isClosing || tunnel.stopped.isCompleted
+            ? null
+            : client.forwardLocal(remoteHost, remotePort),
+        stopped: tunnel.stopped.future,
+        openTimeout: portForwardStartTimeout,
+        destroyChannel: _destroyLocalForwardChannel,
+      );
+    } on Object catch (error) {
+      if (error is! SSHError &&
+          error is! Exception &&
+          !_isClosedForwardSinkError(error)) {
+        rethrow;
+      }
+      _logLocalForwardFailure(error);
+    }
+  }
 
   /// Start a remote port forward tunnel.
   ///
@@ -6084,9 +6275,13 @@ while($true){
         Socket? socket;
         try {
           socket = await Socket.connect(localHost, localPort);
-          await _relayForward(socket, channel);
+          await _relayForward(socket, () => channel);
         } on Object catch (e) {
-          if (e is! Exception && e is! SSHError) rethrow;
+          if (e is! Exception &&
+              e is! SSHError &&
+              !_isClosedForwardSinkError(e)) {
+            rethrow;
+          }
           DiagnosticsLogService.instance.warning(
             'ssh.forward',
             'remote_connection_failed',
@@ -6096,10 +6291,12 @@ while($true){
             debugPrint('Remote forward connection error: $e');
           }
         } finally {
-          try {
-            channel.destroy();
-          } on SSHError catch (_) {
-            // The transport may already be closed during channel teardown.
+          if (socket == null) {
+            try {
+              channel.destroy();
+            } on SSHError catch (_) {
+              // The transport may already be closed during channel teardown.
+            }
           }
           try {
             socket?.destroy();
@@ -6176,6 +6373,7 @@ while($true){
     }
     final tunnel = _activeTunnels.remove(portForwardId);
     if (tunnel != null) {
+      tunnel.stopped.complete();
       await tunnel.subscription?.cancel();
       for (final browserSubscription in tunnel.browserSubscriptions) {
         await browserSubscription.cancel();
@@ -6185,6 +6383,7 @@ while($true){
         await browserServerSocket.close();
       }
       tunnel.remoteForward?.close();
+      await Future.wait(tunnel.localConnections);
       _notifyPortForwardsChanged();
     }
   }
@@ -6503,6 +6702,8 @@ class _ActiveTunnel {
        isShellRelated = false,
        isLocal = false;
 
+  final stopped = Completer<void>();
+  final localConnections = <Future<void>>{};
   final ServerSocket? serverSocket;
   final List<ServerSocket> browserServerSockets;
   final SSHRemoteForward? remoteForward;
@@ -6966,7 +7167,48 @@ class _AppReviewDemoSftpFile implements SftpFile {
   bool get isClosed => _isClosed;
 
   @override
-  Future<SftpFileAttrs> stat() async => _attrs;
+  Future<SftpFileAttrs> stat() async {
+    _ensureOpen();
+    return _attrs;
+  }
+
+  void _ensureOpen() {
+    if (_isClosed) {
+      // ignore: only_throw_errors, dartssh2 models protocol errors this way.
+      throw SftpError('File is closed');
+    }
+  }
+
+  @override
+  Future<void> setStat(SftpFileAttrs attrs) async {
+    _ensureOpen();
+    final size = attrs.size;
+    if (size != null) {
+      if (size < 0) {
+        // ignore: only_throw_errors
+        throw SftpError('File size must not be negative');
+      }
+      final previous = _readContent();
+      _writeContent(
+        Uint8List(size)..setRange(0, math.min(size, previous.length), previous),
+      );
+    }
+    _attrs = SftpFileAttrs(
+      size: size ?? _readContent().length,
+      mode: attrs.mode ?? _attrs.mode,
+      userID: attrs.userID ?? _attrs.userID,
+      groupID: attrs.groupID ?? _attrs.groupID,
+      accessTime: attrs.accessTime ?? _attrs.accessTime,
+      modifyTime: attrs.modifyTime ?? _attrs.modifyTime,
+    );
+  }
+
+  @override
+  Future<Never> statvfs() async {
+    _ensureOpen();
+    // ignore: only_throw_errors
+    throw SftpExtensionUnsupportedError('fstatvfs@openssh.com');
+  }
 
   @override
   Stream<Uint8List> read({
@@ -6976,14 +7218,24 @@ class _AppReviewDemoSftpFile implements SftpFile {
     int chunkSize = 16 * 1024,
     int maxPendingRequests = 64,
   }) async* {
+    _ensureOpen();
+    if (offset < 0 || (length != null && length < 0)) {
+      // ignore: only_throw_errors
+      throw SftpError('Read offset and length must not be negative');
+    }
+    if (chunkSize <= 0 || maxPendingRequests <= 0) {
+      // ignore: only_throw_errors
+      throw SftpError('Read chunk size and request count must be positive');
+    }
     final bytes = Uint8List.fromList(_readContent());
     final start = offset.clamp(0, bytes.length);
     final requestedLength = length ?? bytes.length - start;
     final end = (start + requestedLength).clamp(start, bytes.length);
-    final chunk = Uint8List.sublistView(bytes, start, end);
-    if (chunk.isNotEmpty) {
-      onProgress?.call(chunk.length);
-      yield chunk;
+    for (var position = start; position < end; position += chunkSize) {
+      _ensureOpen();
+      final chunkEnd = math.min(position + chunkSize, end);
+      onProgress?.call(chunkEnd - start);
+      yield Uint8List.sublistView(bytes, position, chunkEnd);
     }
   }
 
@@ -7001,17 +7253,29 @@ class _AppReviewDemoSftpFile implements SftpFile {
     Stream<Uint8List> stream, {
     int offset = 0,
     void Function(int total)? onProgress,
-  }) => SftpFileWriter(this, stream, offset, onProgress);
+  }) {
+    _ensureOpen();
+    if (offset < 0) {
+      // ignore: only_throw_errors
+      throw SftpError('Write offset must not be negative');
+    }
+    return _AppReviewDemoSftpFileWriter(this, stream, offset, onProgress);
+  }
 
   @override
   Future<void> writeBytes(Uint8List data, {int offset = 0}) async {
+    _ensureOpen();
+    if (offset < 0) {
+      // ignore: only_throw_errors
+      throw SftpError('Write offset must not be negative');
+    }
     final previousBytes = _readContent();
     final requiredLength = offset + data.length;
     final bytes = Uint8List(math.max(previousBytes.length, requiredLength))
       ..setRange(0, previousBytes.length, previousBytes)
       ..setRange(offset, requiredLength, data);
     _writeContent(bytes);
-    _attrs = _demoFileAttrs(bytes.length);
+    await setStat(SftpFileAttrs(size: bytes.length));
   }
 
   @override
@@ -7020,7 +7284,142 @@ class _AppReviewDemoSftpFile implements SftpFile {
   }
 
   @override
-  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+  Future<int> downloadTo(
+    StreamSink<List<int>> destination, {
+    int? length,
+    int offset = 0,
+    void Function(int bytesRead)? onProgress,
+    int chunkSize = 16 * 1024,
+    int maxPendingRequests = 64,
+    bool closeDestination = false,
+  }) async {
+    var total = 0;
+    try {
+      await destination.addStream(
+        read(
+          length: length,
+          offset: offset,
+          chunkSize: chunkSize,
+          maxPendingRequests: maxPendingRequests,
+          onProgress: (count) {
+            total = count;
+            onProgress?.call(count);
+          },
+        ),
+      );
+      return total;
+    } finally {
+      if (closeDestination) await destination.close();
+    }
+  }
+
+  @override
+  Future<int> downloadToRandomAccess(
+    RandomAccessFile destination, {
+    int? length,
+    int offset = 0,
+    void Function(int bytesRead)? onProgress,
+    int chunkSize = 16 * 1024,
+    int maxPendingRequests = 64,
+  }) async {
+    var total = 0;
+    await for (final chunk in read(
+      length: length,
+      offset: offset,
+      chunkSize: chunkSize,
+      maxPendingRequests: maxPendingRequests,
+    )) {
+      await destination.setPosition(offset + total);
+      await destination.writeFrom(chunk);
+      total += chunk.length;
+      onProgress?.call(total);
+    }
+    return total;
+  }
+}
+
+// dartssh2's writer does not route source/write errors to done. Keep the demo
+// writer's asynchronous work owned by the upload caller, including cancellation.
+class _AppReviewDemoSftpFileWriter implements SftpFileWriter {
+  _AppReviewDemoSftpFileWriter(
+    this.file,
+    this.stream,
+    this.offset,
+    this.onProgress,
+  ) {
+    _source = StreamIterator(stream);
+    done = _write();
+  }
+
+  @override
+  final SftpFile file;
+  @override
+  final Stream<Uint8List> stream;
+  @override
+  final int offset;
+  @override
+  final void Function(int)? onProgress;
+  late final StreamIterator<Uint8List> _source;
+  Completer<void>? _resume;
+  var _progress = 0;
+  var _aborted = false;
+
+  Future<void> _write() async {
+    try {
+      while (!_aborted && await _source.moveNext()) {
+        await _resume?.future;
+        if (_aborted) break;
+        final chunk = _source.current;
+        await file.writeBytes(chunk, offset: offset + _progress);
+        _progress += chunk.length;
+        onProgress?.call(_progress);
+      }
+    } finally {
+      await _source.cancel();
+    }
+  }
+
+  @override
+  late final Future<void> done;
+  @override
+  int get progress => _progress;
+  @override
+  void pause() {
+    _resume ??= Completer<void>();
+  }
+
+  @override
+  void resume() {
+    _resume?.complete();
+    _resume = null;
+  }
+
+  @override
+  Future<void> abort() async {
+    _aborted = true;
+    resume();
+    await _source.cancel();
+    await done;
+  }
+
+  @override
+  Stream<void> asStream() => done.asStream();
+  @override
+  Future<void> catchError(Function onError, {bool Function(Object)? test}) =>
+      done.catchError(onError, test: test);
+  @override
+  Future<T> then<T>(
+    FutureOr<T> Function(dynamic) onValue, {
+    Function? onError,
+  }) => done.then(onValue, onError: onError);
+  @override
+  Future<void> whenComplete(FutureOr<void> Function() action) =>
+      done.whenComplete(action);
+  @override
+  Future<void> timeout(
+    Duration timeLimit, {
+    FutureOr<void> Function()? onTimeout,
+  }) => done.timeout(timeLimit, onTimeout: onTimeout);
 }
 
 class _AppReviewDemoForwardChannel implements SSHForwardChannel {
@@ -7048,6 +7447,9 @@ class _AppReviewDemoForwardChannel implements SSHForwardChannel {
   StreamSink<List<int>> get sink => _sinkController.sink;
 
   @override
+  Future<void> flush() async {}
+
+  @override
   Future<void> get done => _done.future;
 
   @override
@@ -7056,8 +7458,9 @@ class _AppReviewDemoForwardChannel implements SSHForwardChannel {
       return;
     }
     _closed = true;
-    await _sinkController.close();
+    // Keep accepting request bytes while the response drains to the socket.
     await _streamController.close();
+    await _sinkController.close();
     if (!_done.isCompleted) {
       _done.complete();
     }
