@@ -32,6 +32,7 @@ class _PausedEncryptionService extends SecretEncryptionService {
   final started = Completer<void>();
   final resume = Completer<void>();
   int validationCount = 0;
+  int decryptCount = 0;
 
   @override
   bool isValidEncryptedEnvelope(String value) {
@@ -44,6 +45,7 @@ class _PausedEncryptionService extends SecretEncryptionService {
 
   @override
   Future<String?> decryptNullable(String? value) async {
+    decryptCount++;
     if (pauseDecrypt) {
       pauseDecrypt = false;
       started.complete();
@@ -105,14 +107,25 @@ void main() {
         }
       }
 
-      await read();
+      final secretCount = kind == 'host' ? 1 : 2;
       encryption.validationCount = 0;
+      // Reads validate envelopes inside decryptNullable, without the separate
+      // validation probe that previously classified corrupt data as plaintext.
       await read();
       expect(encryption.validationCount, 0);
+      expect(encryption.decryptCount, secretCount);
+      encryption.decryptCount = 0;
+      await read();
+      expect(encryption.validationCount, 0);
+      expect(encryption.decryptCount, 0);
       hosts.clearDecryptionCache();
       keys.clearDecryptionCache();
       await read();
-      expect(encryption.validationCount, kind == 'host' ? 1 : 2);
+      expect(encryption.validationCount, 0);
+      expect(encryption.decryptCount, secretCount);
+      await read();
+      expect(encryption.validationCount, 0);
+      expect(encryption.decryptCount, secretCount);
     });
 
     for (final operation in [

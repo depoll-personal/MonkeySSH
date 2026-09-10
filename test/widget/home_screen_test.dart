@@ -23,10 +23,12 @@ import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/acp_session_manager.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
 import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
+import 'package:monkeyssh/domain/services/auth_service.dart';
 import 'package:monkeyssh/domain/services/home_screen_shortcut_service.dart';
 import 'package:monkeyssh/domain/services/host_cli_launch_preferences_service.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/domain/services/monkeymux_service.dart';
+import 'package:monkeyssh/domain/services/secure_transfer_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/terminal_theme_service.dart';
@@ -40,6 +42,8 @@ import 'package:monkeyssh/presentation/widgets/connection_preview_snippet.dart';
 import 'package:xterm/xterm.dart' hide TerminalThemes;
 
 import '../support/fake_acp_session_manager.dart';
+import '../support/settings_import_test_helpers.dart'
+    show FakeAuthService, MockAuthStateNotifier;
 
 class _MockHostRepository extends Mock implements HostRepository {}
 
@@ -61,6 +65,9 @@ class _MockHostCliLaunchPreferencesService extends Mock
     implements HostCliLaunchPreferencesService {}
 
 class _MockMonetizationService extends Mock implements MonetizationService {}
+
+class _MockSecureTransferService extends Mock
+    implements SecureTransferService {}
 
 void _callReorderItemCallback(
   ReorderCallback? callback,
@@ -438,6 +445,133 @@ void main() {
       child: MaterialApp(home: HomeScreen(initialTab: initialTab)),
     ),
   );
+
+  for (final tab in [HomeScreenTab.hosts, HomeScreenTab.keys]) {
+    testWidgets(
+      '${tab.name} export shows unreadable secrets without reporting an error',
+      (tester) async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        final host = _buildHost(id: 1, label: 'Alpha', sortOrder: 0);
+        final key = SshKey(
+          id: 1,
+          name: 'Alpha key',
+          keyType: 'ed25519',
+          publicKey: 'ssh-ed25519 test',
+          privateKey: '',
+          fingerprint: 'SHA256:test',
+          createdAt: DateTime(2026),
+        );
+        final transferService = _MockSecureTransferService();
+        final message = tab == HomeScreenTab.hosts
+            ? 'Cannot export: re-enter the password for host "Alpha".'
+            : 'Cannot export: re-enter the private key for SSH key "Alpha key".';
+        final createPayload = tab == HomeScreenTab.hosts
+            ? () => transferService.createHostPayload(
+                host: host,
+                transferPassphrase: 'transfer-passphrase',
+                includeReferencedKey: false,
+              )
+            : () => transferService.createKeyPayload(
+                key: key,
+                transferPassphrase: 'transfer-passphrase',
+              );
+        when(
+          createPayload,
+        ).thenAnswer((_) async => throw FormatException(message));
+        final billing = _MockMonetizationService();
+        when(() => billing.currentState).thenReturn(_proMonetizationState);
+        when(
+          () => billing.canUseFeature(MonetizationFeature.encryptedTransfers),
+        ).thenAnswer((_) async => true);
+        try {
+          await tester.pumpWidget(
+            buildMobileHomeScreen(
+              db: db,
+              initialTab: tab,
+              overrides: [
+                activeSessionsProvider.overrideWith(
+                  _TestActiveSessionsNotifier.new,
+                ),
+                allHostsProvider.overrideWith((ref) => Stream.value([host])),
+                allKeysProvider.overrideWith((ref) => Stream.value([key])),
+                authServiceProvider.overrideWithValue(FakeAuthService()),
+                authStateProvider.overrideWith(MockAuthStateNotifier.new),
+                secureTransferServiceProvider.overrideWithValue(
+                  transferService,
+                ),
+                monetizationServiceProvider.overrideWithValue(billing),
+                monetizationStateProvider.overrideWith(
+                  (ref) => Stream.value(_proMonetizationState),
+                ),
+              ],
+            ),
+          );
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 300));
+
+          if (tab == HomeScreenTab.hosts) {
+            await tester.tap(find.byTooltip('Host actions'));
+            await tester.pump();
+            await tester.pump(const Duration(milliseconds: 300));
+            await tester.tap(find.text('Export Encrypted File (Pro)'));
+          } else {
+            await tester.tap(find.byTooltip('Export encrypted'));
+          }
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 300));
+          expect(find.byType(AlertDialog), findsOneWidget);
+          await tester.enterText(
+            find.widgetWithText(TextField, 'Transfer passphrase'),
+            'transfer-passphrase',
+          );
+          final reportedErrors = <FlutterErrorDetails>[];
+          final originalOnError = FlutterError.onError;
+          addTearDown(() => FlutterError.onError = originalOnError);
+          FlutterError.onError = reportedErrors.add;
+          try {
+            await tester.tap(find.widgetWithText(FilledButton, 'Continue'));
+            await tester.pump();
+            // Exercise a frame during dismissal, when the TextField still needs
+            // its controller, then finish the dialog and SnackBar animations.
+            await tester.pump(const Duration(milliseconds: 100));
+            await tester.pump(const Duration(milliseconds: 200));
+            await tester.pump();
+          } finally {
+            FlutterError.onError = originalOnError;
+          }
+
+          expect(
+            reportedErrors,
+            isEmpty,
+            reason: reportedErrors.map((error) => error.toString()).join('\n'),
+          );
+
+          verify(createPayload).called(1);
+          expect(find.widgetWithText(SnackBar, message), findsOneWidget);
+          expect(find.text('Export failed. Try again.'), findsNothing);
+          expect(find.byType(AlertDialog), findsNothing);
+          expect(find.byType(HomeScreen), findsOneWidget);
+          expect(tester.takeException(), isNull);
+        } finally {
+          // Pump cleanup inside the test's fake async zone, before database
+          // teardown, and resolve any dialog left open by a failed assertion.
+          final navigators = find.byType(Navigator);
+          if (navigators.evaluate().isNotEmpty) {
+            tester
+                .state<NavigatorState>(navigators)
+                .popUntil((route) => route.isFirst);
+            await tester.pump();
+            await tester.pump(const Duration(milliseconds: 300));
+          }
+          await tester.pumpWidget(const SizedBox.shrink());
+          await tester.pump();
+        }
+      },
+      timeout: const Timeout(Duration(seconds: 30)),
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+  }
 
   group('HomeScreen mobile insets', () {
     const systemNavigationBarHeight = 24.0;
@@ -1067,6 +1201,56 @@ void main() {
 
       expect(openedRoutes, ['/terminal/1?connectionId=7']);
     });
+    testWidgets('connection chooser rebuilds after its host row is removed', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final hosts = StreamController<List<Host>>();
+      addTearDown(hosts.close);
+      final sessions = _MutableActiveSessionsNotifier(
+        initialConnections: [
+          for (var id = 1; id <= 2; id++)
+            _buildActiveConnection(
+              connectionId: id,
+              hostId: 1,
+              state: SshConnectionState.connecting,
+            ),
+        ],
+      );
+      await tester.pumpWidget(
+        buildMobileHomeScreen(
+          db: db,
+          overrides: [
+            activeSessionsProvider.overrideWith(() => sessions),
+            allHostsProvider.overrideWith((ref) => hosts.stream),
+          ],
+        ),
+      );
+      await tester.pump();
+      hosts.add([_buildHost(id: 1, label: 'Alpha', sortOrder: 0)]);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      final row = tester.element(find.text('Alpha'));
+      await tester.tap(find.text('Alpha'));
+      await tester.pumpAndSettle();
+      expect(find.text('2 active connections'), findsOneWidget);
+
+      hosts.add([]);
+      await tester.pumpAndSettle();
+      expect(row.mounted, isFalse);
+      // Re-run the route builder after the originating Consumer is disposed.
+      tester.element(find.byType(BottomSheet)).markNeedsBuild();
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+      expect(find.text('Connection #1'), findsOneWidget);
+      expect(find.text('Connection #2'), findsOneWidget);
+      await tester.tap(find.text('Connection #1'));
+      await tester.pumpAndSettle();
+      expect(find.byType(BottomSheet), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets(
       'connection chooser scrolls to old connections on a short viewport',
       (tester) async {

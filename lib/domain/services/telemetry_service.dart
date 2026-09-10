@@ -78,11 +78,16 @@ class TelemetryService {
     required DiagnosticsLogger diagnosticsLogger,
     TelemetryAnalyticsClient? analyticsClient,
     TelemetryCrashReporter? crashReporter,
+    AbsorbedErrorRateLimiter? absorbedErrorRateLimiter,
   }) : _status = status,
        _collectionEnabled = collectionEnabled,
        _diagnosticsLogger = diagnosticsLogger,
        _analyticsClient = analyticsClient,
-       _crashReporter = crashReporter;
+       _crashReporter = crashReporter,
+       _absorbedErrorRateLimiter =
+           absorbedErrorRateLimiter ?? _processAbsorbedErrorRateLimiter;
+
+  static final _processAbsorbedErrorRateLimiter = AbsorbedErrorRateLimiter();
 
   static final RegExp _safeNamePattern = RegExp('[^a-z0-9]+');
   static final _camelCasePattern = RegExp('([a-z0-9])([A-Z])');
@@ -230,8 +235,11 @@ class TelemetryService {
   final DiagnosticsLogger _diagnosticsLogger;
   final TelemetryAnalyticsClient? _analyticsClient;
   final TelemetryCrashReporter? _crashReporter;
+  final AbsorbedErrorRateLimiter _absorbedErrorRateLimiter;
   bool _collectionEnabled;
   Future<void> _collectionUpdates = Future<void>.value();
+  Future<void> _crashReports = Future<void>.value();
+  int _collectionRevision = 0;
 
   /// Whether Firebase telemetry is available in this app run.
   bool get isAvailable => _status == TelemetryServiceStatus.ready;
@@ -246,6 +254,7 @@ class TelemetryService {
   Future<void> setCollectionEnabled({required bool enabled}) async {
     final wasEnabled = _collectionEnabled;
     _collectionEnabled = enabled;
+    _collectionRevision += 1;
     // Gate events immediately, but apply native SDK changes in request order.
     // Otherwise a slow enable can finish after a newer opt-out.
     final operation = _collectionUpdates.then(
@@ -707,50 +716,71 @@ class TelemetryService {
       _logEvent('terminal_path_link_opened', const <String, Object?>{});
 
   /// Records a sanitized Flutter framework error as non-fatal.
-  Future<void> recordFlutterError(FlutterErrorDetails details) async {
-    if (!_canRecordCrash()) {
-      return;
-    }
-    final crashReporter = _crashReporter;
-    if (crashReporter == null) {
-      return;
-    }
-    try {
-      await crashReporter.recordFlutterError(
-        FlutterErrorDetails(
-          exception: SanitizedTelemetryError.from(details.exception),
-          stack: details.stack,
-          library: 'flutter',
-          context: ErrorDescription('flutter_error'),
-        ),
-      );
-    } on Object {
-      return;
-    }
-  }
+  Future<void> recordFlutterError(FlutterErrorDetails details) =>
+      _recordCrash(details.exception, details.stack, flutterDetails: details);
 
   /// Records a sanitized Dart error.
   Future<void> recordError(
     Object error,
     StackTrace stackTrace, {
     required bool fatal,
+    bool absorbed = false,
+  }) => _recordCrash(error, stackTrace, fatal: fatal, absorbed: absorbed);
+
+  Future<void> _recordCrash(
+    Object error,
+    StackTrace? stackTrace, {
+    bool fatal = false,
+    bool absorbed = false,
+    FlutterErrorDetails? flutterDetails,
   }) async {
-    if (!_canRecordCrash()) {
-      return;
-    }
     final crashReporter = _crashReporter;
-    if (crashReporter == null) {
+    if (!_canRecordCrash() || crashReporter == null) {
       return;
     }
-    try {
-      await crashReporter.recordError(
-        SanitizedTelemetryError.from(error),
-        stackTrace,
-        fatal: fatal,
+    // Reserve before awaiting, so concurrent failures cannot bypass the limit.
+    if (absorbed &&
+        !_absorbedErrorRateLimiter.shouldRecord(error.runtimeType)) {
+      return;
+    }
+    final sanitized = SanitizedTelemetryError.from(error);
+    final revision = _collectionRevision;
+    bool canRecord() => _canRecordCrash() && revision == _collectionRevision;
+    // Crashlytics keys are shared mutable SDK state. Keep each report and its
+    // keys together, and recheck consent after every asynchronous SDK call.
+    final operation = _crashReports.then((_) async {
+      for (final entry in <String, Object>{
+        'error_type': sanitized.errorType,
+        'error_absorbed': absorbed,
+        'top_app_frame': _topAppFrame(stackTrace),
+        'flutter_error_exception': sanitized.errorType,
+      }.entries) {
+        if (!canRecord()) return;
+        await _runSdkUpdate(
+          'crash_metadata_update_failed',
+          operation: () => crashReporter.setCustomKey(entry.key, entry.value),
+        );
+      }
+      if (!canRecord()) return;
+      await _runSdkUpdate(
+        'crash_report_failed',
+        operation: () => flutterDetails != null
+            ? crashReporter.recordFlutterError(
+                FlutterErrorDetails(
+                  exception: sanitized,
+                  stack: stackTrace,
+                  library: 'flutter',
+                  context: ErrorDescription(sanitized.reason),
+                ),
+              )
+            : crashReporter.recordError(
+                sanitized,
+                stackTrace ?? StackTrace.empty,
+                fatal: fatal && !absorbed,
+              ),
       );
-    } on Object {
-      return;
-    }
+    });
+    return _crashReports = operation.catchError((Object _) {});
   }
 
   Future<void> _logEvent(String name, Map<String, Object?> parameters) async {
@@ -919,18 +949,54 @@ class TelemetryService {
   }
 }
 
-/// Sanitized error marker that avoids sending exception messages to Crashlytics.
+/// Limits absorbed reports by runtime type for the lifetime of this process.
+class AbsorbedErrorRateLimiter {
+  /// Creates a limiter with an optional monotonic clock for deterministic tests.
+  AbsorbedErrorRateLimiter({Duration Function()? elapsed}) {
+    final stopwatch = Stopwatch()..start();
+    _elapsed = elapsed ?? (() => stopwatch.elapsed);
+  }
+
+  late final Duration Function() _elapsed;
+  final _reports = <Type, ({int count, Duration lastReport})>{};
+
+  /// Allows the first three reports, then at most one every ten minutes.
+  bool shouldRecord(Type errorType) {
+    final now = _elapsed();
+    final previous = _reports[errorType];
+    if (previous != null &&
+        previous.count >= 3 &&
+        now - previous.lastReport < const Duration(minutes: 10)) {
+      return false;
+    }
+    _reports[errorType] = (
+      count: previous == null ? 1 : (previous.count + 1).clamp(1, 3),
+      lastReport: now,
+    );
+    return true;
+  }
+}
+
+/// Error type and an allowlisted summary, without dynamic exception contents.
 @immutable
 class SanitizedTelemetryError implements Exception {
   /// Creates a sanitized telemetry error from a normalized error type.
-  const SanitizedTelemetryError(this.errorType);
+  const SanitizedTelemetryError(this.errorType, {this.summary = '[redacted]'});
 
   /// Creates a sanitized telemetry error from an arbitrary object.
-  factory SanitizedTelemetryError.from(Object error) =>
-      SanitizedTelemetryError(_sanitizeErrorType(error));
+  factory SanitizedTelemetryError.from(Object error) => SanitizedTelemetryError(
+    _sanitizeErrorType(error),
+    summary: _sanitizeErrorSummary(error),
+  );
 
   /// Normalized exception type.
   final String errorType;
+
+  /// Safe text derived from the first line of the original error.
+  final String summary;
+
+  /// Distinguishes failures without including user or server-provided strings.
+  String get reason => '$errorType: $summary';
 
   @override
   String toString() => errorType;
@@ -1336,7 +1402,12 @@ class _FirebaseTelemetryCrashReporter implements TelemetryCrashReporter {
     Object error,
     StackTrace stackTrace, {
     required bool fatal,
-  }) => _crashlytics.recordError(error, stackTrace, fatal: fatal);
+  }) => _crashlytics.recordError(
+    error,
+    stackTrace,
+    reason: error is SanitizedTelemetryError ? error.reason : null,
+    fatal: fatal,
+  );
 
   @override
   Future<void> recordFlutterError(FlutterErrorDetails details) =>
@@ -1377,4 +1448,100 @@ String _sanitizeErrorType(Object error) {
     return 'UnknownError';
   }
   return sanitized.length <= 80 ? sanitized : sanitized.substring(0, 80);
+}
+
+String _sanitizeErrorSummary(Object error) {
+  // Blacklisting URLs/password labels cannot protect arbitrary server replies,
+  // commands, filenames, or user strings. Only retain known diagnostic phrases
+  // from the first line; everything else is redacted, including bare secrets.
+  const safePhrases = [
+    'Transport is closed',
+    'Connection closed before authentication',
+    'Authentication timed out',
+    'All authentication methods failed',
+    'Connection reset by peer',
+    'Connection refused',
+    'Connection timed out',
+    'Connection closed',
+    'Broken pipe',
+    'Network is unreachable',
+    'No route to host',
+    'Software caused connection abort',
+    'Failed host lookup',
+    'Permission denied',
+    'Open failed',
+    'No such file',
+    'Directory not empty',
+    'Administratively prohibited',
+    'Resource shortage',
+    'Handshake error in client',
+    'CERTIFICATE_VERIFY_FAILED',
+    'Cannot add event while adding a stream',
+    'Cannot add new events after calling close',
+    'StreamSink is closed',
+    'Stream has already been listened to',
+    'Failed to load font with url',
+    'Bad state',
+    'Invalid argument(s)',
+  ];
+  try {
+    final firstLine = error.toString().split(RegExp(r'[\r\n]')).first;
+    // These bounded protocol status codes are useful even when the server's
+    // entire description is private. Do not retain arbitrary numeric values.
+    final channelCode = RegExp(
+      r'^SSHChannelOpenError\(([1-4]):',
+    ).firstMatch(firstLine)?.group(1);
+    final sftpCode = RegExp(
+      r'^SftpStatusError: .*\(code ([0-8])\)$',
+    ).firstMatch(firstLine)?.group(1);
+    final code = channelCode ?? sftpCode;
+    final codePrefix = code == null ? '' : 'code $code: ';
+    var message = firstLine;
+    final type = '${error.runtimeType}';
+    if (message.startsWith('$type(') || message.startsWith('$type:')) {
+      message = message.substring(type.length + 1).trim();
+      if (firstLine.startsWith('$type(') && message.endsWith(')')) {
+        message = message.substring(0, message.length - 1);
+      }
+    }
+    for (final phrase in safePhrases) {
+      if (message.toLowerCase() == phrase.toLowerCase()) {
+        return '$codePrefix$phrase';
+      }
+      if (RegExp(
+        '${RegExp.escape(phrase)}(?:[ :,(.]|\$)',
+        caseSensitive: false,
+      ).hasMatch(message)) {
+        return '$codePrefix$phrase [redacted]';
+      }
+    }
+    return '$codePrefix[redacted]';
+  } on Object {
+    // An exception's own toString can fail. Reporting must still retain its type.
+    return '[unavailable]';
+  }
+}
+
+String _topAppFrame(StackTrace? stackTrace) {
+  if (stackTrace == null) return 'unknown';
+  final frame = RegExp(
+    r'^#\d+\s+([A-Za-z_$][A-Za-z0-9_$.<> ]*) \((package:monkeyssh/[A-Za-z0-9_./-]+\.dart:\d+(?::\d+)?)\)$',
+  );
+  for (final line in stackTrace.toString().split('\n')) {
+    final match = frame.firstMatch(line.trim());
+    if (match == null) continue;
+    final location = match.group(2)!;
+    // These are source locations, never local filesystem or SSH/SFTP paths.
+    // Reporter frames are not the origin when the original stack is missing.
+    if ((location.startsWith('package:monkeyssh/main.dart:') &&
+            match.group(1)!.contains('installTelemetryErrorHandlers')) ||
+        location.startsWith(
+          'package:monkeyssh/domain/services/telemetry_service.dart:',
+        )) {
+      continue;
+    }
+    final value = '${match.group(1)} ($location)';
+    return value.length <= 240 ? value : value.substring(0, 240);
+  }
+  return 'unknown';
 }

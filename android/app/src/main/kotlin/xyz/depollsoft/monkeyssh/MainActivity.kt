@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.util.Log
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import androidx.core.content.ContextCompat
@@ -16,11 +17,14 @@ import androidx.core.view.WindowInsetsCompat
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import io.flutter.plugin.common.StandardMethodCodec
 import java.io.ByteArrayOutputStream
 import java.util.Locale
+import java.util.concurrent.Executors
 
 class MainActivity : FlutterFragmentActivity() {
     companion object {
+        private val transferExecutor = Executors.newSingleThreadExecutor()
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1001
         private const val MAX_CLIPBOARD_CONTENT_URI_BYTES = 512 * 1024
         private const val MONKEYSSH_TRANSFER_MIME_TYPE = "application/x-monkeyssh-transfer"
@@ -40,6 +44,7 @@ class MainActivity : FlutterFragmentActivity() {
     private var keyboardVisibilityMethodChannel: MethodChannel? = null
     private var terminalImeKeyInterceptionEnabled = false
     private var pendingTransferPayload: String? = null
+    private var transferGeneration = 0
     private var hasRequestedNotificationPermission = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -76,6 +81,9 @@ class MainActivity : FlutterFragmentActivity() {
             MethodChannel(
                 flutterEngine.dartExecutor.binaryMessenger,
                 clipboardChannel,
+                StandardMethodCodec.INSTANCE,
+                // Content providers can block on disk, another process, or the network.
+                flutterEngine.dartExecutor.binaryMessenger.makeBackgroundTaskQueue(),
             )
         clipboardMethodChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
@@ -229,10 +237,27 @@ class MainActivity : FlutterFragmentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        SshConnectionService.setActivityVisible(true)
+    }
+
     override fun onResume() {
         super.onResume()
+        SshConnectionService.setForegroundState(applicationContext, true)
         // The "tap to return" prompt has done its job once the app is visible.
         DeviceDebugChannelHandler.hideReturnPrompt(applicationContext)
+    }
+
+    override fun onPause() {
+        // Request foreground service while Android still considers us visible.
+        SshConnectionService.setForegroundState(applicationContext, false)
+        super.onPause()
+    }
+
+    override fun onStop() {
+        SshConnectionService.setActivityVisible(false)
+        super.onStop()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -242,6 +267,7 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     override fun onDestroy() {
+        transferGeneration++
         ViewCompat.setOnApplyWindowInsetsListener(window.decorView, null)
         SshServiceChannelHandler.detachActivity(this)
         clipboardMethodChannel?.setMethodCallHandler(null)
@@ -311,16 +337,29 @@ class MainActivity : FlutterFragmentActivity() {
 
         val transferIntent = intent ?: return
         val sourceUri = transferIntent.data ?: return
-        try {
-            pendingTransferPayload =
-                readBoundedContent(
-                    sourceUri,
-                    maxTransferPayloadBytes,
-                    "Transfer payload exceeds ${maxTransferPayloadBytes / 1024} KB limit",
-                )?.toString(Charsets.UTF_8)
-            notifyIncomingTransferPayload()
-        } catch (_: Exception) {
-            pendingTransferPayload = null
+        val generation = ++transferGeneration
+        pendingTransferPayload = null
+        transferExecutor.execute {
+            val payload = try {
+                if (hasTransferExtension(sourceUri)) {
+                    readBoundedContent(
+                        sourceUri,
+                        maxTransferPayloadBytes,
+                        "Transfer payload exceeds ${maxTransferPayloadBytes / 1024} KB limit",
+                    )?.toString(Charsets.UTF_8)
+                } else {
+                    null
+                }
+            } catch (error: Exception) {
+                Log.w("MainActivity", "Transfer read failed: ${error.javaClass.simpleName}")
+                null
+            }
+            runOnUiThread {
+                if (generation == transferGeneration && !isDestroyed) {
+                    pendingTransferPayload = payload
+                    notifyIncomingTransferPayload()
+                }
+            }
         }
     }
 
@@ -383,6 +422,11 @@ class MainActivity : FlutterFragmentActivity() {
         if (mimeType != MONKEYSSH_TRANSFER_MIME_TYPE) {
             return false
         }
+        // Routing runs during activity startup; provider metadata is read on the worker.
+        return true
+    }
+
+    private fun hasTransferExtension(sourceUri: Uri): Boolean {
         val lastPathSegment = sourceUri.lastPathSegment?.lowercase(Locale.ROOT)
         if (lastPathSegment?.endsWith(MONKEYSSH_TRANSFER_EXTENSION) == true) {
             return true

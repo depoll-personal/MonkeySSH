@@ -589,18 +589,25 @@ class _ThrowOnRepeatedCloseSink implements StreamSink<List<int>> {
   _ThrowOnRepeatedCloseSink(this._delegate);
 
   final StreamSink<List<int>> _delegate;
+  int addAttempts = 0;
+  int addStreamAttempts = 0;
   int closeAttempts = 0;
 
   @override
-  void add(List<int> data) => _delegate.add(data);
+  void add(List<int> data) {
+    addAttempts++;
+    _delegate.add(data);
+  }
 
   @override
   void addError(Object error, [StackTrace? stackTrace]) =>
       _delegate.addError(error, stackTrace);
 
   @override
-  Future<void> addStream(Stream<List<int>> stream) =>
-      _delegate.addStream(stream);
+  Future<void> addStream(Stream<List<int>> stream) {
+    addStreamAttempts++;
+    return _delegate.addStream(stream);
+  }
 
   @override
   Future<void> close() {
@@ -623,6 +630,7 @@ class _SingleCloseForwardChannel implements SSHForwardChannel {
   final _streamController = StreamController<Uint8List>();
   final _sinkController = StreamController<List<int>>.broadcast();
   int destroyCalls = 0;
+  Future<void> Function()? onFlush;
 
   @override
   // ignore: close_sinks
@@ -644,7 +652,7 @@ class _SingleCloseForwardChannel implements SSHForwardChannel {
   }
 
   @override
-  Future<void> flush() async {}
+  Future<void> flush() async => onFlush?.call();
 
   @override
   Future<void> get done async {}
@@ -5711,6 +5719,162 @@ LISTEN ::1:4201
       },
     );
 
+    for (final scenario in [
+      'closed sink',
+      'sink closes during flush',
+      'remote EOF',
+      'socket EOF',
+      'stop',
+      'refused',
+      'late open',
+      'late refusal',
+      'peer closes before open',
+    ]) {
+      test('Crashlytics local forward handles $scenario', () async {
+        final client = _MockSshClient();
+        final forward = _SingleCloseForwardChannel();
+        final opening = Completer<SSHForwardChannel>();
+        final requested = Completer<void>();
+        final flushing = Completer<void>();
+        final releaseFlush = Completer<void>();
+        if (scenario == 'sink closes during flush') {
+          forward.onFlush = () {
+            flushing.complete();
+            return releaseFlush.future;
+          };
+        }
+        final session = SshSession(
+          connectionId: 1,
+          hostId: 42,
+          client: client,
+          config: const SshConnectionConfig(
+            hostname: 'host.example.com',
+            port: 22,
+            username: 'tester',
+          ),
+        );
+        when(() => client.forwardLocal('remote.example.com', 80)).thenAnswer((
+          _,
+        ) {
+          requested.complete();
+          return opening.future;
+        });
+        addTearDown(() async {
+          if (!releaseFlush.isCompleted) releaseFlush.complete();
+          await session.stopAllForwards();
+          if (scenario == 'refused' ||
+              scenario == 'late refusal' ||
+              scenario == 'late open' ||
+              scenario == 'peer closes before open') {
+            await forward._streamController.stream.listen((_) {}).cancel();
+          }
+          await forward.close();
+        });
+        final port = await _unusedLoopbackPort();
+        expect(
+          await session.startLocalForward(
+            portForwardId: 1,
+            localHost: InternetAddress.loopbackIPv4.address,
+            localPort: port,
+            remoteHost: 'remote.example.com',
+            remotePort: 80,
+          ),
+          isTrue,
+        );
+        final socket = await Socket.connect(InternetAddress.loopbackIPv4, port);
+        addTearDown(socket.destroy);
+        final socketErrors = <Object>[];
+        // Own both socket error paths immediately, including errors that
+        // arrive while the test is coordinating channel closure.
+        final socketDone = socket.done.then<void>(
+          (_) {},
+          onError: socketErrors.add,
+        );
+        final received = socket
+            .handleError(socketErrors.add)
+            .fold<List<int>>([], (bytes, chunk) => bytes..addAll(chunk));
+        await requested.future;
+        if (scenario == 'peer closes before open') {
+          await socket.close();
+          await received.timeout(const Duration(seconds: 1));
+          opening.complete(forward);
+        } else if (scenario == 'late open' || scenario == 'late refusal') {
+          await session.stopForward(1).timeout(const Duration(seconds: 1));
+          if (scenario == 'late open') {
+            opening.complete(forward);
+          } else {
+            opening.completeError(SSHChannelOpenError(1, 'refused'));
+          }
+        } else if (scenario == 'refused') {
+          opening.completeError(SSHChannelOpenError(1, 'refused'));
+        } else {
+          if (scenario == 'closed sink') {
+            // Queue a real socket write while opening is pending. The pump
+            // must discard it when the delivered channel's sink is closed.
+            socket.add([1, 2, 3]);
+            await socket.flush();
+            await forward._sinkController.close();
+          }
+          opening.complete(forward);
+          await Future<void>.delayed(Duration.zero);
+          if (scenario == 'remote EOF') {
+            forward._streamController.add(Uint8List.fromList([4, 5, 6]));
+            await forward.closeIncoming();
+          } else if (scenario == 'socket EOF') {
+            await socket.close();
+          } else if (scenario == 'stop') {
+            await session.stopForward(1).timeout(const Duration(seconds: 1));
+          } else if (scenario != 'closed sink') {
+            socket.add([1, 2, 3]);
+            await socket.flush();
+            if (scenario == 'sink closes during flush') {
+              await flushing.future.timeout(const Duration(seconds: 1));
+              socket.add([4, 5, 6]);
+              await socket.flush();
+              await forward._sinkController.close();
+              releaseFlush.complete();
+            }
+          }
+        }
+        final bytes = await received.timeout(const Duration(seconds: 1));
+        await socket.close().then<void>((_) {}, onError: socketErrors.add);
+        await socketDone;
+        if (scenario == 'closed sink' ||
+            scenario == 'sink closes during flush') {
+          // All writes precede remote closure. The server may still have
+          // unread request bytes when it closes, which can produce a reset
+          // (macOS) or a broken pipe (Linux) even after its write side has
+          // closed gracefully.
+          expect(
+            socketErrors,
+            everyElement(
+              isA<SocketException>().having(
+                (error) => error.osError?.errorCode,
+                'connection reset or broken pipe error code',
+                isIn(
+                  Platform.isWindows
+                      ? const [10053, 10054]
+                      : (Platform.isMacOS ? const [32, 54] : const [32, 104]),
+                ),
+              ),
+            ),
+          );
+        } else {
+          expect(socketErrors, isEmpty);
+        }
+        if (scenario == 'remote EOF') expect(bytes, [4, 5, 6]);
+        if (scenario == 'closed sink') expect(forward.sink.addAttempts, 0);
+        if (scenario == 'sink closes during flush') {
+          expect(forward.sink.addAttempts, 1);
+        }
+        expect(forward.sink.addStreamAttempts, 0);
+        await _waitForCondition(
+          () => scenario.contains('refus') || forward.destroyCalls == 1,
+        );
+        expect(forward.destroyCalls, scenario.contains('refus') ? 0 : 1);
+      });
+    }
+
     test(
       'local forward cleanup destroys the channel without closing its sink',
       () async {
@@ -6099,6 +6263,56 @@ LISTEN ::1:4201
         },
       );
     }
+
+    for (final asynchronous in [false, true]) {
+      test(
+        'session close handles ${asynchronous ? 'async' : 'sync'} disconnected transport EOF',
+        () async {
+          final client = _MockSshClient();
+          final dependent = _MockSshClient();
+          final error = SSHStateError('Transport is closed');
+          final stack = StackTrace.fromString(
+            '#0 SSHTransport.sendPacket\n#1 SSHChannelController._sendEOFIfNeeded\n#2 SSHClient._closeChannels',
+          );
+          when(client.close).thenAnswer((_) {
+            if (asynchronous) return Future<void>.error(error, stack);
+            Error.throwWithStackTrace(error, stack);
+          });
+          when(dependent.close).thenAnswer((_) async {});
+          final session = SshSession(
+            connectionId: 1,
+            hostId: 42,
+            client: client,
+            dependentClients: [dependent],
+            config: const SshConnectionConfig(
+              hostname: 'host',
+              port: 22,
+              username: 'tester',
+            ),
+          );
+          await session.close();
+          verify(client.close).called(1);
+          verify(dependent.close).called(1);
+        },
+      );
+    }
+
+    test('session close still reports unrelated SSH state failures', () async {
+      final client = _MockSshClient();
+      final error = SSHStateError('Unexpected state');
+      when(client.close).thenAnswer((_) => Future<void>.error(error));
+      final session = SshSession(
+        connectionId: 1,
+        hostId: 42,
+        client: client,
+        config: const SshConnectionConfig(
+          hostname: 'host',
+          port: 22,
+          username: 'tester',
+        ),
+      );
+      await expectLater(session.close(), throwsA(same(error)));
+    });
 
     for (final failureIndex in [0, 1]) {
       test(
@@ -7294,6 +7508,71 @@ LISTEN ::1:4201
       expect(result.success, isFalse);
       expect(result.error, contains('changed between verification'));
     });
+
+    test(
+      'refused jump-host forward returns a failed connection through cancellation guard',
+      () async {
+        final fixture = await _AuthenticationFixture.create(
+          hostname: 'jump.example.com',
+          keyBytes: [1, 2, 3],
+        );
+        when(
+          () => fixture.client.forwardLocal('target.example.com', 22),
+        ).thenAnswer(
+          (_) => Future<SSHForwardChannel>.error(
+            SSHChannelOpenError(1, 'administratively prohibited'),
+          ),
+        );
+        final result = await fixture.service.connect(
+          const SshConnectionConfig(
+            hostname: 'target.example.com',
+            port: 22,
+            username: 'tester',
+            jumpHost: SshConnectionConfig(
+              hostname: 'jump.example.com',
+              port: 22,
+              username: 'tester',
+            ),
+          ),
+          cancellationToken: SshConnectionCancellationToken(),
+        );
+        expect(result.success, isFalse);
+        expect(result.error, contains('refused the tunnel'));
+        verify(fixture.client.close).called(1);
+      },
+    );
+
+    test(
+      'cancelled channel open consumes late refusal and teardown failure',
+      () async {
+        final token = SshConnectionCancellationToken();
+        final opening = Completer<SSHForwardChannel>();
+        final guarded = token.guard(opening.future);
+        final checked = expectLater(
+          guarded,
+          throwsA(isA<SshConnectionCancelledException>()),
+        );
+        token.cancel();
+        await checked;
+        opening.completeError(SSHChannelOpenError(1, 'refused'));
+        await Future<void>.delayed(Duration.zero);
+
+        final lateChannel = Completer<SSHForwardChannel>();
+        final cleanup = token.guard(
+          lateChannel.future,
+          onAbandonedValue: (_) {
+            // ignore: only_throw_errors
+            throw SSHStateError('Transport is closed');
+          },
+        );
+        await expectLater(
+          cleanup,
+          throwsA(isA<SshConnectionCancelledException>()),
+        );
+        lateChannel.complete(_SingleCloseForwardChannel());
+        await Future<void>.delayed(Duration.zero);
+      },
+    );
 
     test('connect verifies jump-host and destination host keys', () async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());

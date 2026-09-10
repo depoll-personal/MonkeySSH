@@ -132,7 +132,7 @@ class SecretEncryptionService {
     final nonce = _decodeEnvelopeField(envelope, 'n');
     final cipherText = _decodeEnvelopeField(envelope, 'c');
     final mac = _decodeEnvelopeField(envelope, 'm');
-    if (nonce.length != _nonceBytes || mac.length < 16) {
+    if (nonce.length != _nonceBytes || mac.length != 16) {
       throw const FormatException('Invalid encrypted value envelope');
     }
     return SecretBox(cipherText, nonce: nonce, mac: Mac(mac));

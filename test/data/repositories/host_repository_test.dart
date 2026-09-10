@@ -8,6 +8,7 @@ import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/models/port_proxy_name.dart';
+import 'package:monkeyssh/domain/services/diagnostics_log_service.dart';
 
 import '../../helpers/pausing_secret_encryption_service.dart';
 
@@ -325,32 +326,91 @@ void main() {
     });
 
     test(
-      'getById migrates malformed ENCv1-prefixed plaintext password',
+      'all host read paths tolerate a corrupt envelope without rewriting it',
       () async {
-        const plaintextPassword = 'ENCv1:not-a-valid-password-envelope';
+        final diagnostics = DiagnosticsLogService(enabled: true);
+        addTearDown(diagnostics.dispose);
+        repository = HostRepository(
+          db,
+          encryptionService,
+          diagnosticsLog: diagnostics,
+        );
+        const corruptPassword = 'ENCv1:not-a-valid-password-envelope';
         final id = await db
             .into(db.hosts)
             .insert(
               HostsCompanion.insert(
-                label: 'Legacy Host',
-                hostname: '192.168.1.12',
+                label: 'Damaged Host',
+                hostname: 'example.com',
                 username: 'admin',
-                password: const Value(plaintextPassword),
+                password: const Value(corruptPassword),
               ),
             );
+        final healthyId = await repository.insert(
+          HostsCompanion.insert(
+            label: 'Healthy Host',
+            hostname: 'healthy.example.com',
+            username: 'admin',
+            password: const Value('healthy-secret'),
+          ),
+        );
 
-        final host = await repository.getById(id);
-        expect(host!.password, plaintextPassword);
+        final host = (await repository.getById(id))!;
+        expect(host.password, isNull);
+        expect(repository.hasUnreadablePassword(id), isTrue);
+        expect((await repository.getAll()).map((h) => h.password), [
+          null,
+          'healthy-secret',
+        ]);
+        expect((await repository.watchAll().first).map((h) => h.password), [
+          null,
+          'healthy-secret',
+        ]);
+        expect((await repository.watchById(id).first)!.password, isNull);
+        expect(
+          (await repository.getById(healthyId))!.password,
+          'healthy-secret',
+        );
 
-        final storedHost = await (db.select(
+        // Locking clears plaintext, but must retain the unreadable marker so a
+        // metadata save cannot erase the original ciphertext or log it again.
+        repository.clearDecryptionCache();
+        await repository.update(host.copyWith(label: 'Renamed Host'));
+        expect((await repository.getById(id))!.password, isNull);
+        final stored = await (db.select(
           db.hosts,
         )..where((h) => h.id.equals(id))).getSingle();
-        expect(storedHost.password, startsWith('ENCv1:'));
-        expect(storedHost.password, isNot(plaintextPassword));
-        await expectLater(
-          encryptionService.decryptNullable(storedHost.password),
-          completion(plaintextPassword),
+        expect(stored.password, corruptPassword);
+        final entries = diagnostics.snapshot();
+        expect(entries, hasLength(1));
+        expect(entries.single.message, 'password_decryption_failed');
+        expect(entries.single.fields, {
+          'hostId': id,
+          'errorType': 'FormatException',
+        });
+        expect(diagnostics.exportText(), isNot(contains(corruptPassword)));
+
+        await repository.update(
+          host.copyWith(password: const Value('replacement')),
         );
+        expect((await repository.getById(id))!.password, 'replacement');
+        expect(repository.hasUnreadablePassword(id), isFalse);
+      },
+    );
+
+    test(
+      'new passwords may literally start with the envelope prefix',
+      () async {
+        const password = 'ENCv1:not-a-valid-password-envelope';
+        final id = await repository.insert(
+          HostsCompanion.insert(
+            label: 'New Host',
+            hostname: 'example.com',
+            username: 'admin',
+            password: const Value(password),
+          ),
+        );
+        expect((await repository.getById(id))!.password, password);
       },
     );
 
